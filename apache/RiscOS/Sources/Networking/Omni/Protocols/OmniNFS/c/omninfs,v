@@ -1,0 +1,2608 @@
+head	1.9;
+access;
+symbols
+	OmniNFS-0_72:1.9
+	OmniNFS-0_71:1.8
+	OmniNFS-0_70-2:1.7
+	OmniNFS-0_70-1:1.6
+	OmniNFS-0_70-0:1.5
+	OmniNFS-0_69:1.4
+	OmniNFS-0_68:1.4
+	OmniNFS-0_67:1.3
+	OmniNFS-0_66:1.3
+	OmniNFS-0_65:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2018.09.25.16.58.17;	author rsprowson;	state Exp;
+branches;
+next	1.8;
+commitid	GFJOSkFX3KOGvvTA;
+
+1.8
+date	2018.01.29.21.52.30;	author rsprowson;	state Exp;
+branches;
+next	1.7;
+commitid	jxnHhDaBaRHUOOoA;
+
+1.7
+date	2018.01.29.21.49.27;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	JbejJtfNqqtCNOoA;
+
+1.6
+date	2018.01.29.21.47.04;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	NGm1yEfHuvIIMOoA;
+
+1.5
+date	2018.01.29.21.44.19;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	qDB3uqw9ftg6MOoA;
+
+1.4
+date	2015.08.25.09.27.15;	author jballance;	state Exp;
+branches;
+next	1.3;
+commitid	AoLGsy5s8PXUeDyy;
+
+1.3
+date	2009.07.16.19.15.38;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.11.29.18.32.26;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.11.29.14.05.55;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.11.29.14.05.55;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@Fix handle and memory leaks on error
+Found by cppcheck static analysis.
+
+Version 0.72. Tagged as 'OmniNFS-0_72'
+@
+text
+@/* Copyright 1999 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* -*-c-*- */
+
+/* OmniClient front end for NFS */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include "Global/RISCOS.h"
+#include "Global/Services.h"
+#include "Global/OsBytes.h"
+#include "Interface/HighFSI.h"
+#include "Interface/NFS.h"
+#include "Interface/OmniClient.h"
+
+#include "AsmUtils/rminfo.h"
+
+#include "DebugLib/DebugLib.h"
+
+#include "omnifiler.h"
+#include "omninfs.h"
+#include "serverlist.h"
+#include "callback.h"
+#include "OmniNFSHdr.h"
+
+
+#define DO_PRINTING 1
+
+/*******************************************************************/
+/* Global variables */
+
+void *private_word;
+int rpc_socket;
+
+static int msg_struct[4];
+
+static int server_list_has_changed;
+
+static int we_are_registered;
+
+static onfs_active_server *server_list;
+static onfs_active_mount  *mount_list;
+
+static onfs_print_job *print_list;
+
+static volatile int tick_pending, datagram_pending, callback_pending;
+
+/*******************************************************************/
+/* Forward declarations of static functions */
+
+static _kernel_oserror *register_client(void);
+static void deregister_client(void);
+
+static void setup_callback(void);
+static void clear_callback(void);
+
+static _kernel_oserror *setup_ticker_and_event(void);
+static void clear_ticker_and_event(void);
+
+static void server_item_check_name(onfs_active_server *as);
+
+/*******************************************************************/
+/* Now the code itself */
+
+/* mountlist_update
+ *
+ * Ensure that the list of mounts that we hold is an up to date
+ * view of the NFS mounts.
+ */
+
+static _kernel_oserror *mountlist_update(void)
+{
+   _kernel_oserror *ep;
+   _kernel_swi_regs r;
+   onfs_active_mount **app;
+
+   app = &mount_list;
+
+   r.r[0] = 0;			/* All servers */
+   r.r[1] = 0;			/* Start listing mounts */
+
+   dprintf (("", "Starting to read internal mount list\n"));
+
+   do
+   {
+       ep = _kernel_swi(NFS_MountList, &r, &r);
+
+       if (ep)
+	   return ep;
+
+       if (r.r[1] != 0)
+       {
+	   int test;
+	   char *name = (char*) r.r[1];
+	   dprintf (("", "Mount fetched: %s\n", name));
+
+	   do
+	   {
+	       if ( (*app) == 0)
+	       {
+		   dprintf (("", "No more items in our own list\n"));
+		   test = -1;
+	       }
+	       else
+	       {
+		   dprintf (("", "Testing against '%s'", (*app)->mount_name));
+		   test = strcmp(name, (*app)->mount_name);
+		   dprintf (("", ", outcome = %d\n", test));
+	       }
+	       /* The mount list from NFS and our mount list
+		* are both in alphabetic order
+		*/
+
+	       /* If the mount from NFS comes before the one in the list
+		* we need to insert the new item.
+		*/
+	       if (test < 0)
+	       {
+		   onfs_active_mount *newmount;
+
+		   dprintf (("", "Allocating new space, "));
+		   newmount = malloc(sizeof(onfs_active_mount));
+		   if (newmount == NULL)
+		       return intl_error(err_NO_MEMORY);
+		   newmount->mount_name = malloc(strlen(name)+1);
+		   if (newmount->mount_name == NULL)
+		   {
+		       free(newmount);
+		       return intl_error(err_NO_MEMORY);
+		   }
+
+		   dprintf (("", "entry at 0x%p, string at 0x%p, ", newmount, newmount->mount_name));
+		   newmount->magic = ONFS_MOUNT_MAGIC;
+		   newmount->server_id = 0;
+		   strcpy(newmount->mount_name, name);
+		   newmount->next = *app;
+		   *app = newmount;
+		   app = &(newmount->next);	/* Points to the same item as before */
+		   dprintf (("", " linked into list\n"));
+		   test = 0;		/* Leave the inner while loop */
+	       }
+	       /* If the mount from NFS comes after the one in the list
+		* we need to delete the one in the list and try again.
+		* This path is not taken if the rest of the list is empty.
+		*/
+	       else if (test > 0)
+	       {
+		   onfs_active_mount *old;
+
+		   old = *app;
+		   dprintf (("", "Removing stale item '%s'. ", old->mount_name));
+		   *app = old->next;
+		   dprintf (("", "Next point in chain point to 0x%p\n", *app));
+		   if (old->mount_name)
+		       free(old->mount_name);
+		   old->magic = 0; /* Stomp on the magic number to prevent accidental reuse */
+		   free(old);
+		   /* Leave 'test' alone so we go around again */
+	       }
+	       /* If they are the same we just move on the the next in the list */
+	       else
+	       {
+		   dprintf (("", "Items are equal so pass on\n"));
+		   app = &((*app)->next);
+	       }
+
+	   } while (test != 0);
+       }
+   } while(r.r[1] != 0);
+
+   /* There are no more real mounts */
+
+   while (*app != 0)
+   {
+       onfs_active_mount *old;
+       old = *app;
+       dprintf (("", "Removing stale item '%s'. ", old->mount_name));
+       *app = old->next;
+       dprintf (("", "Next point in chain point to 0x%p\n", *app));
+       if (old->mount_name != 0)
+	   free(old->mount_name);
+       old->magic = 0;
+       free(old);
+   }
+
+   return NULL;
+}
+
+/* International support functions
+ */
+const char *intl_lookup(const char *token, const char *arg1)
+{
+    _kernel_oserror *err;
+    _kernel_swi_regs r;
+    static char string[64];
+  
+    r.r[0] = (int) msg_struct;
+    r.r[1] = (int) token;
+    r.r[2] = (int) string;
+    r.r[3] = sizeof(string);
+    r.r[4] = (int) arg1;
+    r.r[5] = r.r[6] = r.r[7] = 0;
+    err = _kernel_swi(MessageTrans_Lookup, &r, &r);
+    if (err)
+    {
+        return "???";
+    }
+    return (const char  *)string;
+}
+
+_kernel_oserror *intl_error(err_number_type which)
+{
+    struct
+    {
+        int  errnum;
+        char token[8];
+    } interrblk;
+    static _kernel_oserror errblk;
+    _kernel_swi_regs r;
+  
+    sprintf(interrblk.token, "E%02x", which - client_ERRBASE);
+    interrblk.errnum = which;
+    r.r[0] = (int) &interrblk;
+    r.r[1] = (int) msg_struct;
+    r.r[2] = (int) &errblk;
+    r.r[3] = sizeof(errblk);
+    r.r[4] = r.r[5] = r.r[6] = r.r[7] = 0;
+    return _kernel_swi(MessageTrans_ErrorLookup, &r, &r);
+}
+
+/* SWI server_id+0 "XXXX_OmniOp"
+ *	On entry, R0 = reason code;
+ *			0 = Mount
+ *			1 = Dismount
+ *			2 = Free
+ *			3 = Enumerate servers
+ *			4 = Enumerate mounts on a server
+ *			5 = Enumerate active mounts
+ *			6 = Open Root
+ *			7 = Open User Root
+ *			8 = Get Mount Info
+ * 			9 = Create Print Job
+ * 	               10 = Send data in Print Job
+ * 	               11 = End Print Job
+ * 	               12 = Abort Print Job(s)
+ * 	               13 = Get Print Job Info
+ *                    >13 = *reserved*
+ *                  Other registers as required for given reason code
+ *      On exit,  Registers set as required for given reason code
+ *	All other registers preserved on exit
+ *
+ *      This SWI provides an entry point for the OmniClient to call
+ *      individual client modules that have registered with it.
+ */
+
+
+/*	Reason code 0 - Mount server
+ *        	On entry, R1 = ptr to Server string
+ *        		  R2 = ptr to UserID string (optional)
+ *        		  R3 = ptr to Password string (optional)
+ *        		  R4 = ptr to Mount name string
+ *        		  R5 = ptr to Mount path string (optional)
+ *        		  R6 = ptr to Authentication server str (optional)
+ *		On exit,  R1 = mount_id, or 0 if failed
+ *
+ *		Operation to mount a server (in fact a given 'mount' on a
+ *		particular server).
+ *		Strings are null terminated. Pointers are 0 if fields
+ *		are not required for a given Client module. Strings not
+ *		guaranteed by caller to be static across multiple calls.
+ *		See comments about unique mount_id's in 'Terminology'
+ *		section above.
+ */
+static _kernel_oserror *Op_Mount(_kernel_swi_regs *r)
+{
+    onfs_active_mount *am;
+    onfs_active_mount **app;
+    _kernel_swi_regs rr;
+    _kernel_oserror *ep;
+    int user = r->r[2];
+    int auth = r->r[6];
+    int server = r->r[1];
+    char *new_name;
+
+    /* Now it is safe to overwrite r->r[1] */
+    r->r[1] = 0;
+
+    if (auth == 0 || ((char*)auth)[0] == 0)	/* If there is no authentication server... */
+	auth = server;				/* 	Use the file server to authenicate */
+    if (user == 0 || ((char*)user)[0] == 0)	/* If there is no user specified... */
+    {
+	user = (int) "nobody";			/* 	use the user 'nobody' */
+	auth = 0;
+    }
+
+    rr.r[0] = auth;
+    rr.r[1] = user;
+    rr.r[2] = r->r[3];
+
+    ep = _kernel_swi(NFS_SetUser, &rr, &rr);
+
+    if (ep)
+	return ep;
+
+    rr.r[0] = server;
+    rr.r[1] = r->r[4];
+    rr.r[2] = r->r[5];
+
+    ep = _kernel_swi(NFS_Mount, &rr, &rr);
+
+    if (ep)
+	return ep;
+
+    am = malloc(sizeof(onfs_active_mount));
+    if (am == NULL)
+	return intl_error(err_NO_MEMORY);
+
+    new_name = (char*) r->r[4];
+
+    am->magic = ONFS_MOUNT_MAGIC;
+    am->server_id = 0;
+    am->mount_name = malloc(strlen(new_name)+1);
+    if (am->mount_name == NULL)
+    {
+	free(am);
+	return intl_error(err_NO_MEMORY);
+    }
+
+    strcpy(am->mount_name, new_name);
+
+    app = &mount_list;
+
+    while ( (*app != 0) && (strcmp(new_name, (*app)->mount_name) > 0) )
+    {
+	app = &((*app)->next);
+    }
+
+    am->next = *app;
+    *app = am;
+
+    r->r[1] = (int) am;
+
+    return(NULL);
+}
+
+
+/*	Reason code 1 - Dismount server
+ *		On entry, R1 = mount_id
+ *
+ *		Operation to dismount a previously mounted server (in fact a
+ *		given 'mount' on a particular server).
+ */
+static _kernel_oserror *Op_Dismount(_kernel_swi_regs *r)
+{
+    onfs_active_mount *am = (onfs_active_mount *) r->r[1];
+    _kernel_swi_regs rr;
+    _kernel_oserror *ep;
+
+    if (am == 0 || am->magic != ONFS_MOUNT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    rr.r[0] = 0;
+    rr.r[1] = (int) am->mount_name;
+
+    ep = _kernel_swi(NFS_Dismount, &rr, &rr);
+
+    return ep;
+}
+
+/*	Reason code 2 - Freespace on mount
+ *		On entry, R1 = mount_id
+ *		On exit,  R1 = user free space on mount (bytes)
+ *		          R2 = user used space on mount (bytes)
+ *		          R3 = total size of mount (bytes)
+ *
+ *		Returns freespace. Numbers are unsigned 32-bit integers. If
+ *		any value is greater than (2^32 - 1) (=4Gbytes!) then simply
+ *		return the maximum (0xFFFFFFFF).
+ *              The exact interpretation of 'user freespace' and 'total
+ *              size' is client dependent, however R1+R2 >= R3.
+ */
+static _kernel_oserror *Op_Free(_kernel_swi_regs *r)
+{
+    onfs_active_mount *am = (onfs_active_mount *) r->r[1];
+    _kernel_swi_regs rr;
+    _kernel_oserror *ep;
+
+    if (am == 0 || am->magic != ONFS_MOUNT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    rr.r[1] = (int) am->mount_name;
+
+    ep = _kernel_swi(NFS_FreeSpace, &rr, &rr);
+
+    if (ep)
+	return ep;
+
+    r->r[1] = rr.r[0];
+    r->r[2] = rr.r[2] - rr.r[3];
+    r->r[3] = rr.r[2];
+
+    return(NULL);
+}
+
+
+/*	Reason code 3 - Enumerate all servers on network
+ *		On entry, R1 = ptr to buffer for servers list
+ *		          R2 = size of buffer (bytes)
+ *		          R3 = 0, start enumerating servers
+ *		               not 0, continue enumerating servers
+ *		On exit,  R1 = ptr to next free byte in buffer, word aligned
+ *		          R3 = 0, operation complete
+ *		               not 0, buffer full, call again with this R3
+ *
+ *		Operation scans visible network and returns block filled
+ *		with Server records for every possible server, in the
+ *		following format;
+ *
+ *		+0	server_id
+ *		$4	shortname (no more than 24 characters, 0-terminated)
+ *			fullname (no more than 64 characters, 0-terminated)
+ *			description (some additional string, <= 48 chars)
+ *
+ *		+n	server_id
+ *		$n+4	shortname/fullname/description
+ *		...
+ *
+ *		Where n is the number of bytes, aligned upwards to a word
+ *		boundary.
+ *
+ *		'shortname' is a short description of the server for Large
+ *		and Small icon filer displays. eg, "server"
+ *		'fullname' is a full description of the server for Full info
+ *		filer displays. eg, "server.subnet.net"
+ *              'description' is some textual field for tacking on the end
+ *              of Full info filer displays. [We should discuss the sort of
+ *              things that might go in here].
+ *
+ *		If R3 is not 0 on exit, then the enumeration is not complete
+ *		(buffer full), and the reason code is called again with the
+ *		new R3 value. This process continues until the enumeration
+ *		is complete.
+ */
+static _kernel_oserror *Op_Servers(_kernel_swi_regs *r)
+{
+    onfs_active_server *as;
+    char *buffer = (char *) r->r[1];
+    int remaining = r->r[2];
+    char tempbuf[4+24+64+48];
+
+    if (r->r[3] == 0)
+	as = server_list;
+    else
+	as = (onfs_active_server *) r->r[3];
+
+    if (as->magic != ONFS_SERVER_MAGIC)
+    	return intl_error(err_BAD_MAGIC);
+
+    while (as != 0)
+    {
+	dprintf(("", "Server id %p, name %s, address %x, last seen %d, %sill\n",
+		as, as->server_name, as->addr, as->last_seen,
+		as->server_ill ? "" : "not "));
+	/* Only update the buffer if the server is not ill */
+	if (as->server_ill == 0)
+	{
+	    char *ctemp = tempbuf;
+	    int slen, clen;
+
+	    clen = 0;
+
+	    server_item_check_name(as);
+
+	    *((int*)ctemp) = (int) as;
+	    ctemp += 4;
+	    clen  += 4;
+	    slen = strlen(as->server_name);
+	    strncpy(ctemp, as->server_name, as->short_name_len);
+	    ctemp[as->short_name_len] = 0;
+	    ctemp += as->short_name_len+1;
+	    clen  += as->short_name_len+1;
+	    strcpy(ctemp, as->server_name);
+	    ctemp += slen+1;
+	    clen  += slen+1;
+	    strcpy(ctemp, get_dotted_ip_addr(as->addr));
+	    strcat(ctemp, "\n\n");
+	    slen = strlen(ctemp);
+	    ctemp += slen+1;
+            clen  += slen+1;
+
+	    clen = (clen+3) & (~3);
+
+	    if (clen <= remaining)
+	    {
+	      	memcpy(buffer, tempbuf, clen);
+	      	remaining -= clen;
+	      	buffer += clen;
+	    }
+	    else
+	    {
+	      	/* Don't move on if we could not copy */
+	      	break;
+	    }
+	}
+	/* Move to the next server even if it is ill */
+	as = as->next;
+    }
+
+    dprintf (("", "Finnished list\n"));
+
+    r->r[1] = (int) buffer;
+    r->r[3] = (int) as;
+
+    return(NULL);
+}
+
+
+/*	Reason code 4 - Enumerate all mounts on a server
+ *		On entry, R1 = ptr to buffer for mounts list
+ *		          R2 = size of buffer (bytes)
+ *		          R3 = 0, start enumerating mounts
+ *		               not 0, continue enumerating mounts
+ *		          R4 = server_id
+ *		On exit,  R1 = ptr to last byte written to buffer
+ *		          R3 = 0, operation complete
+ *		               not 0, buffer full, call again with this R3
+ *
+ *		Operation scans visible network and returns block filled
+ *		with Mount records for every possible mount on the given
+ *		server, in the following format;
+ *
+ *		+0	mount_id (or 0 if not connected)
+ *		$4	shortname (no more than 16 characters, 0-terminated)
+ *			fullname (no more than 32 characters, 0-terminated)
+ *			description (some additional string, <= 64 chars)
+ *
+ *		+n	mount_id
+ *		$n+4	shortname/fullname/description
+ *		...
+ *
+ *		Where n is the number of bytes, aligned upwards to a word
+ *		boundary.
+ *
+ *		'shortname' is a short description of the mount for Large
+ *		and Small icon filer displays. eg, "leafdir"
+ *		'fullname' is a full description of the mount for Full info
+ *		filer displays. eg, "dir1.dir2.leafdir"
+ *              'description' is some textual field for tacking on the end
+ *              of Full info filer displays. We should discuss the sort of
+ *              things that might go in here.
+ *
+ *		If R3 is not 0 on exit, then the enumeration is not complete
+ *		(buffer full), and the reason code is called again with the
+ *		new R3 value. This process continues until the enumeration
+ *		is complete.
+ */
+static _kernel_oserror *Op_Mounts(_kernel_swi_regs *r)
+{
+    return intl_error(err_NOT_SUPPORTED);
+}
+
+/*	Reason code 5 - Enumerate active (connected) mounts
+ *		On entry, R1 = ptr to buffer for mounts list
+ *		          R2 = size of buffer (bytes)
+ *		          R3 = 0, start enumerating mounts
+ *		               not 0, continue enumerating mounts
+ *		On exit,  R1 = ptr to last byte written to buffer
+ *		          R3 = 0, operation complete
+ *		               not 0, buffer full, call again with this R3
+ *
+ *		Operation returns buffer filled with Mount records for every
+ *		active (connected) mount on a server, in the following format;
+ *
+ *		+0	server_id
+ *		+4	mount_id
+ *		$8 	mount name (no more than 16 chars, 0-terminated)
+ *
+ *		+n	server_id
+ *		...
+ *
+ *		Where n is the number of bytes, aligned upwards to a word
+ *		boundary.
+ *
+ *		'mount name' is the mount name, as passed in the Mount
+ *		(reason code = 0) OmniOp SWI call.
+ *
+ *		If R3 is not 0 on exit, then the enumeration is not complete
+ *		(buffer full), and the reason code is called again with the
+ *		new R3 value. This process continues until the enumeration
+ *		is complete.
+ */
+static _kernel_oserror *Op_ActiveMounts(_kernel_swi_regs *r)
+{
+    _kernel_oserror *ep;
+    onfs_active_mount *am;
+    char *buffer = (char *) r->r[1];
+    int remaining = r->r[2];
+
+    if (r->r[3] == 0)
+    {
+	ep = mountlist_update();
+
+	if (ep)
+	    return ep;
+	am = mount_list;
+    }
+    else
+    {
+	am = (onfs_active_mount *) r->r[3];
+
+     	if (am->magic != ONFS_MOUNT_MAGIC)
+	    return intl_error(err_BAD_MAGIC);
+    }
+
+    while ((am != 0) && (remaining > 24) )
+    {
+	/* Any entry that starts 'Spool:' is assumed to be a printer spool and is surpressed */
+	if (strncmp(am->mount_name, "Spool:", 6) != 0)
+	{
+	    int slen;
+
+	    *((int*)buffer) = (int) am->server_id;
+	    buffer += 4;
+	    *((int*)buffer) = (int) am;
+	    buffer += 4;
+	    strncpy(buffer, am->mount_name, 15);
+	    buffer[15]=0;
+	    slen = strlen(buffer);
+	    slen += 4;
+	    slen &= (~3);
+
+	    buffer += slen;
+
+	    remaining -= 8;
+	    remaining -= slen;
+	}
+
+	am = am->next;
+    }
+
+    r->r[1] = (int) buffer;
+    r->r[3] = (int) am;
+
+    return(NULL);
+}
+
+
+/*	Reason code 6 - Open Root of mount
+ *		On entry, R1 = mount_id
+ *
+ *		Trigger a Filer_OpenDir on the highest point available
+ *		in mount's visible directory tree. eg, '$'
+ */
+static _kernel_oserror *Op_Root(_kernel_swi_regs *r)
+{
+    char buffer[256];
+    onfs_active_mount *am = (onfs_active_mount *) r->r[1];
+
+    if (am == 0 || am->magic != ONFS_MOUNT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    sprintf(buffer, "Filer_OpenDir NFS::%s.$", am->mount_name);
+
+    _kernel_oscli(buffer);
+
+    return NULL;
+}
+
+/*	Reason code 7 - Open User Root of mount
+ *		On entry, R1 = mount_id
+ *
+ *		Trigger a Filer_OpenDir on the current user's 'home'
+ *		directory, or the highest point available in mount's
+ *		visible directory tree if not applicable. eg, '/homes/nas'
+ *		or '$'
+ */
+static _kernel_oserror *Op_UserRoot(_kernel_swi_regs *r)
+{
+    /* For NFS this is the same as the Op above */
+    return Op_Root(r);
+}
+
+
+/*	Reason code 8 - Get (inactive/not-connected) Mount Info
+ *		On entry, R1 = mount_id (of active mount)
+ *			  R2 = ptr to new Mount path string
+ *		On exit,  R1 = new mount facilities flags word;
+ *			       bit 0 = 1, mount does need User identifier
+ *			       bit 1 = 1, mount does need Password string
+ *                             bits 2..31 = *reserved* zero
+ *
+ *		This reason code allows for the possibility of changing
+ *		authentication once a mount to a given server is made.
+ *		mount_id is the existing connection to a server (possibly
+ *		one of several) and the new mount name/path strings are the
+ *		new mount to that server. Some clients (eg, LAN Manager)
+ *		allow unauthenticated new mounts, once an authenticated
+ *		mount is performed.
+ */
+static _kernel_oserror *Op_InactiveMountInfo(_kernel_swi_regs *r)
+{
+    /* Lord alone knows why anybody would want to do this.  I know I don't */
+    return intl_error(err_NOT_SUPPORTED);
+}
+
+/*	Reason code 9 - Get (active/connected) Mount Info
+ *		On entry, R1 = mount_id (of active mount)
+ *		On exit,  R1 = ptr to Server string
+ *       		  R2 = ptr to UserID string
+ *       		  R3 = ptr to Mount name string
+ *       		  R4 = ptr to Mount path string
+ *       		  R5 = ptr to Authentication server string
+ *
+ *		Operation to get information about an active mount.
+ *		Strings are null terminated. Pointers are 0 if fields
+ *		are not available for a given mount. Strings do not need to
+ *		be guaranteed to be static across multiple calls.
+ *              The Server string (R1) should be the 'full name' as supplied
+ *              by OmniOp reason code 3 (Enumerate all servers).
+ */
+static _kernel_oserror *Op_ActiveMountInfo(_kernel_swi_regs *r)
+{
+    onfs_active_mount *am = (onfs_active_mount *) r->r[1];
+    _kernel_oserror *ep;
+    _kernel_swi_regs rr;
+
+    if (am == 0 || am->magic != ONFS_MOUNT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    rr.r[1] = (int) am->mount_name;
+
+    ep = _kernel_swi(NFS_MountInfo, &rr, &rr);
+
+    if (ep)
+	return ep;
+
+    r->r[1] = rr.r[0];
+    r->r[2] = rr.r[3];
+    r->r[3] = rr.r[1];
+    r->r[4] = rr.r[2];
+    r->r[5] = rr.r[4];
+
+    r->r[6] = (int) am->server_id;
+
+    return NULL;
+}
+
+
+/* 	Reason code 10 - Create Print Job
+ * 		On entry, R1 = ptr to server name
+ * 	                  R2 = ptr to printer name
+ * 	                  R3 = ptr to user name, or NULL
+ * 	                  R4 = ptr to password string, or NULL
+ * 	                  R5 = ptr to options string, or NULL
+ * 	                  R6 = size of print job (bytes), or 0 if not known
+ * 		On exit,  R1 = print_id, or 0 if failed
+ *
+ *         	Submit a new job for network printing. The user name and
+ *         	options string are optional, and may be	NULL pointers.
+ */
+static _kernel_oserror *Op_CreateJob(_kernel_swi_regs *r)
+{
+    char *fname = (char *) malloc(256);
+    char *sname = (char *) r->r[1];
+    char *pname = (char *) r->r[2];
+    char *uname = (char *) r->r[3];
+    char *opts  = (char *) r->r[5];
+    onfs_print_job *pj;
+    _kernel_oserror *err = NULL;
+    _kernel_swi_regs fr;
+
+    r->r[1] = 0;
+    if (fname == NULL)
+	return intl_error(err_NO_MEMORY);
+
+    sprintf(fname, "NFS#Printer::%s.%s.%s%s%s",
+	    sname, pname,
+	    (uname ? uname : "nobody"),
+	    (opts ? "." : ""),
+	    (opts ? opts : "") );
+
+    pj = malloc(sizeof(onfs_print_job));
+    if (pj == NULL)
+    {
+      free(fname);
+      return intl_error(err_NO_MEMORY);
+    }
+
+    pj->handle = 0;
+    err = _swix(OS_Find, _INR(0,1) | _OUT(0),
+                open_write | open_nopath, fname, &pj->handle);
+
+    if ((pj->handle == 0) || (err))
+    {
+	free(pj);
+	free(fname);
+	return intl_error(err_CANT_PRINT);
+    }
+    pj->magic = ONFS_PRINT_MAGIC;
+    pj->status = flag_print_OPENED;
+    pj->bytes = 0;
+
+    pj->next = print_list;
+    print_list = pj;
+
+    r->r[1] = (int) pj;
+
+    free(fname);
+    return 0;
+}
+
+
+/* 	Reason code 11 - Send data in Print Job
+ * 		On entry, R1 = print_id
+ * 		          R2 = ptr to data block to send
+ * 		          R3 = size of data block to send
+ * 		On exit,  R3 = number of bytes not sent, or 0 for all done
+ * 		All other registers preserved on exit
+ *
+ *         	Send a block of data down network printer stream for a given
+ *         	active print_id word.
+ */
+static _kernel_oserror *Op_SendJob(_kernel_swi_regs *r)
+{
+    onfs_print_job *pj = (onfs_print_job *) r->r[1];
+    _kernel_osgbpb_block gbpb;
+    _kernel_oserror *ep;
+
+    if (pj == 0 || pj->magic != ONFS_PRINT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    gbpb.dataptr = (void*) r->r[2];
+    gbpb.nbytes = r->r[3];
+
+    /* @@@@@@@@ What should we do with the int return code from this call ? */
+    ep = (_kernel_oserror *) _kernel_osgbpb(2, pj->handle, &gbpb);
+
+    pj->bytes += (r->r[3] - gbpb.nbytes);
+    r->r[3] = gbpb.nbytes;
+
+    if ((int) ep == 2)
+    {
+	ep = NULL;
+	pj->status = flag_print_SENDING;
+    }
+    else
+    {
+	pj->status = flag_print_ERROR;
+    }
+
+    return ep;
+}
+
+
+/* 	Reason code 12 - End Print Job
+ * 		On entry, R1 = print_id
+ * 		All registers preserved on exit
+ *
+ *         	End a specified print job normally (ie, all data
+ *         	transmitted).
+ */
+static _kernel_oserror *Op_EndJob(_kernel_swi_regs *r)
+{
+    onfs_print_job *pj = (onfs_print_job *) r->r[1];
+
+    if (pj == 0 || pj->magic != ONFS_PRINT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    if (pj->handle)
+	_swix(OS_Find, _INR(0,1), OSFind_Close, pj->handle);
+
+    pj->handle = 0;
+    pj->status = flag_print_CLOSED;
+
+    return NULL;
+}
+
+
+/* 	Reason code 13 - Abort Print Job(s)
+ * 		On entry, R1 = print_id, or
+ * 		             = 0, to abort all jobs
+ * 		All registers preserved on exit
+ *
+ *         	Abort a specified print job, or all current jobs.
+ */
+static _kernel_oserror *Op_AbortJob(_kernel_swi_regs *r)
+{
+    onfs_print_job *pj = (onfs_print_job *) r->r[1];
+
+    /* This one is different, pj can be zero legally */
+    if (pj != 0 && pj->magic != ONFS_PRINT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    if (pj)
+    {
+	if (pj->handle)
+	    _swix(OS_Find, _INR(0,1), OSFind_Close, pj->handle);
+
+	pj->handle = 0;
+	pj->status = flag_print_ABORTED;
+    }
+    else
+    {
+	pj = print_list;
+	while (pj)
+	{
+	    if (pj->handle)
+		_swix(OS_Find, _INR(0,1), OSFind_Close, pj->handle);
+
+	    pj->handle = 0;
+	    pj->status = flag_print_ABORTED;
+
+	    pj = pj->next;
+	}
+    }
+
+    return NULL;
+}
+
+
+/* 	Reason code 14 - Get Print Job Info
+ * 		On entry, R1 = print_id
+ * 		On exit,  R1 = local job status word
+ * 			  R2 = local job # bytes sent
+ * 			  R3 = error/status block ptr, or 0
+ * 			  R4 = remote job status word
+ * 			  R5 = remote job # bytes printed
+ * 			  R6 = error/status block ptr, or 0
+ * 		All other registers preserved on exit
+ *
+ *         	Get information on a specified print job. The status word
+ *         	(R1, R3) is defined above in SWI Omni_JobStatus.
+ */
+static _kernel_oserror *Op_GetJobInfo(_kernel_swi_regs *r)
+{
+    onfs_print_job *pj = (onfs_print_job *) r->r[1];
+
+    if (pj == 0 || pj->magic != ONFS_PRINT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    r->r[1] = pj->status | flag_print_HAS_STATUS;
+    r->r[2] = pj->bytes;
+    r->r[3] = r->r[4] = r->r[5] = r->r[6] = 0;
+
+    return NULL;
+}
+
+
+/*	Reason code 15 - Clear Print Job(s)
+ *		On entry, R1 = pjob_id, or
+ *			     = 0, to clear all inactive jobs
+ *		All registers preserved on exit
+ *
+ *		Clear a specified print job, or all inactive jobs. OmniClient
+ *		will make this call when the print job submitter indicates,
+ *		by calling SWI Omni_ClearJob, longer requires status information
+ *		about that job. The status of a print job should reside in
+ *		memory forever if this reason code is not called.
+ *		'Inactive' in this case means either 'transfer complete' (3) or
+ *		'job has terminal error' (5).
+ */
+
+static _kernel_oserror *Op_ClearJob(_kernel_swi_regs *r)
+{
+    onfs_print_job *pj = (onfs_print_job *) r->r[1];
+    onfs_print_job **pjp = &print_list;
+
+    if (pj != 0 && pj->magic != ONFS_PRINT_MAGIC)
+	return intl_error(err_BAD_MAGIC);
+
+    if (pj != 0 && (pj->status != flag_print_CLOSED && pj->status != flag_print_ABORTED) )
+    {
+	return intl_error(err_JOB_NOT_FINISHED);
+    }
+
+    while (*pjp)
+    {
+	if (*pjp == pj || (pj == 0 && ((*pjp)->status == flag_print_ABORTED || (*pjp)->status == flag_print_CLOSED)))
+	{
+	    onfs_print_job *pj2 = *pjp;
+	    *pjp = pj2->next;
+	    pj2->magic = 0;
+	    free(pj2);
+	}
+	else
+	{
+	    pjp = &((*pjp)->next);
+	}
+    }
+
+    return 0;
+}
+
+
+/*	Reason code 16 - Enumerate all printers on network
+ *		On entry, R1 = ptr to buffer for printers list (word aligned)
+ *			  R2 = size of buffer (words * 4)
+ *			  R3 = 0, start enumerating printers
+ *			       not 0, continue enumerating printers
+ *		On exit,  R1 = ptr to next free byte in buffer, word aligned
+ *			  R3 = 0, operation complete
+ *			       not 0, buffer full, call again with this R3
+ *
+ *		Operation scans visible network and returns block filled
+ *		with Printer records for every possible printer, in the
+ *		following format;
+ *
+ *		+0	flags word (see below)
+ *		$4	printer (no more than 24 chars, 0-terminated)
+ *			server (no more than 64 chars, 0-terminated)
+ *
+ *		+n	flags
+ *		$n+4	name
+ *		...
+ *
+ *		Where n is the number of bytes, aligned upwards to a word
+ *		boundary.
+ */
+
+static _kernel_oserror *Op_EnumeratePrinters(_kernel_swi_regs *r)
+{
+    return intl_error(err_NOT_SUPPORTED);
+}
+
+
+_kernel_oserror *onfs_swi(int n, _kernel_swi_regs *r, void *pw)
+{
+    switch (n)
+    {
+    case 0: /* Dummy_OmniOp */
+	dprintf (("", "OmniOP reason %d\n", r->r[0]));
+	switch (r->r[0])
+	{
+        case OmniOp_Mount:
+	    return Op_Mount(r);
+	    break;
+        case OmniOp_Dismount:
+	    return Op_Dismount(r);
+	    break;
+        case OmniOp_Free:
+	    return Op_Free(r);
+	    break;
+        case OmniOp_EnumerateServers:
+	    return Op_Servers(r);
+	    break;
+        case OmniOp_EnumerateMountsOnServer:
+	    return Op_Mounts(r);
+	    break;
+        case OmniOp_EnumerateActiveMounts:
+	    return Op_ActiveMounts(r);
+	    break;
+        case OmniOp_OpenRoot:
+	    return Op_Root(r);
+	    break;
+        case OmniOp_OpenUserRoot:
+	    return Op_UserRoot(r);
+	    break;
+        case OmniOp_GetInactiveMountInfo:
+	    return Op_InactiveMountInfo(r);
+	    break;
+        case OmniOp_GetActiveMountInfo:
+	    return Op_ActiveMountInfo(r);
+	    break;
+        case OmniOp_CreatePrintJob:
+	    return Op_CreateJob(r);
+	    break;
+        case OmniOp_SendPrintJobData:
+	    return Op_SendJob(r);
+	    break;
+        case OmniOp_EndPrintJob:
+	    return Op_EndJob(r);
+	    break;
+        case OmniOp_AbortPrintJob:
+	    return Op_AbortJob(r);
+	    break;
+        case OmniOp_GetPrintJobInfo:
+	    return Op_GetJobInfo(r);
+	    break;
+        case OmniOp_ClearPrintJob:
+	    return Op_ClearJob(r);
+	    break;
+        case OmniOp_EnumeratePrinters:
+	    return Op_EnumeratePrinters(r);
+	    break;
+        default:
+	    return intl_error(err_NOT_SUPPORTED);
+	}
+	break;
+
+    default:
+	return intl_error(err_NOT_SUPPORTED);
+    }
+
+    return NULL;
+}
+
+
+#ifdef DEBUG
+
+_kernel_oserror *onfs_command(const char *tail, int argc, int n, void *pw)
+{
+    dprintf (("", "Command number %d\n", n));
+    switch (n)
+    {
+    case CMD_OmniNFSListMounts:
+	printf ("Listing mounts\n");
+	if (mountlist_update() == NULL)
+	{
+	    onfs_active_mount *ap = mount_list;
+
+	    while (ap)
+	    {
+		printf ("Mount ID 0x%p, server id 0x%p, '%s'\n", ap, ap->server_id, ap->mount_name);
+		ap = ap->next;
+	    }
+	}
+	break;
+    case CMD_OmniNFSListPrintJobs:
+	printf("Current printer jobs:\n");
+	if (print_list == NULL)
+	    printf("<None>\n");
+	else
+        {
+	    onfs_print_job *pj = print_list;
+	    char *status_strings[] = { "Pending ", "Opened  ", "Sending ", "Closed  ", "Error   ", "Aborted " };
+
+	    while (pj)
+	    {
+		printf("Pjob ID %08p, Status: %s\t%d bytes sent\n", pj, status_strings[pj->status >> 1], pj->bytes);
+		pj = pj->next;
+	    }
+	}
+	break;
+    case CMD_OmniNFSListServers:
+	printf("Listing servers\n");
+        {
+	    onfs_active_server *as = server_list;
+
+	    while (as)
+	    {
+		printf("Server ID 0x%p, '%s'%s\n", as, as->server_name, as->server_ill ? " (ill)":"" );
+		as = as->next;
+	    }
+	}
+	break;
+    }
+
+    return NULL;
+}
+#endif
+
+void onfs_service(int n, _kernel_swi_regs *r, void *pw)
+{
+    switch(n)
+    {
+    case Service_OmniAction:
+	dprintf (("", "Service_OmniAction... "));
+	switch(r->r[0])
+	{
+	case Service_OmniAction_Starting:
+	    {
+		_kernel_oserror *ep;
+		dprintf (("", "Registering\n"));
+		ep = register_client();
+		if (ep == 0)
+		{
+		    dprintf (("", "Registration successful\n"));
+		    we_are_registered = 1;
+		}
+		else
+		{
+		    dprintf (("", "Registration failed, '%s'\n", ep->errmess));
+		}
+	    }
+	    break;
+	case Service_OmniAction_Died:
+	    {
+		char *module_base = (char*) Image_RO_Base;
+		char *module_title = module_base + *((int*) (module_base +0x10));
+		dprintf (("", "Marking as de-registered\n"));
+	        we_are_registered = 0;
+		suicide(module_title);
+	    }
+	    break;
+	}
+	break;
+    case Service_NFS:
+	/* Mounts have changed or NFS has just started */
+	if (we_are_registered)
+        {
+	    _kernel_swi_regs rr;
+
+	    rr.r[0] = OmniNFS_OmniOp;
+    	    rr.r[1] = 1;
+
+	    _kernel_swi(Omni_EnumerateMounts, &rr, &rr);
+	}
+	break;
+    case Service_ResourceFSStarting:
+	/* Reregister with ResourceFS */
+	(*(void (*)(void *, void *, void *, void *))r->r[2])(Resources(), 0, 0, (void *)r->r[3]);
+	break;
+    }
+}
+
+_kernel_oserror *onfs_initialise(const char *tail, int base, void *pw)
+{
+    _kernel_oserror *ep;
+
+    debug_initialise ("", "OmniNFS", NULL);
+    debug_set_options (0, 0, 0);
+    debug_output_device (TML_OUTPUT);
+
+    private_word = pw;
+
+    server_list = NULL;
+    mount_list 	= NULL;
+    print_list = NULL;
+
+    we_are_registered = 0;
+
+    tick_pending = datagram_pending = callback_pending = 0;
+
+    server_list_has_changed = 0;
+
+    rpc_socket = -1;		/* Give it an invalid socket number before the event is enabled */
+
+    dprintf (("", "About to setup resources\n"));
+
+    ep = _swix(ResourceFS_RegisterFiles, _IN(0), Resources());
+    if (ep) return ep;
+
+    ep = _swix(MessageTrans_OpenFile, _INR(0,2),
+               msg_struct, "Resources:$.ThirdParty.OmniClient.OmniNFS.Messages", 0);
+    if (ep) goto msg_dereg;
+
+    dprintf (("", "About to setup find server code\n"));
+
+    ep = find_server_setup();
+    if (ep) goto msg_close;
+
+    dprintf (("", "About to setup ticker and event\n"));
+
+    ep = setup_ticker_and_event();
+    if (ep) goto msg_close;
+
+    dprintf (("", "About to set callback for first request\n"));
+
+    tick_pending = 1;
+    setup_callback();
+
+    dprintf (("", "About to IconSprite the resources\n"));
+
+    _kernel_oscli("IconSprites Resources:$.ThirdParty.OmniClient.OmniNFS.Sprites");
+
+    dprintf (("", "About to register as client\n"));
+
+    if (register_client() == 0)
+	we_are_registered = 1;
+
+    return NULL;
+
+msg_close:
+    _swix(MessageTrans_CloseFile, _IN(0), msg_struct);
+msg_dereg:
+    _swix(ResourceFS_DeregisterFiles, _IN(0), Resources());
+    debug_terminate();
+    return ep;
+}
+
+_kernel_oserror *onfs_finalise(int fatal, int podule, void *pw)
+{
+    onfs_active_mount *am;
+    onfs_active_server *as;
+    onfs_print_job *pj;
+
+    if (we_are_registered)
+    {
+	deregister_client();
+    }
+
+    find_server_clear();
+
+    clear_ticker_and_event();
+    clear_callback();
+
+    am = mount_list;
+    while (am)
+    {
+	onfs_active_mount *am_next = am->next;
+	if (am->mount_name != 0)
+	    free(am->mount_name);
+	/* Avoid confusion should we be restarted and offered an old handle */
+	am->magic = 0;
+	free(am);
+	am = am_next;
+    }
+
+    as = server_list;
+    while (as)
+    {
+	onfs_active_server *as_next = as->next;
+	if (as->server_name)
+	    free(as->server_name);
+	as->magic=0;
+	free(as);
+	as = as_next;
+    }
+
+    pj = print_list;
+    while (pj)
+    {
+	onfs_print_job *pj_next = pj->next;
+	if (pj->handle)
+	{
+	    _swix(OS_Find, _INR(0,1), OSFind_Close, pj->handle);
+	}
+	pj->magic=0;
+	free(pj);
+	pj = pj_next;
+    }
+
+    /* Unset NFSFiler$Running variable to allow !NFSFiler to startup */
+    _kernel_oscli("UnSet NFSFiler$Running");
+
+    /* Finished with the resources now */
+    _swix(MessageTrans_CloseFile, _IN(0), msg_struct);
+    _swix(ResourceFS_DeregisterFiles, _IN(0), Resources());
+
+    debug_terminate();
+
+    return NULL;
+}
+
+static void server_item_check_name(onfs_active_server *as)
+{
+    char *name;
+
+    if (!as->good_address)
+    {
+        name = get_name_from_dns(as->addr);
+
+        if (name)
+        {
+            char *nn, *dot;
+
+            nn = malloc(strlen(name)+1);
+            if (nn != NULL)
+            {
+                free(as->server_name);
+                as->server_name = nn;
+                strcpy(nn, name);
+
+	        dot = strchr(name, '.');
+	        if ((dot) && atoi(name) == 0)
+	           as->short_name_len = dot - name;
+	    	else
+	    	   as->short_name_len = strlen(name);
+
+	    	as->good_address = 1;
+            }
+        }
+    }
+}
+
+/* Returns true if the server list is altered */
+int server_list_insert(unsigned long addr)
+{
+    onfs_active_server **app = &server_list;
+    onfs_active_server *as;
+    int changed = 0;
+    unsigned int now;
+
+    dprintf (("", "Inserting server 0x%x\n", (int) addr));
+
+    _swix(OS_ReadMonotonicTime, _OUT(0), &now);
+
+    while (*app)
+    {
+	as = *app;
+
+	dprintf (("", "app = %p, *app = %p\n", app, *app));
+
+	if (as->addr == addr)
+	{
+	    as->server_ill = 0;
+	    as->last_seen = now;
+	    dprintf (("", "Address hit\n"));
+	    return 0;
+	}
+	app = &(as->next);
+    }
+
+    /* We didn't find the server so we better add it in */
+    as = malloc(sizeof(onfs_active_server));
+    /* If the malloc fails we ignore it this server for the moment; hopefully better luck next time */
+    if (as != NULL)
+    {
+	char *name;
+
+	dprintf (("", "Building new item\n"));
+
+	name = get_name_from_dns(addr);
+
+	as->magic = ONFS_SERVER_MAGIC;
+	as->addr = addr;
+	as->last_seen = now;
+	as->server_ill = 0;
+	as->server_name = 0;
+
+	name = get_name_from_dns(addr);
+	if (name)
+	{
+	    as->good_address = 1;
+	}
+	else
+	{
+	    name = get_name_from_addr(addr);
+	    as->good_address = 0;
+	}
+
+	if (name)
+	{
+	    as->server_name = malloc(strlen(name)+1);
+	    if (as->server_name != NULL)
+	    {
+		char *dot;
+
+		strcpy(as->server_name, name);
+
+		dot = strchr(as->server_name, '.');
+		if (dot && atoi(name) == 0)
+		    as->short_name_len = dot - as->server_name;
+		else
+		    as->short_name_len = strlen(as->server_name);
+	    }
+	}
+
+	if (as->server_name == 0)
+	{
+	    as->server_name = "<No memory>";
+	    as->short_name_len = 11;
+	}
+
+	dprintf (("", "Built new server item at %p\n", as));
+
+	as->next = server_list;
+	server_list = as;
+	changed = 1;
+    }
+    else
+    {
+	dprintf (("", "No memory for new server item\n"));
+    }
+
+    if (changed)
+	server_list_has_changed = 1;
+
+    return changed;
+}
+
+/* Returns true if the server list is altered */
+int server_list_purge(void)
+{
+    onfs_active_server **app = &server_list;
+    int changed = 0;
+    unsigned int now;
+
+    _swix(OS_ReadMonotonicTime, _OUT(0), &now);
+
+    while (*app)
+    {
+	onfs_active_server *as = *app;
+
+	/* Test to see if the server is ill first so that we correctly flag the list as changed */
+	if (((now - as->last_seen) > SERVER_TIMEOUT_ILL) && (as->server_ill == 0))
+	{
+	    as->server_ill = 1;
+	    changed = 1;
+	}
+
+	if ((now - as->last_seen) > SERVER_TIMEOUT_DEAD)
+	{
+	    *app = as->next;
+	    if (as->server_name != 0)
+		free(as->server_name);
+	    as->magic = 0;
+	    free(as);
+
+	    /* Since *app is changed we don't want to move on */
+	    continue;
+	}
+
+	app = &(as->next);
+    }
+
+    if (changed)
+	server_list_has_changed = 1;
+
+    return changed;
+}
+
+int inet_handler( _kernel_swi_regs *r, void *pw )
+{
+    int  rc = DONT_CLAIM_EVENT;
+
+    /* Don't need to check event number because the Inernet Event is
+     * the only one we claim, and since it's specified in the CMHG header,
+     * CMHG will generate appropriate filtering code for us.
+     */
+
+    _kernel_irqs_on ();
+
+    switch (r->r[1])
+    {
+	case Event_Internet_SocketAsync:
+	case Event_Internet_SocketUrgent:
+	case Event_Internet_SocketBroken:
+	    if (r->r[2] == rpc_socket)
+	    {
+		datagram_pending = 1;
+		setup_callback();
+		rc = CLAIM_EVENT;
+	    }
+	    break;
+
+	default:
+	    break;
+    }
+
+    _kernel_irqs_off ();
+
+    return rc;
+}
+
+_kernel_oserror *timer_handler( _kernel_swi_regs *r, void *pw )
+{
+    tick_pending = 1;
+    setup_callback();
+
+    return NULL;
+}
+
+_kernel_oserror *callback_handler( _kernel_swi_regs *r, void *pw )
+{
+    callback_pending = 0;
+
+    if (datagram_pending)
+    {
+	datagram_pending = 0;
+
+	/* Handle incoming data */
+
+	dprintf (("", "About to deal with incoming data\n"));
+
+	find_server_data();
+    }
+
+    if (tick_pending)
+    {
+	tick_pending = 0;
+
+	dprintf (("", "Purging list... "));
+	server_list_purge();
+	/* Send out another broadcast */
+	dprintf (("", "Sending RPC request\n"));
+
+	find_server_send();
+    }
+
+    if (server_list_has_changed)
+    {
+	_kernel_swi_regs rr;
+
+	server_list_has_changed = 0;
+
+	rr.r[0] = OmniNFS_OmniOp;
+	rr.r[1] = 0;
+
+	_kernel_swi(Omni_EnumerateMounts, &rr, &rr);
+    }
+
+    return NULL;
+}
+
+static _kernel_oserror *register_client(void)
+{
+    _kernel_swi_regs r;
+    char titlebar[24];  /* Title bar - 24 max */
+    char infobox[3*32]; /* Info box - 3x32 max */
+
+    strcpy(titlebar, intl_lookup("_Version", NULL)); /* Temp copy */
+    sprintf(infobox, "%s\n"
+                     "\xA9 Acorn Computers Ltd, 1996\n"
+                     "%s",
+                     intl_lookup("WhoNfs", NULL), titlebar);
+    strncpy(titlebar, intl_lookup("DispName", NULL), sizeof(titlebar));
+  
+    r.r[0] = OmniNFS_OmniOp;	/* SWI number */
+    r.r[1] = OmniRegisterFlag_NeedUser | OmniRegisterFlag_NeedPass |
+             OmniRegisterFlag_NeedPath | OmniRegisterFlag_NeedAuth |
+             OmniRegisterFlag_Printer | OmniRegisterFlag_FilingSystem |
+             ('/' << OmniRegisterFlag_ExtensionShift); /* Flags */
+    r.r[2] = (int) "04a480"; /* Sprite name - 12 max */
+    r.r[3] = (int) titlebar; /* Title bar - 24 max */
+    r.r[4] = (int) infobox;  /* Info box - 3x32 max */;
+    r.r[5] = 0;              /* Site ID (ignored) */
+    r.r[6] = (int) "NFS";    /* Filing system name */
+
+    return _kernel_swi(Omni_RegisterClient, &r, &r);
+}
+
+static void deregister_client(void)
+{
+    _kernel_swi_regs r;
+
+    r.r[0] = OmniNFS_OmniOp;	/* SWI number */
+
+    _kernel_swi(Omni_DeregisterClient, &r, &r);
+}
+
+static void setup_callback(void)
+{
+    if (callback_pending == 0)
+    {
+	_kernel_swi_regs r;
+
+	r.r[0] = (int) &callback_entry;
+	r.r[1] = (int) private_word;
+	callback_pending = 1;
+
+	_kernel_swi(OS_AddCallBack, &r, &r);
+    }
+}
+
+static void clear_callback(void)
+{
+    if (callback_pending)
+    {
+	_kernel_swi_regs r;
+
+	r.r[0] = (int) &callback_entry;
+	r.r[1] = (int) private_word;
+
+	callback_pending = 0;
+	_kernel_swi(OS_RemoveCallBack, &r, &r);
+    }
+}
+
+static _kernel_oserror *setup_ticker_and_event(void)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *ep;
+
+    r.r[0] = EventV;
+    r.r[1] = (int) &inet_entry;
+    r.r[2] = (int) private_word;
+
+    ep = _kernel_swi(XOS_Bit + OS_Claim, &r, &r);
+
+    if (ep)
+	return ep;
+
+    _kernel_osbyte(OsByte_EnableEvent, Event_Internet, 0);
+
+    r.r[0] = TICKER_RATE;
+    r.r[1] = (int) timer_entry;
+    r.r[2] = (int) private_word;
+
+    ep = _kernel_swi(OS_CallEvery, &r, &r);
+
+    if (ep)
+    {
+	clear_ticker_and_event();
+	return ep;
+    }
+
+    return NULL;
+}
+
+static void clear_ticker_and_event(void)
+{
+    _kernel_swi_regs r;
+
+    _kernel_osbyte(OsByte_DisableEvent, Event_Internet, 0);
+
+    r.r[0] = EventV;
+    r.r[1] = (int) inet_entry;
+    r.r[2] = (int) private_word;
+
+    _kernel_swi(OS_Release, &r, &r);
+
+    r.r[0] = (int) timer_entry;
+    r.r[1] = (int) private_word;
+
+    _kernel_swi(OS_RemoveTickerEvent, &r, &r);
+}
+@
+
+
+1.8
+log
+@Internationalised
+Tested on a mount from FreeBSD 11.1-RELEASE-p4.
+
+Version 0.71. Tagged as 'OmniNFS-0_71'
+@
+text
+@d144 2
+d147 1
+d341 2
+d344 1
+@
+
+
+1.7
+log
+@Cleanup pass
+Callback.s copied from NetFiler (expands tabs, use Hdr:ModHand names)
+Quit peeking kernel workspace, just use OS_ReadMonotonicTime since no uses of MONOTIME are in places where calling a SWI is prohibited.
+Don't abuse InetDBase$Path, use InetDBase:
+Use constants from Global/OsBytes.h and Interface/HighFSI.h
+Use NFS SWI numbers from Interface/NFS.h (requires NFS-3_23 or later)
+Get Omni constants from Interface/OmniClient.h
+Tagged as OmniNFS-0_70-2.
+@
+text
+@a36 1
+#include "OmniNFS.h"
+d38 1
+a38 3
+
+#include "OmniNFSHdr.h"
+
+a39 2
+#include "constants.h"
+
+d41 1
+a42 1
+#include "makeerror.h"
+d52 2
+d141 1
+a141 1
+		       return make_error(err_NO_MEMORY);
+d144 1
+a144 1
+		       return make_error(err_NO_MEMORY);
+d203 42
+d330 1
+a330 1
+	return make_error(err_NO_MEMORY);
+d338 1
+a338 1
+	return make_error(err_NO_MEMORY);
+d371 1
+a371 1
+	return make_error(err_BAD_MAGIC);
+d400 1
+a400 1
+	return make_error(err_BAD_MAGIC);
+d468 1
+a468 1
+    	return make_error(err_BAD_MAGIC);
+d570 1
+a570 1
+    return make_error(err_NOT_SUPPORTED);
+d623 1
+a623 1
+	    return make_error(err_BAD_MAGIC);
+d671 1
+a671 1
+	return make_error(err_BAD_MAGIC);
+d714 1
+a714 1
+    return make_error(err_NOT_SUPPORTED);
+d739 1
+a739 1
+	return make_error(err_BAD_MAGIC);
+d785 1
+a785 1
+	return make_error(err_NO_MEMORY);
+d797 1
+a797 1
+      return make_error(err_NO_MEMORY);
+d808 1
+a808 1
+	return make_error(err_CANT_PRINT);
+d841 1
+a841 1
+	return make_error(err_BAD_MAGIC);
+d878 1
+a878 1
+	return make_error(err_BAD_MAGIC);
+d903 1
+a903 1
+	return make_error(err_BAD_MAGIC);
+d950 1
+a950 1
+	return make_error(err_BAD_MAGIC);
+d980 1
+a980 1
+	return make_error(err_BAD_MAGIC);
+d984 1
+a984 1
+	return make_error(err_JOB_NOT_FINISHED);
+d1033 1
+a1033 1
+    return make_error(err_NOT_SUPPORTED);
+d1097 1
+a1097 1
+	    return make_error(err_NOT_SUPPORTED);
+d1102 1
+a1102 1
+	return make_error(err_NOT_SUPPORTED);
+d1244 4
+d1251 1
+a1251 1
+    if (ep) goto msg_dereg;
+d1256 1
+a1256 1
+    if (ep) goto msg_dereg;
+a1271 2
+    /* atexit(&onfs_finalise); */
+
+d1274 2
+d1338 1
+d1600 2
+d1603 7
+d1615 5
+a1619 5
+    r.r[2] = (int) onfs_sprite_name;	/* Sprite name */
+    r.r[3] = (int) onfs_client_name;	/* Client name */
+    r.r[4] = (int) onfs_client_desc;	/* Client description */
+    r.r[5] = 0;			/* site_id word */
+    r.r[6] = (int) onfs_fs_name;	/* Filing system name */
+@
+
+
+1.6
+log
+@Resource simplification
+RISC OS 5 themed sprites added
+Assembler to manage resources refactored into C
+Tagged as OmniNFS-0_70-1.
+@
+text
+@d26 6
+a31 2
+#include <Global/RISCOS.h>
+#include <Global/Services.h>
+d33 1
+a33 1
+#include <AsmUtils/rminfo.h>
+d35 1
+a35 1
+#include <DebugLib/DebugLib.h>
+a41 2
+#include "nfsdefs.h"
+
+a67 3
+static unsigned int *MetroGnome;
+
+
+d249 1
+a249 1
+_kernel_oserror *OmniOp_Mount(_kernel_swi_regs *r)
+d325 1
+a325 1
+_kernel_oserror *OmniOp_Dismount(_kernel_swi_regs *r)
+d354 1
+a354 1
+_kernel_oserror *OmniOp_Free(_kernel_swi_regs *r)
+d416 1
+a416 1
+_kernel_oserror *OmniOp_Servers(_kernel_swi_regs *r)
+d529 1
+a529 1
+_kernel_oserror *OmniOp_Mounts(_kernel_swi_regs *r)
+d564 1
+a564 1
+_kernel_oserror *OmniOp_ActiveMounts(_kernel_swi_regs *r)
+d626 1
+a626 1
+_kernel_oserror *OmniOp_Root(_kernel_swi_regs *r)
+d649 1
+a649 1
+_kernel_oserror *OmniOp_UserRoot(_kernel_swi_regs *r)
+d652 1
+a652 1
+    return OmniOp_Root(r);
+d672 1
+a672 1
+_kernel_oserror *OmniOp_InactiveMountInfo(_kernel_swi_regs *r)
+d693 1
+a693 1
+_kernel_oserror *OmniOp_ActiveMountInfo(_kernel_swi_regs *r)
+d733 1
+a733 1
+_kernel_oserror *OmniOp_CreateJob(_kernel_swi_regs *r)
+d761 3
+a763 4
+    fr.r[0] = 0x83;
+    fr.r[1] = (int) fname;
+    err = _kernel_swi(OS_Find, &fr, &fr);
+    pj->handle = fr.r[0]; /* _kernel_osfind(0x83, fname); */
+d795 1
+a795 1
+ _kernel_oserror *OmniOp_SendJob(_kernel_swi_regs *r)
+d834 1
+a834 1
+_kernel_oserror *OmniOp_EndJob(_kernel_swi_regs *r)
+d842 1
+a842 1
+	_kernel_osfind(0, (char*) pj->handle);
+d858 1
+a858 1
+_kernel_oserror *OmniOp_AbortJob(_kernel_swi_regs *r)
+d869 1
+a869 1
+	    _kernel_osfind(0, (char*) pj->handle);
+d880 1
+a880 1
+		_kernel_osfind(0, (char*) pj->handle);
+d906 1
+a906 1
+_kernel_oserror *OmniOp_GetJobInfo(_kernel_swi_regs *r)
+d935 1
+a935 1
+_kernel_oserror *OmniOp_ClearJob(_kernel_swi_regs *r)
+d992 1
+a992 1
+_kernel_oserror *OmniOp_EnumeratePrinters(_kernel_swi_regs *r)
+d1006 2
+a1007 2
+        case 0: /* Mount */
+	    return(OmniOp_Mount(r));
+d1009 2
+a1010 2
+        case 1: /* Dismount */
+	    return(OmniOp_Dismount(r));
+d1012 2
+a1013 2
+        case 2: /* Free */
+	    return(OmniOp_Free(r));
+d1015 2
+a1016 2
+        case 3: /* Enumerate servers */
+	    return(OmniOp_Servers(r));
+d1018 2
+a1019 2
+        case 4: /* Enumerate mounts on a server */
+	    return(OmniOp_Mounts(r));
+d1021 2
+a1022 2
+        case 5: /* Enumerate active mounts on a server */
+	    return(OmniOp_ActiveMounts(r));
+d1024 2
+a1025 2
+        case 6: /* Open Root */
+	    return(OmniOp_Root(r));
+d1027 2
+a1028 2
+        case 7: /* Open User Root */
+	    return(OmniOp_UserRoot(r));
+d1030 2
+a1031 2
+        case 8: /* Get Inactive Mount Info */
+	    return(OmniOp_InactiveMountInfo(r));
+d1033 2
+a1034 2
+        case 9: /* Get Active Mount Info */
+	    return(OmniOp_ActiveMountInfo(r));
+d1036 2
+a1037 2
+        case 10: /* Create Print Job */
+	    return(OmniOp_CreateJob(r));
+d1039 2
+a1040 2
+        case 11: /* Send Data to Print Job */
+	    return(OmniOp_SendJob(r));
+d1042 2
+a1043 2
+        case 12: /* End Print Job */
+	    return(OmniOp_EndJob(r));
+d1045 2
+a1046 2
+        case 13: /* Abort Print Job(s) */
+	    return(OmniOp_AbortJob(r));
+d1048 2
+a1049 2
+        case 14: /* Get Print Job Info */
+	    return(OmniOp_GetJobInfo(r));
+d1051 2
+a1052 2
+        case 15: /* Clear Print Job(s) */
+	    return(OmniOp_ClearJob(r));
+d1054 2
+a1055 2
+        case 16: /* Enumerate Printers */
+	    return(OmniOp_EnumeratePrinters(r));
+d1132 1
+a1132 1
+	case 0:
+d1148 1
+a1148 1
+	case 1:
+d1284 1
+a1284 1
+	    _kernel_osfind(0, (char *) pj->handle);
+d1339 1
+a1339 1
+    unsigned int now = MONOTIME;
+d1343 2
+d1434 3
+a1436 1
+    unsigned int now = MONOTIME;
+a1472 6
+    enum
+    {
+        Socket_Async_Event = 1,
+        Socket_Urgent_Event,
+        Socket_Broken_Event
+    };
+d1483 3
+a1485 3
+	case Socket_Async_Event:
+	case Socket_Urgent_Event:
+	case Socket_Broken_Event:
+d1558 4
+a1561 1
+    r.r[1] = flag_USER | flag_PW | flag_PATH | flag_AUTH | flag_HAS_FS | flag_PRINT | ('/' << flag_EXTshft); /* Flags */
+d1613 1
+a1613 1
+    r.r[0] = 0x10;
+d1622 1
+a1622 16
+    r.r[0] = 6;
+    r.r[1] = 0;
+    r.r[2] = 77;
+
+    /* read address of 'metrognome' if available, or resort to history */
+    ep = _kernel_swi(OS_ReadSysInfo, &r, &r);
+    if (ep)
+    {
+        MetroGnome = (unsigned int *)0x10c;
+    }
+    else
+    {
+        MetroGnome = (unsigned int *)r.r[2];
+    }
+
+    _kernel_osbyte(14, Event_Internet, 0);
+d1643 1
+a1643 1
+    _kernel_osbyte(13, Event_Internet, 0);
+d1645 1
+a1645 1
+    r.r[0] = 0x10;
+@
+
+
+1.5
+log
+@Makefile recreated from fragments
+Placeholder UK/Messages added (will be used later)
+Strip dependencies on clean
+Tagged as OmniNFS-0_70-0.
+@
+text
+@a40 1
+#include "resources.h"
+d1173 4
+d1202 5
+d1210 1
+a1210 2
+    if (ep)
+	return ep;
+d1215 1
+d1217 1
+a1217 4
+    if (ep)
+	return ep;
+
+    dprintf (("", "About to set callbeck for first request\n"));
+a1221 4
+    dprintf (("", "About to setup resources\n"));
+
+    resources_register();
+
+d1234 5
+a1256 2
+    resources_deregister();
+
+d1296 5
+@
+
+
+1.4
+log
+@  Removed zpp access error
+Detail:
+  The macro MONOTIME accessed the 'MetroGmone' location by hard coding
+  its address (0x01c) in the zero page. Now calls OS_ReadSysInfo 77 to
+  find the address instead of hard coding it.
+Admin:
+ tested in iMx6
+
+Version 0.68. Tagged as 'OmniNFS-0_68'
+@
+text
+@d36 1
+a36 5
+#ifdef DEBUG
+#  include "OmniNFSDbg.h"
+#else
+#  include "OmniNFSHdr.h"
+#endif
+@
+
+
+1.3
+log
+@Reduce number of compiler warnings.
+Removed 2 dead variables; renamed a variable called "new" not to be a C++ keyword, removed assumptions that malloc() returns 0 for fail (now NULL).
+The makefile "clean" target no longer trys to compile anything either.
+
+Version 0.66. Tagged as 'OmniNFS-0_66'
+@
+text
+@d71 3
+d1618 15
+@
+
+
+1.2
+log
+@  * Further rationalisations to fit into our build system.
+  * Now builds.
+Detail:
+  * Altered to use auto-generated or centralised declarations, constants etc.
+    whereever possible.
+  * Altered to use some library routines instead of local equivalents.
+  * Debug build uses DebugLib; different CMHG header for debug builds now
+    generated using conditional compilation in preference to a completely
+    separate CMHG file.
+  * serverlist.c no longer built in pcc mode.
+  * Internet event handler enables interrupts on entry and disables them again
+    on exit.
+  * Modified to use SrcCommit.
+Admin:
+  * Removed all files in hdr directory; assembler sources now use macros from
+    HdrSrc.
+  * Removed cmhg.OmniNFSDbg
+  * Removed base.h and Base.s.
+  * Removed builddate.h.
+  * Requires AsmUtils.
+  * Both builds compiled.
+
+Version 0.65. Tagged as 'OmniNFS-0_65'
+@
+text
+@d142 1
+a142 1
+		   onfs_active_mount *new;
+d145 2
+a146 2
+		   new = malloc(sizeof(onfs_active_mount));
+		   if (new == 0)
+d148 2
+a149 2
+		   new->mount_name = malloc(strlen(name)+1);
+		   if (new->mount_name == 0)
+d152 7
+a158 7
+		   dprintf (("", "entry at 0x%p, string at 0x%p, ", new, new->mount_name));
+		   new->magic = ONFS_MOUNT_MAGIC;
+		   new->server_id = 0;
+		   strcpy(new->mount_name, name);
+		   new->next = *app;
+		   *app = new;
+		   app = &(new->next);	/* Points to the same item as before */
+d160 1
+a160 1
+		   test = 0;		/* Leabe the inner while loop */
+d293 1
+a293 1
+    if (am == 0)
+d301 1
+a301 1
+    if (am->mount_name == 0)
+d748 1
+a748 1
+    if (fname == 0)
+d758 1
+a758 1
+    if (pj == 0)
+d1309 1
+a1309 1
+            if (nn)
+d1356 1
+a1356 1
+    if (as)
+d1384 1
+a1384 1
+	    if (as->server_name)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d23 10
+a32 2
+#include "swis.h"
+#include "kernel.h"
+d35 7
+a41 1
+#include "omninfshdr.h"
+a47 1
+#include "base.h"
+a53 8
+#ifndef DEBUG
+#define DEBUG 0
+#endif
+
+#ifndef OS_RemoveCallBack
+#define OS_RemoveCallBack 0x00005F
+#endif
+
+d105 1
+a105 3
+#if DEBUG
+   printf("Starting to read internal mount list\n");
+#endif
+d118 1
+a118 3
+#if DEBUG
+	   printf("Mount fetched: %s\n", name);
+#endif
+d124 1
+a124 3
+#if DEBUG
+		   printf("No more items in our own list\n");
+#endif
+d129 1
+a129 3
+#if DEBUG
+		   printf("Testing against '%s'", (*app)->mount_name);
+#endif
+d131 1
+a131 3
+#if DEBUG
+		   printf(", outcome = %d\n", test);
+#endif
+d144 1
+a144 3
+#if DEBUG
+		   printf("Allocating new space, ");
+#endif
+d152 1
+a152 3
+#if DEBUG
+		   printf("entry at 0x%p, string at 0x%p, ", new, new->mount_name);
+#endif
+d159 1
+a159 3
+#if DEBUG
+		   printf(" linked into list\n");
+#endif
+d171 1
+a171 3
+#if DEBUG
+		   printf("Removing stale item '%s'. ", old->mount_name);
+#endif
+d173 1
+a173 3
+#if DEBUG
+		   printf("Next point in chain point to 0x%p\n", *app);
+#endif
+d183 1
+a183 3
+#if DEBUG
+		   printf("Items are equal so pass on\n");
+#endif
+d197 1
+a197 3
+#if DEBUG
+       printf("Removing stale item '%s'. ", old->mount_name);
+#endif
+d199 1
+a199 3
+#if DEBUG
+       printf("Next point in chain point to 0x%p\n", *app);
+#endif
+d436 1
+a436 2
+#if DEBUG
+	printf("Server id %p, name %s, address %x, last seen %d, %sill\n",
+d438 1
+a438 2
+		as->server_ill ? "" : "not ");
+#endif
+d484 1
+a484 3
+#if DEBUG
+    printf("Finnished list\n");
+#endif
+d1007 1
+a1007 3
+#if DEBUG
+	printf("OmniOP reason %d\n", r->r[0]);
+#endif
+d1074 1
+a1074 7
+#if DEBUG
+enum
+{
+  CMD_OmniNFSListMount = 0,
+  CMD_OmniNFSListPrintJobs,
+  CMD_OmniNFSListServers
+};
+d1076 1
+a1076 1
+_kernel_oserror *onfs_command(char *tail, int argc, int n, void *pw)
+d1078 1
+a1078 3
+#if DEBUG
+    printf("Command number %d\n", n);
+#endif
+d1082 1
+a1082 3
+#if DEBUG
+	printf("Listing mounts\n");
+#endif
+d1089 1
+a1089 1
+		printf("Mount ID 0x%p, server id 0x%p, '%s'\n", ap, ap->server_id, ap->mount_name);
+a1110 1
+#if DEBUG
+a1111 1
+#endif
+d1133 1
+a1133 3
+#if DEBUG
+	printf("Service_OmniAction... ");
+#endif
+d1139 1
+a1139 3
+#if DEBUG
+		printf("Registering\n");
+#endif
+d1143 1
+a1143 3
+#if DEBUG
+		    printf("Registration successful\n");
+#endif
+d1148 1
+a1148 3
+#if DEBUG
+		    printf("Registration failed, '%s'\n", ep->errmess);
+#endif
+d1154 1
+a1154 1
+		char *module_base = (char*) Image__RO_Base;
+d1156 1
+a1156 3
+#if DEBUG
+		printf("Marking as de-registered\n");
+#endif
+d1178 1
+a1178 1
+_kernel_oserror *onfs_initialise(char *tail, int base, void *pw)
+d1182 4
+d1200 1
+a1200 3
+#if DEBUG
+    printf("About to setup find server code\n");
+#endif
+d1206 1
+a1206 3
+#if DEBUG
+    printf("About to setup ticker and event\n");
+#endif
+d1213 1
+a1213 3
+#if DEBUG
+    printf("About to set callbeck for first request\n");
+#endif
+d1218 1
+a1218 3
+#if DEBUG
+    printf("About to setup resources\n");
+#endif
+d1222 1
+a1222 3
+#if DEBUG
+    printf("About to IconSprite the resources\n");
+#endif
+d1226 1
+a1226 3
+#if DEBUG
+    printf("About to register as client\n");
+#endif
+d1231 1
+a1231 1
+    atexit(&onfs_finalise);
+d1236 1
+a1236 1
+void onfs_finalise(void)
+d1292 2
+d1335 1
+a1335 3
+#if DEBUG
+    printf("Inserting server 0x%x, (%s)\n", (int) addr, (name==0)?"<unknown>":name );
+#endif
+d1341 1
+a1341 3
+#if DEBUG
+	printf("app = %p, *app = %p\n", app, *app);
+#endif
+d1347 1
+a1347 3
+#if DEBUG
+	    printf("Address hit\n");
+#endif
+d1360 1
+a1360 3
+#if DEBUG
+	printf("Building new item\n");
+#endif
+d1404 1
+a1404 3
+#if DEBUG
+	printf("Built new server item at %p\n", as);
+#endif
+d1412 1
+a1412 3
+#if DEBUG
+	printf("No memory for new server item\n");
+#endif
+d1460 1
+a1460 1
+RETURNMETHOD inet_handler( _kernel_swi_regs *r, void *pw )
+d1462 16
+a1477 1
+    if (r->r[0] == Event_Internet /* && r->r[1] == 0 */ && r->r[2] == rpc_socket )
+d1479 10
+a1488 2
+	datagram_pending = 1;
+	setup_callback();
+d1490 2
+a1491 1
+	return VIASTACK;
+d1494 3
+a1496 1
+    return VIAR14;
+d1499 1
+a1499 1
+RETURNMETHOD timer_handler( _kernel_swi_regs *r, void *pw )
+d1504 1
+a1504 1
+    return VIAR14;
+d1507 1
+a1507 1
+RETURNMETHOD callback_handler( _kernel_swi_regs *r, void *pw )
+d1517 1
+a1517 3
+#if DEBUG
+	printf("About to deal with incoming data\n");
+#endif
+d1526 1
+a1526 3
+#if DEBUG
+	printf("Purging list... ");
+#endif
+d1529 1
+a1529 3
+#if DEBUG
+	printf("Sending RPC request\n");
+#endif
+d1546 1
+a1546 1
+    return VIAR14;
+@
+
+
+1.1.1.1
+log
+@  Initial import of OmniNFS.
+Detail:
+  ANT sources unmodified; just converted to conform to our build structure.
+  Some modifications should be made, in particular: 
+    serverlist.c is currently compiled in pcc mode - should convert to ANSI
+    module entry point declarations should be altered so that it actually
+      builds with our version of CMHG.
+Admin:
+  Completely untested as it won't build properly yet.
+@
+text
+@@

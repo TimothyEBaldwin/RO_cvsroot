@@ -1,0 +1,2210 @@
+head	1.5;
+access;
+symbols
+	FrontEnd-1_34:1.5
+	FrontEnd-1_33:1.5
+	FrontEnd-1_32:1.5
+	FrontEnd-1_31:1.5
+	FrontEnd-1_30-2:1.5
+	FrontEnd-1_30:1.5
+	FrontEnd-1_29:1.5
+	FrontEnd-1_28:1.5
+	FrontEnd-1_27:1.5
+	FrontEnd-1_26:1.4
+	FrontEnd-1_25:1.3
+	FrontEnd-1_24:1.2
+	FrontEnd-1_23:1.2
+	FrontEnd-1_22:1.1.1.1
+	FrontEnd-1_21:1.1.1.1
+	FrontEnd-1_20:1.1.1.1
+	FrontEnd-1_19:1.1.1.1
+	FrontEnd-1_18:1.1.1.1
+	FrontEnd-1_17:1.1.1.1
+	FrontEnd-1_16:1.1.1.1
+	FrontEnd-Aquarius-1_16:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2001.06.15.17.25.00;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2001.06.01.15.56.00;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.06.01.14.54.37;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.05.22.13.58.41;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.18.10.30.27;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.03.18.10.30.27;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Finally got the rules stuff sorted. Hurrah.
+Detail:
+  A few tricks to this; maintain a usage count for greying/ungreying where
+  the initial state for an icon is zero, meaning 'unknown', and going to
+  either < or > 0 thereafter once the state is determined. That's done
+  at load-time from the Defaults and Choices settings. In addition, the
+  module has to know when an icon is part of a selection group - normally
+  this means a radio button - and detects that when this is happening, the
+  'off' rules for items deselected by the selection of another should *not*
+  be run. This makes a great deal of difference to behaviour, which is now
+  a lot more straightforward and a lot clearer in the code itself.
+
+  The caveat of this is that exclude on = include off / exclude off =
+  include on, which never worked before, now should; you can infact totally
+  remove inclusion support internally beyond leaving it as syntactic sugar
+  for the Desc file by undefining INCLUDES_AS_INCLUDES when building. By
+  default, this isn't done, as there's an omission in this work. Since any
+  item judged to be in a selection group will not have its Off rules run
+  (or On rules unwound IYSWIM) then *any* off item for a radio won't be
+  run. What FrontEnd *should* do is compare the list of icons altered by
+  the selecting item's selection rules and only run rules for the
+  deselecting items that are not part of the other list. It doesn't do
+  this, which creates a slight lack of orthogonality overall. It's minor.
+Admin:
+  Tested it as heavily as I easily can in UpgCreate. Ensured that Link
+  still works. Had a quick look at menu behaviour (sane); brought Docs up
+  to date.
+
+Version 1.27. Tagged as 'FrontEnd-1_27'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* Title:    utils.c
+ * Purpose:  general utility functions
+ * Author:   IDJ
+ * History:  22-May-90: IDJ: Created
+ *           21-Jun-90: IDJ: added wildcarding
+ *           27-Jun-90: IDJ: added fieldlength, find_writeable
+ *           18-May-01: ADH: on/off select/deselect/include/exclude support
+ *
+ */
+
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "wimp.h"
+#include "template.h"
+#include "dbox.h"
+#include "werr.h"
+#include "flex.h"
+#include "msgs.h"
+
+#include "global.h"
+#include "types.h"
+#include "FrontEnd.h"
+#include "FEmem.h"
+#include "FEinterr.h"
+
+#include "utils.h"
+
+#define DIRECTORY   0x1000
+#define APPLICATION 0x2000
+
+/* Local variables */
+
+static BOOL          initialised  = FALSE;
+static int           ihigh        = -1;
+static signed char * i_grey_count = NULL;
+static int           mhigh        = -1;
+static signed char * m_grey_count = NULL;
+
+/* Define the below to output a debug file to the named location */
+
+#undef  LOCAL_TRACING
+#define TRACE_LOCATION "Mem::Sprites.$.FEDebug"
+
+#ifdef LOCAL_TRACING
+   #include <stdio.h>
+#endif
+
+extern int cistrcmp(const char *s1, const char *s2)
+{
+  int ch1, ch2;
+  for (;;) {
+    ch1 = *s1++;  ch2 = *s2++;
+    /* care here for portability... don't rely on ANSI spec */
+    if (isupper(ch1)) ch1 = tolower(ch1);
+    if (isupper(ch2)) ch2 = tolower(ch2);
+    if (ch1 != ch2) return ch1-ch2;
+    if (ch1 == 0) return 0;
+  }
+}
+
+
+extern wimp_icon *icon_num_to_pointer(char *dbox_name, int icon_number)
+{
+   template *t;
+   wimp_wind *w;
+
+   t = template_find(dbox_name);
+   w = &t->window;
+   return (((wimp_icon *)(w + 1)) + icon_number);
+}
+
+extern Frontend_dragto *find_drag(int icn)
+{
+   Frontend_dragto *d = application.setup->drags;
+
+   while (d != 0)
+   {
+      if (d->drag == icn) return d;
+      else d = d->next;
+   }
+   return 0;
+}
+
+extern Frontend_icon *find_icon(int icn)
+{
+   Frontend_icon *i = application.setup->icons;
+
+   while (i != 0)
+   {
+      if (i->number == icn) return i;
+      else i = i->next;
+   }
+   return 0;
+}
+
+extern Frontend_menuentry *find_menuentry(int entry)
+{
+   Frontend_menuentry *e = application.setup->menu.entries;
+
+   while (e != 0)
+   {
+      if (e->number == entry) return e;
+      else e = e->next;
+   }
+   return 0;
+}
+
+extern void add_char(char *s, char c)
+{
+   int len = strlen(s);
+
+   s[len] = c;
+   s[len+1] = '\0';
+}
+
+static void do__setnumeric(Frontend_icon *i, dbox d, dbox_field f, int val)
+{
+   if ((i->flags & IF_NUMBER) != 0)
+   {
+     int current = dbox_getnumeric(d, f);
+     if (current != val) dbox_setnumeric(d, f, val);
+   }
+   else
+   {
+     if ((((i->flags & IF_SELECTED) != 0) && val == 0) || (((i->flags & IF_SELECTED) == 0) && val != 0))
+         dbox_setnumeric(d, f, !!val);
+   }
+
+   return;
+}
+
+static void do__setfield(dbox d, dbox_field f, char *p)
+{
+   if (*p == '\0')
+   {
+      char current[4]; /* Just some small value - we're interested only if the string is NUL */
+
+      dbox_getfield(d, f, current, sizeof(current));
+      if (*current == '\0') return;
+   }
+
+   dbox_setfield(d, f, p);
+   return;
+}
+
+/* --- note that this assumes it is called for icons only in the SetUp window */
+static void do__fadefield(Frontend_icon *i, dbox d, dbox_field f)
+{
+   if ((i->flags & IF_FADED) == 0)
+   {
+      wimp_caretstr cs;
+
+      /* --- is caret in this icon? --- */
+      if (wimp_get_caret_pos(&cs) == NULL)
+      {
+         if (cs.i == (wimp_i) f)
+         {
+            /* --- yes; since we don't know what other items bay be faded, just hide the caret --- */
+
+            cs.i = -1;
+            cs.x = 0;
+            cs.y = 0;
+            cs.index = -1;
+
+            wimp_set_caret_pos(&cs);
+         }
+      }
+      dbox_fadefield(d, f);
+   }
+
+   return;
+}
+
+static void do__unfadefield(Frontend_icon *i, dbox d, dbox_field f)
+{
+   if ((i->flags & IF_FADED) != 0) dbox_unfadefield(d, f);
+   return;
+}
+
+
+/*
+ * General self-initialisation. For initial dialogue box setup,
+ * assume all items are switched off.
+ */
+
+static void do__rules_init(void)
+{
+   Frontend_icon      * icurrent;
+   Frontend_menuentry * mcurrent;
+   unsigned int         amount;
+
+   /* Ensure all arrays are freed to start with */
+
+   FEmem_free(i_grey_count), i_grey_count = NULL;
+   FEmem_free(m_grey_count), m_grey_count = NULL;
+
+   /* Find out the highest icon number */
+
+   icurrent = application.setup->icons;
+   ihigh    = -1;
+
+   if (icurrent != NULL)
+   {
+      while (icurrent != NULL)
+      {
+         if (icurrent->number > ihigh) ihigh = icurrent->number;
+         icurrent = icurrent->next;
+      }
+
+      /* Allocate space for the grey count array */
+
+      amount = (ihigh + 1) * sizeof(char);
+      i_grey_count = FEmem_alloc(amount); /* (this guarantees it will return a valid pointer or will bail out itself) */
+      memset(i_grey_count, 0, amount);
+   }
+
+   /* Similar thing for menu entries */
+
+   mcurrent = application.setup->menu.entries;
+   mhigh    = -1;
+
+   if (mcurrent != NULL)
+   {
+      while (mcurrent != NULL)
+      {
+         if (mcurrent->number > mhigh) mhigh = mcurrent->number;
+         mcurrent = mcurrent->next;
+      }
+
+      amount = (mhigh + 1) * sizeof(Frontend_menuentry *);
+      m_grey_count = FEmem_alloc(amount);
+      memset(m_grey_count, 0, amount);
+   }
+
+   return;
+}
+
+/*
+ * Unwind or run the given list of exclude rules.
+ */
+
+static void do__exclude_rules(Frontend_exclusion * excl,
+                              BOOL                 unwind)
+{
+   Frontend_icon      * icurrent;
+   Frontend_menuentry * mcurrent;
+
+   for (; excl != NULL; excl = excl->next)
+   {
+      if (excl->menu_or_icon == IS_ICON)
+      {
+         icurrent = find_icon(excl->exclude);
+         if (icurrent == NULL || icurrent->number > ihigh) continue;
+
+         if (unwind)
+         {
+            if (i_grey_count[icurrent->number] >  -126) i_grey_count[icurrent->number]--;
+            if (i_grey_count[icurrent->number] == 0)    i_grey_count[icurrent->number] = -1;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Unwind exclude rule for icon %02d to give count %03d\n", icurrent->number, i_grey_count[icurrent->number]);
+               fclose(fi);}}
+            #endif
+         }
+         else
+         {
+            if (i_grey_count[icurrent->number] <  126) i_grey_count[icurrent->number]++;
+            if (i_grey_count[icurrent->number] == 0)   i_grey_count[icurrent->number] = 1;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Run exclude rule for icon %02d to give count %03d\n", icurrent->number, i_grey_count[icurrent->number]);
+               fclose(fi);}}
+            #endif
+         }
+      }
+      else
+      {
+         mcurrent = find_menuentry(excl->exclude);
+         if (mcurrent == NULL || mcurrent->number > mhigh) continue;
+
+         if (unwind)
+         {
+            if (m_grey_count[mcurrent->number] >  -126) m_grey_count[mcurrent->number]--;
+            if (m_grey_count[mcurrent->number] == 0)    m_grey_count[mcurrent->number] = -1;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Unwind exclude rule for menu entry %02d to give count %03d\n", mcurrent->number, m_grey_count[mcurrent->number]);
+               fclose(fi);}}
+            #endif
+         }
+         else
+         {
+            if (m_grey_count[mcurrent->number] <  126) m_grey_count[mcurrent->number]++;
+            if (m_grey_count[mcurrent->number] == 0)   m_grey_count[mcurrent->number] = 1;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Run exclude rule for menu entry %02d to give count %03d\n", mcurrent->number, m_grey_count[mcurrent->number]);
+               fclose(fi);}}
+            #endif
+         }
+      }
+   }
+
+   return;
+}
+
+#ifdef INCLUDES_AS_INCLUDES
+
+   /*
+    * Unwind or run the given list of include rules.
+    */
+
+   static void do__include_rules(Frontend_inclusion * incl,
+                                 BOOL                 unwind)
+   {
+      Frontend_icon      * icurrent;
+      Frontend_menuentry * mcurrent;
+
+      for (; incl != NULL; incl = incl->next)
+      {
+         if (incl->menu_or_icon == IS_ICON)
+         {
+            icurrent = find_icon(incl->include);
+            if (icurrent == NULL || icurrent->number > ihigh) continue;
+
+            if (unwind)
+            {
+               if (i_grey_count[icurrent->number] <  126) i_grey_count[icurrent->number]++;
+               if (i_grey_count[icurrent->number] == 0)   i_grey_count[icurrent->number] = 1;
+
+               #ifdef LOCAL_TRACING
+                  {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+                  fprintf(fi, "Unwind include rule for icon %02d to give count %03d\n", icurrent->number, i_grey_count[icurrent->number]);
+                  fclose(fi);}}
+               #endif
+            }
+            else
+            {
+               if (i_grey_count[icurrent->number] >  -126) i_grey_count[icurrent->number]--;
+               if (i_grey_count[icurrent->number] == 0)    i_grey_count[icurrent->number] = -1;
+
+               #ifdef LOCAL_TRACING
+                  {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+                  fprintf(fi, "Run include rule for icon %02d to give count %03d\n", icurrent->number, i_grey_count[icurrent->number]);
+                  fclose(fi);}}
+               #endif
+            }
+         }
+         else
+         {
+            mcurrent = find_menuentry(incl->include);
+            if (mcurrent == NULL || mcurrent->number > mhigh) continue;
+
+            if (unwind)
+            {
+               if (m_grey_count[mcurrent->number] <  126) m_grey_count[mcurrent->number]++;
+               if (m_grey_count[mcurrent->number] == 0)   m_grey_count[mcurrent->number] = 1;
+
+               #ifdef LOCAL_TRACING
+                  {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+                  fprintf(fi, "Unwind include rule for menu entry %02d to give count %03d\n", mcurrent->number, m_grey_count[mcurrent->number]);
+                  fclose(fi);}}
+               #endif
+            }
+            else
+            {
+               if (m_grey_count[mcurrent->number] >  -126) m_grey_count[mcurrent->number]--;
+               if (m_grey_count[mcurrent->number] == 0)    m_grey_count[mcurrent->number] = -1;
+
+               #ifdef LOCAL_TRACING
+                  {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+                  fprintf(fi, "Run include rule for menu entry %02d to give count %03d\n", mcurrent->number, m_grey_count[mcurrent->number]);
+                  fclose(fi);}}
+               #endif
+            }
+         }
+      }
+
+      return;
+   }
+
+#endif
+
+/*
+ * Take the counts in the i_grey_count and m_grey_count arrays
+ * and echo the results to the dialogue box.
+ */
+
+static void do__echo_count_results(void)
+{
+   Frontend_icon      * icurrent;
+   Frontend_menuentry * mcurrent;
+   int                  item;
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      fprintf(fi, "Echo count results: Called\n");
+      fclose(fi);}}
+   #endif
+
+   for (item = 0; item <= ihigh; item++)
+   {
+      icurrent = find_icon(item);
+      if (icurrent == NULL) continue;
+
+      #ifdef LOCAL_TRACING
+         {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+         fprintf(fi, "Icon %02d count is %03d\n", item, i_grey_count[item]);
+         fclose(fi);}}
+      #endif
+
+      if (i_grey_count[item] < 0 && (icurrent->flags & IF_FADED) != 0)
+      {
+         do__unfadefield(icurrent, application.setup->d, icurrent->number);
+         icurrent->flags &= ~IF_FADED;
+      }
+      else if (i_grey_count[item] > 0 && (icurrent->flags & IF_FADED) == 0)
+      {
+         do__fadefield(icurrent, application.setup->d, icurrent->number);
+         icurrent->flags |= IF_FADED;
+      }
+   }
+
+   for (item = 0; item <= mhigh; item++)
+   {
+      mcurrent = find_menuentry(item);
+      if (mcurrent == NULL) continue;
+
+      #ifdef LOCAL_TRACING
+         {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+         fprintf(fi, "Menu entry %02d count is %03d\n", item, m_grey_count[item]);
+         fclose(fi);}}
+      #endif
+
+      if (m_grey_count[item] < 0)
+      {
+         mcurrent->flags &= ~IF_FADED;
+      }
+      else if (m_grey_count[item] > 0)
+      {
+         mcurrent->flags |= IF_FADED;
+      }
+   }
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      fprintf(fi, "Echo count results: Finished\n");
+      fclose(fi);}}
+   #endif
+}
+
+/* This recursively runs rules putting the results into one of two arrays for
+ * icons and two arrays for menu entries. Whenever a selection rule is run, the
+ * routine calls itself recursively to run the 'on' rules for each item named
+ * in the selection rule that is currently 'off', in turn; whenever a deselection
+ * rule is run, the item calls itself recursively to run the 'off' rules for
+ * any item currently 'on'.
+ *
+ * Rule evaluation order is, for the case where we're called for the 'on' rules
+ * at the top level:
+ *
+ * 1) Unwind exclusions previously run for the item.
+ * 2) Unwind inclusions previously run for the item.
+ * 3) Run selection rules, with recursive call back.
+ * 4) Run deselection rules, with recursive call back.
+ * 5) Run exclusions for the item.
+ * 6) Run inclusions for the item.
+ *
+ * The "_off" variants are run if parameter 'off' is TRUE.
+ *
+ * In addition to the two local arrays for menu entries and icons, the grey count
+ * arrays are updated. Since selection and deselection rules are only run
+ * recursively for items that aren't in the state to which the rule applies,
+ * infinite recursion is inherently impossible.
+ */
+
+static void do__resolve_actions_in_array(void * i_m, int icon_or_menu, BOOL off,
+
+                                         Frontend_icon      ** isel,
+                                         Frontend_icon      ** idesel,
+
+                                         Frontend_menuentry ** msel,
+                                         Frontend_menuentry ** mdesel)
+{
+   Frontend_deselection * desel;
+   Frontend_selection   * sel;
+   Frontend_exclusion   * excl;
+
+   Frontend_icon        * icurrent;
+   Frontend_menuentry   * mcurrent;
+
+   #ifdef INCLUDES_AS_INCLUDES
+      Frontend_inclusion * incl;
+   #endif
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      fprintf(fi, "Resolve actions: Called with &%08X for %s %d\n", (int) i_m, icon_or_menu == IS_ICON ? "icon" : "menuentry", icon_or_menu == IS_ICON ? ((Frontend_icon *)i_m)->number : ((Frontend_menuentry *)i_m)->number);
+      fprintf(fi, "Resolve actions: Running %s rules\n", off ? "OFF" : "ON");
+      fclose(fi);}}
+   #endif
+
+   /* Unwind this item's exclusion/inclusion rules. If the item is being
+    * switched on, it must presently be switched off, in which case we
+    * need to unwind its _off rules - and vice versa.
+    */
+
+   /* Unwind exclusions */
+
+   if (icon_or_menu == IS_ICON)
+      excl = !off ? ((Frontend_icon *)i_m)->exclusions_off : ((Frontend_icon *)i_m)->exclusions;
+   else
+      excl = !off ? ((Frontend_menuentry *)i_m)->exclusions_off : ((Frontend_menuentry *)i_m)->exclusions;
+
+   do__exclude_rules(excl, TRUE);
+
+   #ifdef INCLUDES_AS_INCLUDES
+
+      /* Unwind inclusions */
+
+      if (icon_or_menu == IS_ICON)
+         incl = !off ? ((Frontend_icon *)i_m)->inclusions_off : ((Frontend_icon *)i_m)->inclusions;
+      else
+         incl = !off ? ((Frontend_menuentry *)i_m)->inclusions_off : ((Frontend_menuentry *)i_m)->inclusions;
+
+      do__include_rules(incl, TRUE);
+
+   #endif
+
+   /* Run the selection rules */
+
+   if (icon_or_menu == IS_ICON)
+      sel = off ? ((Frontend_icon *)i_m)->selections_off : ((Frontend_icon *)i_m)->selections;
+   else
+      sel = off ? ((Frontend_menuentry *)i_m)->selections_off : ((Frontend_menuentry *)i_m)->selections;
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      if (sel) fprintf(fi, "Selection rules to run are at &%08X\n", (int) sel);
+      else fprintf(fi, "No selection rules to run\n");
+      fclose(fi);}}
+   #endif
+
+   for (; sel != NULL; sel = sel->next)
+   {
+      if (sel->menu_or_icon == IS_ICON)
+      {
+         icurrent = find_icon(sel->select);
+         if (icurrent == NULL || icurrent->number > ihigh) continue;
+
+         if ((icurrent->flags & IF_SELECTED) == 0)
+         {
+            isel  [icurrent->number] = icurrent;
+            idesel[icurrent->number] = NULL;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Run selection rule for icon %d, go recursive\n", icurrent->number);
+               fclose(fi);}}
+            #endif
+
+            do__resolve_actions_in_array((void *) icurrent, IS_ICON, FALSE,
+                                         isel, idesel,
+                                         msel, mdesel);
+         }
+      }
+      else
+      {
+         mcurrent = find_menuentry(sel->select + 1);
+         if (mcurrent == NULL || mcurrent->number > mhigh) continue;
+
+         if ((mcurrent->flags & IF_SELECTED) == 0)
+         {
+            msel  [mcurrent->number] = mcurrent;
+            mdesel[mcurrent->number] = NULL;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Run selection rule for menu entry %d, go recursive\n", mcurrent->number);
+               fclose(fi);}}
+            #endif
+
+            do__resolve_actions_in_array((void *) mcurrent, IS_MENU, FALSE,
+                                         isel, idesel,
+                                         msel, mdesel);
+         }
+      }
+   }
+
+   /* Run the deselection rules */
+
+   if (icon_or_menu == IS_ICON)
+      desel = off ? ((Frontend_icon *)i_m)->deselections_off : ((Frontend_icon *)i_m)->deselections;
+   else
+      desel = off ? ((Frontend_menuentry *)i_m)->deselections_off : ((Frontend_menuentry *)i_m)->deselections;
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      if (desel) fprintf(fi, "Deselection rules to run are at &%08X\n", (int) desel);
+      else fprintf(fi, "No deselection rules to run\n");
+      fclose(fi);}}
+   #endif
+
+   for (; desel != NULL; desel = desel->next)
+   {
+      if (desel->menu_or_icon == IS_ICON)
+      {
+         icurrent = find_icon(desel->deselect);
+         if (icurrent == NULL || icurrent->number > ihigh) continue;
+
+         if ((icurrent->flags & IF_SELECTED) != 0)
+         {
+            isel  [icurrent->number] = NULL;
+            idesel[icurrent->number] = icurrent;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Run deselection rule for icon %d, go recursive\n", icurrent->number);
+               fclose(fi);}}
+            #endif
+
+            do__resolve_actions_in_array((void *) icurrent, IS_ICON, TRUE,
+                                         isel, idesel,
+                                         msel, mdesel);
+         }
+      }
+      else
+      {
+         mcurrent = find_menuentry(desel->deselect + 1);
+         if (mcurrent == NULL || mcurrent->number > mhigh) continue;
+
+         if ((mcurrent->flags & IF_SELECTED) != 0)
+         {
+            msel  [mcurrent->number] = NULL;
+            mdesel[mcurrent->number] = mcurrent;
+
+            #ifdef LOCAL_TRACING
+               {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+               fprintf(fi, "Run deselection rule for menu entry %d, go recursive\n", mcurrent->number);
+               fclose(fi);}}
+            #endif
+
+            do__resolve_actions_in_array((void *) mcurrent, IS_MENU, TRUE,
+                                         isel, idesel,
+                                         msel, mdesel);
+         }
+      }
+   }
+
+   /* Run the exclusion rules */
+
+   if (icon_or_menu == IS_ICON)
+      excl = off ? ((Frontend_icon *)i_m)->exclusions_off : ((Frontend_icon *)i_m)->exclusions;
+   else
+      excl = off ? ((Frontend_menuentry *)i_m)->exclusions_off : ((Frontend_menuentry *)i_m)->exclusions;
+
+   do__exclude_rules(excl, FALSE);
+
+   #ifdef INCLUDES_AS_INCLUDES
+
+      /* Run the inclusion rules */
+
+      if (icon_or_menu == IS_ICON)
+         incl = off ? ((Frontend_icon *)i_m)->inclusions_off : ((Frontend_icon *)i_m)->inclusions;
+      else
+         incl = off ? ((Frontend_menuentry *)i_m)->inclusions_off : ((Frontend_menuentry *)i_m)->inclusions;
+
+      do__include_rules(incl, FALSE);
+
+   #endif
+
+   /* Finished updating the arrays; return either back to further
+    * rules processing, or to the external caller that will now
+    * use the array contents to update the front-end.
+    */
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      fprintf(fi, "Resolve actions: Exit\n");
+      fclose(fi);}}
+   #endif
+
+   return;
+}
+
+/*
+ * Run the include/exclude/selection/deselection rules associated
+ * with an icon or menu being switched on or off.
+ */
+
+static void do__actions(void * i_m, int icon_or_menu, BOOL off)
+{
+   /* This gets quite volved, though overall, it's straightforward */
+
+   unsigned int          amount;
+   int                   item;
+
+   Frontend_icon       * icurrent;
+   Frontend_icon      ** isel   = NULL;
+   Frontend_icon      ** idesel = NULL;
+
+   Frontend_menuentry  * mcurrent;
+   Frontend_menuentry ** msel   = NULL;
+   Frontend_menuentry ** mdesel = NULL;
+
+   /* Initialised? */
+
+   if (!initialised)
+   {
+      initialised = TRUE;
+      do__rules_init();
+   }
+
+   /* Allocate various arrays */
+
+   if (ihigh >= 0)
+   {
+      amount = (ihigh + 1) * sizeof(Frontend_icon *);
+      isel   = FEmem_alloc(amount); /* (this guarantees it will return a valid pointer or will bail out itself) */
+      idesel = FEmem_alloc(amount);
+
+      memset(isel,   0, amount);
+      memset(idesel, 0, amount);
+   }
+
+   if (mhigh >= 0)
+   {
+      amount = (mhigh + 1) * sizeof(Frontend_menuentry *);
+      msel   = FEmem_alloc(amount);
+      mdesel = FEmem_alloc(amount);
+
+      memset(msel,   0, amount);
+      memset(mdesel, 0, amount);
+   }
+
+   /* Run the rules */
+
+   _swix(Hourglass_On, 0);
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      fprintf(fi, "** Outer call for resolve, %s %d\n", icon_or_menu == IS_ICON ? "icon" : "menuentry", icon_or_menu == IS_ICON ? ((Frontend_icon *)i_m)->number : ((Frontend_menuentry *)i_m)->number);
+      fprintf(fi, "** Highest icon number: %d\n", ihigh);
+      fprintf(fi, "** Highest menu entry : %d\n", mhigh);
+      fclose(fi);}}
+   #endif
+
+   do__resolve_actions_in_array(i_m, icon_or_menu, off,
+                                isel, idesel,
+                                msel, mdesel);
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      fprintf(fi, "** Outer call returned\n");
+      fclose(fi);}}
+   #endif
+
+   _swix(Hourglass_Off, 0);
+
+   /* Deal with the contents of the selections, deselections and count arrays */
+
+   for (item = 0; item <= ihigh; item++)
+   {
+      icurrent = idesel[item];
+
+      if (icurrent != NULL)
+      {
+          if ((icurrent->flags & IF_NUMBER) || !(icurrent->flags & (IF_STRING|IF_ARROWUP|IF_ARROWDOWN)))
+              do__setnumeric(icurrent, application.setup->d, icurrent->number, 0);
+          else if ((icurrent->flags & IF_STRING) != 0) /* string */
+              do__setfield(application.setup->d, icurrent->number, "");
+
+          icurrent->flags &= ~IF_SELECTED;
+      }
+
+      icurrent = isel[item];
+
+      if (icurrent != NULL)
+      {
+          if (!(icurrent->flags & (IF_STRING|IF_ARROWUP|IF_ARROWDOWN|IF_NUMBER)))
+              do__setnumeric(icurrent, application.setup->d, icurrent->number, 1);
+
+          icurrent->flags |= IF_SELECTED;
+      }
+  }
+
+   for (item = 0; item <= mhigh; item++)
+   {
+      mcurrent = mdesel[item];
+      if (mcurrent != NULL) mcurrent->flags &= ~IF_SELECTED;
+
+      mcurrent = msel[item];
+      if (mcurrent != NULL) mcurrent->flags |= IF_SELECTED;
+   }
+
+   /* Bring dialogue box grey/ungrey state up to date */
+
+   do__echo_count_results();
+
+   /* Release memory claimed for the temporary arrays */
+
+   if (ihigh >= 0)
+   {
+      FEmem_free(isel);
+      FEmem_free(idesel);
+   }
+
+   if (mhigh >= 0)
+   {
+      FEmem_free(msel);
+      FEmem_free(mdesel);
+   }
+
+   /* Done. Hurrah. */
+
+   return;
+}
+
+extern void do_on_actions(void *i_m, int icon_or_menu)
+{
+   do__actions(i_m, icon_or_menu, FALSE);
+}
+
+extern void do_off_actions(void *i_m, int icon_or_menu)
+{
+   do__actions(i_m, icon_or_menu, TRUE);
+}
+
+
+extern void do_make_exclusions(void)
+{
+   Frontend_icon *i = application.setup->icons;
+   Frontend_menuentry *m = application.setup->menu.entries;
+
+   /* --- first the icons --- */
+   while (i != 0)
+   {
+      if (i->flags & IF_MAKE_EXCLUDES)
+      {
+         do__fadefield(i, application.setup->d, i->number);
+         i->flags |= IF_FADED;
+      }
+      i = i->next;
+   }
+
+   /* --- then the menu entries --- */
+   while (m != 0)
+   {
+      if (m->flags & IF_MAKE_EXCLUDES) m->flags |= IF_FADED;
+      m = m->next;
+   }
+}
+
+extern void do_inserts(int icn, char *filename, int type, BOOL setcaret)
+{
+   Frontend_dragto *d;
+   char save_filename[MAXFILENAME];
+
+   strcpy(save_filename, filename);
+
+   /* --- for directories we add wild card string --- */
+   if ((type == DIRECTORY || type == APPLICATION) && application.setup->wild_card != 0)
+   {
+      add_char(save_filename, '.');
+      strcat(save_filename, application.setup->wild_card);
+   }
+
+   d = find_drag(icn);
+   if (d == 0) d = find_drag(ANY_ICON);
+
+   if (d != 0)
+   {
+      Frontend_insert *ins;
+      wimp_icon ii;
+
+      /* --- insert filename into "insert list" icons, separated --- */
+      ins = d->inserts;
+      while (ins != 0)
+      {
+         char *buffer;
+
+         wimp_get_icon_info(dbox_syshandle(application.setup->d), ins->insert, &ii);
+         buffer = FEmem_alloc(ii.data.indirecttext.bufflen);
+
+         buffer[0] = 0;
+         dbox_getfield(application.setup->d, ins->insert, buffer, ii.data.indirecttext.bufflen);
+
+         /* --- check for buffer overflow --- */
+
+         if (strlen(buffer) + strlen(save_filename) >= ii.data.indirecttext.bufflen)
+         {
+            werr(FALSE, msgs_lookup("utils1:Field is too long"));
+         }
+         else
+         {
+            if (buffer[0] >= 32)
+            {
+               if (d->separator != '\0')
+               {
+                   add_char(buffer, d->separator);
+                   strcat(buffer, save_filename);
+               }
+               else
+                   strcpy(buffer, save_filename);
+            }
+            else
+               strcpy(buffer, save_filename);
+            dbox_setfield(application.setup->d, ins->insert, buffer);
+
+            /* --- put caret at end of writeable icon --- */
+            if (setcaret)
+                set_caret(dbox_syshandle(application.setup->d), ins->insert);
+         }
+
+         FEmem_free(buffer);
+
+         ins = ins->next;
+      }
+   }
+}
+
+extern BOOL delete_object(char *object)
+{
+   _kernel_swi_regs r;
+
+   if (object == 0) return TRUE;  /* play it safe !! */
+
+   r.r[0] = 27;             /* wipe object */
+   r.r[1] = (int)object;  /* temp. filename */
+   r.r[3] = 0x02 | 0x01;    /* force/recurse (in case directory) */
+   r.r[4] = r.r[5] = r.r[6] = r.r[7] = 0;
+
+   return (_kernel_swi(OS_FSControl, &r, &r) == 0);
+}
+
+
+extern BOOL rename_object(char *from, char *to)
+{
+   _kernel_swi_regs r;
+
+   r.r[0] = 25;             /* rename */
+   r.r[1] = (int)from;
+   r.r[2] = (int)to;
+
+   return (_kernel_swi(OS_FSControl, &r, &r) == 0);
+}
+
+
+extern BOOL copy_object_with_delete(char *from, char *to)
+{
+   _kernel_swi_regs r;
+   _kernel_oserror *e;
+
+   /* NB we don't use delete-source bit on copy, in case copy of directory fails! */
+
+   r.r[0] = 26;             /* copy object */
+   r.r[1] = (int)from;
+   r.r[2] = (int)to;
+   r.r[3] = 0x40 | 0x02 | 0x01;  /* prompt-for-media-change/force/recurse(in case directory!) */
+
+   e = _kernel_swi(OS_FSControl, &r, &r);
+
+   /* now do the delete (testing if the copy worked!) */
+   if (e == 0)
+       return delete_object(from);
+   else
+   {
+       werr(FALSE, msgs_lookup("utils2:Save failed %s -> %s"), from, to);
+       werr(FALSE, "%s", e->errmess);
+       return FALSE;
+   }
+}
+
+
+extern BOOL find_writeable(char *name, wimp_w wh, wimp_i *i)
+{
+   wimp_icon *wi;
+   template *t;
+   wimp_wind *w;
+
+   t = template_find(name);
+   w = &t->window;
+
+   for (*i=0; *i<w->nicons; (*i)++)
+   {
+      wi = ((wimp_icon *)(w + 1)) + *i;
+      if (is_writeable_indirecttext(wi))
+      {
+          wimp_icon is;
+
+          wimp_get_icon_info(wh, *i, &is);
+          if (!(is.flags & wimp_INOSELECT))
+             return TRUE;
+      }
+   }
+   return FALSE;
+}
+
+
+extern int fieldlength(wimp_w w, wimp_i i)
+{
+   wimp_icon wi;
+   int len = 0;
+
+   wimpt_noerr(wimp_get_icon_info(w, i, &wi));
+   while (wi.data.indirecttext.buffer[len] >=32) len++;
+
+   return len;
+}
+
+
+extern void set_caret(wimp_w w, wimp_i i)
+{
+   wimp_caretstr c;
+   c.i = i;
+   c.x = 0;
+   c.y = 0;
+   c.height = -1;
+   c.w = w;
+   c.index = fieldlength(w, i);
+   wimpt_noerr(wimp_set_caret_pos(&c));
+}
+
+
+extern void stralloc(char **dst, char *src)
+{
+   if ((*dst = FEmem_alloc(strlen(src)+1)) != 0)
+        strcpy(*dst, src);
+}
+@
+
+
+1.4
+log
+@  Doh.
+Detail:
+  Testing "fairly thoroughly" wasn't thoroughly enough. I'd missed two
+  tricks; first, it's only necessary to do that last minute inclusion
+  unwind and exclusion run at the outer recursion level, and second, it
+  must *not* be done if the icon in question is already part of the
+  causal link between selection/deselection items - i.e. check it's not
+  mentioned in the [i|m]sel / [i|m]desel arrays before proceeding.
+Admin:
+  More confident of this one!
+
+Version 1.26. Tagged as 'FrontEnd-1_26'
+@
+text
+@d49 8
+d62 4
+d199 281
+a479 6
+/* This recursively runs rules putting the results into one of four arrays for icons
+ * and four arrays for menu entries. Whenever a set of rules is run, it overrides any
+ * previous settings. Whenever a selection rule is run, the routine calls itself
+ * recursively to run the 'on' rules for each item named in the selection rule, in
+ * turn; whenever a deselection rule is run, the item calls itself recursively to
+ * run the 'off' rules.
+d481 2
+a482 2
+ * Rule evaluation order is, for the case where we're called for the 'on' rules at
+ * the top level:
+d491 1
+a491 1
+ * The "_off" variants are (clearly) run if parameter 'off' is TRUE.
+d493 4
+a496 3
+ * If TRUE is returned, the function has suspected infinite recursion in the
+ * rule patterns and is bailing out. Callers should not try to call again for
+ * part of that same rule set.
+d499 4
+a502 4
+#ifdef LOCAL_TRACING
+   #include <stdio.h>
+#endif
+   #include <stdio.h>
+a503 7
+static BOOL do__resolve_actions_in_array(void * i_m, int icon_or_menu, BOOL off,
+                                         BOOL inner, void * outer_i_m, BOOL outer_off,
+                                         int ihigh, int mhigh,
+                                         Frontend_icon ** isel,
+                                         Frontend_icon ** idesel,
+                                         Frontend_icon ** iexcl,
+                                         Frontend_icon ** iincl,
+d505 1
+a505 3
+                                         Frontend_menuentry ** mdesel,
+                                         Frontend_menuentry ** mexcl,
+                                         Frontend_menuentry ** mincl)
+a509 1
+   Frontend_inclusion   * incl;
+d514 3
+a516 1
+   int                    i, m;
+a524 12
+   if (inner && outer_i_m == i_m && outer_off == off)
+   {
+     #ifdef LOCAL_TRACING
+        {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+        fprintf(fi, "Resolve actions: INFINITE RECURSION SUSPECTED\n");
+        fclose(fi);}}
+     #endif
+
+     werr(0, msgs_lookup("FERuleRec:Cannot complete Desc file rule execution; infinite recursion would result."));
+     return TRUE;
+   }
+
+d537 1
+a537 6
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      if (excl) fprintf(fi, "Exclude rules to unwind are at &%08X\n", (int) excl);
+      else fprintf(fi, "No exclusion rules to unwind\n");
+      fclose(fi);}}
+   #endif
+d539 1
+a539 6
+   while (excl != NULL)
+   {
+      if (excl->menu_or_icon == IS_ICON)
+      {
+         icurrent = find_icon(excl->exclude);
+         if (icurrent == NULL || icurrent->number > ihigh) break;
+d541 1
+a541 1
+         /* Unwind this exclude rule - i.e. add to the include list */
+d543 2
+a544 9
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Unwind exclude rule for icon %d\n", icurrent->number);
+            fclose(fi);}}
+         #endif
+
+         iexcl[icurrent->number] = NULL;
+         iincl[icurrent->number] = icurrent;
+      }
+d546 1
+a546 16
+      {
+         mcurrent = find_menuentry(excl->exclude + 1);
+         if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Unwind exclude rule for menu entry %d\n", mcurrent->number);
+            fclose(fi);}}
+         #endif
+
+         mexcl[mcurrent->number] = NULL;
+         mincl[mcurrent->number] = mcurrent;
+      }
+
+      excl = excl->next;
+   }
+d548 1
+a548 1
+   /* Unwind inclusions */
+a549 10
+   if (icon_or_menu == IS_ICON)
+      incl = !off ? ((Frontend_icon *)i_m)->inclusions_off : ((Frontend_icon *)i_m)->inclusions;
+   else
+      incl = !off ? ((Frontend_menuentry *)i_m)->inclusions_off : ((Frontend_menuentry *)i_m)->inclusions;
+
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      if (incl) fprintf(fi, "Include rules to unwind are at &%08X\n", (int) incl);
+      else fprintf(fi, "No inclusion rules to unwind\n");
+      fclose(fi);}}
+a551 36
+   while (incl != NULL)
+   {
+      if (incl->menu_or_icon == IS_ICON)
+      {
+         icurrent = find_icon(incl->include);
+         if (icurrent == NULL || icurrent->number > ihigh) break;
+
+         /* Unwind this include rule - i.e. add to the exclude list */
+
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Unwind include rule for icon %d\n", icurrent->number);
+            fclose(fi);}}
+         #endif
+
+         iexcl[icurrent->number] = icurrent;
+         iincl[icurrent->number] = NULL;
+      }
+      else
+      {
+         mcurrent = find_menuentry(incl->include + 1);
+         if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Unwind include rule for menu entry %d\n", mcurrent->number);
+            fclose(fi);}}
+         #endif
+
+         mexcl[mcurrent->number] = mcurrent;
+         mincl[mcurrent->number] = NULL;
+      }
+
+      incl = incl->next;
+   }
+
+d566 1
+a566 1
+   while (sel != NULL)
+d571 1
+a571 1
+         if (icurrent == NULL || icurrent->number > ihigh) break;
+d573 4
+a576 2
+         isel  [icurrent->number] = icurrent;
+         idesel[icurrent->number] = NULL;
+d578 9
+a586 13
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run selection rule for icon %d, go recursive\n", icurrent->number);
+            fclose(fi);}}
+         #endif
+
+         if (do__resolve_actions_in_array((void *)icurrent, IS_ICON, FALSE,
+                                          TRUE, outer_i_m, outer_off,
+                                          ihigh, mhigh,
+                                          isel, idesel, iexcl, iincl,
+                                          msel, mdesel, mexcl, mincl))
+         {
+            return TRUE;
+d592 1
+a592 1
+         if (mcurrent == NULL || mcurrent->number > mhigh) break;
+d594 4
+a597 8
+         msel  [mcurrent->number] = mcurrent;
+         mdesel[mcurrent->number] = NULL;
+
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run selection rule for menu entry %d, go recursive\n", mcurrent->number);
+            fclose(fi);}}
+         #endif
+d599 9
+a607 7
+         if (do__resolve_actions_in_array((void *)mcurrent, IS_MENU, FALSE,
+                                          TRUE, outer_i_m, outer_off,
+                                          ihigh, mhigh,
+                                          isel, idesel, iexcl, iincl,
+                                          msel, mdesel, mexcl, mincl))
+         {
+            return TRUE;
+a609 2
+
+      sel = sel->next;
+d626 1
+a626 1
+   while (desel != NULL)
+d631 1
+a631 1
+         if (icurrent == NULL || icurrent->number > ihigh) break;
+d633 4
+a636 2
+         isel  [icurrent->number] = NULL;
+         idesel[icurrent->number] = icurrent;
+d638 9
+a646 13
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run deselection rule for icon %d, go recursive\n", icurrent->number);
+            fclose(fi);}}
+         #endif
+
+         if (do__resolve_actions_in_array((void *)icurrent, IS_ICON, TRUE,
+                                          TRUE, outer_i_m, outer_off,
+                                          ihigh, mhigh,
+                                          isel, idesel, iexcl, iincl,
+                                          msel, mdesel, mexcl, mincl))
+         {
+            return TRUE;
+d652 1
+a652 1
+         if (mcurrent == NULL || mcurrent->number > mhigh) break;
+d654 4
+a657 2
+         msel  [mcurrent->number] = NULL;
+         mdesel[mcurrent->number] = mcurrent;
+d659 9
+a667 13
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run deselection rule for menu entry %d, go recursive\n", mcurrent->number);
+            fclose(fi);}}
+         #endif
+
+         if (do__resolve_actions_in_array((void *)mcurrent, IS_MENU, TRUE,
+                                          TRUE, outer_i_m, outer_off,
+                                          ihigh, mhigh,
+                                          isel, idesel, iexcl, iincl,
+                                          msel, mdesel, mexcl, mincl))
+         {
+            return TRUE;
+a669 2
+
+      desel = desel->next;
+d679 1
+a679 6
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      if (excl) fprintf(fi, "Exclusion rules to run are at &%08X\n", (int) excl);
+      else fprintf(fi, "No exclusion rules to run\n");
+      fclose(fi);}}
+   #endif
+d681 1
+a681 6
+   while (excl != NULL)
+   {
+      if (excl->menu_or_icon == IS_ICON)
+      {
+         icurrent = find_icon(excl->exclude);
+         if (icurrent == NULL || icurrent->number > ihigh) break;
+d683 1
+a683 5
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run exclude rule for icon %d\n", icurrent->number);
+            fclose(fi);}}
+         #endif
+d685 2
+a686 3
+         iexcl[icurrent->number] = icurrent;
+         iincl[icurrent->number] = NULL;
+      }
+d688 1
+a688 16
+      {
+         mcurrent = find_menuentry(excl->exclude + 1);
+         if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run exclude rule for menu entry %d\n", mcurrent->number);
+            fclose(fi);}}
+         #endif
+
+         mexcl[mcurrent->number] = mcurrent;
+         mincl[mcurrent->number] = NULL;
+      }
+
+      excl = excl->next;
+   }
+d690 1
+a690 6
+   /* Run the inclusion rules */
+
+   if (icon_or_menu == IS_ICON)
+      incl = off ? ((Frontend_icon *)i_m)->inclusions_off : ((Frontend_icon *)i_m)->inclusions;
+   else
+      incl = off ? ((Frontend_menuentry *)i_m)->inclusions_off : ((Frontend_menuentry *)i_m)->inclusions;
+a691 5
+   #ifdef LOCAL_TRACING
+      {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+      if (incl) fprintf(fi, "Inclusion rules to run are at &%08X\n", (int) incl);
+      else fprintf(fi, "No inclusion rules to run\n");
+      fclose(fi);}}
+d694 1
+a694 197
+   while (incl != NULL)
+   {
+      if (incl->menu_or_icon == IS_ICON)
+      {
+         icurrent = find_icon(incl->include);
+         if (icurrent == NULL || icurrent->number > ihigh) break;
+
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run include rule for icon %d\n", icurrent->number);
+            fclose(fi);}}
+         #endif
+
+         iexcl[icurrent->number] = NULL;
+         iincl[icurrent->number] = icurrent;
+      }
+      else
+      {
+         mcurrent = find_menuentry(incl->include + 1);
+         if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+         #ifdef LOCAL_TRACING
+            {FILE * fi = fopen(TRACE_LOCATION, "a"); if (fi != NULL){
+            fprintf(fi, "Run include rule for menu entry %d\n", mcurrent->number);
+            fclose(fi);}}
+         #endif
+
+         mexcl[mcurrent->number] = NULL;
+         mincl[mcurrent->number] = mcurrent;
+      }
+
+      incl = incl->next;
+   }
+
+   /* If we're ungreying (including) any icon, it could be part of
+    * a larger group that was greyed out. For example, a selection
+    * made in a group of radio buttons might lead to a large chunk
+    * of icons in a window being greyed out. When the selection in
+    * the radio group was changed, these are ungreyed. However, the
+    * group of icons might have its own local include/exclude rules,
+    * and we'd be destroying that. So, for each icon about to be
+    * included, according to the array, we must run the relevant
+    * rule to ensure anything that should still be greyed out, is.
+    *
+    * Thus the logic follows - if the item about to be included has
+    * state and this state is 'on', unwind its 'include off' rules
+    * and run its 'exclude on' rules. Conversely if the icon state
+    * is 'off', unwind its 'include on' rules and run its 'exclude
+    * off' rules.
+    *
+    * This should only be done at the outermost recursion level.
+    */
+
+   if (outer_off == off)
+   {
+      for (i = 0; i <= ihigh; i++)
+      {
+         /* Going to include this icon? */
+
+         if ((icurrent = iincl[i]) != NULL && isel[icurrent->number] == NULL && isel[icurrent->number] == NULL)
+         {
+            if ((icurrent->flags & IF_SELECTED) != 0)
+            {
+               incl = icurrent->inclusions_off;
+               excl = icurrent->exclusions;
+            }
+            else
+            {
+               incl = icurrent->inclusions;
+               excl = icurrent->exclusions_off;
+            }
+
+            /* Unwind include on/off */
+
+            while (incl != NULL)
+            {
+               if (incl->menu_or_icon == IS_ICON)
+               {
+                  icurrent = find_icon(incl->include);
+                  if (icurrent == NULL || icurrent->number > ihigh) break;
+
+                  /* Unwind this include rule - i.e. add to the exclude list */
+
+                  iexcl[icurrent->number] = icurrent;
+                  iincl[icurrent->number] = NULL;
+               }
+               else
+               {
+                  mcurrent = find_menuentry(incl->include + 1);
+                  if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+                  mexcl[mcurrent->number] = mcurrent;
+                  mincl[mcurrent->number] = NULL;
+               }
+
+               incl = incl->next;
+            }
+
+            /* Run exclude on/off */
+
+            while (excl != NULL)
+            {
+               if (excl->menu_or_icon == IS_ICON)
+               {
+                  icurrent = find_icon(excl->exclude);
+                  if (icurrent == NULL || icurrent->number > ihigh) break;
+
+                  iexcl[icurrent->number] = icurrent;
+                  iincl[icurrent->number] = NULL;
+               }
+               else
+               {
+                  mcurrent = find_menuentry(excl->exclude + 1);
+                  if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+                  mexcl[mcurrent->number] = mcurrent;
+                  mincl[mcurrent->number] = NULL;
+               }
+
+               excl = excl->next;
+            }
+         }
+      }
+
+      /* Same again, this time for menus */
+
+      for (m = 0; m <= mhigh; m++)
+      {
+         /* Going to include this menu? */
+
+         if ((mcurrent = mincl[m]) != NULL)
+         {
+            if ((mcurrent->flags & IF_SELECTED) != 0)
+            {
+               incl = mcurrent->inclusions_off;
+               excl = mcurrent->exclusions;
+            }
+            else
+            {
+               incl = mcurrent->inclusions;
+               excl = mcurrent->exclusions_off;
+            }
+
+            /* Unwind include on/off */
+
+            while (incl != NULL)
+            {
+               if (incl->menu_or_icon == IS_ICON)
+               {
+                  icurrent = find_icon(incl->include);
+                  if (icurrent == NULL || icurrent->number > ihigh) break;
+
+                  /* Unwind this include rule - i.e. add to the exclude list */
+
+                  iexcl[icurrent->number] = icurrent;
+                  iincl[icurrent->number] = NULL;
+               }
+               else
+               {
+                  mcurrent = find_menuentry(incl->include + 1);
+                  if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+                  mexcl[mcurrent->number] = mcurrent;
+                  mincl[mcurrent->number] = NULL;
+               }
+
+               incl = incl->next;
+            }
+
+            /* Run exclude on/off */
+
+            while (excl != NULL)
+            {
+               if (excl->menu_or_icon == IS_ICON)
+               {
+                  icurrent = find_icon(excl->exclude);
+                  if (icurrent == NULL || icurrent->number > ihigh) break;
+
+                  iexcl[icurrent->number] = icurrent;
+                  iincl[icurrent->number] = NULL;
+               }
+               else
+               {
+                  mcurrent = find_menuentry(excl->exclude + 1);
+                  if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+                  mexcl[mcurrent->number] = mcurrent;
+                  mincl[mcurrent->number] = NULL;
+               }
+
+               excl = excl->next;
+            }
+         }
+      }
+   } /* 'if (outer_off == off)' */
+
+   /* Finished updating the array; return either back to further
+d705 1
+a705 1
+   return FALSE;
+d708 5
+d718 1
+a718 2
+   int                   ihigh, mhigh;
+   int                   ictr,  mctr;
+d721 2
+a722 4
+   Frontend_icon      ** isel;
+   Frontend_icon      ** idesel;
+   Frontend_icon      ** iexcl;
+   Frontend_icon      ** iincl;
+a726 4
+   Frontend_menuentry ** mexcl  = NULL;
+   Frontend_menuentry ** mincl  = NULL;
+
+   /* Find out the highest icon number */
+d728 1
+a728 2
+   icurrent = application.setup->icons;
+   ihigh    = -1;
+d730 1
+a730 3
+   if (icurrent == NULL) return;
+
+   while (icurrent != NULL)
+d732 2
+a733 2
+      if (icurrent->number > ihigh) ihigh = icurrent->number;
+      icurrent = icurrent->next;
+d736 1
+a736 4
+   /* Allocate arrays for includes and excludes; there may be more
+    * entries than needed but it's fastest to reference the array
+    * contents by icon number.
+    */
+d738 5
+a742 1
+   amount = (ihigh + 1) * sizeof(Frontend_icon *);
+d744 3
+a746 11
+   isel   = FEmem_alloc(amount); /* (this guarantees it will return a valid pointer or will bail out itself) */
+   idesel = FEmem_alloc(amount);
+   iexcl  = FEmem_alloc(amount);
+   iincl  = FEmem_alloc(amount);
+
+   memset(isel,   0, amount);
+   memset(idesel, 0, amount);
+   memset(iincl,  0, amount);
+   memset(iexcl,  0, amount);
+
+   /* Similar thing for menu entries */
+d748 1
+a748 4
+   mcurrent = application.setup->menu.entries;
+   mhigh    = -1;
+
+   if (mcurrent != NULL)
+a749 6
+      while (mcurrent != NULL)
+      {
+         if (mcurrent->number > mhigh) mhigh = mcurrent->number;
+         mcurrent = mcurrent->next;
+      }
+
+a750 1
+
+a752 2
+      mexcl  = FEmem_alloc(amount);
+      mincl  = FEmem_alloc(amount);
+a755 2
+      memset(mincl,  0, amount);
+      memset(mexcl,  0, amount);
+d771 2
+a772 4
+                                FALSE, i_m, off,
+                                ihigh, mhigh,
+                                isel, idesel, iexcl, iincl,
+                                msel, mdesel, mexcl, mincl);
+d782 1
+a782 15
+   /* The eight arrays now contain entries that are either NULL, or point
+    * to a relevant icon or menu entry structure describing something that
+    * should be selected, deselected, excluded or included. There are no
+    * items that contradict each other (e.g. both in the exclusions and
+    * inclusions arrays) and no items that reflect an icon or menu entry
+    * already in the relevant state (e.g. an icon in the selection array
+    * that is already selected).
+    *
+    * So...
+    *
+    * Deselect everything in the deselection arrays;
+    * select everything in the selection arrays;
+    * exclude everything in the exclusion arrays;
+    * include everything in the inclusion arrays.
+    */
+d784 1
+a784 3
+   ictr = 0;
+
+   while (ictr <= ihigh)
+d786 1
+a786 1
+      icurrent = idesel[ictr];
+d798 1
+a798 1
+      icurrent = isel[ictr];
+d807 1
+d809 1
+a809 24
+      icurrent = iexcl[ictr];
+
+      if (icurrent != NULL)
+      {
+          do__fadefield(icurrent, application.setup->d, icurrent->number);
+          icurrent->flags |= IF_FADED;
+      }
+
+      icurrent = iincl[ictr];
+
+      if (icurrent != NULL)
+      {
+          do__unfadefield(icurrent, application.setup->d, icurrent->number);
+          icurrent->flags &= ~IF_FADED;
+      }
+
+      ictr++;
+   }
+
+   /* (Don't forget menus!) */
+
+   mctr = 0;
+
+   while (mctr <= mhigh)
+d811 1
+a811 1
+      mcurrent = mdesel[mctr];
+d814 1
+a814 1
+      mcurrent = msel[mctr];
+d816 1
+d818 1
+a818 2
+      mcurrent = mexcl[mctr];
+      if (mcurrent != NULL) mcurrent->flags |= IF_FADED;
+d820 1
+a820 5
+      mcurrent = mincl[mctr];
+      if (mcurrent != NULL) mcurrent->flags &= ~IF_FADED;
+
+      mctr++;
+   }
+d824 5
+a828 4
+   FEmem_free(isel);
+   FEmem_free(idesel);
+   FEmem_free(iexcl);
+   FEmem_free(iincl);
+d830 1
+a830 1
+   if (application.setup->menu.entries != NULL)
+a833 2
+      FEmem_free(mexcl);
+      FEmem_free(mincl);
+@
+
+
+1.3
+log
+@  Extended unwind of include and running of exclude rules.
+Detail:
+  A large group of items excluded by one single item would all be included
+  again when that item was [de]selected. E.g., a radio button is selected
+  and excludes (greys out) a group of other icons; it's later deselected, so
+  those icons are 'unexcluded' again. Unfortunately this trashes any include
+  or exclude rules within that set of icons. To work around it, any item
+  that would be included at a given point has its own include rules unwound
+  and exclude rules run. Works fine on UpgFetch front-end, but really a full
+  and proper recursive system with true infinite recursion detection and
+  so-on would be ideal. This is certainly good enough to provide logical
+  behaviour and be useful for real interfaces.
+Admin:
+  Tested fairly thoroughly.
+
+Version 1.25. Tagged as 'FrontEnd-1_25'
+@
+text
+@d214 1
+d605 2
+d609 1
+a609 1
+   for (i = 0; i <= ihigh; i++)
+d611 1
+a611 3
+      /* Going to include this icon? */
+
+      if ((icurrent = iincl[i]) != NULL)
+d613 1
+a613 12
+         if ((icurrent->flags & IF_SELECTED) != 0)
+         {
+            incl = icurrent->inclusions_off;
+            excl = icurrent->exclusions;
+         }
+         else
+         {
+            incl = icurrent->inclusions;
+            excl = icurrent->exclusions_off;
+         }
+
+         /* Unwind include on/off */
+d615 1
+a615 1
+         while (incl != NULL)
+d617 1
+a617 1
+            if (incl->menu_or_icon == IS_ICON)
+d619 2
+a620 7
+               icurrent = find_icon(incl->include);
+               if (icurrent == NULL || icurrent->number > ihigh) break;
+
+               /* Unwind this include rule - i.e. add to the exclude list */
+
+               iexcl[icurrent->number] = icurrent;
+               iincl[icurrent->number] = NULL;
+d624 2
+a625 5
+               mcurrent = find_menuentry(incl->include + 1);
+               if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+               mexcl[mcurrent->number] = mcurrent;
+               mincl[mcurrent->number] = NULL;
+d628 1
+a628 4
+            incl = incl->next;
+         }
+
+         /* Run exclude on/off */
+d630 1
+a630 3
+         while (excl != NULL)
+         {
+            if (excl->menu_or_icon == IS_ICON)
+d632 18
+a649 2
+               icurrent = find_icon(excl->exclude);
+               if (icurrent == NULL || icurrent->number > ihigh) break;
+d651 1
+a651 2
+               iexcl[icurrent->number] = icurrent;
+               iincl[icurrent->number] = NULL;
+d653 4
+a656 1
+            else
+d658 16
+a673 2
+               mcurrent = find_menuentry(excl->exclude + 1);
+               if (mcurrent == NULL || mcurrent->number > mhigh) break;
+d675 1
+a675 2
+               mexcl[mcurrent->number] = mcurrent;
+               mincl[mcurrent->number] = NULL;
+a676 2
+
+            excl = excl->next;
+a678 1
+   }
+d680 1
+a680 1
+   /* Same again, this time for menus */
+d682 1
+a682 5
+   for (m = 0; m <= mhigh; m++)
+   {
+      /* Going to include this menu? */
+
+      if ((mcurrent = mincl[m]) != NULL)
+d684 1
+a684 12
+         if ((mcurrent->flags & IF_SELECTED) != 0)
+         {
+            incl = mcurrent->inclusions_off;
+            excl = mcurrent->exclusions;
+         }
+         else
+         {
+            incl = mcurrent->inclusions;
+            excl = mcurrent->exclusions_off;
+         }
+
+         /* Unwind include on/off */
+d686 1
+a686 1
+         while (incl != NULL)
+d688 1
+a688 1
+            if (incl->menu_or_icon == IS_ICON)
+d690 2
+a691 7
+               icurrent = find_icon(incl->include);
+               if (icurrent == NULL || icurrent->number > ihigh) break;
+
+               /* Unwind this include rule - i.e. add to the exclude list */
+
+               iexcl[icurrent->number] = icurrent;
+               iincl[icurrent->number] = NULL;
+d695 2
+a696 5
+               mcurrent = find_menuentry(incl->include + 1);
+               if (mcurrent == NULL || mcurrent->number > mhigh) break;
+
+               mexcl[mcurrent->number] = mcurrent;
+               mincl[mcurrent->number] = NULL;
+d699 1
+a699 4
+            incl = incl->next;
+         }
+
+         /* Run exclude on/off */
+d701 1
+a701 3
+         while (excl != NULL)
+         {
+            if (excl->menu_or_icon == IS_ICON)
+d703 18
+a720 2
+               icurrent = find_icon(excl->exclude);
+               if (icurrent == NULL || icurrent->number > ihigh) break;
+d722 1
+a722 2
+               iexcl[icurrent->number] = icurrent;
+               iincl[icurrent->number] = NULL;
+d724 4
+a727 1
+            else
+d729 16
+a744 2
+               mcurrent = find_menuentry(excl->exclude + 1);
+               if (mcurrent == NULL || mcurrent->number > mhigh) break;
+d746 1
+a746 2
+               mexcl[mcurrent->number] = mcurrent;
+               mincl[mcurrent->number] = NULL;
+a747 2
+
+            excl = excl->next;
+d750 1
+a750 1
+   }
+@
+
+
+1.2
+log
+@  Great many changes and a few fixes.
+Detail:
+  See 'ReadMe' in the Docs directory. Summary - new includes and selections
+  rules, rules_start/rules_end section, lists before rules keywords, actions
+  can take place when icons go off as well as on, and more.
+Admin:
+  Tested new features a reasonable amount by playing around with the UpgFetch
+  front-end. Link still behaves as it should, and all the other Desktop tools
+  run without any parser errors or obvious faults in behaviour.
+
+
+Version 1.23. Tagged as 'FrontEnd-1_23'
+@
+text
+@d235 2
+d587 157
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d21 1
+d49 4
+d122 32
+a153 1
+extern void do_exclusions(void *i_m, int icon_or_menu, BOOL exclude)
+d155 20
+a174 43
+   Frontend_exclusion *ex;
+   Frontend_icon *i;
+   Frontend_menuentry *m;
+
+   ex = (icon_or_menu == IS_ICON)?((Frontend_icon *)i_m)->exclusions
+                                 :((Frontend_menuentry *)i_m)->exclusions;
+   while (ex != 0)
+   {
+       if (ex->menu_or_icon == IS_ICON)
+       {
+          if (exclude)
+          {
+             i = find_icon(ex->exclude);
+             dbox_fadefield(application.setup->d, ex->exclude);
+             if ((i->flags & IF_NUMBER) || !(i->flags & (IF_STRING|IF_ARROWUP|IF_ARROWDOWN)))
+                dbox_setnumeric(application.setup->d, ex->exclude, 0);
+             else  /* string */
+                dbox_setfield(application.setup->d, ex->exclude, "");
+             i->flags |= IF_FADED;
+             i->flags &= ~IF_SELECTED;
+          }
+          else
+          {
+             dbox_unfadefield(application.setup->d, ex->exclude);
+             i = find_icon(ex->exclude);
+             i->flags &= ~IF_FADED;
+          }
+       }
+       else   /* IS_MENU */
+       {
+          if (exclude)
+          {
+             m = find_menuentry(ex->exclude+1);
+             m->flags |= IF_FADED;
+             m->flags &= ~IF_SELECTED;
+          }
+          else
+          {
+             m = find_menuentry(ex->exclude+1);
+             m->flags &= ~IF_FADED;
+          }
+       }
+       ex = ex->next;
+d176 637
+d824 1
+a824 1
+      if (i->flags & IF_MAKE_EXCLUDES) 
+d826 1
+a826 1
+         dbox_fadefield(application.setup->d, i->number);
+a839 37
+
+extern void do_deselections(void *i_m, int icon_or_menu)
+{
+   Frontend_deselection *de;
+   Frontend_icon *i;
+   Frontend_menuentry *m;
+
+   de = (icon_or_menu == IS_ICON)?((Frontend_icon *)i_m)->deselections
+                                 :((Frontend_menuentry *)i_m)->deselections;
+ 
+   while (de != 0)
+   {
+       if (de->menu_or_icon == IS_ICON)
+       {
+          i = find_icon(de->deselect);
+          if ((i->flags & IF_NUMBER) || !(i->flags & (IF_STRING|IF_ARROWUP|IF_ARROWDOWN)))
+              dbox_setnumeric(application.setup->d, de->deselect, 0);
+          else  /* string */
+              dbox_setfield(application.setup->d, de->deselect, "");
+          i->flags &= ~IF_SELECTED;
+
+          
+          /* --- and "unexclude" anything excluded by this icon --- */
+          do_exclusions((void *)i, IS_ICON, FALSE);
+       }
+       else
+       {
+          m = find_menuentry(de->deselect+1);
+          m->flags &= ~IF_SELECTED;
+
+          /* --- and "unexclude" anything excluded by this entry --- */
+          do_exclusions((void *)m, IS_MENU, FALSE);
+       }
+       de = de->next;
+   }
+}
+
+d873 1
+a873 1
+      
+d882 1
+a882 1
+            if (buffer[0] >= 32) 
+d898 1
+a898 1
+                set_caret(dbox_syshandle(application.setup->d), ins->insert); 
+d919 1
+a919 1
+   return (_kernel_swi(OS_FSControl, &r, &r) == 0); 
+d929 1
+a929 1
+   r.r[2] = (int)to; 
+d931 1
+a931 1
+   return (_kernel_swi(OS_FSControl, &r, &r) == 0); 
+d943 2
+a944 2
+   r.r[1] = (int)from;   
+   r.r[2] = (int)to;    
+d976 1
+a976 1
+          
+d982 1
+a982 1
+   return FALSE;      
+@
+
+
+1.1.1.1
+log
+@  Initial import of FrontEnd module to CVS from Aquarius.
+Detail:
+  Code claims to build FrontEnd 1.16 (11 Jan 1995), but will not
+    build in current build environment.
+Admin:
+  Does not compile - checked in for reference purposes only.
+  Tagged appropriately.  Use tag FrontEnd-1_16 to extract version
+    which builds in the current build environment.
+
+Tagged as FrontEnd-Aquarius-1_16
+
+
+@
+text
+@@

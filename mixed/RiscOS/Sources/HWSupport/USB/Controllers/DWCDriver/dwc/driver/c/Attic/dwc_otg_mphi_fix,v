@@ -1,0 +1,184 @@
+head	1.2;
+access;
+symbols
+	DWCDriver-0_20:1.1
+	DWCDriver-0_19:1.1
+	DWCDriver-0_18:1.1
+	DWCDriver-0_17:1.1
+	DWCDriver-0_16:1.1
+	DWCDriver-0_15:1.1
+	DWCDriver-0_14:1.1
+	DWCDriver-0_13:1.1
+	DWCDriver-0_12:1.1
+	DWCDriver-0_11:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2015.10.07.20.59.57;	author jlee;	state dead;
+branches;
+next	1.1;
+commitid	qck3WWYzKpNMGdEy;
+
+1.1
+date	2014.04.26.18.18.05;	author jlee;	state Exp;
+branches;
+next	;
+commitid	3PdzN60cJJ3zNdyx;
+
+
+desc
+@@
+
+
+1.2
+log
+@Update to 'FIQ FSM' USB driver
+Detail:
+  Makefile, dwc/* - Updated to latest-ish code from Raspberry Pi github (rev c8baa9702c). Includes the 'FIQ FSM' USB driver, which replaces the older 'FIQ fix'. Note that many files appear to have no functional changes - just trailing whitespace removal to keep things in sync with github.
+  Makefile - add DEBUGLIBS back into the debug libs listing to fix debug builds
+  c/cmodule - Update to work with new FIQ FSM flags
+  c/dwc_otg_riscos - Update to work with new FIQ FSM flags. Update initialisation procedure. Change IRQ handling to try both the HCD & CIL interrupt handlers (HCD can claim interrupt is handled when there's still a CIL interrupt pending). Disable support for falling back to IRQ if the FIQ vector is claimed by someone else - will need new implementation to cope with starting & stopping the FIQ FSM.
+  s/regaccess - Update FIQ veneer & install routine to allow operation with either the dwc_otg_fiq_fsm or dwc_otg_fiq_nop functions.
+Admin:
+  Tested on Raspberry Pi 1 & 2
+
+
+Version 0.21. Tagged as 'DWCDriver-0_21'
+@
+text
+@#include "dwc_otg_regs.h"
+#include "dwc_otg_dbg.h"
+
+void dwc_debug_print_core_int_reg(gintsts_data_t gintsts, const char* function_name)
+{
+	DWC_DEBUGPL(DBG_USER,   "*** Debugging from within the %s  function: ***\n"
+				"curmode:     %1i    Modemismatch: %1i    otgintr:    %1i    sofintr:    %1i\n"
+				"rxstsqlvl:   %1i    nptxfempty  : %1i    ginnakeff:  %1i    goutnakeff: %1i\n"
+				"ulpickint:   %1i    i2cintr:      %1i    erlysuspend:%1i    usbsuspend: %1i\n"
+				"usbreset:    %1i    enumdone:     %1i    isooutdrop: %1i    eopframe:   %1i\n"
+				"restoredone: %1i    epmismatch:   %1i    inepint:    %1i    outepintr:  %1i\n"
+				"incomplisoin:%1i    incomplisoout:%1i    fetsusp:    %1i    resetdet:   %1i\n"
+				"portintr:    %1i    hcintr:       %1i    ptxfempty:  %1i    lpmtranrcvd:%1i\n"
+				"conidstschng:%1i    disconnect:   %1i    sessreqintr:%1i    wkupintr:   %1i\n",
+				function_name,
+				gintsts.b.curmode,
+				gintsts.b.modemismatch,
+				gintsts.b.otgintr,
+				gintsts.b.sofintr,
+				gintsts.b.rxstsqlvl,
+				gintsts.b.nptxfempty,
+				gintsts.b.ginnakeff,
+				gintsts.b.goutnakeff,
+				gintsts.b.ulpickint,
+				gintsts.b.i2cintr,
+				gintsts.b.erlysuspend,
+				gintsts.b.usbsuspend,
+				gintsts.b.usbreset,
+				gintsts.b.enumdone,
+				gintsts.b.isooutdrop,
+				gintsts.b.eopframe,
+				gintsts.b.restoredone,
+				gintsts.b.epmismatch,
+				gintsts.b.inepint,
+				gintsts.b.outepintr,
+				gintsts.b.incomplisoin,
+				gintsts.b.incomplisoout,
+				gintsts.b.fetsusp,
+				gintsts.b.resetdet,
+				gintsts.b.portintr,
+				gintsts.b.hcintr,
+				gintsts.b.ptxfempty,
+				gintsts.b.lpmtranrcvd,
+				gintsts.b.conidstschng,
+				gintsts.b.disconnect,
+				gintsts.b.sessreqintr,
+				gintsts.b.wkupintr);
+	return;
+}
+
+void dwc_debug_core_int_mask(gintmsk_data_t gintmsk, const char* function_name)
+{
+	DWC_DEBUGPL(DBG_USER,	"Interrupt Mask status (called from %s) :\n"
+				"modemismatch: %1i     otgintr:    %1i    sofintr:    %1i    rxstsqlvl:   %1i\n"
+				"nptxfempty:   %1i     ginnakeff:  %1i    goutnakeff: %1i    ulpickint:   %1i\n"
+				"i2cintr:      %1i     erlysuspend:%1i    usbsuspend: %1i    usbreset:    %1i\n"
+				"enumdone:     %1i     isooutdrop: %1i    eopframe:   %1i    restoredone: %1i\n"
+				"epmismatch:   %1i     inepintr:   %1i    outepintr:  %1i    incomplisoin:%1i\n"
+				"incomplisoout:%1i     fetsusp:    %1i    resetdet:   %1i    portintr:    %1i\n"
+				"hcintr:       %1i     ptxfempty:  %1i    lpmtranrcvd:%1i    conidstschng:%1i\n"
+				"disconnect:   %1i     sessreqintr:%1i    wkupintr:   %1i\n",
+				function_name,
+				gintmsk.b.modemismatch,
+				gintmsk.b.otgintr,
+				gintmsk.b.sofintr,
+				gintmsk.b.rxstsqlvl,
+				gintmsk.b.nptxfempty,
+				gintmsk.b.ginnakeff,
+				gintmsk.b.goutnakeff,
+				gintmsk.b.ulpickint,
+				gintmsk.b.i2cintr,
+				gintmsk.b.erlysuspend,
+				gintmsk.b.usbsuspend,
+				gintmsk.b.usbreset,
+				gintmsk.b.enumdone,
+				gintmsk.b.isooutdrop,
+				gintmsk.b.eopframe,
+				gintmsk.b.restoredone,
+				gintmsk.b.epmismatch,
+				gintmsk.b.inepintr,
+				gintmsk.b.outepintr,
+				gintmsk.b.incomplisoin,
+				gintmsk.b.incomplisoout,
+				gintmsk.b.fetsusp,
+				gintmsk.b.resetdet,
+				gintmsk.b.portintr,
+				gintmsk.b.hcintr,
+				gintmsk.b.ptxfempty,
+				gintmsk.b.lpmtranrcvd,
+				gintmsk.b.conidstschng,
+				gintmsk.b.disconnect,
+				gintmsk.b.sessreqintr,
+				gintmsk.b.wkupintr);
+	return;
+}
+ 
+void dwc_debug_otg_int(gotgint_data_t gotgint, const char* function_name)
+{
+	DWC_DEBUGPL(DBG_USER,	"otg int register (from %s function):\n"
+				"sesenddet:%1i    sesreqsucstschung:%2i    hstnegsucstschng:%1i\n"
+				"hstnegdet:%1i    adevtoutchng:     %2i    debdone:         %1i\n"
+				"mvic:     %1i\n",
+				function_name,
+				gotgint.b.sesenddet,
+				gotgint.b.sesreqsucstschng,
+				gotgint.b.hstnegsucstschng,
+				gotgint.b.hstnegdet,
+				gotgint.b.adevtoutchng,
+				gotgint.b.debdone,
+				gotgint.b.mvic);
+
+	return;
+}
+@
+
+
+1.1
+log
+@Update to latest code from Raspberry Pi github
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github (rev e0001dd59d). Includes the fabled 'FIQ fix' code, although the code isn't yet enabled in the RISC OS version of the driver.
+  c/cmodule - Add extra flags for controlling driver behaviour, as required by the new core code
+  c/dwc_otg_riscos - Add some missing driver parameters (although we leave them at default). Handle DWC_E_SHUTDOWN xfer errors, which will now be produced when the driver is shutting down
+  c/softc_device - Disable interrupts around dwc_otg_hcd_urb_enqueue, to mirror behaviour of Linux code (previously, it was the responsibility of the DWC code to disable interrupts for the appropriate part of the operation)
+  s/regaccess - Add some extra IRQ/memory barrier functions required by the new code (mainly the FIQ fix). Make DWC_MODIFY_REG32 operate atomicly (mirrors change in Linux version)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.11. Tagged as 'DWCDriver-0_11'
+@
+text
+@@
+

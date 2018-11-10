@@ -1,0 +1,457 @@
+head	1.3;
+access;
+symbols
+	Omni-2_30:1.3
+	Omni-2_29:1.3
+	Omni-2_28:1.3
+	Omni-2_27:1.3
+	Omni-2_26:1.3
+	Omni-2_25:1.3
+	Omni-2_24:1.3
+	Omni-2_23:1.3
+	Omni-2_22:1.3
+	Omni-2_21:1.3
+	Omni-2_20:1.3
+	Omni-2_19:1.3
+	Omni-2_18:1.3
+	Omni-2_17:1.3
+	Omni-2_16:1.3
+	Omni-2_15:1.3
+	Omni-2_14:1.3
+	Omni-2_13:1.3
+	Omni-2_12:1.3
+	Omni-2_11:1.3
+	Omni-2_10:1.3
+	Omni-2_09:1.3
+	Omni-2_08:1.3
+	Omni-2_07:1.2
+	Omni-2_06:1.2
+	Omni-2_05:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.07.19.24.14;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	Close.c - close connection? query window handler
+ *
+ * Project:	!Marcel MUA project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	7 January 1994
+ * Last Edited:	24 June 1996
+ *
+ * Copyright 1994 by Nicholas A.Smith
+ */
+
+#include <stdbool.h>
+
+#include <Desk/Event.h>
+#include <Desk/KeyCodes.h>
+#include <Desk/Msgs.h>
+#include <Desk/Template.h>
+#include <Desk/Wimp.h>
+#include <Desk/WimpSWIs.h>
+#include <Desk/Window.h>
+
+#include <DebugLib/DebugLib.h>
+
+#include "Close.h"
+#include "Core.h"
+#include "Defs.h"
+#include "ExtLib.h"
+#include "Filer.h"
+
+static Desk_window_handle 	wind_close = NULL;
+static int		close_result = -1;
+
+
+/*  Create & open close dbox
+ *  Return Desk_FALSE if cannot create, else Desk_TRUE.
+ */
+static bool CreateClose(void)
+{
+  if (wind_close == NULL)
+  {
+    wind_close = Desk_Window_Create("close", Desk_template_TITLEMIN);
+    if (wind_close == NULL) return false;
+  }
+  Window_ShowDialogue(wind_close, Desk_FALSE);
+  return true;
+}
+
+
+/*  Handler attached to all button click events.
+ */
+static Desk_bool Close_ButtonClick(Desk_event_pollblock *event, void *reference)
+{
+  Desk_window_handle w = event->data.mouse.window;
+  Desk_icon_handle 	i = event->data.mouse.icon;
+  Desk_button_state  b = event->data.mouse.button;
+
+  UNUSED (reference);
+
+  if ((w == wind_close) && ((b.data.select) || (b.data.adjust)))	/* close window */
+  {
+    if (i == close_CLOSE)
+    {
+      close_result = 1;
+      /* Desk_Wimp_Patch(); */
+    }
+    if (i == close_CANCEL) close_result = 0;
+    return(Desk_TRUE);
+  }
+  return(Desk_FALSE);
+}
+
+
+/*  Handler to take care of the user's key presses.
+ */
+static Desk_bool Close_KeyPress(Desk_event_pollblock *event, void *reference)
+{
+  Desk_window_handle w = event->data.key.caret.window;
+  Desk_key_press	k = event->data.key.code;
+
+  UNUSED (reference);
+
+  if ((w == wind_close) && ((k == Desk_keycode_RETURN) || (k == Desk_keycode_ESCAPE)))
+  {
+    if (k == Desk_keycode_RETURN) close_result = 1;
+    if (k == Desk_keycode_ESCAPE) close_result = 0;
+  }
+  else
+  {
+    /* Not caught - pass to next handler */
+    Desk_Wimp_ProcessKey(event->data.key.code);
+  }
+  return(Desk_TRUE);
+}
+
+
+
+/*  Popup disconnect dbox and deal with user selection.
+ *  Return 0 (Desk_FALSE) for cancel, 1 (Desk_TRUE) for OK, 2 for button2 (unsubscribe).
+ */
+extern int Close(int type, bool selection, Desk_message_block *m)
+{
+  char msg[196];
+  int polldelay;
+
+  /* Reply to message, and give the user the chance to object */
+  dprintf (("", "Close:\n"));
+  if (m)
+  {
+    m->header.yourref = m->header.myref;
+    Desk_Wimp_SendMessage(Desk_event_ACK, m, m->header.sender, 0);
+  }
+
+  /* If we have active transfers, we want to tell the user about it */
+  switch (type)
+  {
+    case closetype_BYE:
+      Desk_Msgs_printf(msg, "close.bye", selection ? "these newsgroups" : "this newsgroup");
+      break;
+  }
+
+  /* Create & update window */
+  if (!CreateClose()) return(Desk_TRUE);
+  /* Desk_Icon_SetText(wind_close, close_CLOSE, "Dismount"); */
+  Desk_Icon_SetText(wind_close, close_text, msg);
+
+  /* Enter polling loop */
+  close_result = -1;
+  Desk_Event_Claim(Desk_event_CLICK, wind_close, Desk_event_ANY, Close_ButtonClick, NULL);
+  Desk_Event_Claim(Desk_event_KEY,  wind_close, Desk_event_ANY, Close_KeyPress,  NULL);
+  Desk_Icon_SetCaret(wind_close, -1);
+  polldelay = event_polldelay;
+  event_polldelay = -1;
+  while ((global_run_state == RunState_Running) && (close_result == -1))
+  {
+    Event_Poll();
+    if (!Desk_Window_IsOpen(wind_close)) close_result = 0;
+  }
+  event_polldelay = polldelay;
+  Desk_Event_ReleaseWindow(wind_close);
+  Desk_Wimp_CloseWindow(wind_close);
+  dprintf (("", "Close: %d\n", close_result));
+  return(close_result);
+}
+@
+
+
+1.2
+log
+@  Several major bugfixes and further tidying to make Omni fit into our
+  build environment better.
+Detail:
+  * Bug fix: ClientList function (Client.c) creates a textual menu desription
+    for a list of clients (Info and Mounts submenus).  The description was
+    generated on the stack and a pointer to it was returned.  The buffer is now
+    static.
+  * Bug fix: select or adjust clicks on the Omni icon just after it's loaded
+    would kill the task part of Omni.  FilerCreate function (List.c) always
+    calls FilerDelete, which would always attempt to close any existing filer
+    window.  However, on the first call, no window exists so it passes the Wimp
+    a 0 window handle.  This only appeared to happen on RISC OS 4, but I suspect
+    this is to do with RISC OS 4's stricter protection of zero page.  Current
+    fix is for FilerDelete to check if window handle is 0 before closing it;
+    this is not very elegant - would be nicer to only call FilerDelete when the
+    window was actually closed.
+  * Bug fix: writable icon handling overhauled completely.  Many of the buffers
+    which Omni would read the contents of writable icons into were too short
+    to hold the maximum amount of text allowed in the icon.  New Icon_GetText
+    call added (ExtLib.c) to allow Omni to work directly on indirected icon
+    buffers wherever possible, thus removing the whole issue.
+  * Stripped commented-out code from several places.
+  * Changed use of Desk_bool to bool in most places.  This is a bit grim, but
+    the way Desk_bool is implemented means you need to cast it in many places,
+    which is even more grim.
+  * Removed a few error assignements(!) because
+    a) they weren't even being checked
+    b) Desk's psuedo-exception system should now catch them
+  * Got rid of home-grown strcasecmp calls and used Desk's instead.
+  * Removed many local constants definitions and get them from system header
+    files instead.
+  * Removed Hdrs.h which would include *every* header file in *every* C file
+    in the interests of compilation times.  C files now only include what they
+    need.
+  * Reimplemented the fully recursive Menu_Dispose along the lines of the
+    non-recursive Desk_Menu_Dispose, which had changed since ANT's DeskLib
+    split-off.
+  * Altered quite a bit of code to prevent compiler warnings (mainly
+    "use of '=' in condition context" and "variable declared but not used").
+  * Uses 'proper' module finalisation instead of atexit in the interests of
+    consistency and symmetry.
+  * Added MemCheck support.
+  * Reimplemented rma_alloc and rma_free in C (side effect of MemCheck support).
+  * Altered assembler to use system header files instead of local ones.
+  * Omni previously used a seeming random mixture of _kernel_swi and Desk_SWI
+    SWI veneers.  All have now been changed to use _swix/_swi as appropriate.
+  * Converted to use srccommit.
+Admin:
+  Files removed:
+   c.Error
+   c.StrCaseCmp
+   h.Debug
+   h.Hdrs
+   h.ModuleWrap
+   h.OmniClient
+   h.StrCaseCmp
+   hdr.Macros
+   hdr.RegDefs
+   hdr.SwiNos
+
+  Files added:
+   Docs.DeskLibDiffs
+   Docs.EventHandling
+   h.Omni
+
+  * Compiled.
+  * All windows, menus checked to make sure they at least display.
+  * Played around with a new NFS and LanMan mounts.
+  * Basically, there shouldn't be any showstoppers, but the change from a very
+    old DeskLib to Desk is a large one.  I'd be surprised if there aren't a
+    few problems and this should definitely be thrashed a bit by people
+    willing to do so before anyone has any confidence in it.
+
+
+
+Version 2.05. Tagged as 'Omni-2_05'
+@
+text
+@d152 1
+a152 1
+  while ((all_done == 0) && (close_result == -1))
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d31 2
+d41 2
+a44 1
+#include "Debug.h"
+d47 1
+d56 1
+a56 1
+static Desk_bool CreateClose(void)
+d61 1
+a61 1
+    if (wind_close == NULL) return(Desk_FALSE);
+d64 1
+a64 1
+  return(Desk_TRUE);
+d76 2
+d99 2
+d119 1
+a119 1
+extern int Close(int type, Desk_bool selection, Desk_message_block *m)
+d125 1
+a125 1
+  TRACE("Close:\n");
+d152 1
+a152 1
+  while ((!all_done) && (close_result == -1))
+d160 1
+a160 1
+  TRACE1("Close: %d\n", close_result);
+@
+
+
+1.1.1.1
+log
+@  Initial import of Omni into CVS.
+
+Detail:
+  This is an import of the sources obtained from ANT some time ago, with
+  sufficient changes to allow it to build in our standard environment.  In
+  particular, this involved converting Omni to use Desk instead of DeskLib.
+  ANT's DeskLib was not 'off-the-shelf' - it was based on DeskLib 2.04 (very
+  old), with their own modifications.
+  
+  This means that there are quite severe bugs in the Omni code, which will
+  show up if you attempt to use this version, which were previously masked by
+  some of ANT's DeskLib alterations.  (Hopefully) most of these have already
+  been identified, fixed and will be checked-in soon.  I felt that a
+  minimal version that would simply build would be worthwhile, so that as
+  many changes as possible end up under CVS' control.
+
+Admin:
+  Compiled.
+  Untested.
+@
+text
+@@

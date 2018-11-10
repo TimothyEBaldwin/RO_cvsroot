@@ -1,0 +1,305 @@
+head	4.3;
+access;
+symbols
+	Patch-0_08:4.3
+	Patch-0_07:4.3
+	Patch-0_06:4.2
+	Patch-0_05:4.1.3.1
+	Patch-0_04:4.1.3.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.1.3.1
+	Ursula_RiscPC:4.1.3.1.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.1.3.1
+	UrsulaBuild_FinalSoftload:4.1.3.1
+	rthornb_UrsulaBuild-12Aug1998:4.1.3.1
+	aglover_UrsulaBuild-05Aug1998:4.1.3.1
+	rthornb_UrsulaBuild-29Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-22Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-15Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-07Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-17Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-03Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-27May1998:4.1.3.1
+	rthornb_UrsulaBuild-21May1998:4.1.3.1
+	rthornb_UrsulaBuild_01May1998:4.1.3.1
+	Daytona:4.1.3.1.0.6
+	Daytona_bp:4.1.3.1
+	Ursula:4.1.3.1.0.4
+	Ursula_bp:4.1.3.1
+	RO_3_71:4.1.3.1
+	ART_bp:4.1.3.1
+	ART:4.1.3.1.0.2
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	StrongARM:4.1.3;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	2012.09.01.13.59.28;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	wmVf3VFxGhRBIPiw;
+
+4.2
+date	2002.12.12.17.38.10;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	96.11.06.03.59.43;	author nturton;	state Exp;
+branches
+	4.1.3.1;
+next	;
+
+4.1.3.1
+date	96.11.06.03.59.43;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@Fix to not badly corrupt random bits of RMA
+The C compiler switches were missing the -zM switch, and C code was referencing data in far away areas (which don't get reduced to position independent ADRs).
+It's hard to see how this would have ever worked, but rather than worry too much about it, just change it so it does.
+* Makefile gains -zM switches and general tidying up
+* Generate CMHG header file so the C code matches the module header prototypes, and rename the CMHG file so as not to confuse the unix<->RISC OS filename translation
+* Be more strict and only match on subreason 1 of Service_UKCompression rather than any non zero subreason
+* If the pathname exceeds 255 characters, right justify it and add an elipsis rather than overruning the buffer
+* Remove some dubious casts
+* Add a bit of assembler to the 'GetSig' macro to do the position independent bit
+Tested on StrongARM RISC OS 4.02, with an application known to need patching. Patch count was 1, and machine didn't stiff.
+
+Version 0.07. Tagged as 'Patch-0_07'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "sigfind.h"
+
+typedef struct
+{
+  int *sig;
+  int sigsize;
+  int *new;
+  void *found;
+  int refc;
+  int totalrefc;
+  char name[64];
+} signature_t;
+
+#define SigInit(s,n) {extern void s##_info(int **, int *, int **); int *x, y, *z; strcpy(sigs[num_sigs].name,n); s##_info(&x, &y, &z); sigs[num_sigs].sig = x; sigs[num_sigs].sigsize = y/sizeof(int); sigs[num_sigs++].new = z;}
+
+static signature_t sigs[6];
+static char fname[256];
+static int appsize;
+static int num_sigs;
+
+void sigfind_init(void)
+{
+  fname[0]='\0';
+  appsize=0;
+  memset(sigs, 0, sizeof sigs);
+
+  SigInit(RiscOSLib1, "RISC_OSLib os_swi (variant 1)");
+  SigInit(RiscOSLib2, "RISC_OSLib os_swi (variant 2)");
+  SigInit(SWIc1,      "Static _kernel_swi_c");
+  SigInit(SHuntSWI,   "SWI call (SHunt)");
+  SigInit(Dlib,       "Desklib SWI veneer");
+  SigInit(OvrMangr,   "Overlay loader");
+}
+
+int sigfind_find(char *name, int *image, int image_size)
+{
+  int a;
+  int fnd=0;
+
+  for (a = 0; a<num_sigs; a++) {
+    sigs[a].found = NULL;
+    sigs[a].refc = 0;
+  }
+  if (name) {
+    a = strlen(name);
+    if (a >= sizeof(fname)) {
+       /* Elipsis and right trim */
+       strcpy(&fname[1], &name[a - sizeof(fname) + 2]);
+       fname[0] = 0x8C;
+    } else {
+       strcpy(fname, name);
+    }
+  } else {
+    fname[0] = 0;
+  }
+  appsize = image_size;
+
+#if 0
+  printf ("%x => %x, %d, %x =>  %x, %d\n",*sigs[0].sig, *sigs[0].new,sigs[0].sigsize,
+  	      	     *sigs[1].sig, *sigs[1].new,sigs[1].sigsize);
+#endif
+
+ /* note image may not be multiple of four bytes */
+ while (image_size > 0) {
+   for (a= 0; a<num_sigs; a++) {
+     if ((*image == *sigs[a].sig) && (image_size >= (sigs[a].sigsize*sizeof(int)))) {
+       int b;
+       for (b = 0; b< sigs[a].sigsize; b++) {
+          #if 0
+          if (image[b] != sigs[a].sig[b]) break;
+          #else
+          /* Supporting wildcards */
+          if (image[b] != sigs[a].sig[b] && sigs[a].sig[b] != -2) break;
+          #endif
+       }
+       if (b == sigs[a].sigsize) {
+         sigs[a].found = image;
+         sigs[a].refc++;
+         sigs[a].totalrefc++;
+         fnd = 1;
+       }
+     }
+   }
+   image_size -= 4;
+   image++;
+ }
+ return fnd;
+}
+
+void sigfind_stats(void)
+{
+   int a;
+
+   printf("Last application examined: %s (size = %d bytes)\n\n", fname[0] ? fname : "<Unknown>", appsize);
+
+   printf("                              Occurrences\n"
+          "Signature                     Last app    Total\n"
+          "---------                     --------    -----\n");
+
+   for (a = 0; a<num_sigs;a++)
+      printf("%-29.29s%9d%9d\n", sigs[a].name, sigs[a].refc, sigs[a].totalrefc);
+}
+
+void sigfind_patch(void)
+{
+  int a;
+  for (a = 0; a<num_sigs;a++) {
+    if (sigs[a].found != NULL) {
+      if (*sigs[a].new == -1) {
+        /* need to fix up found+offset to be branch to new+2
+         * assume app, so new address is +ve
+         */
+        unsigned int new_instr = 0xea000000 + (int) (sigs[a].new - ((int *) sigs[a].found) - sigs[a].new[1]);
+        *(((unsigned int *) sigs[a].found) + sigs[a].new[1]) = new_instr;
+      }
+      else memcpy(sigs[a].found, sigs[a].new, sizeof(int)*sigs[a].sigsize);
+    }
+  }
+  /* Synchronise unnecessary as OS will do it after service call returns */
+}
+@
+
+
+4.2
+log
+@OK then,who hardcoded 0.04 into the title string?
+Now derived from the VersionNum file
+
+Version 0.06. Tagged as 'Patch-0_06'
+@
+text
+@d15 4
+a18 3
+#include "stdio.h"
+#include "stdlib.h"
+#include "string.h"
+d20 2
+a21 1
+typedef struct {
+d25 1
+a25 1
+  int found;
+d29 1
+a29 3
+  } Signature;
+
+int num_sigs;
+d31 1
+a31 1
+#define Sig(x,y,z,n) {extern int*x; extern int y; extern int *z; strcpy(sigs[num_sigs].name,n); sigs[num_sigs].sig = x; sigs[num_sigs].sigsize = y/sizeof(int); sigs[num_sigs++].new = z;}
+d33 4
+a36 3
+Signature sigs[6];
+char fname[256];
+int appsize;
+d44 6
+a49 6
+  Sig(RiscOSLib1_signature,RiscOSLib1_size,rolib1,"RISC_OSLib os_swi (variant 1)");
+  Sig(RiscOSLib2_signature,RiscOSLib2_size,rolib2,"RISC_OSLib os_swi (variant 2)");
+  Sig(SWIc1_signature, SWIc1_size,swic1,"Static _kernel_swi_c");
+  Sig(SHuntSWI_signature,SHuntSWI_size,swicall1,"SWI call (SHunt)");
+  Sig(Dlib_signature,Dlib_size,dlib1,"Desklib SWI veneer");
+  Sig(OvrMangr_signature,OvrMangr_size,ovrmgr1,"Overlay loader");
+d58 1
+a58 1
+    sigs[a].found = 0;
+d61 12
+a72 1
+  if (name) strcpy(fname,name); else fname[0] =0;
+d80 1
+a80 1
+ // note image may not be multiple of four bytes
+d94 1
+a94 1
+         sigs[a].found = (int) image;
+d125 1
+a125 1
+    if (sigs[a].found) {
+d127 3
+a129 2
+        // need to fix up found+offset to be branch to new+2
+        // assume app, so new address is +ve
+d131 1
+a131 1
+        *(((int *) sigs[a].found) + sigs[a].new[1]) = (int) new_instr;
+d133 1
+a133 1
+      else memcpy((char *) sigs[a].found, sigs[a].new, sizeof(int)*sigs[a].sigsize);
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d101 1
+a101 1
+   printf("                                 Occurrences\n"
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@@

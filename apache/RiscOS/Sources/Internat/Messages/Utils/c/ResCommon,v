@@ -1,0 +1,4229 @@
+head	4.10;
+access;
+symbols
+	Messages-1_12:4.10
+	Messages-1_11:4.10
+	Messages-1_10:4.10
+	Messages-1_09:4.10
+	Messages-1_08:4.10
+	Messages-1_07:4.10
+	RO_5_07:4.10
+	Messages-1_06:4.10
+	Messages-1_05-4_25_2_3:4.9.2.3
+	Messages-1_05-4_25_2_2:4.9.2.2
+	Messages-1_05-4_25_2_1:4.9.2.1
+	sbrodie_dev:4.9.0.2
+	sbrodie_dev_bp:4.9
+	Messages-1_05:4.9
+	Messages-1_04:4.9
+	Messages-1_03:4.9
+	Messages-1_02:4.9
+	Messages-1_01:4.8
+	Messages-1_00:4.8
+	Messages-0_99:4.8
+	dellis_autobuild_BaseSW:4.8
+	Messages-0_98:4.8
+	Messages-0_97:4.7
+	Messages-0_96:4.6
+	Messages-0_95:4.5
+	Messages-0_94:4.4
+	dcotton_Messages_13062000:4.3
+	dcotton_Messages_10062000:4.2
+	dcotton_autobuild_BaseSW:4.9
+	Messages-0_93:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.10
+date	2003.12.02.15.50.04;	author bavison;	state Exp;
+branches;
+next	4.9;
+
+4.9
+date	2000.11.11.14.03.22;	author dcotton;	state Exp;
+branches
+	4.9.2.1;
+next	4.8;
+
+4.8
+date	2000.08.16.13.56.25;	author dcotton;	state Exp;
+branches;
+next	4.7;
+
+4.7
+date	2000.08.13.15.53.01;	author dcotton;	state Exp;
+branches;
+next	4.6;
+
+4.6
+date	2000.08.10.17.26.41;	author dcotton;	state Exp;
+branches;
+next	4.5;
+
+4.5
+date	2000.06.20.12.57.07;	author dcotton;	state Exp;
+branches;
+next	4.4;
+
+4.4
+date	2000.06.15.10.39.17;	author dcotton;	state Exp;
+branches;
+next	4.3;
+
+4.3
+date	2000.06.13.16.53.48;	author dcotton;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	2000.06.10.10.31.04;	author dcotton;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2000.05.31.09.18.32;	author dcotton;	state Exp;
+branches;
+next	;
+
+4.9.2.1
+date	2001.06.27.15.43.50;	author sbrodie;	state Exp;
+branches;
+next	4.9.2.2;
+
+4.9.2.2
+date	2001.06.28.13.28.33;	author sbrodie;	state Exp;
+branches;
+next	4.9.2.3;
+
+4.9.2.3
+date	2001.07.02.13.28.38;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.10
+log
+@  Given a thrashing to make it build on a 32-bit machine.
+Detail:
+  * Switched to build the module using objasm instead of aasm
+  * Rebuilt all the utils APCS-32, involved making them C99 compliant
+  * Fixed a bug in MsgTok whereby single character tokens would screw up
+    the output (because the tokenised version is longer than the original).
+    Not really sure how we got away with this in the past, and not sure why
+    the token generator produces single-character tokens to begin with.
+Admin:
+  Tested in a Tungsten build.
+
+Version 1.06. Tagged as 'Messages-1_06'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*****************************************************************************
+* $Id: ResCommon,v 4.9 2000/11/11 14:03:22 dcotton Exp $
+* $Name:  $
+*
+* Author:  David Cotton
+* Project: Bethany (333)
+*
+* ----------------------------------------------------------------------------
+* Copyright [2000] Pace Micro Technology PLC.  All rights reserved.
+*
+* The copyright in this material is owned by Pace Micro Technology PLC
+* ("Pace").  This material is regarded as a highly confidential trade secret
+* of Pace.  It may not be reproduced, used, sold or in any other way exploited
+* or transferred to any third party without the prior written permission of
+* Pace.
+*
+* ----------------------------------------------------------------------------
+* Purpose: This file contains source code required for the ResCommon utility.
+*           This utility implements some of the functionality required for
+*           the Multiple Resource sets in RISC OS ROMS (see spec 2503,027/FS).
+*          This utlity scans through a set of resource directories and strips
+*           out all the common files into a series of Common directories.
+*
+* ----------------------------------------------------------------------------
+* History: See source control system log
+*
+*****************************************************************************/
+
+
+/*****************************************************************************
+* Include header files
+*****************************************************************************/
+/* Include Standard headers */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+#include <assert.h>
+#include <ctype.h>
+
+/* Include RISC OS headers */
+#include "kernel.h"
+#include "swis.h"
+#include "os.h"
+#include "Global/FileTypes.h"
+#include "Global/Services.h"
+
+/* Include other headers */
+#include "msgcommon.h"
+#include "debuglib/debuglib.h"
+
+/*****************************************************************************
+* MACROS
+*****************************************************************************/
+#define MAX_TERRITORIES 10            /* As defind in the spec. */
+#define MAX_OPEN_TERRITORY_FILES MAX_TERRITORIES   /* This value matches the available number of territories defined in the spec */
+#define ENV_LOCALE_LIST "LocaleList"  /* name of env var holding the comma-seperated list of lcoales */
+#define BUFSZ   512                   /* Old value needed by cut & paste code. */
+#define MAX_PATH_SIZE BUFSZ           /* Maximum path lengths allowd in strings. */
+#define filetype( object )      (((object)->loadaddr>>8)&0xFFF)
+
+/*****************************************************************************
+* New enumerated types
+*****************************************************************************/
+typedef unsigned int word;
+
+/* Structure in which to hold the file information for a file */
+typedef struct
+{
+  word loadaddr;
+  word execaddr;
+  word length;
+  word attr;
+  word type;
+  char name[1];
+} object;
+
+/* The structure below defines a type that can be used to hold squash file headers as
+    defined in PRM 4 Appendix E */
+typedef struct
+{
+  char id[4];
+  int size;
+  int load_addr;
+  int exec_addr;
+  int reserved;
+} squash_header_struct;
+
+
+/* This structure holds the details of which files held in the resources are
+    identical. */
+typedef struct
+{
+  int   file_num[MAX_TERRITORIES];   // The file number this refers to, 0 to MAX_TERRITORIES-1
+  int   array_size;                  // The number of entries in this array. -1 is a special value.
+} list;
+
+/* This structure holds a list of the above structures. This allows a number
+    of resource files to be seen as being identical. Each set of identical
+    resource files is held in it's own list. */
+typedef struct
+{
+  list lists[MAX_TERRITORIES]; // There has to be a maximum of MAX_TERRITORIES list.
+} list_of_lists;
+
+list_of_lists* main_list;
+
+/*****************************************************************************
+* Constants
+*****************************************************************************/
+
+
+/*****************************************************************************
+* File scope Global variables
+*****************************************************************************/
+char* supported_territories[MAX_TERRITORIES] = NULL; /* An array in which territories defined in the Env file can be stored. */
+unsigned int num_of_territories = 0;                 /* The number of territories defined. */
+char* root_resources_directory = NULL;
+char* root_processed_directory = NULL;
+char* directory_to_copy = NULL;
+char* compared_files[MAX_TERRITORIES] = NULL; /* An array in which to store the filenames of the files t be compared. */
+bool  verbose = false; /* Do you wish to see what it is doing */
+bool  simulate = false; /* Do not actually delete any files. */
+char* common_directory = NULL; /* Stores the path relating to the 'common' resource set. */
+bool  uk_resources_present = false; /* Set to true if locale_list includes "UK" */
+
+/*****************************************************************************
+* Function prototypes - Private to this file
+*****************************************************************************/
+unsigned long int filer_object_type(const char* filename);
+bool file_exists(char* filename);
+char *strdup(const char *str);
+bool parse_territories(char* territory_line);
+bool mkdir(char *dir, int mode);
+int  file_size(char *file);
+char *read_env(char *variable);
+bool ensure_resource_directories_exist(void);
+int  get_filetype(char* obj);
+void appendleaf( char *path, char *leaf );
+void stripleaf( char *path );
+bool compare_files(const char* filename);
+bool perform_comparisons(char* path_leaf);
+void descend(char *path);
+bool compare_resources(void);
+int  cstrcmp(const char* a, const char *b);
+void help_text(void);
+void exit_handler(void);
+bool compare_squash_files(void);
+int  return_country_number(const char* const country);
+
+void test_file_comparisons(void);
+
+
+void         main_list_create_initial(unsigned int num_of_territories);
+void         main_list_initialise(list_of_lists* main_list, unsigned int num_of_territories);
+void         main_list_display(list_of_lists* list_to_display, unsigned int num_of_territories);
+void         main_list_display_node_num(list_of_lists* main_list_to_display, unsigned int list_to_display);
+unsigned int list_create_new(list_of_lists* list_to_alter, const char char_to_enter, unsigned int num_of_territories);
+void         sublist_parse(list* this_list, list_of_lists* new_list, const unsigned int* const file_line, unsigned int num_of_territories);
+unsigned int main_list_count_nodes(list_of_lists* list, unsigned int num_of_territories);
+
+void compare_file_contents(const unsigned int* const string, unsigned int num_of_territories);
+
+
+/*****************************************************************************
+* Functions
+*****************************************************************************/
+
+
+
+
+/*********************************************************************************/
+/* file_exists                                                                   */
+/*                                                                               */
+/* This routine checks whether the passed file exists.                           */
+/*                                                                               */
+/* Parameters: filename  This is the filename of the file to be checked.         */
+/*                                                                               */
+/* Returns:    It returns true if the file exists, false otherwise (or if there  */
+/*              was an error during the SWI call).                               */
+/*                                                                               */
+/*********************************************************************************/
+bool file_exists(char* filename)
+{
+  _kernel_oserror *err;
+  unsigned long int exists;
+
+  dprintf(("", "file_exists()\n"));
+
+  err = _swix( OS_File, _IN(0)|_IN(1)|_OUT(0), 5, filename, &exists);
+  if (!exists || err) /* File does not exist. */
+  {
+    return (false);
+  }
+  return (true);
+}
+
+
+
+
+/*********************************************************************************/
+/* filer_object_type                                                             */
+/*                                                                               */
+/* This routine returns the type of the filer object corresponding to the        */
+/*  filename passed in.                                                          */
+/*                                                                               */
+/* Parameters: filename  This is the filename of the file to be checked.         */
+/*                                                                               */
+/* Returns:    It returns : 0 for no such object                                 */
+/*                          1 for a file object                                  */
+/*                          2 for a directory object                             */
+/*                          3 for an image object                                */
+/*                                                                               */
+/*********************************************************************************/
+unsigned long int filer_object_type(const char* filename)
+{
+  _kernel_oserror *err;
+  unsigned long int object_type = 0;
+
+  dprintf(("", "filer_object_type()\n"));
+
+  assert (filename!=NULL);
+  err = _swix( OS_File, _IN(0)|_IN(1)|_OUT(0), 5, filename, &object_type);
+  if (err)
+  {
+    dprintf(("", "filer_object_type(): Error trying to find object type of file '%s'\n", filename));
+  }
+
+  return (object_type);
+}
+
+
+
+
+
+/*****************************************************************************
+* strdup
+*
+* This routine malloc's an area for a string and copy the string in
+*
+* Assumptions
+*  uses malloc; the memory allocated must be free'd at some point.
+*
+* Inputs
+*  str         : The string to be copied.
+*
+* Outputs
+*  variablename: None; str is constant and should remain unaltered.
+*
+* Returns
+*  A pointer to the copy of the string, or NULL if the copy failed.
+*****************************************************************************/
+char *strdup(const char *str)
+{
+  char *newstr = malloc(str == NULL ? 1 : (strlen(str) + 1));
+
+  if (newstr != NULL) {
+    if (str == NULL)
+      *newstr = 0;
+    else
+      strcpy(newstr, str);
+  }
+  return (newstr);
+}
+
+
+
+/*****************************************************************************
+* parse_territories
+*
+* This routine parses any territory line passed in and strips out all the
+*  territories into the global supported_territoried array.
+* If the line is invalid, it retunrs false, otherwise it returns true. A
+*  line is considered invalid if it is empty or contains whitespace.
+*
+* Assumptions
+*  The global variables supported_territories[] and num_of_territories
+*   will both be altered.
+*
+* Inputs
+*  territory_line: A comma-seperated list of countries.
+*
+* Outputs
+*  None. territory_line is a constant pointer.
+*
+* Returns
+*  A boolean describing whether or not the territory line was parsed
+*   successfully.
+*****************************************************************************/
+
+bool parse_territories(char* territory_line)
+{
+  char *territory = NULL;
+
+  printf("Parsing territory line %s\n", territory_line);
+
+  if (strlen(territory_line) < 1)
+  {
+    /* Line must contain something */
+    return (false);
+  }
+
+  territory = strtok(territory_line, ",");
+  while (territory)
+  {
+    printf ("territory is %s\n", territory);
+    supported_territories[num_of_territories++] = strdup(territory);
+    territory = strtok (NULL, ",");
+  }
+
+  printf ("%d territories detected in the territories list.\n", num_of_territories);
+
+  return (true);
+}
+
+
+
+/*****************************************************************************
+* mkdir
+*
+* This routine creates the directory passed in.
+*
+* Assumptions
+*  That the directory immediately below the one to be created exists. If it
+*   does not then the directory will fail to be completed.
+*
+* Inputs
+*  dir           : A pointer to a string containing the directory to be
+*                   created
+*  mode          : Unused. Kept for Unix compatability.
+*
+* Outputs
+*  Will create the directory if all conditions are met.
+*
+* Returns
+*  A boolean describing whether or not the swi call was called successfully.
+*
+*****************************************************************************/
+bool mkdir(char *dir, int mode)
+{
+  _kernel_swi_regs reg;
+
+  reg.r[0] = 8;
+  reg.r[1] = (int) dir;
+  reg.r[4] = 0;
+  if (_kernel_swi(OS_File, &reg, &reg))
+  {
+    return (true);
+  }
+  return (false);
+}
+
+
+
+
+/*****************************************************************************
+* file_size
+*
+* This routine returns the size of the file represented by the filename
+*  passed in.
+*
+* Assumptions
+*  This routine falls foul of the normal RISC OS limitation of a file
+*   not being larger than the size of an unsigned integer.
+*
+* Inputs
+*  file          : A pointer to the filename
+*
+* Outputs
+*  None
+*
+* Returns
+*  An integer holding the size of the returned file, or -1 if the operation
+*   failed.
+*
+*****************************************************************************/
+int file_size(char *file)
+{
+  _kernel_swi_regs reg;
+
+  reg.r[0] = 23;		/* no paths */
+  reg.r[1] = (int) file;
+  _kernel_swi(OS_File, &reg, &reg);
+
+  return (reg.r[0] == 1 ? reg.r[4] : -1);
+}
+
+
+
+
+/*****************************************************************************
+* read_env
+*
+* This routine reads an environment variable in to a malloced string
+*
+* Assumptions
+*  None
+*
+* Inputs
+*  variable      : The system variable to be read.
+*
+* Outputs
+*  None
+*
+* Returns
+*  A pointer a string containing the contents of the system variable; if
+*   the operation fails (for instance the system variable passed in does
+*   not exist) then it returns NULL.
+*
+*****************************************************************************/
+char *read_env(char *variable)
+{
+  char *var = NULL;
+  char *cp = NULL;
+
+  if ((var = getenv(variable)) != NULL)
+    cp = strdup(var);
+
+  return (cp);
+}
+
+
+
+
+
+/*****************************************************************************
+* ensure_resource_directories_exist
+*
+* This routine scans through the list of territories and ensures that the
+*  required resource directories all exist. It does this by checking that
+*  <root_resources_directory>.<territory_name> is a valid directory.
+*
+* Assumptions
+*  There should be no effect outside this routine.
+*
+* Inputs
+*  None.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  A boolean, true if the resource directories existed in the correct
+*   location, false otherwise.
+*****************************************************************************/
+bool ensure_resource_directories_exist(void)
+{
+  unsigned int loop;
+  char buffer[BUFSZ]; /* Nasty hardcoded value */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    sprintf(buffer, "%s.%s", root_resources_directory, supported_territories[loop]);
+    printf ("Checking for %s.\n", buffer);
+    if (filer_object_type(buffer) != 2)
+    {
+      printf("Warning: %s is not a directory.\n", buffer);
+      return (false);
+    }
+  }
+
+  return (true);
+}
+
+
+
+
+
+
+
+/*****************************************************************************
+* get_filetype
+*
+* This routine returns the filetype of the object to pointed to by obj.
+*
+* Assumptions
+*  It is assumed that the object pointed to by obj exists and is a file; if
+*   not then -1 is returned.
+*
+* Inputs
+*  obj :         The object we require the filetype of.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  The filetype, or -1 if the file does not exist.
+*****************************************************************************/
+
+int get_filetype(char* obj)
+{
+  if (file_exists(obj))
+  {
+    int type, load_addr;
+    _swi( OS_File, _IN(0)|_IN(1)|_OUT(2), 17, obj, &load_addr );
+    type = (load_addr>>8)&0xFFF;
+    return (type);
+  }
+  else
+  {
+    return (-1);
+  }
+}
+
+
+
+
+
+
+
+/*****************************************************************************
+* appendleaf
+*
+* This routine appends the leaf passed in onto the end of the path.
+*
+* Assumptions
+*  This routine assumes that the area of memory that holds path is large
+*   enough to hold the alterd string. No bounds checking is performed.
+*
+* Inputs
+*  path :        The path for the leaf to be appended to.
+*  leaf :        The leafname to be appended.
+*
+* Outputs
+*  The new path with the leaf appended.
+*
+* Returns
+*  None.
+*****************************************************************************/
+void appendleaf( char *path, char *leaf )
+{
+  strcat( path, "." );
+  strcat( path, leaf );
+}
+
+
+
+
+
+/*****************************************************************************
+* stripleaf
+*
+* This function strips the last leaf segment off the path passed in.
+* The filename seperator is taken to be the '.' character
+*
+* Assumptions
+*  If there are no seperator ('.') characters in te string, then the string
+*   is unaltered.
+*
+* Inputs
+*  path :        The path to be truncated.
+*
+* Outputs
+*  path :         The truncated path.
+*
+* Returns
+*  None.
+*****************************************************************************/
+void stripleaf( char *path )
+{
+  char *sep = strrchr( path, '.' );
+
+  if (sep != NULL)
+  {
+    *sep = '\0';
+  }
+}
+
+
+
+
+
+/*****************************************************************************
+* compare_files
+*
+* This routine takes the path passed in and compares it with the other
+*  resource sets. E.g. if a file ...UK.Foo was passed in, and the LocaleList
+*  was set to UK,France,Germany it would compare ...Common.Foo, ...France.Foo
+*  and ...Germany.Foo.
+* The UK territory, being he first in the localelist, was used as te base for
+*  the Common directory, and therefore must be identical and is not compared
+*  for that reason.
+*
+* Assumptions
+*  This routine alters the global array compared_files[], which contains the
+*   paths to all the files to be compared.
+*  It also deletes the file in the 'common' directory if it was not common, or
+*   in the territory-specific directoties if it was common.
+*
+* Inputs
+*  filename:     The name of the file to be compared.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  It returns true if the file exists in all possible resource sets and they
+*   match, false otherwise
+*****************************************************************************/
+bool compare_files(const char* filename)
+{
+  char buffer[255];
+  char* path_segment = NULL;
+  unsigned int length;
+  unsigned int loop;
+
+  /* Get the segment of the path after the territory. */
+  length = strlen(root_resources_directory);
+  path_segment = (char*)filename+length;
+  length = strlen(supported_territories[0]);
+  path_segment+=length+2;
+
+  /* Now create the other filenames using the known path. */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    if (strcmp(supported_territories[loop], directory_to_copy) != 0) /* Ignore the one we copied, as files must be the same. */
+    {
+      sprintf(buffer, "%s.%s.%s", root_resources_directory, supported_territories[loop], path_segment);
+      compared_files[loop] = strdup(buffer);
+    }
+    else
+    {
+      /* Store the reference file */
+      compared_files[loop] = strdup((char*)filename);
+    }
+  }
+
+  /* Display all the files that will be parsed if the verbose flag is set. */
+  if (verbose)
+  {
+    for (loop=0; loop < num_of_territories; loop++)
+    {
+       printf ("%s\n", compared_files[loop]);
+    }
+  }
+
+  /* Perform the comparisons...*/
+  perform_comparisons(path_segment);
+
+  /* Now free the memory held by all the files... */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    if (compared_files[loop])
+    {
+      free (compared_files[loop]);
+      compared_files[loop] = NULL;
+    }
+  }
+
+  return (false);
+}
+
+
+
+
+
+/*****************************************************************************
+* perform_comparisons
+*
+* This routine opens all the files held in the compared_files array and
+*  attempts to compare them. It checks files are identical by the following
+*  means:
+*   1) Compare filetypes and sizes.
+*   2) Open all the files
+*   3) Read all the files byte-by-byte, compareing them, until a difference
+*       is detected or the end of the file is reached.
+*   4) Close all the files.
+* Note that files of type Squash are treated differently due to the fact
+*  that identical files that have been squashed at different times will end
+*  up with different header data.
+* If a file is identical in (say) UK and France but not in Germany, then the
+*  file will be placed in a UK,France directory and also in the Germany
+*  directory. This reduces the commanlity of the files to the minimum possible.
+* If a file is identical in all files, then it gets placed into a directory
+*  that is common between all resource sets.
+*
+* Assumptions
+*  That the number of files to be opened is less than MAX_OPEN_TERRITORY_FILES.
+*
+* Inputs
+*  None.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  This routine returns true if all the files are the same, false otherwise.
+*****************************************************************************/
+bool perform_comparisons(char* path_leaf)
+{
+  FILE* file_handles[MAX_OPEN_TERRITORY_FILES]; /* An array to hold all the file handles */
+  unsigned int loop;
+  bool file_matches = true;
+  unsigned int main_list_loop;
+  unsigned int filesize[MAX_OPEN_TERRITORY_FILES] = 0;
+  unsigned int filetype[MAX_OPEN_TERRITORY_FILES] = 0;
+  unsigned int file_byte_count = 0; /* Stores the number of bytes we are through the file. */
+
+  assert (path_leaf != NULL);
+
+  /* Initialise all the memory */
+  main_list = malloc(sizeof(list_of_lists));
+  main_list_initialise(main_list, num_of_territories);
+  main_list_create_initial(num_of_territories);  /* Create a list with all files being identical. */
+
+  /* Ensure that all the files exist and grab their filesizes and filetypes.*/
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    unsigned int files_exist[MAX_OPEN_TERRITORY_FILES]; /* Store whether the files exists or not. */
+    assert (compared_files[loop] != NULL); /* Check we are not going to try to open a NULL pointer... */
+
+    /* Ensure that all the files exist. */
+    if (!file_exists(compared_files[loop]))
+    {
+      if (verbose)
+        printf("%s does not exist.\n", compared_files[loop]);
+      files_exist[loop] = 0;
+      return (false);
+    }
+    else
+    {
+      files_exist[loop] = 1;
+    }
+
+    /* Compare the filetypes and filesizes */
+    filetype[loop] = get_filetype(compared_files[loop]);
+    filesize[loop] = file_size(compared_files[loop]);
+  }
+
+  /* Now set up the initial list with the data held in the filetype and filesizes. */
+  compare_file_contents(filetype, num_of_territories);
+  compare_file_contents(filesize, num_of_territories);
+
+  /* Open all the files. */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    assert (compared_files[loop] != NULL); /* Check we are not going to try to open a NULL pointer... */
+    /* Open the file.. */
+    if ((file_handles[loop]=fopen(compared_files[loop],"r")) == NULL)
+    {
+      if (verbose)
+        printf("Error opening file %s for reading.\n", compared_files[loop]);
+      return (false); /* If we can't open it, we are not bothered... (atm neway) */
+    }
+  }
+
+  /* Scan through all the files on a byte-by-byte basis, comparing them. */
+  while (!feof(file_handles[0]) && file_matches)
+  {
+    unsigned int bytes[MAX_OPEN_TERRITORY_FILES+1]; /* To hold the bytes from all the files... */
+    bool ignore_line = false; /* Set ig we wish to ignire a line of a file for some reason. */
+    file_byte_count++;
+
+    /* Another check - if the files are squash files, then they will always be
+       different due to headser differences. Ignore the headers. */
+    if (filetype[0] == FileType_Squash)
+    {
+      if (file_byte_count < sizeof(squash_header_struct))
+      {
+        ignore_line = true;
+      }
+    }
+
+    /* In the future we may wish to treat spritefiles differently. This is a
+        conditional to check for the presence of a spritefile. */
+    if (filetype[0] == FileType_Sprite)
+    {
+      /* Do some magic munging here. We could possibly split all common sprites
+          held within the spritefiles into a 'common' file to save ROM space. */
+    }
+
+    /* Fill up the string with the bytes from the files. */
+    if (!ignore_line) /* We wish to diff this line. */
+    {
+      for (loop=0; loop<num_of_territories; loop++)
+      {
+        bytes[loop] = (unsigned int) getc(file_handles[loop]);
+      }
+      bytes[loop+1]=(unsigned int)'\0';
+
+      /* Perform the comparisons */
+      compare_file_contents(bytes, num_of_territories);
+
+      /* If we have n lists, they must all be different files. No need to parse anymore. */
+      if (main_list_count_nodes(main_list, num_of_territories) == num_of_territories)
+      {
+        if (verbose)
+        {
+          printf ("All files are different. Exiting early.\n");
+        }
+        break;
+      }
+    }
+  }
+
+  /* Display the results */
+  if (verbose)
+  {
+    printf("List condition after parsing all the files (file %s)...\n", path_leaf);
+    main_list_display(main_list, num_of_territories);
+  }
+
+  /* Collate the result into a series of directories that the files have to be
+      copied into. */
+  for (main_list_loop=0; main_list_loop<num_of_territories; main_list_loop++)
+  {
+    char directory_string[(MAX_TERRITORIES*2)+1]; /* Each territory can have two characters, and the string needs a terminator */
+    char destination_directory[MAX_PATH_SIZE];    /* Nasty hardcoded limit */
+    char buffer[MAX_PATH_SIZE];                   /* Another nasty hardcoded limit. */
+    list *this_list = &main_list->lists[main_list_loop];
+
+    /* Create the directory string relating to this particular list of
+        directories */
+    strcpy(directory_string,""); /* Initialise the string */
+    if (this_list->array_size > 0) /* We do not wish to display empty lists. */
+    {
+      unsigned int sublist_loop;
+      for (sublist_loop=0; sublist_loop < this_list->array_size; sublist_loop++)
+      {
+        if (this_list->file_num[sublist_loop] >= 0) /* Do not display empty locations */
+        {
+          char tempstr[7];
+          int terr_number = return_country_number(supported_territories[this_list->file_num[sublist_loop]]);
+          //printf (" %d (%s, country code %d)", this_list->file_num[sublist_loop], supported_territories[this_list->file_num[sublist_loop]], terr_number);
+          if (!uk_resources_present && this_list->file_num[sublist_loop] == 0)
+          {
+            /* We wish to add UK territory number (01) onto the first territory */
+            sprintf(tempstr, "%02d01", terr_number);
+            strcat(directory_string, tempstr);
+          }
+          else
+          {
+            sprintf(tempstr, "%02d", terr_number);
+            strcat(directory_string, tempstr);
+          }
+        }
+      }
+
+      /* printf ("directory string is %s\n", directory_string); Debug line */
+
+      /* If the directory string is the same as the common one, then change
+          it's name to 'common' */
+      if (strcmp(directory_string, common_directory) == 0) /* They match */
+      {
+        assert (common_directory != NULL);
+        // printf("%s is the common resource set. Renaming the directory path to 00.\n", directory_string);
+        strcpy(directory_string, "common");
+      }
+
+      /* Create the directory and copy the resources over. */
+      sprintf(destination_directory, "%s.%s", root_processed_directory, directory_string);
+      mkdir (destination_directory, 0);
+      for (sublist_loop=0; sublist_loop < this_list->array_size; sublist_loop++)
+      {
+        if (this_list->file_num[sublist_loop] >= 0) /* Do not display empty locations */
+        {
+          char dir_to_create[MAX_PATH_SIZE];
+          /* Ensure the relevant directory exists. */
+          sprintf(dir_to_create, "mkdir -p %s.%s", destination_directory, path_leaf);
+          stripleaf(dir_to_create);
+          system(dir_to_create);
+          /* Copy the file over. */
+          sprintf(buffer, "copy %s.%s.%s %s.%s r~v~cf", root_resources_directory, supported_territories[this_list->file_num[sublist_loop]], path_leaf, destination_directory, path_leaf);
+          //printf("Running sys command %s\n", buffer);
+          system(buffer);
+        }
+      }
+    }
+  }
+
+  /* Close all the files */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    if (file_handles[loop])
+    {
+      fclose(file_handles[loop]);
+    }
+  }
+
+  /* Free off the memory. */
+  free (main_list);
+
+  return (file_matches);
+}
+
+
+
+
+
+/*****************************************************************************
+* descend
+*
+* This routine descends into the directory path passed in, reading all the
+*  files and directories held within it. It can be caled recursively to scan
+*  a whole directory structure.
+* Any files that are in the path directory are compared using subsidiary
+*  routines.
+*
+* Assumptions
+*  That BUFSZ is large enough to hold any possible path.
+*
+* Inputs
+*  path:         The path to be recursed from.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  None.
+*****************************************************************************/
+void descend(char *path)
+{
+  char *buf = malloc( BUFSZ );
+  int offset = 0;
+
+  if ( buf != NULL )
+  {
+    do
+    {
+      object *op = (object *)buf;
+      int nread;
+
+      printf ("Comparing files in path %s\n", path);
+      _swi( OS_GBPB, _IN(0)|_IN(1)|_IN(2)|_IN(3)|_IN(4)|_IN(5)|_IN(6)|_OUT(3)|_OUT(4),
+              10, path, buf, 80, offset, BUFSZ, 0, &nread, &offset );
+
+      while ( nread > 0 )
+      {
+        switch ( op->type )
+        {
+          case 1:
+            /* Text file found so scan it for tags. */
+            appendleaf( path, op->name );
+            if (compare_files(path))
+            {
+            }
+            else
+            {
+              //printf ("Not matched: %s\n", path);
+            }
+            stripleaf( path );
+            break;
+
+          case 2:
+            /* Directory found so descend into it.
+             */
+            appendleaf( path, op->name );
+            descend( path );
+            stripleaf( path );
+            break;
+
+          default:
+            printf("Don't know how to process object type %d\n", op->type );
+      }
+
+        op = (object *)(((int)(op->name)+strlen(op->name)+4)&~3);
+        nread -= 1;
+      }
+    } while ( offset != -1 );
+
+    free( buf );
+  }
+  else
+  {
+    printf("Couldn't allocate enough memory\n" );
+    exit (EXIT_FAILURE);
+  }
+}
+
+
+
+
+
+
+
+/*****************************************************************************
+* compare_resources
+*
+* This routine is the main routine that is called when attempting to compare
+*  a set of resources.
+*
+* Assumptions
+*  That root_resources_directory exists, and that BUFSZ is large enoguh to hold a
+*   string of length strlen(root_resources_directory)+strlen(".Common"). Because it is
+*   used within the descend() routine to hold the curren path, then BUFSZ will
+*   have to be large enough to hold the longest path in the directory
+*   structure below root_resources_directory.
+*
+* Inputs
+*  None.
+*
+* Outputs
+*  buffer :      This gets altered  range of outputs, etc. List variables in
+*                the same order that they appear in the function definition.
+*
+* Returns
+*  This routine returns true.
+*****************************************************************************/
+
+bool compare_resources(void)
+{
+  char buffer[BUFSZ];
+
+  assert(root_resources_directory);
+
+  /* Recurse down the directory structure... */
+  sprintf(buffer, "%s.%s", root_resources_directory, supported_territories[0]);
+  descend(buffer);
+
+  return (true);
+}
+
+
+
+
+/*****************************************************************************
+* cstrcmp
+*
+* This routine compares two string caselessly.
+*
+* Assumptions
+*  State any assumptions and side effects (eg. globals changed)
+*
+* Inputs
+*  a:            The first string to be compared.
+*  b:            The second string to be compared.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  0 if both strings are NULL, or both strings are (ignoring case) identical.
+*  -1 if one (but not both) of the strings are NULL.
+*  Any other value if the strings are different.
+*****************************************************************************/
+
+int cstrcmp(const char *a, const char *b)
+{
+  int d;
+
+  if (a == NULL && b == NULL)
+    return (0);
+
+  if (a == NULL || b == NULL)
+    return (-1);
+
+  while (*a || *b) {
+    d = tolower(*(a++)) - tolower(*(b++));
+    if (d)
+      return (d);
+  }
+  return (0);
+}
+
+
+
+
+
+/*****************************************************************************
+* help_text
+*
+* Display a suitable help text.
+*
+* Assumptions
+*  There are no assumptions.
+*
+* Inputs
+*  None.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  None.
+*****************************************************************************/
+
+void help_text(void)
+{
+  printf ("ResCommon\n");
+  printf ("\n");
+  printf ("Usage: ResCommon <root resources dir> <root processed dir> [-t <territory_list>] [-v -h -s]\n");
+  printf ("Commands: <root resources dir> Where to get the resources files for each territory from.\n");
+  printf ("Commands: <root processed dir> Where to place all the resource files after commanlities have been detected.\n");
+  printf ("Options:  -t <territory_list>  A comma-seperated list of territories to use.\n");
+  printf ("          -v                   Verbose. Display verbose output on what the utility is doing.\n");
+  printf ("          -h                   Help. Display help text.\n");
+  printf ("          -s                   Simulate. Do not delete any files.\n");
+  printf ("\n");
+  printf ("This utility looks for common resources held in different territories and places them in relevant directories. \n");
+  printf ("This allows as may different resource sets as possible to be squeezed into one ROM image.\n");
+  printf ("\n");
+}
+
+
+
+
+
+/*****************************************************************************
+* main
+*
+* Main routine. This routine parses the command line argument passed in, sets
+*  up appropriate data needed for the program and starts off the comparison
+*  of the resources.
+*
+* Assumptions
+*  None.
+*
+* Inputs
+*  argc:         A count of the number of command-line arguments.
+*  argv:         A vector containing the command line arguments.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  EXIT_FAILURE if the program failed for some reason, otherwise,
+*   EXIT_SUCCESS
+*****************************************************************************/
+int main(int argc, char **argv)
+{
+  char* locale_list = NULL;
+  unsigned int i, loop;
+
+  /* Define an atexit handler */
+  atexit(exit_handler);
+
+  if (argc < 3)
+  {
+    fprintf(stderr, "Usage: ResCommon <root resourcesd dir> <root processed dir> [-t <territory_list>] [-v -h -s]\n");
+    exit (EXIT_FAILURE);
+  }
+
+  for (i = 1; i < argc; i++)
+  {
+    // printf("arg %d: %s\n", i, argv[i]);
+    if ((cstrcmp(argv[i], "-h") == 0) || (cstrcmp(argv[i], "-help") == 0))
+    {
+      help_text();
+      exit(EXIT_FAILURE);
+    }
+    if ((cstrcmp(argv[i], "-v") == 0) || (cstrcmp(argv[i], "-verbose") == 0))
+    {
+      verbose = TRUE;
+    }
+    if ((cstrcmp(argv[i], "-t") == 0) || (cstrcmp(argv[i], "-territories") == 0))
+    {
+      /* The next arg should be a comma-separated territory list. */
+      char* list = NULL;
+      list = strdup(argv[++i]);
+      parse_territories(list);
+      if (list)
+      {
+        free (list);
+        list = NULL;
+      }
+    }
+    else
+    {
+      if ((cstrcmp(argv[i], "-s") == 0) || (cstrcmp(argv[i], "-simulate") == 0))
+      {
+        simulate = TRUE;
+      }
+    }
+  }
+
+  /* Read the required starting directory from the command line. */
+  root_resources_directory = strdup(argv[1]);
+  if (verbose)
+    printf("root resources directory is %s\n", root_resources_directory);
+
+  /* Read the required starting directory from the command line. */
+  root_processed_directory = strdup(argv[2]);
+  if (verbose)
+    printf("root processed directory is %s\n", root_processed_directory);
+
+  /* Ensure that root resources directory is a directory. */
+  if (filer_object_type(root_resources_directory) != 2)
+  {
+    fprintf(stderr, "Error: %s should be a directory.\n", root_resources_directory);
+    exit (EXIT_FAILURE);
+  }
+  /* Ensure that root processed directory is a directory. */
+  if (filer_object_type(root_processed_directory) != 2)
+  {
+    fprintf(stderr, "Error: %s should be a directory.\n", root_processed_directory);
+    exit (EXIT_FAILURE);
+  }
+
+  /* We need to see if a locale_list has been defined. If it has, we need to split it into a list of locales.
+      Only do this if a valid list was not passed in on the command line. */
+  if (num_of_territories == 0 && ((locale_list = read_env(ENV_LOCALE_LIST)) != NULL))
+  {
+    if (!parse_territories(locale_list))
+    {
+      /* An error occured whilst parsing the loale list. */
+      printf("Malformed Locale list detected.");
+      exit (EXIT_FAILURE);
+    }
+    free (locale_list);
+    locale_list = NULL; /* locale_list is no longer needed */
+  }
+
+  /* If there are no territories something hs gone wrong. Flag this up. */
+  if (num_of_territories == 0)
+  {
+    /* If there was not a locale list in env or on command line, report it and quit. */
+    fprintf(stderr, "No locale list present.\n");
+    exit (EXIT_FAILURE); /* Success as the program should do nothing if there is no localelist. */
+  }
+
+  /* One territory is a special case - just copy the resources as there are
+no comparisons to be made. This will speed up single-territory builds. */
+  if (num_of_territories == 1)
+  {
+    char buffer[MAX_PATH_SIZE];                   /* Another nasty hardcoded limit. */
+    char dir_to_create[MAX_PATH_SIZE];
+    printf("There is only one territory. Copying from resources to processed and exiting.\n");
+    /* Ensure the relevant directory exists. */
+    sprintf(dir_to_create, "mkdir -p %s.%s", root_processed_directory, "Common");
+    if (verbose) printf("Running sys command %s\n", dir_to_create);
+    system(dir_to_create);
+    /* Copy the file over. */
+    sprintf(buffer, "copy %s.%s %s.%s r~v~cf", root_resources_directory, supported_territories[0],  root_processed_directory, "Common");
+    if (verbose) printf("Running sys command %s\n", buffer);
+    system(buffer);
+    exit (EXIT_SUCCESS);
+  }
+
+  /* See if the UK territory (01) is in the list. If it is not, map one of
+the other territories onto it. This is because a ROM build should always
+have a UK territory in it (the Kernel default value for territory is 01, so
+doing a reset on a build with no UK resources in causes ROM initialisation to
+fail). Mapping a territory to UK (for example making Germany 0701) means that
+the ROM thinks that the UK resources are present, although in reality it is
+using the German resource set. This will allow the NC to boot correctly after
+a delete-poweron has been performed. */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    printf("Supported territory %d is %s\n", loop, supported_territories[loop]);
+    if (cstrcmp(supported_territories[loop],"UK") == 0) /* UK resource set is present */
+    {
+      printf("UK resource set present in locale list.\n");
+      uk_resources_present = true;
+    }
+  }
+
+  /* Create the 'common_directory' string */
+  if (num_of_territories == 1)
+  {
+    common_directory = malloc (3);
+    sprintf(common_directory, "%02d", return_country_number(supported_territories[0]));
+  }
+  else
+  {
+    unsigned int loop = 0;
+    common_directory = malloc ((num_of_territories*3)+1);
+    strcpy(common_directory, "");
+    for (loop=0; loop < num_of_territories; loop++)
+    {
+      char tempstr[5];
+      int terr_number = return_country_number(supported_territories[loop]);
+      sprintf(tempstr, "%02d", terr_number);
+      strcat(common_directory, tempstr);
+      if (!uk_resources_present && loop == 0)
+      {
+        /* Add the UK territory onto the string */
+        strcat(common_directory, "01");
+      }
+    }
+  }
+  printf("Common directory is %s\n", common_directory);
+
+  /* Ensure that the resource directories exist. */
+  if (!ensure_resource_directories_exist())
+  {
+    printf("Not all resource directories exist.\n");
+    exit (EXIT_FAILURE);
+  }
+
+  /* And now do the comparisons... */
+  compare_resources();
+}
+
+
+
+
+/*****************************************************************************
+* exit_handler
+*
+* This function can be used to clear up any outstanding memory left
+*  afer the program has finished. It should only be used to delete
+*  memory that is needed throughout the lifetime of the program, for
+*  example the locale_list.
+*
+* Assumptions
+*  There are no assumptions.
+*
+* Inputs
+*  None.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  None.
+*****************************************************************************/
+void exit_handler(void)
+{
+  unsigned int loop;
+
+  /* Free the locale array if it has not already been free'd. */
+  if (num_of_territories != 0)
+  {
+    for (loop=0; loop < num_of_territories; loop++)
+    {
+      if (compared_files[loop]) /* Memory has not been free'd. */
+      {
+        free (compared_files[loop]);
+        compared_files[loop] = NULL;
+      }
+    }
+    num_of_territories = 0;
+  }
+
+  /* Free the directory_to_copy memory */
+  if (directory_to_copy)
+  {
+    free (directory_to_copy);
+    directory_to_copy = NULL;
+  }
+
+  /* Free the root resources directory */
+  if (root_resources_directory)
+  {
+    free (root_resources_directory);
+    root_resources_directory = NULL;
+  }
+
+  /* Free the root processed directory */
+  if (root_processed_directory)
+  {
+    free (root_processed_directory);
+    root_processed_directory = NULL;
+  }
+
+  /* Free the common directory */
+  if (common_directory)
+  {
+    free (common_directory);
+    common_directory = NULL;
+  }
+}
+
+
+
+
+
+
+
+
+/*****************************************************************************
+* compare_file_contents
+*
+* This routine compares the contents of a 'line' of bytes across the files
+*  that are currently open. The contents of the file are held in array of
+*  unsigned integers, which means that things other than file contents can be
+*  compared (for instance this routine is also used to compare filetypes and
+*  filesizes).
+*
+* Assumptions
+*  This routine assumes that all the data being passed in is filled in as
+*   appropriate; no run-time checks are performed to ensure this.
+*
+* Inputs
+*  uint* file_contents: A pointer to an array of integers comprising the data
+*                       that is to be compared.
+*  uint num_of_territories: The number of territories that are held within the
+*                       data array.
+*
+* Outputs
+*  The contents of the global main_list array is altered.
+*
+* Returns
+*  None.
+*****************************************************************************/
+void compare_file_contents(const unsigned int* const file_contents, unsigned int num_of_territories)
+{
+  unsigned int main_list_loop;
+  unsigned int file_contents_loop;
+  bool file_contents_identical = true; /* set to true if all bytes in the file_contents are the same. */
+  list_of_lists* swap_ptr; /* Used as a scratch ptr to aid swapping lists */
+
+  /* Create a temp list which data can be stored in. */
+  list_of_lists* temp_list = malloc(sizeof(list_of_lists));
+
+  main_list_initialise(temp_list, num_of_territories);
+
+  /* Quick check: if all bytes in the file_contents are the same, then the list must remain identical. */
+  for (file_contents_loop=0; file_contents_loop<num_of_territories; file_contents_loop++)
+  {
+    if (file_contents_loop > 0)
+    {
+      if (file_contents[file_contents_loop] != file_contents[file_contents_loop-1])
+      {
+        file_contents_identical=false;
+        break; // Quit loop early - we have proved file_contents is not identical.
+      }
+    }
+  }
+
+  /* Iterate through all the main lists. */
+  if (!file_contents_identical)
+  {
+    for (main_list_loop=0; main_list_loop < num_of_territories; main_list_loop++)
+    {
+      list *this_list = &main_list->lists[main_list_loop];
+      sublist_parse(this_list, temp_list, file_contents, num_of_territories);
+    }
+
+    /* Copy the data from the temp list to the main list. Do this by swapping the pointers. */
+    swap_ptr = main_list;
+    main_list = temp_list;
+    temp_list = swap_ptr;
+  }
+
+  /* Free up the memory holding the temporary list */
+  free (temp_list);
+}
+
+
+
+
+#ifdef INCLUDE_OLD_DEBUG_CODE
+/* The code below is a wrapper routne that I used to test some of the core
+functions within this code. This routine has not been run for some time, but
+I have left it in as it may be of use to maintaners of code in the future. */
+
+
+static char *test_array[] =
+{
+"AAAAA", /* Should all be in the same list. */
+"AABBB", /* 2 lists  0,1   and  2,3,4 */
+"ABBBB", /* 3 lists  0  1   and 2,3,4 */
+"ABBCB", /* 4 lists  0  1  2,4 and 3 */
+"ABCDD", /* 4 lists  0  1  2  and 3,4 */
+"BCDRR", /* 4 lists  0  1  2  and 3,4 */
+"ABCDE", /* 5 lists  0  1  2  3  and 4 */
+"QQQQQ", /* Should not have to parse this line. */
+"ADSFC",  /* Or this one...*/
+""
+};
+
+
+void test_file_comparisons(void)
+{
+  unsigned int file_line = 0;
+  unsigned int num_territories = 5; /* This hould be passed in as a parameter */
+
+  main_list = malloc(sizeof(list_of_lists));
+
+  main_list_initialise(main_list, num_of_territories);
+
+  /* Create a list with all files being identical. */
+  main_list_create_initial(num_of_territories);  /* Create a list with all files being identical. */
+
+  /* Create a new node inthe main list */
+  list_create_new(main_list, 'a', num_of_territories);
+
+  /* Now scan through the file line by line, altering the list as appropriate. */
+  file_line = 0;
+  while (test_array[file_line])
+  {
+    unsigned int main_list_loop;
+    list_of_lists* swap_ptr;
+    /* Create a temp list which data can be stored in. */
+    list_of_lists* temp_list = malloc(sizeof(list_of_lists));
+    main_list_initialise(temp_list, num_of_territories);
+
+    printf ("\n\nParsing string %s\n", test_array[file_line]);
+
+    /* Iterate through all the main lists. */
+    for (main_list_loop=0; main_list_loop < num_of_territories; main_list_loop++)
+    {
+      list *this_list = &main_list->lists[main_list_loop];
+      sublist_parse(this_list, temp_list, (unsigned int*) test_array[file_line], num_of_territories);
+    }
+
+    /* Display it after the alterations... */
+    main_list_display(temp_list, num_of_territories);
+
+    /* Copy the data from the temp list to the main list. Do this by swapping the pointers. */
+    swap_ptr = main_list;
+    main_list = temp_list;
+    temp_list = swap_ptr;
+    free (temp_list);
+
+    /* If we have n lists, they must all be different files. No need to parse anymore. */
+    if (main_list_count_nodes(main_list, num_of_territories) == num_territories)
+    {
+      printf ("All files are different. Exiting early.\n");
+      break;
+    }
+
+    file_line++;
+  }
+
+  /* Free off the memory. */
+  free (main_list);
+}
+
+#endif  /* INCLUDE_OLD_DEBUG_CODE */
+
+
+
+
+/* This routine initialises the lists ready for use. */
+void main_list_initialise(list_of_lists* main_list, unsigned int num_of_territories)
+{
+  unsigned int main_list_loop;
+  /* Initialise all the lists held in the main list */
+  for (main_list_loop=0; main_list_loop<num_of_territories; main_list_loop++)
+  {
+    list *this_list = &main_list->lists[main_list_loop];
+    unsigned int sublist_loop;
+    /* Initialise all the sub-lists */
+    for (sublist_loop=0; sublist_loop<num_of_territories; sublist_loop++)
+    {
+      this_list->file_num[sublist_loop] = -1;
+    }
+    this_list->array_size = -1;
+  }
+}
+
+
+
+
+
+
+/* This routine creates an initial list with the first node pointing to all files. */
+void main_list_create_initial(unsigned int num_of_territories)
+{
+  unsigned int sublist_loop;
+  list *this_list = &main_list->lists[0];
+  /* Initialise all the sub-lists */
+  for (sublist_loop=0; sublist_loop<num_of_territories; sublist_loop++)
+  {
+    this_list->file_num[sublist_loop] = sublist_loop;
+  }
+  this_list->array_size = num_of_territories;
+}
+
+
+
+
+/* This routine displays all the nodes in the main list.*/
+void main_list_display(list_of_lists* list_to_display, unsigned int num_of_territories)
+{
+  unsigned int main_list_loop;
+  for (main_list_loop=0; main_list_loop<num_of_territories; main_list_loop++)
+  {
+    main_list_display_node_num(list_to_display, main_list_loop);
+  }
+}
+
+
+
+
+/* This routine returns the number of filled nodes in the passed in list. */
+unsigned int main_list_count_nodes(list_of_lists* list_to_count, unsigned int num_of_territories)
+{
+  unsigned int main_list_loop;
+  unsigned int count = 0;
+
+  for (main_list_loop=0; main_list_loop<num_of_territories; main_list_loop++)
+  {
+    list *this_list = &list_to_count->lists[main_list_loop];
+    if (this_list->array_size > 0)
+    {
+      count++;
+    }
+  }
+
+  return (count);
+}
+
+
+
+/* This routine displays the information held in a specific node of the main list. */
+void main_list_display_node_num(list_of_lists* main_list_to_display, unsigned int list_to_display)
+{
+  unsigned int sublist_loop;
+  list *this_list = &main_list_to_display->lists[list_to_display];
+  if (this_list->array_size > 0) /* We do not wish to display empty lists. */
+  {
+    printf ("main_list_display_node_num(): List %d contains %d nodes:", list_to_display, this_list->array_size);
+    /* Loop through all the elements in the loop */
+    for (sublist_loop=0; sublist_loop < this_list->array_size; sublist_loop++)
+    {
+      if (this_list->file_num[sublist_loop] >= 0) /* Do not display empty locations */
+      {
+        printf (" %d (%s)", this_list->file_num[sublist_loop], supported_territories[this_list->file_num[sublist_loop]]);
+      }
+    }
+    printf("\n");
+  }
+}
+
+
+
+
+/* This routine creates a new main list.
+   It returns the number of the created list.  */
+unsigned int list_create_new(list_of_lists* list_to_alter, const char char_to_enter, unsigned int num_of_territories)
+{
+  unsigned int pos_created = 0;
+  unsigned int list_loop;
+
+  /* Find an empty list. */
+  for (list_loop=0; list_loop<num_of_territories; list_loop++)
+  {
+    list *this_list = &list_to_alter->lists[list_loop];
+    //printf("list_create_new(): this_list->array_size = %d\n", this_list->array_size);
+    if (this_list->array_size == -1)
+    {
+      //printf("list_create_new(): Creating an array at position %d\n", list_loop);
+      pos_created = list_loop;
+      break;
+    }
+  }
+
+  return (pos_created);
+}
+
+
+
+/*
+  We use arrays rather than linked lists for two reasons:
+     *) Linked lists need memory allocations, node creation and node destruction, which can be time-consuming.
+     *) We know that there only needs to be a maximum of n nodes, where n is the number of territories being supported.
+  This means that we waste a small amount of memory, but the build should go quicker without the extra memory allocaions.
+*/
+
+
+/* This routine scans through the current main list and creates a relevent new list. */
+void sublist_parse(list* this_list, list_of_lists* new_list, const unsigned int* const file_line, unsigned int num_of_territories)
+{
+  unsigned int char_array[MAX_TERRITORIES];
+  bool char_array_pos_filled[MAX_TERRITORIES] = false;
+
+  if (this_list->array_size > 0) /* Ensure this list has some entries... */
+  {
+    unsigned int sublist_loop;
+
+    /* We now wish to scan through all the entries in this list */
+    for (sublist_loop=0; sublist_loop < this_list->array_size; sublist_loop++)
+    {
+      int num = this_list->file_num[sublist_loop];
+      unsigned int main_list_loop;
+      signed int char_already_entered=-1;
+      // printf ("sublist_parse(): %d (corresponding char is %c)\n", num, (char)file_line[num]);
+
+      /* Is the character already held in one of the lists? */
+      for (main_list_loop=0; main_list_loop<num_of_territories; main_list_loop++)
+      {
+        list *this_list = &new_list->lists[main_list_loop];
+        if (this_list->array_size > -1) /* The list is not empty */
+        {
+          unsigned int sublist_loop;
+          for (sublist_loop=0; sublist_loop<this_list->array_size; sublist_loop++)
+          {
+            if (char_array_pos_filled[main_list_loop] && char_array[main_list_loop] == file_line[num])
+            {
+              char_already_entered = main_list_loop;
+              //printf("sublist_parse(): char %c has already been entered at pos %d\n", file_line[num], main_list_loop);
+              break; /* We have found it, so quit the loop early. */
+            }
+          }
+        }
+      }
+
+      if (char_already_entered >= 0)
+      {
+        //printf("char %c has already been entered at pos %d\n", file_line[num], char_already_entered);
+        new_list->lists[char_already_entered].file_num[new_list->lists[char_already_entered].array_size++] = num;
+      }
+      else
+      {
+        /* Create another list. */
+        unsigned int node_pos = 0;
+        node_pos = list_create_new(new_list, file_line[num], num_of_territories);
+        //printf("Created another sublist for char %c at pos %d\n", file_line[num], node_pos);
+        new_list->lists[node_pos].array_size++; /* move it onto 0 from -1 */
+        new_list->lists[node_pos].file_num[new_list->lists[node_pos].array_size++] = num;
+        char_array[node_pos] = file_line[num];
+        char_array_pos_filled[node_pos] =true;
+      }
+
+    }
+  }
+}
+
+
+
+
+
+
+/*****************************************************************************
+* return_country_number
+*
+* This routine returns the country code number of a passed in country.
+*
+* Assumptions
+*  That the version of the International module has knowledge about the
+*   country that is being requested.
+*
+* Inputs
+*  country     : A string containing the name of the territory to be
+*                 converted.
+*
+* Outputs
+*  None
+*
+* Returns
+*  This routine returns the numeric form of the territory name passed in, or
+*   -1 if it is not a valid country. Note that build machines that wish
+*   to use utilities that inclue this routine should ensure that they have
+*   the latest version of the International module so that they can ensure
+*   they are aware of all the latest Name->number mappings.
+*
+*****************************************************************************/
+int return_country_number(const char* const country)
+{
+  _kernel_swi_regs reg;
+  int return_value = 0;
+
+  reg.r[1] = Service_International;
+  reg.r[2] = 0;              /* sub-reason code 0 */
+  reg.r[3] = (int)country;   /* The country we require (NULL terminated) */
+  reg.r[4] = 0;
+  _kernel_swi(OS_ServiceCall, &reg, &reg);
+
+  if (reg.r[1] != 0)
+    return_value = -1; /* Unrecognised country */
+  else
+    return_value = reg.r[4];
+
+  return (return_value);
+}
+
+
+
+
+/* Things to do:
+   3) Implement a system where all the files in all the resource directories
+are listed. Use this list to search for the files, and not scanning through
+one individual directory. Currently if a file is not present in the main
+resource directory being scanned but is present in one of the other resource
+directories, then it will not be scanned.
+   4) As part of 3) above, ensure that if a file is not present the system
+still works.
+
+Completed ones:
+   9) Make it use ServiceCall_Territory 0 insetad of Territory_NameToNumber
+   2) A common case is for all files to be identical; catch the case where
+all bytes in a line of the file are identical early and drop out without
+doing the laborious list calculations.
+   10) Convert the char array that is read from the file to integers. This
+will allow filetypes and filesizes to be compared, as well as the actual file
+contents.
+   8) Get the filesize and filetype things working.
+   7) Test with 1,2,3,4 and 5 territories set.
+   5) Ensure that the created resource directories are in the processed
+directory, not the resources one as they are at present. Do this by altering
+the command-line arguments so that the required processed directory is passed
+in as a flag.
+   1) Cope with squash files.
+   6) If there is only one territory, none of the above should happen, and
+the resources should be copied straight into the relevant territory
+directory.  
+  11) There should always be a 'common' directory, called 'Common'. In the
+case of single-territory builds, this will be the territory itself. In the
+case of multiple territory builds, this will be the 'common' directory (e.g.
+0107 for UK and German builds).
+  12) If the locale_list does not include UK, make the first locale in the
+list also map to territory 01. This prevents problems with the UK resource
+set being expected in ROM by making the Kernel believe that the first
+resource set is the UK set, even if it is not.
+  13) Ensure that if there is only one territory it copies the resources
+directory over to te processed directory, meaning that the scanning does not
+have to be done and saving time.
+ */
+
+
+
+/*****************************************************************************
+* END OF FILE
+*****************************************************************************/
+
+
+@
+
+
+4.9
+log
+@    Speed-up for single territory builds.
+
+Detail:
+    If there was only one territory then the file scanning in ResCommon was
+occuring, increasing build time. ResCommon now detects if there is only one
+territory and then copies it straight over to the processed directory.
+    This was not needed for the Bethany project and so was left out. Inserted
+now to save build time on other projects.
+
+Admin:
+    Some testing performed in a 32-bit Lazarus build.
+    All Utils binaries have been recompiled with the latest toolset.
+
+Version 1.02. Tagged as 'Messages-1_02'
+@
+text
+@d16 1
+a16 1
+* $Id: ResCommon,v 4.8 2000/08/16 13:56:25 dcotton Exp $
+d171 1
+a171 1
+void         main_list_display_node_num(list_of_lists* list_to_display, unsigned int list_to_display);
+@
+
+
+4.9.2.1
+log
+@  Checkpoint check-in.
+Detail:
+  These are the initial portable versions of all these utilities.
+  Most have not been tested and the rest have received cursory testing.
+  They do all compile for me though.
+Admin:
+  Not for use - checked-in to provide a baseline only.
+  Some notes on portability changes added too.
+
+
+Version 1.05, 4.25.2.1. Tagged as 'Messages-1_05-4_25_2_1'
+@
+text
+@d16 1
+a16 1
+* $Id: ResCommon,v 4.9 2000/11/11 14:03:22 dcotton Exp $
+a50 1
+#include <stddef.h>
+a52 1
+#include <errno.h>
+a54 6
+/* CLX */
+#include "wholefls.h"
+#include "host.h"
+#include "filestamp.h"
+#include "err.h"
+
+d56 9
+a64 9
+#ifdef RISCOS
+#  include "swis.h"
+#else
+#  include <sys/stat.h>
+#  include <dirent.h>
+#endif
+
+/* Local headers */
+#include "shared.h"
+d69 1
+d71 3
+a73 10
+#define FileType_Squash                          (0xfca)
+#define FileType_Sprite                          (0xff9)
+
+#ifdef RISCOS
+#  define BUFSZ   512                   /* Old value needed by cut & paste code. */
+#else
+#  define BUFSZ   4096
+#endif
+
+#define MAX_PATH_SIZE BUFSZ           /* Maximum path lengths allowed in strings. */
+a75 1
+
+a125 8
+typedef struct {
+  object op[2];
+} align_test;
+
+#define STRUCTURE_ALIGNMENT \
+  ((offsetof(align_test, op[1]) - offsetof(align_test, op[0].name)) - 1)
+
+
+d130 1
+d135 5
+a139 7
+char* compared_files[MAX_TERRITORIES];               /* An array in which to store the filenames of the files to be compared. */
+bool  verbose = false;                               /* Do you wish to see what it is doing? */
+bool  simulate = false;                              /* Do not actually delete any files. */
+char* common_directory = NULL;                       /* Stores the path relating to the 'common' resource set. */
+bool  uk_resources_present = false;                  /* Set to true if locale_list includes "UK" */
+
+char  dir_sep_char;                                  /* Host directory separator */
+d145 7
+a151 3
+static char *str_rc_dup(const char *str, size_t);
+static bool do_mkdir(char *dir1, char *dir2);
+static bool ensure_resource_directories_exist(void);
+d153 9
+a161 5
+static char *appendleaf( char *path, const char *leaf );
+static char *stripleaf( char *path );
+static int  cstrcmp(const char* a, const char *b);
+static int  cnstrcmp(const char *first_param, const char *second_param, size_t limit);
+static void help_text(void);
+d163 1
+d171 1
+a171 1
+void         main_list_display_node_num(list_of_lists* main_list_to_display, unsigned int list_to_display);
+d176 1
+a176 1
+void         compare_file_contents(const unsigned int* const string, unsigned int num_of_territories);
+d185 1
+d187 1
+a187 1
+/* file_copy                                                                     */
+d189 1
+a189 1
+/* This routine copies files/directories                                         */
+d191 1
+a191 2
+/* Parameters: source   The source file/directory                                */
+/*             dest     The destination file/directory                           */
+d193 2
+a194 1
+/* Returns:    It returns true if the copy succeeded, false otherwise.           */
+d197 1
+a197 1
+bool file_copy(char* source, char* dest)
+d199 11
+a209 7
+#ifdef RISCOS
+  return (_swix(OS_FSControl, _INR(0,3), 26, source, dest, 3/*FR~C~V~N*/) == NULL);
+#else
+  char command[BUFSZ];
+  sprintf(command, "cp -pfr %s %s", source, dest);
+  return (system(command) == 0);
+#endif
+a214 1
+
+d231 13
+a243 1
+  return wf_objtype(filename);
+d251 1
+a251 1
+* str_rc_dup
+a253 1
+* optionally with some extra spare bytes allocated.
+d259 1
+a259 2
+*  str         : The string to be copied (or NULL => empty string)
+*  n           : Extra space to allocate
+d262 1
+a262 1
+*  none
+d265 1
+a265 2
+*  A pointer to the copy of the string
+*  This function cannot fail - it will abort the program in preference
+d267 1
+a267 1
+static char *str_rc_dup(const char *s1, const size_t extra_to_allocate)
+d269 9
+a277 7
+        if (s1 == NULL) {
+                s1 = "";
+        }
+        {
+                const size_t length = strlen(s1) + 1;
+                return memcpy(safe_alloc(length + extra_to_allocate), s1, length);
+        }
+a281 1
+
+d283 1
+a283 1
+* parse_territory_callback
+d285 4
+a288 2
+* This routine stores the parsed territories into the global supported_territories
+* array.  It is passed as the callback function to parse_territories.
+d291 2
+a292 1
+*  None.
+d295 1
+a295 3
+*  name:    the territory name
+*  num:     that territory's number
+*  data:    the void* parameter passed to parse_territories
+d298 1
+a298 1
+*  None.
+d305 1
+a305 1
+static void parse_territory_callback(const char *name, unsigned long num, void *data)
+d307 1
+a307 5
+  (void) data;
+  (void) num;
+  printf("territory is %s\n", name);
+  supported_territories[num_of_territories++] = str_rc_dup(name, 0);
+}
+d309 1
+d311 5
+d317 12
+d333 1
+a333 1
+* do_mkdir
+d342 1
+a342 1
+*  dir1          : A pointer to a string containing the root directory to be
+d344 1
+a344 1
+*  dir2          : A pointer to the subdirectory string to create
+d353 1
+a353 1
+static bool do_mkdir(char *dir1, char *dir2)
+d355 1
+a355 10
+  char command[BUFSZ];
+  int len;
+  len = sprintf(command, "mkdir -p %s%c%s", dir1, dir_sep_char, dir2?dir2:"");
+  if (dir2 == NULL) {
+    command[len-1] = '\0'; /* delete the directory separator again */
+  }
+  if (verbose)
+    printf("executing: %s\n", command);
+  return system(command) == 0;
+}
+d357 6
+a362 37
+
+
+
+
+/*****************************************************************************
+* load_unix_directory
+*
+* This routine enumerates the contents of the specified directory and stores
+* the results in 'buf'.  buf has size bufsize, *nread receives the number of
+* entries in the directory.  'buf' is filled with structures as returned by
+* OS_GBPB 10, although not all the data is filled in (only the name and
+* the objct type)
+*
+* Assumptions
+*  the buffer is large enough to receive the details on ALL items.
+*
+* Inputs
+*  dir:     the directory to search (must be writable!)
+*  buf:     to receive the output records
+*  bufsize: size of buf
+*
+* Outputs
+*  nread:   the number of items placed in buf.
+*
+* Returns
+*  Nothing.
+*****************************************************************************/
+#ifndef RISCOS
+void load_unix_directory(char *dir, char *buf, size_t bufsize, int *nread)
+{
+  DIR *d = opendir(dir);
+  char *const leaf = appendleaf(dir, "") + 1;
+
+  *nread = 0;
+
+  if (!d) {
+    err_fail("Unable to open directory '%s'\n", dir);
+d364 1
+a364 48
+
+  for (;;) {
+    struct dirent *de;
+    errno = 0;
+    de = readdir(d);
+    if (de == NULL) {
+      if (errno == 0) {
+        break;
+      }
+      else {
+        err_fail("Unable to read directory '%s': %s\n", dir, strerror(errno));
+        break;
+      }
+    }
+    else {
+      object *op = (object *) buf;
+      int namelen;
+
+      if (de->d_name[0] == '.' && (de->d_name[1] == '\0' || (de->d_name[1] == '.' && de->d_name[2] == '\0'))) {
+        continue;
+      }
+
+      /* Find length of leafname whilst copying it */
+      namelen = sprintf(leaf, "%s", de->d_name);
+
+      if (sizeof(*op) + namelen >= bufsize) {
+        err_fail("out of buffer space in load_unix_directory (directory %s)", dir);
+      }
+      else {
+        struct stat sb;
+
+        op->type = filer_object_type(dir);
+        if (op->type != 1 && op->type != 2) {
+          continue;
+        }
+
+        buf = memcpy(op->name, de->d_name, namelen) + namelen;
+        do {
+          *buf++ = '\0';
+        } while (((int)buf)&STRUCTURE_ALIGNMENT);
+        bufsize -= (buf - (char *)op);
+        ++(*nread);
+      }
+    }
+  }
+
+  (void) closedir(d);
+  leaf[-1] = '\0';
+a365 2
+#endif
+
+d371 1
+a371 1
+* resolve_unix_filetypes
+d373 2
+a374 2
+* This routine examines the specified name to see if the directory contains
+* a filename which matches but with a different RISC OS type.
+d377 2
+a378 1
+*  none
+d384 1
+a384 1
+*  size          : The size of the file (or -1 if unable to find the file)
+d387 2
+a388 1
+*   true if the file existed and the information could be read, false otherwise.
+d391 1
+a391 2
+#ifndef RISCOS
+static bool resolve_unix_filetypes(char *name, unsigned int *size)
+d393 1
+a393 2
+  DIR *d;
+  bool result = false;
+d395 3
+a397 30
+  char *end_of_dir = stripleaf(name);
+  d = opendir(name);
+  *end_of_dir++ = dir_sep_char;
+
+  if (d != NULL) {
+    /* end_of_dir is now the leafname we are looking to match */
+    int type = get_filetype(end_of_dir);
+    /* Calculate the initial amount of string to match */
+    const size_t length = strlen(end_of_dir) - 4 * (type != 0xFFF);
+
+    while (result == false) {
+      struct dirent *de = readdir(d);
+      if (de == NULL) {
+        /* Either an error or end of directory - don't care which */
+        break;
+      }
+      else {
+        if (cnstrcmp(end_of_dir, de->d_name, length) == 0) {
+          /* Might have found a match */
+          char *end_of_d_name = de->d_name + length;
+          if (*end_of_d_name == '\0' || (*end_of_d_name == ',' && strlen(end_of_d_name) == 4)) {
+            /* Found a match, update the filename and return true */
+            (void) strcpy(end_of_dir, de->d_name);
+            result = true;
+          }
+        }
+      }
+    }
+    closedir(d);
+  }
+d399 1
+a399 1
+  return result;
+a400 3
+#endif
+
+
+d406 1
+a406 1
+* retrieve_file_details
+d408 1
+a408 4
+* This routine returns the size of the file represented by the filename
+*  passed in and the filetype.  If the file does not exist but a file
+*  with a different filetype *does* exist, then we *alter* the name
+*  and file in the correct filetype.
+d411 1
+a411 2
+*  This routine falls foul of the normal RISC OS limitation of a file
+*   not being larger than the size of an unsigned integer.
+d414 1
+a414 1
+*  file          : A pointer to the filename
+d417 1
+a417 3
+*  filetype      : The RISC OS filetype
+*  size          : The size of the file
+*  path          : May have been updated on UNIX systems to reflect the real filename
+d420 3
+a422 1
+*   true if the file existed and the information could be read, false otherwise.
+d425 1
+a425 1
+static bool retrieve_file_details(char *name, unsigned int *filetype, unsigned int *size)
+d427 2
+a428 1
+  *size = (unsigned) wf_filesize(name);
+d430 2
+a431 5
+#ifndef RISCOS
+  if (*size == -1 && !resolve_unix_filetypes(name, size)) {
+    return false;
+  }
+#endif
+d433 1
+a433 8
+  if (*size != -1) {
+    /* Derive the filetype */
+    *filetype = get_filetype(name);
+    return true;
+  }
+  else {
+    return false;
+  }
+a439 1
+
+d460 1
+a460 1
+static bool ensure_resource_directories_exist(void)
+d466 1
+a466 1
+    sprintf(buffer, "%s%c%s", root_resources_directory, dir_sep_char, supported_territories[loop]);
+d505 10
+a514 27
+  int type = 0xfff;
+
+#ifdef RISCOS
+  int load_addr;
+  _swi( OS_File, _IN(0)|_IN(1)|_OUT(2), 17, obj, &load_addr );
+  type = (load_addr>>8)&0xFFF;
+#else
+  obj = strrchr(obj, ',');
+  if (obj && strlen(obj) == 4) {
+    int count;
+
+    ++obj;
+
+    if (memcmp(obj, "lxa", 3) == 0) {
+      /* need to load the last 8 bytes to get the load/exec address, then truncate */
+      err_fail("Sorry - I cannot cope with files that have an explicit load+exec address");
+    }
+    else if (memcmp(obj, "xxx", 3) == 0) {
+      err_fail("Files are unstable - being updated whilst this program is running!");
+    }
+    else if (sscanf(obj, "%x%n", &type, &count) > 0 && count == 3) {
+      /* Got one! */
+    }
+    else {
+      /* Not a filetype */
+      type = 0xfff;
+    }
+a515 2
+#endif
+  return (type);
+a531 4
+*   The address of the appended terminator is returned to optimise the
+*   removal (via stripleaf) of this leafname (although NOTE that if 'leaf'
+*   contains directory separators, stripleaf won't overwrite the dir sep
+*   that is returned by this function).
+d541 1
+a541 1
+*  The address of the appended directory separator
+d543 1
+a543 1
+static char *appendleaf( char *path, const char *leaf )
+d545 2
+a546 4
+  path = strchr(path, '\0');
+  *path = dir_sep_char;
+  (void) strcpy(path+1, leaf);
+  return path;
+d560 1
+a560 1
+*  If there are no seperator ('.') characters in the string, then the string
+d570 1
+a570 2
+*  The address of the separator it just obliterated.
+*
+d572 1
+a572 1
+static char *stripleaf( char *path )
+d574 1
+a574 1
+  char *sep = strrchr( path, dir_sep_char );
+d580 82
+d663 1
+a663 1
+  return sep;
+d702 1
+a702 1
+static bool perform_comparisons(char* path_leaf, unsigned int filesize[MAX_OPEN_TERRITORY_FILES], unsigned int filetype[MAX_OPEN_TERRITORY_FILES])
+d704 1
+a704 1
+  FILE* file_handles[MAX_OPEN_TERRITORY_FILES] = { NULL }; /* An array to hold all the file handles */
+d708 2
+d715 1
+a715 1
+  main_list = safe_alloc(sizeof(list_of_lists));
+d722 1
+d726 15
+d750 1
+a755 6
+
+      /* Let's close the files that we *did* manage to open */
+      while (--loop != -1u) {
+        (void) fclose(file_handles[loop]);
+      }
+
+d764 1
+a764 1
+    bool ignore_line = false; /* Set if we wish to ignore a line of a file for some reason. */
+d768 2
+a769 2
+       different due to header differences. Ignore the headers. */
+    if (file_byte_count < sizeof(squash_header_struct))
+d771 1
+a771 1
+      if (filetype[0] == FileType_Squash)
+d822 1
+d827 1
+a827 1
+    *directory_string = '\0'; /* Initialise the string */
+d836 1
+a836 1
+          unsigned long terr_number = return_country_number(supported_territories[this_list->file_num[sublist_loop]]);
+d841 1
+a841 1
+            sprintf(tempstr, "%02ld01", terr_number);
+d846 1
+a846 1
+            sprintf(tempstr, "%02ld", terr_number);
+d860 1
+a860 1
+        strcpy(directory_string, "Common");
+d864 2
+a865 2
+      sprintf(destination_directory, "%s%c%s", root_processed_directory, dir_sep_char, directory_string);
+      do_mkdir (root_processed_directory, directory_string);
+a870 1
+          char src_file[MAX_PATH_SIZE];
+d872 7
+a878 7
+          sprintf(dir_to_create, "%s%c%s", destination_directory, dir_sep_char, path_leaf);
+          (void) stripleaf(dir_to_create);
+          do_mkdir(dir_to_create, 0);
+          sprintf(dir_to_create, "%s%c%s", destination_directory, dir_sep_char, path_leaf);
+          sprintf(src_file, "%s%c%s%c%s", root_resources_directory, dir_sep_char,
+            supported_territories[this_list->file_num[sublist_loop]], dir_sep_char, path_leaf);
+          file_copy(src_file, dir_to_create);
+a901 114
+/* A helper function that puts three bits of a path together optimally
+ * 4 extra bytes are allocated to ensure we have space to append a UNIX filetype indicator
+ * (which is ,xxx)
+ *
+ */
+#pragma no_check_stack
+static char *compare_files_construct_path(const char *part1, const char *part2, const char *part3)
+{
+  const size_t lpart1 = strlen(part1)+1;
+  const size_t lpart2 = strlen(part2)+1;
+  const size_t lpart3 = strlen(part3)+1;
+  char *result;
+
+  result = memcpy(safe_alloc(lpart1 + lpart2 + lpart3 + 4), part1, lpart1);
+  (void) memcpy(result + lpart1, part2, lpart2);
+  (void) memcpy(result + lpart1 + lpart2, part3, lpart3);
+  result[lpart1 + lpart2 - 1] = result[lpart1 - 1] = dir_sep_char;
+
+  return result;
+}
+#pragma check_stack
+
+
+
+
+/*****************************************************************************
+* compare_files
+*
+* This routine takes the path passed in and compares it with the other
+*  resource sets. E.g. if a file ...UK.Foo was passed in, and the LocaleList
+*  was set to UK,France,Germany it would compare ...Common.Foo, ...France.Foo
+*  and ...Germany.Foo.
+* The UK territory, being the first in the localelist, was used as the base for
+*  the Common directory, and therefore must be identical and is not compared
+*  for that reason.
+*
+* Assumptions
+*  This routine alters the global array compared_files[], which contains the
+*   paths to all the files to be compared.
+*  It also deletes the file in the 'common' directory if it was not common, or
+*   in the territory-specific directories if it was common.
+*
+* Inputs
+*  filename:     The name of the file to be compared.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  It returns true if the file exists in all possible resource sets and they
+*   match, false otherwise
+*****************************************************************************/
+static bool compare_files(const char* filename)
+{
+  char* path_segment = NULL;
+  unsigned int length;
+  unsigned int loop;
+  unsigned int filesize[MAX_OPEN_TERRITORY_FILES];
+  unsigned int filetype[MAX_OPEN_TERRITORY_FILES];
+
+  /* Get the segment of the path after the territory. */
+  length = strlen(root_resources_directory);
+  path_segment = (char*)filename+length;
+  length = strlen(supported_territories[0]);
+  path_segment+=length+2;
+
+  /* Now create the other filenames using the known path. */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+//    if (strcmp(supported_territories[loop], directory_to_copy) != 0) /* Ignore the one we copied, as files must be the same. */
+    if (1)
+    {
+      compared_files[loop] = compare_files_construct_path(root_resources_directory, supported_territories[loop], path_segment);
+    }
+    else
+    {
+      /* Store the reference file */
+      compared_files[loop] = str_rc_dup(filename, 4);
+    }
+
+    /* Display all the files that will be parsed if the verbose flag is set. */
+    if (verbose)
+    {
+       printf ("%s\n", compared_files[loop]);
+    }
+
+    if (!retrieve_file_details(compared_files[loop], &filetype[loop], &filesize[loop]))
+    {
+      if (verbose)
+        printf("%s does not exist.\n", compared_files[loop]);
+      return (false);
+    }
+  }
+
+  /* Perform the comparisons...*/
+  perform_comparisons(path_segment, filesize, filetype);
+
+  /* Now free the memory held by all the files... */
+  for (loop=0; loop < num_of_territories; loop++)
+  {
+    if (compared_files[loop])
+    {
+      free (compared_files[loop]);
+      compared_files[loop] = NULL;
+    }
+  }
+
+  return (false);
+}
+
+
+
+
+
+d907 1
+a907 1
+*  files and directories held within it. It can be called recursively to scan
+d924 1
+a924 1
+static void descend(char *path)
+d926 1
+a926 1
+  char *buf = safe_alloc( BUFSZ );
+a936 1
+#ifdef RISCOS
+a938 4
+#else
+      offset = -1;
+      load_unix_directory(path, buf, BUFSZ, &nread);
+#endif
+a943 2
+          char *trunc_char;
+
+d946 1
+a946 1
+            trunc_char = appendleaf( path, op->name );
+d954 1
+a954 1
+            (void) stripleaf( trunc_char );
+d960 1
+a960 1
+            trunc_char = appendleaf( path, op->name );
+d962 1
+a962 1
+            (void) stripleaf( trunc_char );
+d969 1
+a969 1
+        op = (object *)(((int)(op->name)+strlen(op->name)+STRUCTURE_ALIGNMENT+1)&~STRUCTURE_ALIGNMENT);
+d1013 1
+a1013 1
+static bool compare_resources(void)
+d1015 1
+a1015 1
+  static char buffer[BUFSZ];
+d1020 1
+a1020 1
+  sprintf(buffer, "%s%c%s", root_resources_directory, dir_sep_char, supported_territories[0]);
+d1050 1
+a1050 1
+int cstrcmp(const char *first_param, const char *second_param)
+d1052 4
+a1055 2
+        const unsigned char *first = (const unsigned char *) first_param;
+        const unsigned char *second = (const unsigned char *) second_param;
+d1057 2
+a1058 2
+        if (first == second) return 0;
+        if (first == NULL || second == NULL) return -1;
+d1060 6
+a1065 12
+        for (;;) {
+                unsigned int a = *first++;
+                unsigned int b = *second++;
+
+                if (a == 0) return -b;
+                if (a != b) {
+                        unsigned int c = (unsigned int) tolower(a);
+                        unsigned int d = (unsigned int) tolower(b);
+                        signed int result = c - d;
+                        if (result != 0) return result;
+                }
+        }
+a1069 44
+/*****************************************************************************
+* cnstrcmp
+*
+* This routine compares two string caselessly.
+*
+* Assumptions
+*  State any assumptions and side effects (eg. globals changed)
+*
+* Inputs
+*  a:            The first string to be compared.
+*  b:            The second string to be compared.
+*  limit:        The maximum number of characters to compare
+*
+* Outputs
+*  None.
+*
+* Returns
+*  0 if both strings are NULL, or both strings are (ignoring case) identical.
+*  -1 if one (but not both) of the strings are NULL.
+*  Any other value if the strings are different.
+*****************************************************************************/
+
+static int cnstrcmp(const char *first_param, const char *second_param, size_t limit)
+{
+        const unsigned char *first = (const unsigned char *) first_param;
+        const unsigned char *second = (const unsigned char *) second_param;
+
+        for (;limit;--limit) {
+                unsigned int a = *first++;
+                unsigned int b = *second++;
+
+                if (a == 0) return -b;
+                if (a != b) {
+                        unsigned int c = (unsigned int) tolower(a);
+                        unsigned int d = (unsigned int) tolower(b);
+                        signed int result = c - d;
+                        if (result != 0) return result;
+                }
+        }
+
+        return 0;
+}
+
+
+d1090 1
+a1090 1
+static void help_text(void)
+d1092 13
+a1104 14
+  puts(
+  "ResCommon\n"
+  "\n"
+  "Usage: ResCommon <root resources dir> <root processed dir> [-t <territory_list>] [-v -h -s]\n\n"
+  "Commands: <root resources dir> Where to get the resources files for each territory from.\n"
+  "Commands: <root processed dir> Where to place all the resource files after commonalities have been detected.\n"
+  "Options:  -t <territory_list>  A comma-seperated list of territories to use.\n"
+  "          -v                   Verbose. Display verbose output on what the utility is doing.\n"
+  "          -h                   Help. Display help text.\n"
+  "          -s                   Simulate. Do not delete any files.\n"
+  "\n"
+  "This utility looks for common resources held in different territories and places them in relevant directories. \n"
+  "This allows as many different resource sets as possible to be squeezed into one ROM image.\n"
+  "\n");
+d1134 1
+d1138 1
+a1138 1
+  /* Not needed: atexit(exit_handler); */
+d1140 5
+a1144 3
+  shared_init(argc, argv);
+  host_init();
+  dir_sep_char = host_dir_sep_char();
+d1154 1
+a1154 1
+    else if ((cstrcmp(argv[i], "-v") == 0) || (cstrcmp(argv[i], "-verbose") == 0))
+d1156 1
+a1156 1
+      verbose = true;
+d1158 1
+a1158 1
+    else if ((cstrcmp(argv[i], "-t") == 0) || (cstrcmp(argv[i], "-territories") == 0))
+d1161 8
+a1168 3
+      char* const list = str_rc_dup(argv[++i], 0);
+      (void) parse_territories(list, parse_territory_callback, NULL);
+      free(list);
+d1170 1
+a1170 1
+    else if ((cstrcmp(argv[i], "-s") == 0) || (cstrcmp(argv[i], "-simulate") == 0))
+d1172 4
+a1175 15
+      simulate = true;
+    }
+    else if ((argv[i])[0] == '-') {
+      fprintf(stderr, "Unknown option '%s'\n", argv[i]);
+      exit(EXIT_FAILURE);
+    }
+    else if (root_resources_directory == NULL) {
+      root_resources_directory = str_rc_dup(argv[i], 0);
+    }
+    else if (root_processed_directory == NULL) {
+      root_processed_directory = str_rc_dup(argv[i], 0);
+    }
+    else {
+      root_processed_directory = NULL;
+      break;
+a1178 6
+  if (root_processed_directory == NULL)
+  {
+    fprintf(stderr, "Usage: ResCommon <root resources dir> <root processed dir> [-t <territory_list>] [-v -h -s]\n");
+    exit (EXIT_FAILURE);
+  }
+
+d1180 1
+d1185 1
+d1204 1
+a1204 1
+  if (num_of_territories == 0)
+d1206 1
+a1206 1
+    if (!parse_territories(NULL, parse_territory_callback, NULL))
+d1209 1
+a1209 1
+      printf("Malformed locale list detected.");
+d1212 2
+d1216 1
+a1216 1
+  /* If there are no territories something has gone wrong. Flag this up. */
+d1225 1
+a1225 1
+     no comparisons to be made. This will speed up single-territory builds. */
+d1229 1
+a1229 1
+    char dest[MAX_PATH_SIZE];
+d1232 3
+a1234 1
+    do_mkdir(root_processed_directory, "Common");
+d1236 4
+a1239 4
+    sprintf(buffer, "%s%c%s", root_resources_directory, dir_sep_char, supported_territories[0]);
+    sprintf(dest,   "%s%c%s", root_processed_directory, dir_sep_char, "Common");
+    if (verbose) printf("Copying %s as %s ...\n", buffer, dest);
+    exit (file_copy(buffer, dest) ? EXIT_SUCCESS : EXIT_FAILURE);
+d1243 7
+a1249 7
+     the other territories onto it. This is because a ROM build should always
+     have a UK territory in it (the Kernel default value for territory is 01, so
+     doing a reset on a build with no UK resources in causes ROM initialisation to
+     fail). Mapping a territory to UK (for example making Germany 0701) means that
+     the ROM thinks that the UK resources are present, although in reality it is
+     using the German resource set. This will allow the NC to boot correctly after
+     a delete-poweron has been performed. */
+a1260 1
+  common_directory = safe_alloc ((num_of_territories*3)+1);
+d1263 2
+a1264 1
+    sprintf(common_directory, "%02ld", return_country_number(supported_territories[0]));
+d1268 3
+a1270 2
+    unsigned int loop;
+    char *end = common_directory;
+d1273 4
+a1276 1
+      end += sprintf(end, "%02ld", return_country_number(supported_territories[loop]));
+d1280 1
+a1280 1
+        end += sprintf(end, "01");
+a1294 6
+
+  /* Whee ! */
+  exit(EXIT_SUCCESS);
+
+  /* Now some references to avoid compiler warnings */
+  (void) cnstrcmp;
+a1309 2
+*  (SNB: except that the author didn't know that malloc'ed memory is discarded
+*         automatically on process exit?? )
+a1319 1
+#if 0
+d1366 1
+a1366 1
+#endif
+d1405 5
+a1409 1
+  const unsigned int *file_contents_ptr = file_contents;
+d1412 1
+a1412 1
+  for (file_contents_loop=1; file_contents_loop<num_of_territories; file_contents_loop++)
+d1414 1
+a1414 2
+    const unsigned int previous_word = *file_contents_ptr++;
+    if (*file_contents_ptr != previous_word)
+d1416 5
+a1420 2
+      file_contents_identical=false;
+      break; // Quit loop early - we have proved file_contents is not identical.
+a1426 5
+    /* Create a temp list which data can be stored in. */
+    list_of_lists* temp_list = safe_alloc(sizeof(list_of_lists));
+
+    main_list_initialise(temp_list, num_of_territories);
+
+a1436 3
+
+    /* Free up the memory holding the temporary list */
+    free (temp_list);
+d1439 2
+d1449 1
+a1449 1
+I have left it in as it may be of use to maintainers of code in the future. */
+d1472 1
+a1472 1
+  main_list = safe_alloc(sizeof(list_of_lists));
+d1489 1
+a1489 1
+    list_of_lists* temp_list = safe_alloc(sizeof(list_of_lists));
+d1661 1
+a1661 1
+  bool char_array_pos_filled[MAX_TERRITORIES] = { false };
+d1717 49
+d1802 1
+a1802 1
+directory over to the processed directory, meaning that the scanning does not
+@
+
+
+4.9.2.2
+log
+@  Several utilities modified to return 0 from main() explicitly.
+  Couple of NULL pointer bugs fixed.
+Detail:
+  UNIX builds stopped with "errors" because of the random numbers being
+    treated as process return values.
+  ResCommon and MsgExt both contained NULL pointer dereferences - these
+    have been fixed (they cause seg faults on UNIX; RISC OS builds are
+    just lucky to get away with it)
+Admin:
+  Run over a test resources directory and the output data file was built
+    successfully.  It still remains to be seen whether the output file is
+    sensible and matches that produced by a RISC OS build.
+
+
+Version 1.05, 4.25.2.2. Tagged as 'Messages-1_05-4_25_2_2'
+@
+text
+@d170 1
+a170 1
+static bool do_mkdir(char *dir1);
+d330 1
+d336 1
+a336 1
+*  A boolean describing whether or not the system call was called successfully.
+d339 1
+a339 1
+static bool do_mkdir(char *dir1)
+d341 5
+a345 19
+#ifdef RISCOS
+  return (_swix(OS_File, _INR(0,1)|_IN(4), 8, dir1, 256) == NULL);
+#else
+  if (mkdir(dir1, 0755) < 0) {
+    if (errno == EEXIST) {
+      return true;
+    }
+    else {
+      char *last_dir_sep = stripleaf(dir1);
+      fprintf(stderr, "mkdir fails: %s - trying parent\n", strerror(errno));
+      if (last_dir_sep) {
+        bool result = do_mkdir(dir1);
+        *last_dir_sep = dir_sep_char;
+        return result;
+      }
+      else {
+        return false;
+      }
+    }
+d347 3
+a349 4
+  else {
+    return true;
+  }
+#endif
+d914 1
+a914 1
+      do_mkdir (destination_directory);
+d924 1
+a924 1
+          do_mkdir(dir_to_create);
+d1021 10
+a1030 1
+    compared_files[loop] = compare_files_construct_path(root_resources_directory, supported_territories[loop], path_segment);
+d1456 2
+a1460 2
+    /* Ensure the relevant directory exists. */
+    do_mkdir(dest);
+@
+
+
+4.9.2.3
+log
+@  Change to the directory creation in ResCommon to make it properly
+    recursive.
+Detail:
+  If directory creation fails, try to create the parent, then try again
+    to create the directory.  Applied recursively, this avoids the need
+    to shell out to "mkdir -p" when most of the time the directories are
+    going to exist anyway.
+Admin:
+  Tested - manages to build a Messages module data block, but we never
+    got around to testing whether it contains the same things that a
+    RISC OS hosted build would put in.  A straight diff does not work
+    due to directory contents enumeration orders differing on RISC OS
+    and UNIX.
+
+
+Version 1.05, 4.25.2.3. Tagged as 'Messages-1_05-4_25_2_3'
+@
+text
+@d16 1
+a16 1
+* $Id: ResCommon,v 4.9.2.2 2001/06/28 13:28:33 sbrodie Exp $
+d349 1
+a352 8
+        if (result == true) {
+          if (mkdir(dir1, 0755) < 0) {
+            if (errno != EEXIST) {
+              fprintf(stderr, "mkdir fails: %s\n", strerror(errno));
+              result = false;
+            }
+          }
+        }
+@
+
+
+4.8
+log
+@	ResCommon now allows resource sets *not* to have UK in them.
+
+Detail:
+	On a delete-poweron, the default territory is set to UK (01). On
+startup the messages module looks at all the registered ResourceFS blocks and
+uses the ones containing the currently territory.
+	Unfortunately if the territories in the build do not include the UK
+resource set, this means that no resources are allocated, and hence the
+machine does not boot up in varies weird and wonderful ways (usually by the
+WIMP failing to initialise).
+	To overcome this limitation, if the territory list in the ROM does
+not include UK, then the UK territory code is added to the first territory's
+resource blocks. This means that the country code 01 is present in the ROM,
+but it does not point to the UK territory. This allows the ROM to boot up.
+	The code in ResCommon and ScanRes have been tidied.
+	Added a file explaining how the resource differencing within
+ResCommon works into a Docs directory.
+
+Admin:
+	Tested in Bethany and Lazarus builds. Builds containing UK resource
+blocks still work, and ones without it work, and default to the first
+territory in the territory list after a delete-poweron.
+
+Version 0.98. Tagged as 'Messages-0_98'
+@
+text
+@d16 2
+a17 2
+* $Id: ResCommon,v 4.7 2000/08/13 15:53:01 dcotton Exp $
+* $Name: Messages-0_97 $
+d1216 1
+d1224 18
+d1648 1
+d1650 1
+a1650 1
+  We use arrays rather than lnked lists for two reasons:
+a1656 2
+
+
+d1792 5
+a1796 4
+directory.   11) There should always be a 'common' directory, called
+'Common'. In the case of single-territory builds, this will be the territory
+itself. In the case of multiple territory builds, this will be the 'common'
+directory (e.g. 0107 for UK and German builds).
+d1800 5
+a1804 3
+resource set is the UK set, even if it is not. */
+
+
+@
+
+
+4.7
+log
+@	Uodated ScanRes and ResCommon.
+
+Detail:
+	ScanRes now uses Service_International rather than the
+Territory_NameToNumber swi. Also added the caseless strcmp() routine to allow
+certain string comparisons to work.
+	ResCommon now places resources that are common between all the
+resource sets into a 'Common' directory, rather than in a numeric form. This
+allows ScanRes to place them in the '00' directory that the messages module
+expects on start-up.
+
+Admin:
+	Tested in Bethany and Lazarus builds.
+
+Version 0.97. Tagged as 'Messages-0_97'
+@
+text
+@d16 2
+a17 2
+* $Id: ResCommon,v 4.5 2000/06/20 12:57:07 dcotton Exp $
+* $Name:  $
+d69 2
+a70 1
+#define MAX_OPEN_TERRITORY_FILES 10   /* This value matches the available number of territories defined in the spec */
+a71 1
+#define MAX_TERRITORIES 10            /* As defind in the spec. */
+d104 2
+a105 2
+
+
+d112 3
+d136 2
+a137 2
+bool verbose = false; /* Do you wish to see what it is doing */
+bool simulate = false; /* Do not actually delete any files. */
+d139 1
+d253 1
+a253 1
+* malloc an area for a string and copy the string in
+d332 21
+a352 3
+/*
+ * make directory
+ */
+d370 21
+a390 3
+/*
+ * return the size of a file in bytes
+ */
+d405 20
+a424 3
+/*
+ * read an environment variable in to a malloced string
+ */
+a713 34
+  /* There can be up to num_of_territories (e.g. 5) lists of equiavalent
+files. If there are 5, then all the files must be different. If there is one
+list, then they must all be identical.
+     We start off with one list, and as long as all the files are identical
+it remains one list.
+     If there is one difference in the list, then that goes into a list on
+its own and gets ignored for the rest of the process. If there is more than
+one file with identical changes, then the list gets split accordingly. E.g.:
+
+  File:       1 2 3 4 5
+  Byte 0:     A A A A A    Lists  12345
+       1:     B B C A A    Lists  12  3  45
+       2:     B B C A A    Lists  12  3  45
+       3:     A D C B B    Lists  1   2   3   45
+       4:     A D C B A    Lists  1   2   3   4   5
+       We do not need to continue in this file, as all lists are different.
+
+  or:
+  Byte 0:    A A A A A   Lists    12345
+       1:    C C E E E   Lists    12  345
+       2:    A C D F F   Lists    1   2   3   45
+
+     This therefore splits down into the following algorithm:
+     * For each active (i.e. contains more than one file) list:
+       * If all bytes are identical move onto next list.
+         * If not, then split into lists as appropriate
+
+     * If all active lists have been checked, read in next bytes from all files and repeat.
+
+     When comparing the bytes, there are (2^n)-1 possible combinations that
+can be made, i.e. for 5 there are 31 possible combinations that need to be
+checked. For 3 there are only 8 checks needed.
+*/
+
+a772 1
+        //printf("Ignoring byte %d of a squash file.\n", file_byte_count);
+d816 2
+a817 1
+  /* Collate the result into a series of directories that the file have to be copied into. */
+d820 3
+a822 3
+    char directory_string[(MAX_TERRITORIES*2)+1]; /* Each territory can have two characters, and string needs a terminator */
+    char destination_directory[MAX_PATH_SIZE]; /* Nasty hardcoded limit */
+    char buffer[MAX_PATH_SIZE];                /* Another nasty hardcoded limit. */
+d825 2
+a826 1
+    /* Create the directory string relating to this particular list of directories */
+d835 1
+a835 1
+          char tempstr[5];
+d838 11
+a848 2
+          sprintf(tempstr, "%02d", terr_number);
+          strcat(directory_string, tempstr);
+d852 4
+a855 1
+      /* If the directory string is the same as the common one, change it to '00' */
+a880 1
+
+d1135 1
+a1135 1
+  unsigned int i;
+d1223 18
+d1258 5
+a1264 1
+
+d1702 24
+a1725 7
+/*
+ Return the country code number of a passed in country.
+ Returns -1 if it is not a valid country. Note that build machines that wish
+  to use utilities that inclue this routine should ensure that they have the
+  latest version of the Territory module so that they can ensure they are
+aware of all the latest Name->number mappings.
+*/
+d1749 8
+a1756 4
+   3) Implement a system where all the files in all the resource directories are listed. Use this list to search for the files, and not scanning through one individual directory. Currently if a file is not present in the main resource directory being scanned but is present in one of the other resource directories, then it will not be scanned.
+   4) As part of 3) above, ensure that if a file is not present the system still works.
+   6) If there is only one territory, none of the above should happen, and the resources should be copied straight into the relevant territory directory.
+  11) There should always be a 'common' directory, called '00'. In the case of single-territory builds, this will be the territory itself. In the case of multiple territory builds, this will be the 'common' directory (e.g. 0107 for UK and German builds).
+d1759 6
+a1764 2
+   2) A common case is for all files to be identical; catch the case where all bytes in a line of the file are identical early and drop out without doing the laborious list calculations.
+   10) Convert the char array that is read fromthe file to integers. This will allow filetypes and filesizes to be compared, as well as the actual file contents.
+d1767 4
+a1770 1
+   5) Ensure that the created resource directories are in the processed directory, not the resources one as they are at present. Do this by altering the command-line arguments so that the required processed directory is passed in as a flag.
+d1772 10
+a1781 1
+*/
+@
+
+
+4.6
+log
+@	Yet more magic ways of fitting even more territory resources into one
+build.
+
+Detail:
+	We now need to fit five resource sets into the first Bethany ROM
+image. The previous simple scheme that I implemented did not allow this, so
+the ResCommon utility has been extensively overhauled to detect more
+commonality between resource sets and hence reduce the ROM requirements for
+the resources.
+	For instance if there are three files, each containing a byte as
+follows:
+	File:	1	2	3
+	Data:	A	B	A
+	Then files 1 and 3 will be common, whilst 2 would have it's own,
+individual, version of the file.
+	This process is undertaken for all files in the resource sets. For a
+Bethany build with five territories (and hence resource sets) this parsing
+takes about seven minutes to calculate all commonality and copy the files
+into the correct processed directories on a RiscPC with RapIde interface.
+
+Admin:
+	Tested in Bethany builds with 3 and 5 different resource sets, and in
+Lazarus builds with 1 resource set. This all appears to work correctly, with
+please use with caution; the first time you do a build with this version,
+check the resources in the build to ensure that they at least look correct
+with nothing missing.
+	There are some limitations of the current system; for more detais of
+these please see the 'ToDo' comments at the end of the ResCommon sources.
+
+Version 0.96. Tagged as 'Messages-0_96'
+@
+text
+@d135 1
+a135 1
+
+a694 1
+//  list_create_new(main_list, 'a', num_of_territories);
+d819 8
+d1185 21
+a1205 1
+    exit (EXIT_SUCCESS); /* Success as the program should do nothing if there is no localelist. */
+d1208 2
+d1282 7
+d1678 1
+a1678 1
+
+@
+
+
+4.5
+log
+@	Minor changes to ResCommon and ScanRes
+Detail:
+	Added more comments to ResCommon and added a few more run-time checks
+for incorect parameters. Corrected a comment in ScanRes.
+Amin:
+	Tested in a Bethany build.
+
+Version 0.95. Tagged as 'Messages-0_95'
+@
+text
+@d16 1
+a16 1
+* $Id: ResCommon,v 4.4 2000/06/15 10:39:17 dcotton Exp $
+d36 1
+a36 1
+*           out all the common files into a Common directory.
+d60 1
+d73 1
+d104 15
+d129 2
+a130 1
+char* root_directory = NULL;
+a147 1
+void create_common(const char* res_to_copy);
+d152 1
+a152 2
+bool remove_file(const char* file_to_remove);
+bool perform_comparisons(void);
+d155 1
+a155 1
+int  cstrcmp(const char *a, const char *b);
+d159 14
+a172 1
+bool is_directory_empty(const char* directory);
+d388 1
+a388 1
+*  <root_directory>.<territory_name> is a valid directory.
+d401 1
+a401 1
+*   locationm false otherwise.
+d409 1
+a409 1
+    sprintf(buffer, "%s.%s", root_directory, supported_territories[loop]);
+a424 45
+/*****************************************************************************
+* create_common
+*
+* This routine creates the 'common' directory, and copies the resources from
+*  the res_to_copy resource set recursively into it.
+*
+* Assumptions
+*  That res_tp_copy points to a valid territory that exists in the resource
+*   set.
+*  This routine use filer operations to create directories and copy files; as
+*   such it is open to the vagaries of available disc space, pre-existing
+*   files etcetera. No checks are made as for whether or not any of these
+*   operations failed.
+*
+* Inputs
+*  res_to_copy:  The resource set to use as the copy; this will get copied
+*                 into the 'Common' directory.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  None.
+*****************************************************************************/
+void create_common(const char* res_to_copy)
+{
+  char buffer[255]; /* another nasty hardcoded limit */
+  char source[255];
+  char dest[255];
+
+  /* Create the common directory */
+  sprintf(dest, "%s.Common", root_directory);
+  mkdir (dest, 0);
+  printf ("Creating directory %s\n", dest);
+
+  sprintf(source, "%s.%s", root_directory, res_to_copy);
+  printf ("Copying from %s to %s\n", source, dest);
+
+  /* Copy the resources over into the common directory. */
+  sprintf(buffer, "copy %s %s r~v~cf", source, dest);
+  system(buffer);
+}
+
+
+
+d559 1
+a559 1
+  char* path_segment;
+a561 6
+  bool matches = false;
+
+  if (verbose)
+  {
+    printf("Comparing with %s\n", filename);
+  }
+d564 1
+a564 1
+  length = strlen(root_directory);
+d566 1
+a566 1
+  length = strlen("Common");
+d574 1
+a574 2
+      sprintf(buffer, "%s.%s.%s", root_directory, supported_territories[loop], path_segment);
+      //printf("Comparing with %s\n", buffer);
+d584 1
+d594 1
+a594 17
+  if (!perform_comparisons())
+  {
+    /* Delete the files from the 'Common' directory */
+    matches = false;
+    remove_file(filename);
+  }
+  else
+  {
+    /* Delete the files from the other directories apart from the 'Common' one. */
+    matches = true;
+    /* Recurse through all the territories... We should just be left with the 'common' one in this case. */
+    for (loop=0; loop < num_of_territories; loop++)
+    {
+      sprintf(buffer, "%s.%s.%s", root_directory, supported_territories[loop], path_segment);
+      remove_file(buffer);
+    }
+  }
+d596 1
+a596 1
+  /* Now free the memory... */
+d606 1
+a606 1
+  return (matches);
+a611 49
+/*****************************************************************************
+* remove_file
+*
+* Ths routine does exactly what it says on the tin - it removes the
+*  specified file. It returns true if successful, false otherwise.
+* If the global 'simulate' flag is set, then the file is not actually
+*  deleted. This is useful if you wish to see what it will do before
+*
+* Assumptions
+*  If the global flag 'simulate' is set then the file does not actualy get
+*   deleted. This is handy fo testing the functionality of this utility
+*   without having to regenerate resource tree each time.
+*  If the global flag 'verbose' is set then the routine displays a diagnostic
+*   statinf which file is being deleted.
+*
+* Inputs
+*  file_to_remove: The name of the file to be removed.
+*
+* Outputs
+*  None.
+*
+* Returns
+*  true if the file was deleted, false otherwise.
+*****************************************************************************/
+
+bool remove_file(const char* file_to_remove)
+{
+  bool success = false;
+  _kernel_swi_regs reg;
+
+  if (verbose)
+    printf("Removing file %s\n", file_to_remove);
+
+  if (!simulate)
+  {
+    reg.r[0] = 6;		/* remove object */
+    reg.r[1] = (int) file_to_remove;
+    _kernel_swi(OS_File, &reg, &reg);
+    success = true;
+  }
+
+  return (success);
+}
+
+
+
+
+
+
+d621 1
+a621 1
+*   3) Read all th files byte-by-byte, compareing them, until a difference
+d624 1
+a624 1
+* Note that files of type Squash asre treated differently due to the fact
+d627 5
+d645 1
+a645 1
+bool perform_comparisons(void)
+d650 1
+d653 43
+d700 1
+d708 1
+d711 4
+d716 1
+a716 1
+    /* Compare the filetypes and fileseizes */
+a718 6
+    if (loop > 0 && ((filesize[loop] != filesize[loop-1]) || filetype[loop] != filetype[loop-1]))
+    {
+      if (verbose)
+        printf("No match: differing file sizes or types!\n");
+      return (false);
+    }
+d721 3
+a723 14
+  /* Another check - if the files are squash files, then they will always be
+      different. Check the headers of each file to ensure they are the same. */
+  if (filetype[0] == FileType_Squash)
+  {
+    return (compare_squash_files()); /* We hsve no need to continue. */
+  }
+
+  /* In the future we may wish to treat spritefiles differently. This is a
+      conditional to check for the presence of a spritefile. */
+  if (filetype[0] == FileType_Sprite)
+  {
+    /* Do some magic munging here. We could possibly split all common sprites
+        held within the spritefiles into a 'common' file to save ROM space. */
+  }
+d741 25
+a765 3
+    char bytes[MAX_OPEN_TERRITORY_FILES]; /* To hold the bytes from all the files... */
+    bytes[MAX_OPEN_TERRITORY_FILES-1]='\0';
+    for (loop=0; loop < num_of_territories; loop++)
+d767 11
+a777 2
+      bytes[loop] = getc(file_handles[loop]);
+      if (loop > 0 && (bytes[loop] != bytes[loop-1]))
+d779 4
+a782 1
+        file_matches = false;
+d788 54
+d851 3
+d910 1
+a910 1
+              printf ("Not matched: %s\n", path);
+d954 2
+a955 2
+*  That root_directory exists, and that BUFSZ is large enoguh to hold a
+*   string of length strlen(root_directory)+strlen(".Common"). Because it is
+d958 1
+a958 1
+*   structure below root_directory.
+d975 1
+a975 1
+  assert(root_directory);
+d978 1
+a978 1
+  sprintf(buffer, "%s.Common", root_directory);
+d1052 7
+a1058 6
+  printf ("Usage: ResCommon <root dir> [-t <territory_list>] [-v -h -s]\n");
+  printf ("Commands: <root dir> n");
+  printf ("Options:  -t <territory_list> A comma-seperated list of territories to use.\n");
+  printf ("          -v                  Verbose. Display verbose output on what the utility is doing.\n");
+  printf ("          -h                  Help. Display help text.\n");
+  printf ("          -s                  Simulate. Do not delete any files.\n");
+d1060 1
+a1060 1
+  printf ("This utility looks for common resources held in different territories and palces them in a 'Common' directory. \n");
+d1095 4
+a1098 1
+  if (argc < 2)
+d1100 1
+a1100 1
+    fprintf(stderr, "Usage: ResCommon <root dir> [-t <territory_list>] [-v -h -s]\n");
+a1103 3
+  /* Define an atexit handler */
+  atexit(exit_handler);
+
+d1138 1
+a1138 1
+  root_directory = strdup(argv[1]);
+d1140 1
+a1140 1
+    printf("root directory is %s\n", root_directory);
+d1142 13
+a1154 2
+  /* Ensure that root directory is a directory. */
+  if (filer_object_type(root_directory) != 2)
+d1156 1
+a1156 1
+    fprintf(stderr, "Error: %s should be a directory.\n", argv[1]);
+d1188 1
+a1188 5
+  /* Copy the UK directory into the Common one. */
+  directory_to_copy = strdup(supported_territories[0]);
+  create_common(directory_to_copy);
+
+  /* And now do the compariasons... */
+d1240 2
+a1241 2
+  /* Free the root directory */
+  if (root_directory)
+d1243 9
+a1251 2
+    free (root_directory);
+    root_directory = NULL;
+d1258 4
+d1263 1
+a1263 1
+* compare_squash_files
+d1265 5
+a1269 5
+* This routine scans a number of squash files and returns whether or not they
+*  are identical. This is necessary because identical files can be squahed
+*  at different times and end up with different timestamps and load/exec
+*  addreses due to when the Squash files were created. Therefore we ignore the
+*  timestamp and exec data held in the Squashfile header.
+d1272 2
+a1273 4
+*  That the compared_files[] array contains num_of_territories files, and
+*  that these files point to files of type Squash (&FCA). It also assumes
+*  that the files are able to be opened for reading.
+*  The routine should not alter the contents of any of the files.
+d1276 4
+a1279 1
+*  None.
+d1282 1
+a1282 1
+*  None.
+d1285 1
+a1285 1
+*  A boolean stating wether or not the files are identical.
+d1287 67
+d1355 1
+a1355 1
+bool compare_squash_files(void)
+d1357 12
+a1368 12
+  bool file_matches = true;
+  unsigned int loop;
+  FILE* file_handles[MAX_OPEN_TERRITORY_FILES]; /* An array to hold all the file handles */
+  squash_header_struct hdr[MAX_OPEN_TERRITORY_FILES];
+  /* Squash file header is as follows: (PRM 4 appendix E):
+  char[4] id      (should be SQSH)
+  int size
+  int load_addr
+  int exec_addr
+  int reserved    (should be 0)
+  We would expect exec_addr to be different even if the two files are identical.
+  */
+d1370 3
+a1372 2
+  /* Open all the files. */
+  for (loop=0; loop < num_of_territories; loop++)
+d1374 26
+a1399 3
+    assert (compared_files[loop] != NULL); /* Check we are not going to try to open a NULL pointer... */
+    /* Open the file.. */
+    if ((file_handles[loop]=fopen(compared_files[loop],"r")) == NULL)
+d1401 2
+a1402 3
+      if (verbose)
+        printf("Error opening file %s for reading.\n", compared_files[loop]);
+      return (false); /* If we can't open it, we are no bothered... (atm neway)*/
+d1404 2
+d1408 15
+a1422 2
+  /* Read in the header for all the files. */
+  for (loop=0; loop < num_of_territories; loop++)
+d1424 4
+a1427 2
+    printf ("%s is a squash file...\n", compared_files[loop]);
+    if (fread (&hdr[loop], sizeof(squash_header_struct), 1, file_handles[loop]) == 0)
+d1429 1
+a1429 1
+      printf("Read of the header for file %s failed.\n", compared_files[loop]);
+d1431 48
+a1478 1
+    else
+d1480 1
+a1480 12
+      if (loop > 0 && ((hdr[loop].size != hdr[loop-1].size) || (hdr[loop].load_addr != hdr[loop-1].load_addr))) /* We are not bothered with exec_addr as it contains the datestamp */
+      {
+        file_matches = false;
+        break;
+      }
+      if (verbose)
+      {
+        printf("Size      for file %d is %0x\n", loop, hdr[loop].size);
+        printf("Load addr for file %d is %0x\n", loop, hdr[loop].load_addr);
+        printf("Exec addr for file %d is %0x\n", loop, hdr[loop].exec_addr);
+        printf("reserved  for file %d is %0x\n", loop, hdr[loop].reserved);
+      }
+d1484 11
+a1494 2
+  /* Now go through the rest of the file and do a byte-by-byte comparison... */
+  while (!feof(file_handles[0]))
+d1496 3
+a1498 3
+    char bytes[MAX_OPEN_TERRITORY_FILES]; // To hold the bytes from all the files...
+    bytes[MAX_OPEN_TERRITORY_FILES-1]='\0';
+    for (loop=0; loop < num_of_territories; loop++)
+d1500 1
+a1500 2
+      bytes[loop] = getc(file_handles[loop]);
+      if (loop > 0 && (bytes[loop] != bytes[loop-1]))
+d1502 1
+a1502 3
+        // printf ("File %s do not match!\n", compared_files[loop]);
+        file_matches = false;
+        break;
+d1505 1
+d1507 4
+d1512 9
+a1520 2
+  /* Close all the files */
+  for (loop=0; loop < num_of_territories; loop++)
+d1522 3
+a1524 1
+    if (file_handles[loop])
+d1526 3
+a1528 1
+      fclose(file_handles[loop]);
+d1532 1
+a1532 1
+  return (file_matches);
+d1536 6
+d1546 2
+a1547 21
+/*****************************************************************************
+* is_directory_empty
+*
+* This routine attempts to read the number of objects held in the directory
+*  passed in. Ir returns true *only* if the object passed in is a directory
+*  and there are no objects held within the directory.
+*
+* Assumptions
+*  None.
+*
+* Inputs
+*  directory   : The directory to be scanned.
+*
+* Outputs
+*  None        : directory is a constant pointer.
+*
+* Returns
+*  This routine returns true if the directory has no entries or is not a
+*   valid directory, othrwise it returns true.
+*****************************************************************************/
+bool is_directory_empty(const char* directory)
+d1549 2
+a1550 1
+  bool is_empty = false;
+d1552 1
+a1552 1
+  if (filer_object_type(directory) == 2) /* It is a directory. */
+d1554 4
+a1557 4
+    /* Is directory empty? */
+    char *buf = malloc( BUFSZ );
+    int offset = 0;
+    if ( buf != NULL )
+d1559 25
+a1583 4
+      int nread;
+      _swi( OS_GBPB, _IN(0)|_IN(1)|_IN(2)|_IN(3)|_IN(4)|_IN(5)|_IN(6)|_OUT(3)|_OUT(4),
+              10, directory, buf, 80, offset, BUFSZ, 0, &nread, &offset );
+      if (verbose)
+d1585 2
+a1586 1
+        printf ("Number of files in directory %s is %d\n", directory, nread);
+d1588 1
+a1588 2
+      free (buf);
+      if (nread == 0) /* There were no entries */
+d1590 8
+a1597 1
+        is_empty=true;
+d1599 1
+d1602 27
+d1630 1
+a1630 3
+  {
+    printf ("Warning: %s is not a directory.\n", directory);
+  }
+d1632 1
+a1632 1
+  return (is_empty);
+d1637 20
+d1660 1
+@
+
+
+4.4
+log
+@	Bug fixed and general tidying.
+
+Detail:
+	Some redundant code had been left in ResCommon, which caused the
+resource sets to be incomplete. This code as been removed.
+	ResCommon has had many comments added explaining what is going on,
+along with associated code tidying.
+
+Admin:
+	Tested in Lazarus and Bethany builds. Requires srcbuild 0.21 or
+later. Appears to be stable, but use with caution.
+
+Version 0.94. Tagged as 'Messages-0_94'
+@
+text
+@d16 1
+a16 1
+* $Id: ResCommon,v 4.3 2000/06/13 16:53:48 dcotton Exp $
+d34 1
+a34 1
+*           the Multiple Resource sets in RISC OS ROMS (see spec ****,***).
+d125 1
+a125 1
+bool parse_territories(const char* const territory_line);
+d131 1
+a131 1
+int  get_filetype(const char* const obj);
+a149 20
+/*****************************************************************************
+* FunctionName
+*
+* Description of the function
+*
+* Assumptions
+*  State any assumptions and side effects (eg. globals changed)
+*
+* Inputs
+*  variablename: describe variable, range of inputs, etc. List variables in
+*                the same order that they appear in the function definition.
+*
+* Outputs
+*  variablename: describe variable, range of outputs, etc. List variables in
+*                the same order that they appear in the function definition.
+*
+* Returns
+*  describe possible return values, etc.
+*****************************************************************************/
+
+d272 1
+a272 1
+bool parse_territories(const char* const territory_line)
+d395 25
+a419 1
+/* This routine creates the 'common' directory, and moves the sources in. */
+d441 22
+a462 2
+/* This routine returns the filetype of the object. */
+int get_filetype(const char* const obj)
+d464 11
+a474 4
+  int type, load_addr;
+  _swi( OS_File, _IN(0)|_IN(1)|_OUT(2), 17, obj, &load_addr );
+  type = (load_addr>>8)&0xFFF;
+  return (type);
+d483 19
+a501 2
+/* Append leaf to path.
+ */
+d510 21
+a530 2
+/* Strip leaf from path.
+ */
+d535 1
+a535 1
+  if ( sep != 0 )
+d544 28
+a571 2
+/* This routine takes the path passed in and compares it with the other resource sets.
+   It returns true if they match, false otherwise */
+d650 24
+a673 5
+
+/* Ths routine does exactly what it says on the tin - it removes the
+specified file. It returns true if successful, false otherwise.
+   If the global 'simulate' flag is set, then the file is not actually
+deleted. This is useful if you wish to see what it will do before */
+d699 28
+a726 2
+/* This routine opens all the files held in the compared_files array and
+    returns true if they are the same, false otherwise. */
+d819 21
+a839 3
+/* Descend into the given directory. Called recursively to scan a whole
+ * directory structure.
+ */
+d904 25
+a928 1
+/* This is the main routine to compare all the relevant directories. */
+d933 2
+d945 21
+a965 3
+/*
+ * compare two strings caselessly
+ */
+d987 19
+a1005 1
+/* Display a suitable help text. */
+d1025 22
+a1046 1
+/* The main routine. Gosh. Wow. Absolutely amazing comment, eh? */
+@
+
+
+4.3
+log
+@	More changes.
+Detail:
+	* ResCommon no longer called with Verbose flag set.
+	* A new Perl script, RemoveEmpt, added, that strips out any emtpy
+directories in the processed directory.
+	* ResCommon now deals correctly with squashed filed - it reads in the
+header of the file and ignores the exec address.
+	* get_filetype() now works correctly.
+	* ResCommon has been generally tidied up.
+Admin:
+	Still under development. Should work more reliably than the previous
+version.
+
+Version 0.93. Not tagged
+@
+text
+@d16 2
+a17 2
+* $Id: ResCommon,v 4.2 2000/06/10 10:31:04 dcotton Exp $
+* $Name: dcotton_Messages_10062000 $
+d79 1
+a116 1
+bool common_directory_deleted = false;  /* A global flag to say whether an empty directory was deleted on this pass. If it was, then the recursive routines have to restart. */
+d122 14
+d137 4
+a140 2
+bool remove_file(const char* file_to_remove);
+bool compare_files(const char* filename);
+d142 1
+a142 1
+char *strdup(const char *str);
+a143 3
+bool compare_squash_files(void);
+int get_filetype(const char* const obj);
+
+d237 17
+a253 3
+/*
+ * malloc an area for a string and copy the string in
+ */
+d269 22
+a290 5
+/* This routine parses any territory line passed in and strips out all the
+territories into an array.
+   If the line is invalid, it retunrs false, otherwise it returns true. A
+line is considered invalid if it is empty or contains whitespace.
+ */
+d292 1
+a292 1
+bool parse_territories(char* territory_line)
+d373 21
+a393 4
+/* This routine scans through the list of territories and ensures that they
+all exist. It does this by cheking that <root_directory>.<territory_name> is
+a valid directory.
+ */
+d397 1
+a397 1
+  char buffer[255]; /* Nasty hardcoded value */
+a527 1
+    common_directory_deleted = true;
+a566 1
+  char* file_path = NULL;
+d576 1
+a576 10
+  }
+
+  /* Get the path to the file. */
+  file_path = strdup(file_to_remove);
+  stripleaf(file_path);
+
+  if (file_path)
+  {
+    free (file_path);
+    file_path = NULL;
+d621 2
+a622 1
+  /* Another check - if the files are squash files, then they will always be different. Check the headers of each file to ensure they are the same. */
+d628 8
+d652 2
+a653 2
+    char bytes[10]; /* To hold the bytes from all the files... */
+    bytes[9]='\0';
+d680 1
+a695 6
+      if (common_directory_deleted)
+      {
+        offset = 0; /* Rescan this directory */
+        common_directory_deleted = false;
+      }
+
+d751 2
+a752 1
+  char buffer[255];
+a754 1
+
+d961 25
+a985 8
+/*
+  This routine scans two squash files and reutrns whether or not they are
+   identical. This is necessary becauyse two identical files can be squahed at
+   different times and end up with different timestamps and load/exec
+   addreses due to when the Squash files were created. Therefore we ignore
+   the timestamp and exec data on the squashed file, and go with the data
+   held in the Squashfile header.
+*/
+d1030 7
+a1036 4
+      printf("Size      for file %d is %0x\n", loop, hdr[loop].size);
+      printf("Load addr for file %d is %0x\n", loop, hdr[loop].load_addr);
+      printf("Exec addr for file %d is %0x\n", loop, hdr[loop].exec_addr);
+      printf("reserved  for file %d is %0x\n", loop, hdr[loop].reserved);
+d1073 21
+a1093 2
+/* This routine returns true if the directory is full, false otherwise. */
+/* This routine is currently uncompleted. */
+@
+
+
+4.2
+log
+@	Many changes. Warning, Danger! Danger!
+	This version of the module deals with multiple territory blocks being
+held in ResourceFS.
+
+Detail:
+	* Fixed a bug in TokGen2. MAX_TOKEN_LEN2 was set to 256, when it
+actually should be 254 (to allow for 2 byte to hold length and status). This
+was causing an overflow which meant that large messages were not being
+correctly tokenised. Also added a check for tokens that are too long, to at
+least make sure that the buildmaster is informed that something has gone
+screwy with the token generation instead of continuing on regardless.
+	* Created a simple Perl script, HelpApend, that appends common help
+data onto the end of each of the individual territory blocks.
+	* Bug fixed in s.Common: Pointer in list was not being advanced.
+	* ScanRes altered to allow nested resorce blocks.
+	* Bug fixed in ResCommon - the -simulate flag now works in the
+correct manner, and not the inverse (ooops!)
+	* MsgTok2 now gives a warning if the input file is not present.
+	* The main MakeFile has been altered to go through the extra stages
+needed by the multiple-resource system.
+	* Added the ResCommon binary.
+
+To be done:
+	* Make ScanRes use Service_Territory 0 instead of
+Territory_NameToNumber to work out territory number to name mappings.
+	* Make ResCommon cope with Squash files.
+	* Make ResCommon remove all empty directories from the resource
+directories.
+	* Tidy up the code.
+	* Add documentation.
+	* Thoroughly test on different builds.
+
+Admin:
+	Must be used with srcbuild 20 or later.
+	Important notice: From this version onwards, the TerritoryManager
+*must* be placed ahead of Messages in the ROM, but after ResourceFS.
+	This module has not yet been tested without the LocaleList system
+variable being set.
+	Work in progress. Do not use for anything release-critical.
+
+Version 0.93. Not tagged
+@
+text
+@d16 2
+a17 2
+* $Id: template.c,v 1.6 2000/02/21 10:25:28 rwarren Exp $
+* $Name:  $
+d54 1
+d59 2
+d89 11
+a110 1
+
+d116 2
+a117 1
+bool directory_deleted = false; /* A global flag to say whether an empty directory was deleted on this pass. If it was, then the recursive routines have to restart. */
+d128 2
+d327 2
+d377 1
+a377 1
+int get_filetype( char *obj )
+d379 4
+a382 3
+  int type;
+  _swi( OS_File, _IN(0)|_IN(1)|_OUT(0), 17, obj, &type );
+  return type;
+d437 1
+a437 1
+  /* Now create the other filenames using the known path.*/
+a454 1
+    printf("Comparing...\n");
+d467 1
+a522 11
+/*
+  if (!simulate)
+  {
+    // Now attempt to delete the directory using OS_File 6. Hacky, but faster than working out if it is empty and then deleting it.
+    printf ("Attempting to delete directory %s\n", file_path);
+    reg.r[0] = 6;		// remove object
+    reg.r[1] = (int) file_path;
+    _kernel_swi(OS_File, &reg, &reg);
+  }
+*/
+
+d545 1
+a545 1
+  unsigned long int filetype[MAX_OPEN_TERRITORY_FILES] = 0;
+d550 1
+a550 1
+    assert (compared_files[loop] != NULL); /* Check we are not going to try to open a NULL string... */
+d561 1
+a561 1
+    filetype[loop] = filer_object_type(compared_files[loop]);
+d572 4
+a575 1
+
+d580 1
+a580 2
+    assert (compared_files[loop] != NULL); /* Check we are not going to try to open a NULL string... */
+//    printf ("%s\n", compared_files[loop]);
+d586 1
+a586 1
+      return (false); /* If we can't open it, we are no bothered... (atm neway)*/
+d590 1
+a590 1
+  /* Now go through the file and do a byte-by-byte comparison... */
+a599 1
+        // printf ("File %s do not match!\n", compared_files[loop]);
+a603 1
+//    printf("%s\n", bytes[9]);
+a614 5
+  if (verbose)
+  {
+    // printf ("Files match.\n");
+  }
+
+d636 7
+a642 8
+      /* Slight hack - there is a chance that the directory has been deleted because it was empty.
+          Detect if it has, and, if so, move down one segment of the path. */
+//      if (!file_exists(path))
+//      {
+//        stripleaf(path);
+     //   printf("Stripped leaf from the path. Path is now %s\n", path);
+//      }
+      printf ("Calling OS_GBPB 8 on path %s\n", path);
+a652 1
+            //printf("File is %s (type %d)\n", path, filetype(op));
+d684 2
+a685 2
+          printf("Couldn't allocate enough memory\n" );
+          exit (EXIT_FAILURE);
+d692 2
+d707 2
+d717 1
+a717 1
+    return 0;
+d725 1
+a725 1
+      return d;
+d727 1
+a727 1
+  return 0;
+d907 92
+a998 1
+#if 0
+d1005 1
+a1005 1
+  if filer_object_type(directory) == 2)) /* It is a directory. */
+d1008 21
+d1033 1
+a1033 1
+#endif /* 0 */
+@
+
+
+4.1
+log
+@	Import and binary of the ResCommon utility.
+Detail:
+	This utility can be used to generate a set of common resources from a
+series of different locale resource sets. This can then be used by a future
+version of the Messages module to create ROM builds with more than one
+resource set included. The Common files help save space in the ROM.
+Admin:
+	Tested on Lazarus build resources. This is very much work in
+progress, although it should be essentially feature-complete.
+
+Version 0.93. Tagged as 'Messages-0_93'
+@
+text
+@d32 1
+a32 1
+* Purpose: This file contains source code required for the MsgCommon utility.
+d103 1
+d112 4
+d211 1
+a211 1
+char *strdup(char *str)
+d336 2
+a337 2
+/* This routine creates the 'common' directory, and copies the sources in. */
+void create_common(char* res_to_copy)
+d480 3
+a482 1
+specified file. It returns true if successful, false otherwise. */
+d488 1
+d493 1
+a493 1
+  if (simulate)
+d500 21
+d537 1
+d539 1
+a539 1
+  /* Ensure that all the files exist and grab their filesizes.*/
+d543 2
+d552 2
+d555 1
+a555 1
+    if (loop > 0 && (filesize[loop] != filesize[loop-1]))
+d558 1
+a558 1
+        printf("No match: differing file sizes!\n");
+d563 3
+d633 8
+a752 1
+  directory_to_copy = strdup("UK");
+d837 1
+d899 18
+@
+

@@ -1,0 +1,245 @@
+head	1.2;
+access;
+symbols
+	ResEd-0_59:1.2
+	ResEd-0_58:1.2
+	ResEd-0_57:1.2
+	ResEd-0_56:1.2
+	ResEd-0_55:1.2
+	ResEd-0_54:1.2
+	ResEd-0_53:1.2
+	ResEd-0_52:1.2
+	ResEd-0_51:1.1.1.1
+	ResEd-0_50:1.1.1.1
+	ResEd-0_49:1.1.1.1
+	ResEd-0_48:1.1.1.1
+	ResEd-0_47:1.1.1.1
+	ResEd-0_46:1.1.1.1
+	ResEd-0_45:1.1.1.1
+	ResEd-0_44:1.1.1.1
+	ResEd-0_43:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2011.04.19.20.58.00;	author rgriffin;	state Exp;
+branches;
+next	1.1;
+commitid	ELFY9fuOaAmj8ugv;
+
+1.1
+date	98.06.03.15.12.28;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.06.03.15.12.28;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@Added support for Tabs and Treeview gadgets to ResEd.
+
+Version 0.52. Tagged as 'ResEd-0_52'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*-*-C-*-
+ * Rename dialogue box for ResEd shell
+ */
+
+#include "resed.h"
+#include "main.h"
+
+#include "swicall.h"
+#include "wimp.h"
+#include "resformat.h"
+#include "dbox.h"
+#include "interactor.h"
+#include "registry.h"
+
+#include "class.h"
+#include "document.h"
+#include "icondefs.h"
+#include "rename.h"
+
+
+static WindowPtr window = NULL;
+
+
+/*
+ * Load templates, etc.
+ */
+
+error * rename_load_prototypes (void)
+{
+   ER ( wimp_load_template("Rename", &window) );
+   ER ( swi (Wimp_CreateWindow,  R1, &window->visarea,
+               OUT,  R0, &window->handle,  END) );
+
+   /* register window - for interactive help */
+   return registry_register_window(window->handle,
+                                       RenameDbox, (void *) window);
+}
+
+
+/*
+ * Interactor for the rename window.  Expects to be pushed on top of the
+ * menu.c interactor, so needs to be careful about popping itself correctly.
+ */
+
+static error * rename_interactor (unsigned int event, int *buf, void *closure, Bool *consumed)
+{
+    MouseClickPtr mouse = (MouseClickPtr) buf;
+    WindowPtr win = (WindowPtr) buf;         /* only half there */
+    KeyPressPtr key = (KeyPressPtr) buf;
+    ResourcePtr res = (ResourcePtr) closure;
+    error *err = NULL;
+
+    if (buf == NULL)                     /* we are being asked to cancel */
+    {
+        return NULL;
+    }
+
+    switch (event)
+    {
+    case EV_OPEN_WINDOW_REQUEST:
+        if (win->handle == window->handle)
+        {
+            *consumed = TRUE;
+            window->visarea = win->visarea;
+            window->scrolloffset = win->scrolloffset;
+            window->behind = win->behind;
+            ER ( swi (Wimp_OpenWindow, R1, window, END) );
+        }
+        break;
+
+    case EV_KEY_PRESSED:
+        if (key->caret.windowhandle == window->handle)
+        {
+            unsigned int modifiers = wimp_read_modifiers ();
+
+            *consumed = TRUE;
+            switch (key->code)
+            {
+            case 0x0d:   /* RETURN */
+                err = document_rename_resource (res->owner, res, dbox_getstring (window, I_RENAME_NAME));
+                if (err)
+                {
+                    error_box (err);
+                    break;
+                }
+
+            case 0x1b:   /* ESCAPE */
+                if ((modifiers & MODIFIER_SHIFT) == 0)
+                    interactor_cancel();
+                else
+                    dbox_setstring (window, I_RENAME_NAME, res->object->hdr.name);
+                break;
+
+            default:
+                *consumed = FALSE;
+                break;
+            }
+        }
+        break;
+
+    case EV_MOUSE_CLICK:
+        if (mouse->windowhandle == window->handle)
+        {
+            *consumed = TRUE;
+            switch (mouse->iconhandle)
+            {
+            case I_RENAME_OK:
+                if (mouse->buttons == MB_CLICK(MB_SELECT) ||
+                    mouse->buttons == MB_CLICK(MB_ADJUST))
+                {
+                    err = document_rename_resource (res->owner, res, dbox_getstring (window, I_RENAME_NAME));
+                    if (err)
+                    {
+                        error_box (err);
+                        break;
+                    }
+                }
+            case I_RENAME_CANCEL:
+                if (mouse->buttons == MB_CLICK(MB_SELECT))
+                    interactor_cancel ();
+                else if (mouse->buttons == MB_CLICK(MB_ADJUST))
+                    dbox_setstring (window, I_RENAME_NAME, res->object->hdr.name);
+                break;
+            }
+        }
+        break;
+    }
+
+    return NULL;
+}
+
+
+/*
+ * Open the rename dialogue as a submenu at the appointed position
+ */
+
+error * rename_open (DocumentPtr doc, PointPtr position)
+{
+    ResourcePtr res = doc->resources;
+    if (doc->numselected == 0)
+        return NULL;
+    for (; res; res = res->next)
+        if (res->selected)
+            break;
+    dbox_setstring (window, I_RENAME_NAME, res->object->hdr.name);
+    ER ( swi (Wimp_CreateSubMenu,  R1, window->handle,  R2, position->x,  R3, position->y,  END) );
+    interactor_push (rename_interactor, (void *) res);
+    return NULL;
+}
+
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d42 1
+a42 1
+error * rename_load_prototypes ()
+@
+
+
+1.1.1.1
+log
+@
+Import of ResEd from SrcFiler.
+
+RISC OS Version 0.42.
+Build structure rationalised.
+
+@
+text
+@@

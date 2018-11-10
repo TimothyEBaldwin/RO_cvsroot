@@ -1,0 +1,412 @@
+head	1.4;
+access;
+symbols
+	SrcEdit-1_34:1.4
+	SrcEdit-1_33:1.4
+	SrcEdit-1_32:1.4
+	SrcEdit-1_31:1.4
+	SrcEdit-1_30:1.3
+	SrcEdit-1_29:1.3
+	SrcEdit-1_28:1.3
+	SrcEdit-1_27:1.3
+	SrcEdit-1_26:1.3
+	SrcEdit-1_25:1.3
+	SrcEdit-1_24:1.3
+	SrcEdit-1_23:1.2
+	SrcEdit-0_02:1.1.1.1
+	SrcEdit-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2015.04.03.21.01.31;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	rZLpc3DzBUA6Ibgy;
+
+1.3
+date	2007.06.15.01.33.39;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2007.06.10.12.29.42;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2007.05.24.17.50.40;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2007.05.24.17.50.40;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Switch from ArcEdit style model to clipboard cut & paste model
+Messages:
+ Remove TaskInput from Task menu, add clipboard keys to Select menu, add swap case to Select menu.
+ Slim down the Misc menu which was too wide in system font.
+ Update interactive help.
+ Use some more of the escape code tokens in interactive help.
+ Remove key shortcut from iconbar menu.
+Templates:
+ Line use magic search character '\n' in the dialogue.
+message.c:
+ Let the task window accept clipboard pastes too.
+ This is tied to the 'Ignore ctrl' menu option. When enabled (default) then ^C ^V are filtered out to for clipboard typing to the task, and filters control characters from the task too (as before). When disabled, ^C ^V are passed raw to the task, and all VDU is displayed raw from the task. Cut & paste can still be performed in the disabled case by using the Edit->Select menu.
+multiedit.c:
+ Adjust list of acceptable keys in Read-Only mode.
+ Remove nonsense shortcut keys.
+ Inform RISC_OSLib of a read only text using new charoption txt_READONLY.
+srcedmenus.c:
+ Adjust shading logic for changed menu layouts.
+winevent.c:
+ Remove handling of ^A, as this is now dealt with in txt.
+
+
+Version 1.31. Tagged as 'SrcEdit-1_31'
+@
+text
+@/* Copyright 2007 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* Title:   winevent.c
+ * Purpose: vet edit window events before passing them on
+ * Author: IDJ
+ * History: 01-Mar-90: IDJ: created
+ *          07-Mar-90: IDJ: added bra-ket matching CTRL-( CTRL-)
+ *          18-Mar-90: IDJ: fixed bug in matching {}
+ *          25-Mar-90: IDJ: added Sh-F9 as keyboard shortcut for save all
+ *          27-Mar-90: IDJ: added ctl-? as keyboard shortcut for language help
+ *          31-Aug-90: IDJ: changed help request to F1 (style guide)
+ *          10-Sep-90: IDJ: changed bracket matching to have caret BEFORE both brackets
+ *                          better for use of Ctrl F7
+ *          04-Mar-91: IDJ: orrible kludge to make ColTab the default
+ *          03-Apr-91: IDJ: new coltab overwrite wordwrap global options
+ *
+ *          Aquarius
+ *          16-Dec-94: IDJ: fixed bra-ket matching AQU-00528
+ *
+ */
+
+#include <string.h>
+
+#include "txtedit.h"
+#include "event.h"
+#include "txt.h"
+#include "txtscrap.h"
+#include "akbd.h"
+#include "werr.h"
+#include "msgs.h"
+
+#include "srcedmenus.h"
+#include "selectload.h"
+#include "saveall.h"
+#include "options.h"
+#include "langhelp.h"
+
+#include "winevent.h"
+
+#define CTRL_L 0xc
+#define CTRL_A 0x1
+#define ch_bra_round   '('
+#define ch_ket_round   ')'
+#define ch_bra_square  '['
+#define ch_ket_square  ']'
+#define ch_bra_curly   '{'
+#define ch_ket_curly   '}'
+
+static txt_event_proc winevent__oldtxthandler;
+
+static txt_index winevent__matchfor(txt t, char bra)
+{
+   txt_index nowat = txt_dot(t);  /* dot is before ket */
+   int kets = 0, bras = 0;
+   char c;
+   char ket = (bra == ch_bra_round)?ch_ket_round:
+              (bra == ch_bra_square)?ch_ket_square:
+              ch_ket_curly;
+
+   /* search backwards */
+   while (nowat <= txt_size(t))
+   {
+       if ((c = txt_charat(t, nowat)) == ket) kets++;
+       else if (c == bra) bras++;
+       if (bras == kets) return nowat;
+       nowat++;
+   }
+   return -1;
+}
+
+
+static txt_index winevent__matchback(txt t, char ket)
+{
+   txt_index nowat = txt_dot(t);  /* dot is before ket */
+   int kets = 0, bras = 0;
+   char c;
+   char bra = (ket == ch_ket_round)?ch_bra_round:
+              (ket == ch_ket_square)?ch_bra_square:
+              ch_bra_curly;
+
+   /* search backwards */
+   while (nowat >= 0)
+   {
+       if ((c = txt_charat(t, nowat)) == bra) bras++;
+       else if (c == ket) kets++;
+       if (bras == kets) return nowat;
+       nowat--;
+   }
+   return -1;
+}
+
+      
+
+static void winevent__eventhandler(txt t, void *handle)
+{
+   txtedit_state *s = (txtedit_state *)handle;
+   txt_eventcode e = txt_get(t);
+
+   switch(e)
+   {
+      case CTRL_L:
+        if (txtscrap_selectowner() != 0)  
+           selectload_load(s);
+        else
+           goto ignore;
+        break;
+
+ /*
+  *          16-Dec-94: IDJ: fixed bra-ket matching AQU-00528 (use F10)
+  *
+  */
+
+      case akbd_Fn10:   /* use F10 for bra-ket matching */
+        {
+           char c = txt_charatdot(t);
+           int matchat;
+
+           if (c == ch_bra_round || c == ch_bra_square || c == ch_bra_curly)
+           {
+               /* search forwards for corresponding ket */
+               if ((matchat = winevent__matchfor(t, c)) != -1)
+                   txtscrap_setselect(t, matchat, matchat+1);
+               else
+                   werr(FALSE, msgs_lookup("winevent2:No corresponding closing bracket"));
+           }
+           else if (c == ch_ket_round || c == ch_ket_square || c == ch_ket_curly)
+           {
+               /* search backwards for corresponding bra */
+               if ((matchat = winevent__matchback(t, c)) != -1)
+                   txtscrap_setselect(t, matchat, matchat+1);
+               else
+                   werr(FALSE, msgs_lookup("winevent1:No corresponding opening bracket"));  
+           }
+           else
+             goto ignore;
+        }
+        break;
+
+#if 0
+      /****** IDJ: 16-Dec-94:doesn't work with RISC OS 3 keybd drivers ******/
+      case ch_bra_round:
+        if (akbd_pollctl())
+        {  
+           char c;
+           txt_index matchat;
+
+           /* see if it's a ket */
+           if ((c = txt_charatdot(t)) != ch_ket_round && c != ch_ket_square && c != ch_ket_curly) goto ignore;
+
+           /* search backwards for corresponding bra */
+           if ((matchat = winevent__matchback(t, c)) != -1)
+               txtscrap_setselect(t, matchat, matchat+1);
+           else
+               werr(FALSE, msgs_lookup("winevent1:No corresponding opening bracket"));         
+        }
+        else
+          goto ignore;
+        break;
+
+      case ch_ket_round: 
+        if (akbd_pollctl())
+        {
+           char c;
+           int matchat;
+ 
+           /* see if it's a bra */
+           if ((c = txt_charatdot(t)) != ch_bra_round && c != ch_bra_square && c != ch_bra_curly) goto ignore;
+
+           /* search forwards for corresponding ket */
+           if ((matchat = winevent__matchfor(t, c)) != -1)
+               txtscrap_setselect(t, matchat, matchat+1);
+           else
+               werr(FALSE, msgs_lookup("winevent2:No corresponding closing bracket"));
+        }
+        else
+          goto ignore;
+        break;
+#endif
+  
+      case akbd_Fn + akbd_Sh + 9:
+        saveall_savethem();
+        break;
+
+      case akbd_Fn + 1:
+        langhelp_gethelp();
+        break;
+
+      ignore:
+      default:
+        txt_unget(t, e);
+        winevent__oldtxthandler(t, s);
+        break; 
+   }
+}
+
+     
+
+extern void winevent_open_handler(char *filename, txtedit_state *s, void *handle)
+{
+   void *winevent__oldtxthandle;
+   char title[256+32];
+
+   handle = handle;
+   filename = filename;
+  
+   /* attach our own menumaker */
+   event_attachmenumaker(txt_syshandle(s->t), srcedmenus_menumaker, srcedmenus_menuproc, s);
+
+   /* attach our own txt event handler (remembering old one) */
+   txt_readeventhandler(s->t, &winevent__oldtxthandler, &winevent__oldtxthandle);
+   txt_eventhandler(s->t, winevent__eventhandler, winevent__oldtxthandle);
+
+   /* --- set from global defaults --- */
+   s->wordtab = options_coltab()?FALSE:TRUE;
+   s->overwrite = options_overwrite();
+   s->wordwrap = options_wordwrap();
+   if (s->filename[0] == 0)
+       strcpy(title, "<untitled>");
+   else
+       strcpy(title, s->filename);
+   if (!s->wordtab) strcat(title, msgs_lookup("txt23: (ColTab)"));
+   if (s->overwrite) strcat(title, msgs_lookup("txt24: (Overwrite"));
+   if (s->wordwrap)  strcat(title, msgs_lookup("txt25: (Wordwrap)"));
+   txt_settitle(s->t, title);
+}
+@
+
+
+1.3
+log
+@ BASIC editing added so that you can replace !Edit
+
+Detail:
+ Changes from Colin Granville:
+ * BASIC editing added.
+ * BASIC options added and saved with other options.
+       s       indicates don't strip line numbers.
+       n<num>  sets line number increment to num.
+ * Added 'Export' file to !Run which sets SrcEdit$Detokenise and
+   SrcEdit$Tokenise for BASIC editing.
+ * Added creation of BASIC files, TaskObey files and creation by
+   name entries on the Create Menu.
+ * Changed sprites to RO5 sprites - versions which came with the Acornc/c++
+   distribution.
+ * Options read from Choices:SrcEdit
+ * Options written to <choices$Write>.srcedit.
+ * Read-only documents can be printed.
+ * Read-only documents can have selections saved and printed.
+ * ctrl A selects whole text (should be done by RiscOSLib).
+ * version now set by EditId in Messages file - was from templates file.
+
+Admin:
+ Tested on Iyonix RO510
+
+Version 1.24. Tagged as 'SrcEdit-1_24'
+@
+text
+@a112 4
+      case CTRL_A:
+        txtscrap_setselect(t, 0, txt_size(t));
+        break;
+
+@
+
+
+1.2
+log
+@  Import of SrcEdit 1.23.
+Detail:
+  Appears to be substantially more complete than the version previously
+  imported. Thanks to Rob Sprowson for bringing this to our attention.
+Admin:
+  Builds, and tested briefly - seems to fix the more obvious bugs that were
+  present in the previous version.
+
+Version 1.23. Tagged as 'SrcEdit-1_23'
+@
+text
+@d53 1
+d113 4
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d26 5
+d34 2
+d112 36
+a147 2
+      case CTRL_L:  
+        selectload_load(s);
+d150 2
+d189 1
+d212 1
+d224 12
+@
+
+
+1.1.1.1
+log
+@  Initial import of !SrcEdit, exported from the old SrcFiler repository
+  and given a modern build structure.
+Detail:
+  I'm not convinced these are actually the most recent sources. They didn't
+  build as-is against a "modern" RISC_OSLib, and I had to substitute the
+  !Run/!Boot/Messages etc from the C/C++ tools release to make it work.
+  There are still some issues - some menus are incorrectly created, and one
+  source file invokes a compiler bug.
+Admin:
+  Not particularly thoroughly tested.
+
+Version 0.01. Tagged as 'SrcEdit-0_01'
+@
+text
+@@

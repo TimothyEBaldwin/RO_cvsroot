@@ -1,0 +1,289 @@
+head	1.4;
+access;
+symbols
+	EtherH-4_54:1.3
+	EtherH-4_53:1.3
+	EtherH-4_52:1.1.1.1
+	designit-4_52:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2012.10.13.20.55.23;	author rsprowson;	state dead;
+branches;
+next	1.3;
+commitid	iWEN5VZZYRYzFgow;
+
+1.3
+date	2012.10.13.20.45.39;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	1E7Khr6vvCWfCgow;
+
+1.2
+date	2012.10.13.20.41.18;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	wjgMh8kSS5QCAgow;
+
+1.1
+date	2012.10.13.20.36.27;	author rsprowson;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	K58crg30YaBxygow;
+
+1.1.1.1
+date	2012.10.13.20.36.27;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	K58crg30YaBxygow;
+
+
+desc
+@@
+
+
+1.4
+log
+@Replaced htons and friends with ${INETLIB} ones
+Functions max() and min() changed for macros.
+Made supporting assembler functions common -> support.s, so the IO sources just manipulate IO.
+Unused header file 'int_hndlr.h' removed.
+Resolved all the remaining compiler warnings.
+File 'dma.c' compiles now, but is unused.
+Substituted magic numbers for defines from exported header files where available.
+Text for NIC slot 8 is now "Network slot" rather than "Expansion slot 8".
+Builds but not tested. 26 bit only.
+
+Version 4.55. Tagged as 'EtherH-4_55'
+@
+text
+@/*
+ * Copyright (c) 2002, Design IT
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+/* -*-C-*-
+ *
+ */
+#include <kernel.h>
+#include <swis.h>
+
+#include <sys/types.h>
+#include <sys/dcistructs.h>
+#include <sys/errno.h>
+#include <sys/mbuf.h>
+
+#include "delay.h"
+#include "if_eh.h"
+
+#ifdef DBGMBUF
+static void df(char *s)
+{
+    _kernel_swi_regs r;
+    _kernel_swi(OS_WriteI+4, &r, &r);
+
+    printf(s);
+}
+#endif
+
+
+struct mbctl MBCTL =
+{
+        0,                              /* opaque */
+        sizeof(struct mbctl),           /* mbcsize */
+        MBUF_MANAGER_VERSION,           /* mbcvers */
+        0ul,                            /* flags */
+        MINCONTIG,                      /* advminubs */
+        ETHERMTU,                       /* advmaxubs */
+        MINCONTIG,                      /* mincontig */
+        0ul,                            /* spare1 */
+        /*
+         * Rest of the structure gets initialised
+         * to zeroes due to the trailing comma
+         */
+};
+
+/**********************************************************************/
+
+_kernel_oserror *mb_entryinit(void)
+{
+    _kernel_swi_regs r;
+    r.r[0] = (int) &MBCTL;
+
+    return _kernel_swi( XOS_Bit | Mbuf_OpenSession, &r, &r);
+}
+
+/**********************************************************************/
+
+/*
+ * mb_present - check whether the mbuf manager is present or not,
+ * using the Mbuf_Control SWI to do so.  returns 1 if manager
+ * present, else 0.
+ */
+int mb_present(void)
+{
+    _kernel_swi_regs r;
+
+    /*
+     * the control SWI with reason code 0 should *always*
+     * succeed if the mbuf manager is loaded.
+     */
+    r.r[0] = 0;
+    return((_kernel_swi(XOS_Bit | Mbuf_Control, &r, &r) == NULL) ? 1 : 0);
+}
+
+/**********************************************************************/
+
+extern _kernel_oserror *mb_closesession(void)
+{
+    _kernel_swi_regs r;
+    r.r[0] = (int) &MBCTL;
+
+    return _kernel_swi( XOS_Bit | Mbuf_CloseSession, &r, &r);
+}
+
+#if 0
+/**********************************************************************/
+
+/*
+ * XXX TRACE XXX TRACE XXX
+ *
+ * *temporary* code for m_pullup until Borris gets his arse into gear
+ * and provides a kosher, working, version within the mbuf manager
+ */
+struct mbuf *m_pullup(struct mbuf *m0, int nbytes)
+{
+    struct mbuf *m;
+
+    if( nbytes > MINCONTIG )
+        /*
+         * this is not allowed
+         */
+        return(NULL);
+
+    /*
+     * ensure_contig does not work, so copy the entire mbuf chain
+     * which will do a similar (if over-zealous) job
+     */
+    if( (m = COPY(m0, 0, M_COPYALL)) != NULL )
+    {
+        /*
+         * have finished with the old chain
+         */
+        m_freem(m0);
+
+        /*
+         * XXX
+         *
+         * current copy routines do not preserve the type
+         * field, which gets higher layers in the stack
+         * upset, fix the types here
+         */
+        m0 = m;
+        m0->m_type = MT_HEADER;
+        while( (m0 = m0->m_next) )
+            m0->m_type = MT_DATA;
+    }
+
+    return(m);
+}
+#endif
+
+/**********************************************************************/
+
+/* EOF mbuf.c */
+
+@
+
+
+1.3
+log
+@Substitute 'mbuf', 'dcistructs', 'types', 'errors' from TCPIPLibs:
+Insert version number from VersionNum.
+Changed error numbers to use SETDCI4ERRNO(), a few were previously using the wrong offset from 0x20E00.
+CMHG now generates a header file.
+Textual SWI prefix is now "EtherH" for both EtherH8 and EtherH16 versions, since they use the same SWI base they can't coexist, and to match the prefix declared in the DIB block (slightly irrelevant for an ethernet driver since the DCI interface doesn't use SWI names).
+Macro FREEM() replaced with m_freem(), also no longer checks for freeing NULL, since MbufManager does that.
+Builds but not tested. 26 bit only.
+
+Version 4.53. Tagged as 'EtherH-4_53'
+@
+text
+@@
+
+
+1.2
+log
+@Add explicit copyright header to all files
+Builds but not tested. 26 bit only.
+@
+text
+@d31 2
+a32 2
+#include "kernel.h"
+#include "swis.h"
+d34 4
+a37 4
+/*
+#include "sys/param.h"
+#include "sys/errno.h"
+ */
+a38 2
+#include "types.h"
+#include "mbuf.h"
+a39 1
+#include "dcistructs.h"
+d108 1
+d136 1
+a136 1
+        FREEM(m0);
+d153 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 27
+@
+
+
+1.1.1.1
+log
+@Import of EtherH driver for i-cubed/Acorn/DesignIT NIC
+Special thanks to Rob Cowell of Design IT for taking the time to locate the sources, and agreeing to them being published. 
+This is EtherH 4.52, the last public release. 
+Only changes
+ - makefile now creates empty dirs (to avoid importing empty dirs into CVS)
+ - local copies of Hdr: removed, assembler files point to exported central copies
+Builds but not tested. 26 bit only.
+@
+text
+@@

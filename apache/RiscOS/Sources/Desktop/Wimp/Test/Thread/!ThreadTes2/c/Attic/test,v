@@ -1,0 +1,206 @@
+head	1.1;
+access;
+symbols
+	Wimp-4_66-4_77_2_1:1.1.2.1
+	bavison_Threads_dev:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2007.10.07.02.17.29;	author bavison;	state dead;
+branches
+	1.1.2.1;
+next	;
+commitid	NSavcPvbNd36pBAs;
+
+1.1.2.1
+date	2007.10.07.02.17.29;	author bavison;	state Exp;
+branches;
+next	;
+commitid	NSavcPvbNd36pBAs;
+
+
+desc
+@@
+
+
+1.1
+log
+@file test was initially added on branch bavison_Threads_dev.
+@
+text
+@@
+
+
+1.1.2.1
+log
+@  Added Dan Ellis's multithreading support, on a development branch for now.
+Detail:
+  This breaks the equivalence between tasks and AMB slots, allowing many
+  threads of execution to share the same AMB slot, where an application's
+  heap is usually located. In API terms, it is presented as an extension to
+  Wimp_StartTask, see Docs/Multithreading for more information. It is the
+  caller's responsibility to create a new stack chunk for the new thread if
+  required. Note that BASIC's variable storage model is fundamentally
+  unsuited for multithreading.
+Admin:
+  This was developed in 2001 and was not committed at the time due to lack
+  of testing and peer review. It is now being added as a branch from a
+  contemporary trunk Wimp. Hopefully somebody will be interested enough to
+  merge the branch into a recent version!
+
+Version 4.66, 4.77.2.1. Tagged as 'Wimp-4_66-4_77_2_1'
+@
+text
+@a0 148
+/* Copyright 2007 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "wimplib.h"
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+
+#include "unixlib.h"
+#include "Taskwindow.h"
+#include "DebugLib/DebugLib.h"
+
+ObjectId object = 0;
+
+extern void start_thread (const char* name, void (entry) (void*), int priority, int stack_size, void* txt, int* task_handle);
+
+void thread (void* n) {
+    char buf[32];
+    _kernel_oserror* e;
+    int i = 0;
+    printf ("started thread\n");
+
+    while (1) {
+        i++;
+        sprintf (buf, "thread count %d\n", i);
+        dprintf (("", "thread count %d\n", i));
+        if (object) {
+            e = displayfield_set_value (0, object, 1, buf);
+            if (e) dprintf (("", "%s\n", e->errmess));
+        }
+        printf ("ticking...\n");
+        sleep (1);
+    }
+}
+
+int object_created (int code, ToolboxEvent* ev, IdBlock* id, void* h)
+{
+    object = id->self_id;
+    return 0;
+}
+
+/* This code initialises with the window manager and calls the above routine
+   every period */
+int main (void) {
+    WimpMessage block;
+    MessagesFD     md;
+    IdBlock        id_block;
+    int event_code;
+    _kernel_oserror* e;
+    int handle = 0;
+    int flag = -10;
+    FILE* f;
+
+    /* idle time in centi-seconds */
+    int idle = 100;
+    int next_call; /* time to next return */
+
+    /* messages we're interested in */
+    int messages[3] = {TaskWindow_Output, TaskWindow_Ego, Wimp_MQuit};
+    int events[] = {Toolbox_ObjectAutoCreated, 0};
+
+    debug_initialise ("Thread", "", "");
+    debug_set_device (DEBUGIT_OUTPUT);
+    debug_set_unbuffered_files (TRUE);
+
+    event_initialise (&id_block);
+    event_set_mask (0);
+
+    event_register_toolbox_handler (-1, Toolbox_ObjectAutoCreated,
+        object_created, 0);
+
+    /* initialise with the window manager */
+    e = toolbox_initialise (0, 310, messages, events, "<Thread$Dir>", &md, &id_block, 0, 0, 0);
+    if (e) {
+        _swi (OS_GenerateError, _IN (0), e);
+        return 1;
+    }
+
+    f = fopen ("pipe:out", "w");
+
+    fprintf (f, "Thread test initialised\n");
+//    fclose (f);
+//    fflush (f);
+
+    /* poll the window manager for events */
+    next_call = _swi (OS_ReadMonotonicTime, _RETURN (0)) + idle;
+    for (;;) {
+        int t = _swi (OS_ReadMonotonicTime, _RETURN (0));
+        if (t > next_call) {
+            char buf[32];
+            next_call += idle;
+            sprintf (buf, "master tick %d\n", t);
+            dprintf (("", "master tick %d\n", t));
+            fprintf (f, "master tick %d\n", t);
+            if (object) displayfield_set_value (0, object, 0, buf);
+            fflush (f);
+        }
+        event_poll_idle (&event_code, (WimpPollBlock*) &block, next_call, 0);
+        switch (event_code) {
+        case Wimp_ENull:
+            if (flag++ == 0) {
+                flag = 1;
+                start_thread ("Child thread", thread, 10, 256, 0, &handle);
+            }
+            break;
+        case Wimp_EUserMessage:
+        case Wimp_EUserMessageRecorded:
+            switch (block.hdr.action_code) {
+            case Wimp_MQuit:
+                if (handle != 0) wimp_close_down (handle);
+                return 1;
+            case TaskWindow_Ego:
+                handle = block.hdr.sender;
+//                f = fopen ("pipe:out", "w");
+                fprintf (f, "child created: %x\n", handle);
+                fflush (f);
+//                fclose (f);
+                break;
+            case TaskWindow_Output:
+//                f = fopen ("pipe:out", "w");
+                fwrite (block.data.bytes + 4, block.data.words[0], 1, f);
+                fflush (f);
+//                fclose (f);
+                break;
+            break;
+            }
+        }
+    }
+
+    return 0;
+}
+@
+

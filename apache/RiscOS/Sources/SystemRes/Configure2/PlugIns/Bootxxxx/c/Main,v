@@ -1,0 +1,352 @@
+head	1.3;
+access;
+symbols
+	Bootxxxx-0_15:1.3
+	Bootxxxx-0_14:1.3
+	Bootxxxx-0_13:1.3
+	Bootxxxx-0_12:1.3
+	Bootxxxx-0_11:1.2
+	Bootxxxx-0_10:1.1.1.1
+	Bootxxxx-0_09:1.1.1.1
+	Bootxxxx-0_08:1.1.1.1
+	Bootxxxx-0_07:1.1.1.1
+	Bootxxxx-0_06:1.1.1.1
+	Bootxxxx-0_05:1.1.1.1
+	Bootxxxx-0_04:1.1.1.1
+	Bootxxxx-0_03:1.1.1.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.1
+	Ursula_RiscPC:1.1.1.1.0.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.1
+	UrsulaBuild_FinalSoftload:1.1.1.1
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.1
+	bavison_Bootxxxx-0_02:1.1.1.1
+	bavison_Bootxxxx-0_01:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2012.11.28.11.22.42;	author rgriffin;	state Exp;
+branches;
+next	1.2;
+commitid	tKeEfVcg1WUr18uw;
+
+1.2
+date	2012.11.21.15.38.40;	author rgriffin;	state Exp;
+branches;
+next	1.1;
+commitid	TRoNV7BAy1kaFftw;
+
+1.1
+date	98.06.23.11.29.54;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.06.23.11.29.54;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Fixed data abort in Bootxxxx plugin
+
+Version 0.12. Tagged as 'Bootxxxx-0_12'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	Main.c ************************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	BootApps/BootBoot/BootRun
+This file:	Overall control
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+10/06/1998	BJGA	Created
+11/06/1998	BJGA	Added Modifed flag and modified/unmodified title strings
+12/06/1998	BJGA	Added ErrorBuffer; calls List_Read during initialisation
+15/06/1998	BJGA	Added BootDiff/BootPath/BootHat and static_ReadVariables
+19/06/1998	BJGA	Stores task handle for use in Wimp message handlers
+
+\**************************************************************************/
+
+/* CLib */
+#include <stdlib.h>
+/* Toolbox */
+#include "event.h"
+#include "wimplib.h"
+#include "toolbox.h"
+#include "window.h"
+/* ConfigureLib */
+#include "error.h"
+#include "message.h"
+#include "misc.h"
+#include "str.h"
+/* Local headers */
+#include "List.h"
+#include "Main.h"
+#include "ToolboxE.h"
+#include "WimpE.h"
+#include "WimpM.h"
+
+#define WimpVersion	((int) 380)
+
+/* Global variables */
+
+	int		MyTaskHandle;
+	BOOL		Quit = FALSE;
+	BOOL		Modified = FALSE;
+	BOOL		Complain = TRUE;
+	MessagesFD	messages;
+	ObjectId	Window_Obj;
+	ObjectId	Pane_Obj;
+	ObjectId	DCS_Obj;
+	int		BootDiff;
+	char		*BootPath;
+	char		*BootHat;
+	char		*Title_Unmodified = NULL;
+	char		*Title_Modified = NULL;
+	_kernel_oserror	ErrorBuffer = { 0, "" };
+
+/* Prototypes */
+
+static void static_CreateWindows (void);
+static void static_ReadVariables (void);
+
+
+/******	main() ************************************************************\
+
+In:		Command line option:
+		  -openat x y
+		    specifies initial position to open window at
+
+\**************************************************************************/
+
+int main (int argc, char *argv[])
+{
+  WimpPollBlock PollBlock;
+  IdBlock IDBlock;
+
+  error_initialise ();
+  throw (toolbox_initialise (0, WimpVersion, WimpM_Messages, ToolboxE_Events,
+  #if   APP == BOOTAPPS
+    "<BootApps$Dir>",
+  #elif APP == BOOTBOOT
+    "<BootBoot$Dir>",
+  #elif APP == BOOTRUN
+    "<BootRun$Dir>",
+  #endif
+    &messages, &IDBlock, NULL, &MyTaskHandle, NULL));
+  misc_parsearguments (argc, argv);
+  throw (event_initialise (&IDBlock));
+  throw (event_set_mask (WimpE_Mask));
+
+  static_ReadVariables ();
+  static_CreateWindows ();
+
+  WimpM_Register ();
+  WimpE_Register ();
+  ToolboxE_Register ();
+
+  error_recover_point();
+  while (!Quit)
+  {
+    throw (event_poll (NULL, &PollBlock, NULL));
+  }
+  exit (EXIT_SUCCESS);
+}
+
+/******	static_CreateWindows() ********************************************\
+
+Purpose:	Creates and opens window and pane
+
+\**************************************************************************/
+
+static void static_CreateWindows (void)
+{
+  int title_len;
+  _kernel_oserror err_alloc = { 0, "Err_Alloc" };
+
+  /* Create window objects */
+  throw (toolbox_create_object (0, "Edit", &Window_Obj));
+  throw (toolbox_create_object (0, "Pane", &Pane_Obj));
+  throw (toolbox_create_object (0, "DCS", &DCS_Obj));
+
+  /* Get modified and unmodified title strings */
+  throw (window_get_title (0, Window_Obj, NULL, 0, &title_len));
+  Title_Unmodified = malloc (title_len);
+  Title_Modified = malloc (title_len + 2);
+  if (!Title_Unmodified || !Title_Modified) message_error(messages, err_alloc);
+  throw (window_get_title (0, Window_Obj, Title_Unmodified, title_len, NULL));
+  str_cpy (Title_Unmodified, Title_Unmodified); /* null terminate */
+  sprintf (Title_Modified, "%s *", Title_Unmodified);
+
+  /* Nest pane in the main window */
+  throw (WimpE_open_pane(NULL));
+
+  /* Set up contents of pane */
+  throw (List_Read (FALSE));
+
+  /* Open main window */
+  misc_openwindow (Window_Obj, TRUE);
+}
+
+/******	static_ReadVariables() ********************************************\
+
+Purpose:	Reads system variable Boot$Path
+
+\**************************************************************************/
+
+static void static_ReadVariables (void)
+{
+  const char *var;
+  const char *ptr_s;
+  char *ptr_d;
+  int diff;
+  int diff_hat;
+  _kernel_oserror e = { 0, "Err_Alloc" };
+
+  var = getenv ("Boot$Path");
+  BootPath = malloc (str_len (var) + 1);
+  BootHat = malloc (str_len (var) + 1);
+  if (!BootPath || !BootHat) message_error(messages, e);
+
+  /* Copy first element of path only into BootPath */
+  ptr_s = var;
+  ptr_d = BootPath;
+  while (*ptr_s != ',' && *ptr_s >= ' ')
+  {
+    *ptr_d = *ptr_s;
+    ptr_s++;
+    ptr_d++;
+  }
+  *ptr_d = '\0';
+
+  /* Copy BootPath to BootHat, remove up to penultimate period */
+  str_cpy (BootHat, BootPath);
+  ptr_d = BootHat + str_len (BootHat) - 1;
+  while (*(ptr_d - 1) != '.' && ptr_d > BootHat)
+  {
+    ptr_d--;
+  }
+  *ptr_d = '\0';
+
+  /*  Calculate BootDiff, the maximum difference between canonicalised and
+   *  path-relative versions of Boot: or Boot:^. paths (in either direction)
+   */
+  diff = abs (str_len (BootPath) - str_len ("Boot:"));
+  diff_hat = abs (str_len (BootHat) - str_len ("Boot:^."));
+  BootDiff = max(diff, diff_hat);
+}
+@
+
+
+1.2
+log
+@Bootxxxx configure plugins' window made resizable
+
+Version 0.11. Tagged as 'Bootxxxx-0_11'
+@
+text
+@d171 1
+a171 1
+  if (!BootPath || !BootHat) message_error(messages,e);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d88 1
+a88 1
+  
+d102 4
+a105 1
+  
+d109 1
+a109 4
+  
+  static_ReadVariables ();
+  static_CreateWindows ();
+  
+a125 2
+  WimpGetWindowStateBlock pane_state;
+  WindowShowObjectBlock block;
+d128 1
+a128 1
+  
+d133 1
+a133 1
+  
+d142 4
+a145 13
+  
+  /* Open pane within main window *before* it's opened itself */
+  throw (window_get_wimp_handle (0, Pane_Obj, &(pane_state.window_handle)));
+  throw (wimp_get_window_state (&pane_state));
+  block.visible_area = pane_state.visible_area;
+  block.xscroll = pane_state.xscroll;
+  block.yscroll = pane_state.yscroll;
+  block.behind = -1;
+  throw (window_get_wimp_handle (0, Window_Obj, &(block.parent_window_handle)));
+  block.alignment_flags = 0; /* no window flags, fix to parent's work area */
+  throw (toolbox_show_object (Toolbox_ShowObject_AsSubWindow, Pane_Obj,
+      Toolbox_ShowObject_FullSpec, &block, Window_Obj, NULL_ComponentId));
+  
+d148 1
+a148 1
+  
+d167 1
+a167 1
+  
+d172 1
+a172 1
+  
+d183 1
+a183 1
+  
+d192 1
+a192 1
+  
+@
+
+
+1.1.1.1
+log
+@
+Initial import of Configure plug-ins '!BootApps', '!BootBoot' and '!BootRun'
+to CVS.
+
+Note that all three plug-ins plug in to !BootSetup, and they also share
+source code.
+@
+text
+@@

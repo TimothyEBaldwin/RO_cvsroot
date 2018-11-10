@@ -1,0 +1,828 @@
+head	4.4;
+access;
+symbols
+	Net-6_26:4.4
+	Net-6_25:4.4
+	Net-6_24:4.3
+	Net-6_23:4.3
+	Net-6_22:4.3
+	Net-6_21:4.3
+	RO_5_07:4.3
+	Net-6_20:4.3
+	Net-6_19:4.3
+	Net-6_18:4.2
+	Ursula_merge:4.2
+	Ursula_13May1998_merge:4.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.2
+	Ursula_RiscPC:4.2.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.2
+	UrsulaBuild_FinalSoftload:4.2
+	rthornb_UrsulaBuild-12Aug1998:4.2
+	aglover_UrsulaBuild-05Aug1998:4.2
+	rthornb_UrsulaBuild-29Jul1998:4.2
+	rthornb_UrsulaBuild-22Jul1998:4.2
+	rthornb_UrsulaBuild-15Jul1998:4.2
+	rthornb_UrsulaBuild-07Jul1998:4.2
+	rthornb_UrsulaBuild-17Jun1998:4.2
+	rthornb_UrsulaBuild-03Jun1998:4.2
+	rthornb_UrsulaBuild-27May1998:4.2
+	rthornb_UrsulaBuild-21May1998:4.2
+	Ursula_bp:4.2
+	Ursula:4.2.0.6
+	Ursula_13May1998_bp:4.2
+	Ursula_13May1998:4.2.0.2
+	rthornb_UrsulaBuild_01May1998:4.2
+	Daytona:4.2.0.4
+	Daytona_bp:4.2
+	RO_3_71:4.1.3.1
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	RO_3_60:4.1.1.1
+	StrongARM:4.1.3
+	Black:4.1.1;
+locks; strict;
+comment	@# @;
+
+
+4.4
+date	2015.05.29.19.29.03;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+commitid	2VVHsW5ULMhIonny;
+
+4.3
+date	2003.01.17.14.59.57;	author kbracey;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	97.05.13.11.25.50;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	96.11.05.09.28.27;	author nturton;	state Exp;
+branches
+	4.1.1.1
+	4.1.3.1;
+next	;
+
+4.1.1.1
+date	96.11.05.09.28.27;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.3.1
+date	96.11.05.22.31.35;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.4
+log
+@Have Net look after its own messages
+Net was trying to share some messages with the Econet module, though on balance this wasn't particularly useful as it then needed to duplicate message handling code to keep 2 files open. Because those messages were held in AUNMsgs they didn't get tokenised in ROM, overall ending up taking more space.
+
+Register in ResourcesFS at run time for RAM targets, add tokenisation directives for ROM targets, removed redundant !Configure related strings.
+Changed the messages fd to be int's to ensure word alignment.
+Removed inappropriate Service_MessageFileClosed handler, MessageTrans reopens the files (since the fd is in the RMA) so no need to reopen them a second time. This service call is intended to recache direct pointers to tokens, but none are ever taken.
+Save time by just making textbuf a zero length string rather than memset()ing the whole buffer.
+Resolved a couple more compiler warnings (but NetG still doesn't compile).
+Fix bug where a failure to enable the internet event would decrement the internet event count for any other modules interested in that event.
+Use CMHG finalisation rather than atexit().
+Error "AUN not configured" now uses a non zero trappable error number.
+Error number for BadSWI corrected from 0x111 to 0x110.
+
+Requires HdrSrc-2_51 for the error number.
+
+Version 6.25. Tagged as 'Net-6_25'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* trace.c
+ *
+ * Author: Keith Ruttle (Acorn)
+ *
+ * Description
+ * ===========
+ * Routines to trace actions of NetG module
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.06 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ * 13-Oct-95  15:44  JPD  Version 1.00
+ * First version with change record. Fixed fault leading to loss of logging
+ * of NetTrace information.
+ *
+ * 14-Nov-95  17:08  JPD  Version 1.01
+ * After discussion with MNevilleSmith, turned traceon() into a dummy
+ * routine: the effects of doing fprintf I/O from within a RISC OS event
+ * routine are too horrific to contemplate.
+ *
+ **End of change record*
+ */
+
+#ifdef OldCode
+#define RIPCMDS
+#include "defs.h"
+#include "../module.h"
+
+#else
+
+#undef RIPCMDS
+
+#include <stdio.h>
+#include <string.h>
+
+#include "kernel.h"
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "sys/time.h"
+
+/* appear unable to include both time.h files */
+extern char *ctime(const time_t *timer);
+
+#include "net/route.h"
+#include "netinet/in.h"
+#include "protocols/routed.h"
+
+#include "module.h"
+#include "inetfn.h"
+#include "showrt.h"
+#include "mns.h"
+#include "mnscommon.h"
+#include "debug.h"
+#include "table.h"
+#include "data.h"
+#include "trace.h"
+#include "startup.h"
+#endif
+
+#ifdef OldCode
+char *inet_ntoa(), *sprintnet(), *sprintroute(), *sprintdest(), *mns_str();
+#endif
+
+#define TRACE_FILE "<Gateway$Dir>.Trace"
+
+#ifdef OldCode
+char *trace_file = 0;
+#else
+static char *trace_file = 0;
+#endif
+
+/******************************************************************************/
+
+void traceon(char *file)
+{
+   trace_file = file ? file : TRACE_FILE;
+   traceactions = 1;
+
+   return;
+
+} /* traceon() */
+
+/******************************************************************************/
+
+void traceoff(void)
+{
+   traceactions = 0;
+
+   return;
+
+} /* traceoff() */
+
+/******************************************************************************/
+
+#if 0
+void traceaction(char *action, struct rt_entry *rt)
+{
+   UNUSED(action);
+   UNUSED(rt);
+
+   return;
+
+} /* traceaction() */
+#endif
+
+/******************************************************************************/
+
+#if 0
+void tracenewmetric(struct rt_entry *rt, int newmetric)
+{
+   UNUSED(rt);
+   UNUSED(newmetric);
+
+   return;
+
+} /* tracenewmetric() */
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+dumppacket(dir, who, cp, size, stamp)
+        struct sockaddr_in *who;
+        char *dir, *cp;
+        register int size;
+        struct timeval *stamp;
+{
+        FILE *fd = NULL;
+        struct rip *msg = (struct rip *)cp;
+        struct netinfo *n;
+        int from = strcmp(dir, "to");
+
+        if (msg->rip_cmd != RIPCMD_REQUEST && msg->rip_cmd != RIPCMD_RESPONSE)
+            return;
+        (void) gettimeofday(&now, (struct timezone *)NULL);
+        size -= 4 * sizeof (char);
+        n = msg->rip_nets;
+        for (; size > 0; n++, size -= sizeof (struct netinfo)) {
+            if (size < sizeof (struct netinfo))
+                break;
+            if (msg->rip_cmd == RIPCMD_REQUEST &&
+                ntohl(n->rip_metric) == (u_long)HOPCNT_INFINITY)
+                continue;
+            if (fd == NULL) {
+                fd = fopen(trace_file, "a");
+                if (fd == NULL)
+                    return;
+                fprintf(fd, "%.19s:", ctime((time_t *)&stamp->tv_sec));
+                fprintf(fd, "  %s %s\n", from ? "<==" : "==>", sprintdest(who->sin_addr));
+            }
+#define satosin(sa)     ((struct sockaddr_in *)&sa)
+            fprintf(fd, "%-4s%-16s", " ", sprintnet(&n->rip_dst));
+            if (ntohl(n->rip_metric) == 1)
+                fprintf(fd, "%s\n", mns_str(Str_Local));
+            else
+                fprintf(fd, "%s=%d\n", mns_str(Str_Gtewys), ntohl(n->rip_metric) - 1);
+        }
+        fflush(fd);
+        if (ferror(fd))
+                traceoff(0);
+        fclose(fd);
+}
+/******************************************************************************/
+
+#else
+void dumppacket(char *dir, struct sockaddr_in *who, char *cp,
+                                      register int size, struct timeval * stamp)
+{
+   FILE *fd = NULL;
+   struct rip *msg = (struct rip *)cp;
+   struct netinfo *n;
+   int from = strcmp(dir, "to");
+
+   DEBUGP5("#dumppacket(): dir %s, who %08X, cp %s, size %d\n\r",
+                                           dir, who->sin_addr.s_addr, cp, size);
+
+   if (msg->rip_cmd != RIPCMD_REQUEST && msg->rip_cmd != RIPCMD_RESPONSE)
+   {
+      DEBUGP1("#dumppacket(): neither REQUEST nor RESPONSE\n\r");
+      return;
+   }
+
+   (void) gettimeofday(&now, (struct timezone *)NULL);
+   size -= 4 * sizeof(char);
+   n = msg->rip_nets;
+
+   DEBUGP2("#dumppacket(): size = %d\n\r", size);
+
+   for (; size > 0; n++, size -= sizeof(struct netinfo))
+   {
+      if (size < sizeof(struct netinfo))
+      {
+         DEBUGP1("#dumppacket(): size too small\n\r");
+         break;
+      }
+      if (msg->rip_cmd == RIPCMD_REQUEST &&
+                                ntohl(n->rip_metric) == (u_long)HOPCNT_INFINITY)
+      {
+         DEBUGP1("#dumppacket(): hop count infinity\n\r");
+         continue;
+      }
+      if (fd == NULL)
+      {
+         fd = fopen(trace_file, "a");
+         if (fd == NULL)
+         {
+            DEBUGP2("#dumppacket(): cannot open file: '%s'\n\r", trace_file);
+            return;
+         }
+         fprintf(fd, "%.19s:", ctime((time_t *)&stamp->tv_sec));
+         fprintf(fd, "  %s %s\n", from ? "<==" : "==>",
+                                              sprintdest(who->sin_addr.s_addr));
+      }
+
+      fprintf(fd, "%-4s%-16s", " ", sprintnet(&n->rip_dst));
+      if (ntohl(n->rip_metric) == 1)
+         fprintf(fd, "%s\n", mns_str(Str_Local));
+      else
+         fprintf(fd, "%s=%ld\n", mns_str(Str_Gtewys), ntohl(n->rip_metric) - 1);
+   }
+
+   if (fd != NULL)
+   {
+      fflush(fd);
+      if (ferror(fd))
+         traceoff();
+      fclose(fd);
+   }
+}
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+char *
+sprintdest(saddr)
+u_long saddr;
+{
+    static char line[32];
+
+    saddr = ntohl(saddr);
+#define C(x)    ((x) & 0xff)
+    if (C(saddr >> 8) == 0xff && C(saddr) == 0xff) {
+        if (!mns_addrtoname(line, saddr))
+            (void) sprintf(line, "%lu.%lu", C(saddr >> 24), C(saddr >> 16));
+        strcat(line, " (broadcast)");
+    }
+    else
+        (void) sprintf(line, "%lu.%lu", C(saddr >> 8), C(saddr));
+    return (line);
+}
+
+/******************************************************************************/
+
+#else
+char *sprintdest(u_long saddr)
+{
+   static char line[32];
+
+   saddr = ntohl(saddr);
+
+#define C(x)    ((x) & 0xff)
+
+   if (C(saddr >> 8) == 0xff && C(saddr) == 0xff)
+   {
+      if (!mns_addrtoname(line, saddr))
+         (void) sprintf(line, "%lu.%lu", C(saddr >> 24), C(saddr >> 16));
+      strcat(line, " (broadcast)");
+   }
+   else
+      (void) sprintf(line, "%lu.%lu", C(saddr >> 8), C(saddr));
+
+   return line;
+
+} /* sprintdest() */
+
+#endif
+
+/******************************************************************************/
+
+/* EOF trace.c */
+@
+
+
+4.3
+log
+@Made 32-bit compatible.
+Changed to use VersionNum.
+
+Version 6.19. Tagged as 'Net-6_19'
+@
+text
+@d58 1
+d76 1
+d244 1
+a244 1
+         fprintf(fd, "%s=%d\n", mns_str(Str_Gtewys), ntohl(n->rip_metric) - 1);
+@
+
+
+4.2
+log
+@Version RO_3_71 taken
+@
+text
+@a96 8
+#ifdef OldCode
+traceon(file)
+char *file;
+{
+        trace_file = file ? file : TRACE_FILE;
+        traceactions = 1;
+}
+#else
+d99 2
+a100 1
+   UNUSED(file);
+d106 1
+a106 1
+#endif
+a107 8
+/******************************************************************************/
+#ifdef OldCode
+traceoff(trace)
+int trace;
+{
+        traceactions = 0;
+}
+#else
+a115 2
+#endif
+
+a117 9
+#ifdef OldCode
+traceaction(action, rt)
+char *action;
+struct rt_entry *rt;
+{
+        action=action;
+        rt=rt;
+}
+#else
+a127 1
+#endif
+a130 9
+#ifdef OldCode
+tracenewmetric(rt, newmetric)
+        struct rt_entry *rt;
+        int newmetric;
+{
+        rt=rt;
+        newmetric=newmetric;
+}
+#else
+a139 1
+#endif
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d15 32
+d48 1
+d53 31
+d85 1
+d88 2
+d91 3
+d95 3
+d104 4
+d109 8
+d122 8
+d131 5
+d143 12
+d156 3
+d166 8
+d175 7
+d199 1
+a199 1
+            if (size < sizeof (struct netinfo)) 
+d202 1
+a202 1
+                ntohl(n->rip_metric) == (u_long)HOPCNT_INFINITY) 
+d209 1
+a209 1
+                fprintf(fd, "  %s %s\n", from ? "<==" : "==>", sprintdest(who->sin_addr)); 
+d216 1
+a216 1
+                fprintf(fd, "%s=%d\n", mns_str(Str_Gtewys), ntohl(n->rip_metric) - 1); 
+d223 71
+d295 1
+d305 1
+a305 1
+        if (!mns_addrtoname(line, saddr)) 
+d308 2
+a309 2
+    } 
+    else   
+d314 29
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@a0 46
+/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* trace.c
+ *
+ * Author: Keith Ruttle (Acorn)
+ *
+ * Description
+ * ===========
+ * Routines to trace actions of NetG module
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.06 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ * 13-Oct-95  15:44  JPD  Version 1.00
+ * First version with change record. Fixed fault leading to loss of logging
+ * of NetTrace information.
+ *
+ * 14-Nov-95  17:08  JPD  Version 1.01
+ * After discussion with MNevilleSmith, turned traceon() into a dummy
+ * routine: the effects of doing fprintf I/O from within a RISC OS event
+ * routine are too horrific to contemplate.
+ *
+ **End of change record*
+ */
+a15 1
+#ifdef OldCode
+a19 31
+#else
+
+#undef RIPCMDS
+
+#include <stdio.h>
+
+#include "kernel.h"
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "sys/time.h"
+
+/* appear unable to include both time.h files */
+extern char *ctime(const time_t *timer);
+
+#include "net/route.h"
+#include "netinet/in.h"
+#include "protocols/routed.h"
+
+#include "module.h"
+#include "inetfn.h"
+#include "showrt.h"
+#include "mnscommon.h"
+#include "debug.h"
+#include "table.h"
+#include "data.h"
+#include "trace.h"
+#include "startup.h"
+#endif
+
+#ifdef OldCode
+a20 1
+#endif
+a22 2
+
+#ifdef OldCode
+a23 3
+#else
+static char *trace_file = 0;
+#endif
+a24 3
+/******************************************************************************/
+
+#ifdef OldCode
+a30 4
+#else
+void traceon(char *file)
+{
+   UNUSED(file);
+a31 8
+   return;
+
+} /* traceon() */
+
+#endif
+
+/******************************************************************************/
+#ifdef OldCode
+a36 8
+#else
+void traceoff(void)
+{
+   traceactions = 0;
+
+   return;
+
+} /* traceoff() */
+a37 5
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+a44 12
+#else
+#if 0
+void traceaction(char *action, struct rt_entry *rt)
+{
+   UNUSED(action);
+   UNUSED(rt);
+
+   return;
+
+} /* traceaction() */
+#endif
+#endif
+a45 3
+/******************************************************************************/
+
+#ifdef OldCode
+a52 8
+#else
+#if 0
+void tracenewmetric(struct rt_entry *rt, int newmetric)
+{
+   UNUSED(rt);
+   UNUSED(newmetric);
+
+   return;
+a53 7
+} /* tracenewmetric() */
+#endif
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+d71 1
+a71 1
+            if (size < sizeof (struct netinfo))
+d74 1
+a74 1
+                ntohl(n->rip_metric) == (u_long)HOPCNT_INFINITY)
+d81 1
+a81 1
+                fprintf(fd, "  %s %s\n", from ? "<==" : "==>", sprintdest(who->sin_addr));
+d88 1
+a88 1
+                fprintf(fd, "%s=%d\n", mns_str(Str_Gtewys), ntohl(n->rip_metric) - 1);
+a94 71
+/******************************************************************************/
+
+#else
+void dumppacket(char *dir, struct sockaddr_in *who, char *cp,
+                                      register int size, struct timeval * stamp)
+{
+   FILE *fd = NULL;
+   struct rip *msg = (struct rip *)cp;
+   struct netinfo *n;
+   int from = strcmp(dir, "to");
+
+   DEBUGP5("#dumppacket(): dir %s, who %08X, cp %s, size %d\n\r",
+                                           dir, who->sin_addr.s_addr, cp, size);
+
+   if (msg->rip_cmd != RIPCMD_REQUEST && msg->rip_cmd != RIPCMD_RESPONSE)
+   {
+      DEBUGP1("#dumppacket(): neither REQUEST nor RESPONSE\n\r");
+      return;
+   }
+
+   (void) gettimeofday(&now, (struct timezone *)NULL);
+   size -= 4 * sizeof(char);
+   n = msg->rip_nets;
+
+   DEBUGP2("#dumppacket(): size = %d\n\r", size);
+
+   for (; size > 0; n++, size -= sizeof(struct netinfo))
+   {
+      if (size < sizeof(struct netinfo))
+      {
+         DEBUGP1("#dumppacket(): size too small\n\r");
+         break;
+      }
+      if (msg->rip_cmd == RIPCMD_REQUEST &&
+                                ntohl(n->rip_metric) == (u_long)HOPCNT_INFINITY)
+      {
+         DEBUGP1("#dumppacket(): hop count infinity\n\r");
+         continue;
+      }
+      if (fd == NULL)
+      {
+         fd = fopen(trace_file, "a");
+         if (fd == NULL)
+         {
+            DEBUGP2("#dumppacket(): cannot open file: '%s'\n\r", trace_file);
+            return;
+         }
+         fprintf(fd, "%.19s:", ctime((time_t *)&stamp->tv_sec));
+         fprintf(fd, "  %s %s\n", from ? "<==" : "==>",
+                                              sprintdest(who->sin_addr.s_addr));
+      }
+
+      fprintf(fd, "%-4s%-16s", " ", sprintnet(&n->rip_dst));
+      if (ntohl(n->rip_metric) == 1)
+         fprintf(fd, "%s\n", mns_str(Str_Local));
+      else
+         fprintf(fd, "%s=%d\n", mns_str(Str_Gtewys), ntohl(n->rip_metric) - 1);
+   }
+
+   if (fd != NULL)
+   {
+      fflush(fd);
+      if (ferror(fd))
+         traceoff();
+      fclose(fd);
+   }
+}
+
+#endif
+
+/******************************************************************************/
+a95 1
+#ifdef OldCode
+d105 1
+a105 1
+        if (!mns_addrtoname(line, saddr))
+d108 2
+a109 2
+    }
+    else
+a113 29
+/******************************************************************************/
+
+#else
+char *sprintdest(u_long saddr)
+{
+   static char line[32];
+
+   saddr = ntohl(saddr);
+
+#define C(x)    ((x) & 0xff)
+
+   if (C(saddr >> 8) == 0xff && C(saddr) == 0xff)
+   {
+      if (!mns_addrtoname(line, saddr))
+         (void) sprintf(line, "%lu.%lu", C(saddr >> 24), C(saddr >> 16));
+      strcat(line, " (broadcast)");
+   }
+   else
+      (void) sprintf(line, "%lu.%lu", C(saddr >> 8), C(saddr));
+
+   return line;
+
+} /* sprintdest() */
+
+#endif
+
+/******************************************************************************/
+
+/* EOF trace.c */
+@
+
+
+4.1.1.1
+log
+@Import from cleaned 360 CD
+@
+text
+@@

@@ -1,0 +1,190 @@
+head	1.2;
+access;
+symbols
+	NFS-3_27:1.2
+	NFS-3_26:1.2
+	NFS-3_25:1.2
+	NFS-3_24:1.1
+	NFS-3_23:1.1
+	NFS-3_22:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2018.03.07.21.22.43;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	sKJZhgBEKf2WsztA;
+
+1.1
+date	2018.01.29.21.25.17;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	m4PdBzvfqs9AFOoA;
+
+
+desc
+@@
+
+
+1.2
+log
+@Store lxa files verbatim, without appendum
+Files saved with load & exec address (as opposed to a filetype and the top nybble of load set to 0xFFF) would be extended by 8 bytes in order to hide the true load/exec for later retrieval.
+While useful if only ever saving and retrieving from the RISC OS viewpoint, it would create apparently corrupt or overlong file if you wanted to do any analysis on the NFS server end. Given load/exec addresses are deprecated, change NFS to behave like LanManFS and just denote ",lxa" suffixed files with the appropriate icon in the Filer and a made up load/exec address.
+
+pathmunge.c/_GBPB.c/V2support.c/_Args.c/_File.c/PutBytesX.c/Static.c/Changeinfo.c: Switch out 8 byte appending code. Give the file a proper date stamp instead when viewed on Unix.
+_Open.c: Switch out the 8 byte appendum stuff, and use a common OS_Word 14 clock function.
+Statics.h/Modulewrap.c: Compute a substitute load/exec using the same algorithm as LanManFS (the Kernel's address rounded down to 1MB). Use cmhg finalise function instead of atexit().
+
+Also
+MakeFile: pass in predefine DEBUG for debug builds.
+cmhg/NFSHdr: remove *Histogram debug command except when debugging. Add finalise handler.
+Commands.c/Commands.h: remove *Histogram debug command except when debugging.
+Utils.c: delete unused long long support functions. Add a new time getting support function.
+Utils.h: new time getting support function.
+
+Tested with a handful of area saves using *Save, checking the file size when viewed at the server end was correct not 8 bytes longer.
+
+Version 3.25. Tagged as 'NFS-3_25'
+@
+text
+@; Copyright 2018 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; cmhg control file for nfs
+;
+
+#include "VersionNum"
+
+initialisation-code: nfs_initialise
+
+finalisation-code: nfs_finalise
+
+service-call-handler: nfs_service 0x40
+
+title-string: NFS
+
+help-string: RISC_OS_NFS Module_MajorVersion_CMHG Module_MinorVersion_CMHG
+
+date-string: Module_Date_CMHG
+
+swi-chunk-base-number: 0x410C0
+
+swi-handler-code: nfs_swi
+
+swi-decoding-table: NFS,
+                Mount MountList SetUser Dismount MountInfo FreeSpace FreeSpace64
+                ; NOTE: The Free module knows about the numbers of ^ and ^
+
+command-keyword-table: nfs_command
+
+        NFS(min-args:0, max-args:0,
+                help-text: "*NFS selects NFS as the current filing system.\r"
+                        "Syntax: *NFS",
+                invalid-syntax: "Syntax: *NFS" ),
+
+        NFSInfo( min-args:0, max-args:0,
+                help-text: "*NFSInfo displays internal information for NFS.\r"
+                           "Syntax: *NFSInfo",
+                invalid-syntax: "Syntax: *NFSInfo" ),
+
+        NFSBoot( min-args:0, max-args:0,
+                help-text: "*NFSBoot starts a boot sequence from an NFS server.\r"
+                           "Syntax: *NFSBoot",
+                invalid-syntax: "Syntax: *NFSBoot" ),
+
+        Logon(min-args:0, max-args:4, fs-command:,
+                help-text: "*Logon displays or authenticates the name under which you wish to access "
+                        "future *Mounted mount points. The user name 'nobody' does not require a password.\r"
+                        "Syntax: *Logon [-host <name server>] [<user name> [[<CR>] <password>]]\r" ),
+
+        Mount(min-args:0, max-args:4, fs-command:,
+                help-text: "*Mount lists or mounts mount points on NFS.\r"
+                        "Syntax: *Mount [-host <host name>] [<mount name> [<mount path>]]\r",
+                invalid-syntax: "Syntax: *Mount [-host <host name>] [<mount name> [<mount path>]]\r" ),
+
+        Dismount(min-args:0, max-args:2, fs-command:,
+                help-text: "*Dismount dismounts mount points mounted on NFS.\r"
+                        "Syntax: *Dismount [-host <host name> | <mount name>]\r",
+                invalid-syntax: "Syntax: *Dismount [-host <host name> | <mount name>]\r" ),
+
+        Bye( min-args:0, max-args:0, fs-command:,
+                help-text: "*Bye dismounts all mount points and closes anything open on them. "
+                        "All directories become unset\r"
+                        "Syntax: *Bye\r",
+                invalid-syntax: "Syntax: *Bye\r" ),
+
+        Free( min-args:0, max-args:1, fs-command:,
+                help-text: "*Free displays the free space available on the server.\r"
+                        "Syntax: *Free [<mount name>]\r",
+                invalid-syntax: "Syntax: *Free [<mount name>]\r" ),
+
+        CacheTime( min-args:0, max-args:1, fs-command:, gstrans-map:1,
+                help-text: "*CacheTime sets the time (in 1/100ths of a second) for which all "
+                        "information cached in the future is assumed to be valid.\r"
+                        "Syntax: *CacheTime [<time>]",
+                invalid-syntax: "Syntax: *CacheTime [<time>]" ),
+
+        CacheSize( min-args:0, max-args:1, fs-command:,
+                help-text: "*CacheSize sets the size of the cache for cacheing file information. "
+                           "Each entry uses about 200 bytes of memory.\r"
+                        "Syntax: *CacheSize [<entries>]",
+                invalid-syntax: "Syntax: *CacheSize [<entries>]" ),
+
+        Timeout( min-args:0, max-args:2, fs-command:,
+                help-text: "*Timeout sets the time (in seconds) before an NFS transaction will timeout, "
+                         "and the time in seconds before an unanswered packet is resent.\r"
+                        "Syntax: *Timeout [<timeout time>] [<retry time>]",
+                invalid-syntax: "Syntax: *Timeout [<timeout time>] [<retry time>]" ),
+
+        PacketSize( min-args:0, max-args:1, fs-command:,
+                help-text: "*PacketSize sets the packet size (from 1 to 8K) to be used for NFS packets.\r"
+                        "Syntax: *PacketSize [<packet size>]",
+                invalid-syntax: "Syntax: *PacketSize [<packet size>]" )
+
+#ifdef DEBUG
+        Histogram( min-args:0, max-args:0, fs-command:, add-syntax:,
+                help-text: "*Histogram shows the current cache histograms in the NFS module.\r",
+                invalid-syntax: "Syntax: *Histogram" ),
+#endif
+@
+
+
+1.1
+log
+@Makefile recreated from fragments
+Use Push/Pull macros in the assembler to reduce single reg warnings.
+Fix up headers from AsmUtils.
+
+Version 3.22. Tagged as 'NFS-3_22'
+@
+text
+@a17 1
+; <module-is-runnable:> - NO
+d22 2
+a39 4
+; <swi-decoding-code:> <swi_decoder> - NO
+
+; <irq-handlers:> <entry_name>/<handler_name> ... - NO
+
+a100 4
+        Histogram( min-args:0, max-args:0, fs-command:, add-syntax:,
+                help-text: "*Histogram shows the current cache histograms in the NFS module.\r",
+                invalid-syntax: "Syntax: *Histogram" ),
+
+d105 6
+@
+

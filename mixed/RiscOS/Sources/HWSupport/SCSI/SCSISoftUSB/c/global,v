@@ -1,0 +1,314 @@
+head	1.7;
+access;
+symbols
+	SCSISoftUSB-0_25-1:1.7
+	SCSISoftUSB-0_25:1.7
+	SCSISoftUSB-0_24:1.7
+	SCSISoftUSB-0_23:1.7
+	SCSISoftUSB-0_22:1.7
+	SCSISoftUSB-0_21:1.7
+	SCSISoftUSB-0_20:1.7
+	SCSISoftUSB-0_19:1.7
+	SCSISoftUSB-0_18:1.7
+	SCSISoftUSB-0_17:1.7
+	SCSISoftUSB-0_16:1.7
+	SCSISoftUSB-0_15:1.6
+	SCSISoftUSB-0_14:1.6
+	SCSISoftUSB-0_13:1.5
+	SCSISoftUSB-0_12:1.5
+	SCSISoftUSB-0_11:1.4
+	SCSISoftUSB-0_10:1.3
+	SCSISoftUSB-0_09:1.3
+	SCSISoftUSB-0_08:1.3
+	SCSISoftUSB-0_07:1.3
+	SCSISoftUSB-0_06:1.2
+	SCSISoftUSB-0_05:1.1.1.1
+	SCSISoftUSB-0_04:1.1.1.1
+	SCSISoftUSB-0_03:1.1.1.1
+	SCSISoftUSB-0_02:1.1.1.1
+	SCSISoftUSB-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2012.06.03.14.25.56;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	tugyl8mcBbH3Lg7w;
+
+1.6
+date	2011.07.24.22.09.30;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	hW9XzNMbX8MQrPsv;
+
+1.5
+date	2010.04.22.20.25.18;	author jlee;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2009.10.22.01.19.56;	author jlee;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2005.06.24.21.03.12;	author jballance;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2005.03.05.00.44.42;	author jballance;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2003.05.14.16.49.27;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2003.05.14.16.49.27;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Fix temporary RMA corruption while inside RTSupport routine
+Detail:
+  Previously the RTSupport routine would execute in SYS mode, and use assembler veneers to make direct calls to the buffer manager.
+  Despite being against the buffer manager spec (only IRQ or SVC should be used, according to PRM 5a), the buffer manager was coping with SYS mode calls fine. However the buffer manager would call DeviceFS, and DeviceFS would then call USBDriver, entering the module via one of CMHG's generic veneers.
+  These veneers attempt to switch to SVC mode on entry, but they do so by only interacting with the bottom two bits of the PSR - so the CPU was remaining in SYS mode.
+  Although this isn't a problem in and of itself, immediately after the mode change comes some code to set up the static relocation offsets at the SVC stack limit.
+  This is done by aligning the stack pointer to a MB boundary. If we were in SVC mode this would be fine, but since we're still in SYS mode we're using a stack that was allocated by SCSISoftUSB and isn't aligned to a boundary at all; thus resulting in two words of RMA being swapped out with something completely different while the USBDriver code executes.
+  With RTSupport in ROM this will most likely end up being the first two words of the heap - which is enough to stop OS_Module from manipulating the heap (the heap manager will see it as corrupt), but without causing any lasting damage.
+  To solve this issue we now run the entire routine in SVC mode, using the MB-aligned SVC stack that RTSupport provides for us.
+  File changes:
+  c/global, c/cmodule, h/global - Get rid of the SYS mode stack since we no longer need it
+  c/glue, h/glue - Extern RTSupportWrapper so it can be called from the assembler veneer. Tweak RT_Register parameters to pass in the relocation offsets (and no SYS stack)
+  s/asm, h/asm - Added asm_RTSupportWrapper to get us into and out of SVC mode around the call to RTSupportWrapper. Also sets up our stack limit & relocation offsets within the SVC stack.
+Admin:
+  Tested in BCM2835 ROM
+
+
+Version 0.16. Tagged as 'SCSISoftUSB-0_16'
+@
+text
+@/* Copyright 2003 Tematic Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*****************************************************************************
+* $Id: global,v 1.6 2011/07/24 22:09:30 jlee Exp $
+* $Name: HEAD $
+*
+* Author(s):  Ben Avison
+* Project(s): 
+*
+* ----------------------------------------------------------------------------
+* Purpose: Global variables
+*
+* ----------------------------------------------------------------------------
+* History: See source control system log
+*
+*****************************************************************************/
+
+
+/*****************************************************************************
+* Include header files
+*****************************************************************************/
+#include "global.h"
+
+
+/*****************************************************************************
+* MACROS
+*****************************************************************************/
+
+
+/*****************************************************************************
+* New type definitions
+*****************************************************************************/
+
+
+/*****************************************************************************
+* Constants
+*****************************************************************************/
+
+
+/*****************************************************************************
+* File scope Global variables
+*****************************************************************************/
+void *global_PrivateWord; /* so we don't have to worry about passing pw around */
+MessagesFD global_MessageFD; /* message file descriptor */
+my_usb_device_t *global_DeviceList = NULL; /* list of usb device info */
+my_usb_device_t *global_TickerList = NULL; /* list of devices using TickerV */
+
+bool global_UseRTSupport = false; /* Use RTSupport instead of TickerV? */
+int global_RTSupportPollword = 0; /* RTSupport pollword */
+int global_RTSupportHandle = 0; /* RTSupport handle */
+callback_type global_CallbackType = callback_NONE; /* Type of our registered callback, if any */
+
+uint32_t global_PopUpDelay = 400; /* Delay before SCSIFS gets told about new devices */
+
+/*****************************************************************************
+* Function prototypes - Private to this file
+*****************************************************************************/
+
+
+/*****************************************************************************
+* Functions
+*****************************************************************************/
+
+
+/*****************************************************************************
+* END OF FILE
+*****************************************************************************/
+@
+
+
+1.6
+log
+@Fix null pointer access
+Detail:
+  c/glue - Not all operations make use of device->current_pipe, but glue_DoCommand was accessing the pipe pointer regardless of whether the maxpacket value was needed or not. This causes the code to fail if zero page is relocated.
+  c/global, c/glue, c/module, c/umass, c/umass_quirks, cmhg/modhdr, h/asm, h/global, h/glue, h/resmess, h/umass_quirks, h/umassvar, s/asm - CVS has decided to update all the $Name$ tags. Not entirely sure why, but it probably won't hurt.
+Admin:
+  Tested on rev C2 BB.
+
+
+Version 0.14. Tagged as 'SCSISoftUSB-0_14'
+@
+text
+@d16 1
+a16 1
+* $Id: global,v 1.5 2010/04/22 20:25:18 jlee Exp $
+a61 1
+_kernel_stack_chunk *global_RTSupportStack = 0; /* RTSupport stack chunk */
+@
+
+
+1.5
+log
+@Make SCSISoftUSB's 'PopUpDelay' configurable, improve robustness of device registration
+Detail:
+  c/global, c/module, cmhg/header, h/global - The new command *SCSISoftUSB_PopUpDelay can now be used to control the popup delay value. Additionally, no delay is used if outside the desktop.
+  Makefile, Resources/UK/Messages - Added resources file containing text for the new * command
+  c/module, cmhg/header - Devices are now registered with SCSISwitch from a callback instead of from a ticker event. This ensures the registration won't fail due to insufficient RMA space (e.g. as is often the case for devices detected during OMAP ROM initialisation)
+Admin:
+  Tested in ROM on rev C2 beagleboard, and in RAM on Iyonix.
+  Messages file needs translating!
+
+
+Version 0.12. Tagged as 'SCSISoftUSB-0_12'
+@
+text
+@d16 1
+a16 1
+* $Id: global,v 1.4 2009/10/22 01:19:56 jlee Exp $
+@
+
+
+1.4
+log
+@Update SCSISoftUSB to use RTSupport where possible, for much better USB performance
+Detail:
+  On initialisation SCSISoftUSB now checks if a suitable version of the RTSupport module is loaded (0.05 or above), and if so, will use RTSupport in preference to TickerV to schedule USB transfers. When combined with tweaked DeviceFS buffer thresholds and some extra code to listen out for buffer filling/emptying upcalls, this allows for significant performance improvements for USB 2.0 devices.
+  If at any point RTSupport becomes unavailable or the RT_Register SWI fails (or if a suitable version of RTSupport is not present) the code will (potentially temporarily) fall back to using TickerV to ensure the filesystem remains functional.
+Admin:
+  Tested on RISC OS 5.15 rev C2 beagleboard & RISC OS 5.12 Iyonix with & without RTSupport 0.05.
+
+
+Version 0.11. Tagged as 'SCSISoftUSB-0_11'
+@
+text
+@d16 1
+a16 1
+* $Id: global,v 1.3 2005/06/24 21:03:12 jballance Exp $
+d66 2
+@
+
+
+1.3
+log
+@	Extend device coverage and better startup
+Detail:
+	now checks any mass storage device for usability .. nolonger
+	restricts to types 8-5 and 8-6
+	delays scsi registration for 2 seconds beyond point where
+	module has finished initialising (overcomes issue seen with some
+	devices that fail an inquiry command if sent immediately after
+	device is enabled)
+Admin:
+	castle added IP. tested locally. now a release candidate to
+	be checked via the beta software site.
+
+
+Version 0.07. Tagged as 'SCSISoftUSB-0_07'
+@
+text
+@d16 2
+a17 2
+* $Id: global,v 1.2 2005/03/05 00:44:42 jballance Exp $
+* $Name: SCSISoftUSB-0_06 $
+d60 5
+@
+
+
+1.2
+log
+@   	Numerous updates to improve working.
+	Re-synced with NetBSD mass storage
+	Added part sector fill/ignore needed by SCSIFS
+
+Detail:
+Admin:  tested at castle.. to go to beta site.. Castle added IP
+
+
+Version 0.06. Tagged as 'SCSISoftUSB-0_06'
+@
+text
+@d16 2
+a17 2
+* $Id: global,v 1.1.1.1 2003/05/14 16:49:27 bavison Exp $
+* $Name: SCSISoftUSB-0_05 $
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d16 2
+a17 2
+* $Id:  $
+* $Name:  $
+@
+
+
+1.1.1.1
+log
+@Initial import of SCSISoftUSB, a driver for USB mass storage devices that
+use a SCSI command set over bulk-only or control-bulk-interrupt protocols.
+@
+text
+@@

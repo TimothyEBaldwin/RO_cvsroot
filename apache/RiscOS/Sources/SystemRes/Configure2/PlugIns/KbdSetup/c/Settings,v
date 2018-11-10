@@ -1,0 +1,666 @@
+head	1.3;
+access;
+symbols
+	KbdSetup-0_18:1.3
+	KbdSetup-0_17:1.3
+	KbdSetup-0_16:1.2
+	KbdSetup-0_15:1.2
+	KbdSetup-0_14:1.2
+	KbdSetup-0_13:1.2
+	KbdSetup-0_12:1.1.1.6
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.4
+	Ursula_RiscPC:1.1.1.4.0.2
+	bavison_KbdSetup-0_11:1.1.1.6
+	bavison_KbdSetup-0_10:1.1.1.5
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.4
+	UrsulaBuild_FinalSoftload:1.1.1.4
+	bavison_KbdSetup-0_09:1.1.1.4
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.3
+	bavison_KbdSetup-0_08:1.1.1.3
+	bavison_KbdSetup-0_07:1.1.1.2
+	rthornb_UrsulaBuild-17Jun1998:1.1.1.1
+	bavison_KbdSetup-0_06:1.1.1.1
+	rthornb_UrsulaBuild-03Jun1998:1.1.1.1
+	rthornb_UrsulaBuild-27May1998:1.1.1.1
+	rthornb_UrsulaBuild-21May1998:1.1.1.1
+	rthornb_UrsulaBuild_01May1998:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2012.09.30.08.49.36;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	PPswe7vGR0Jv4xmw;
+
+1.2
+date	2002.12.14.13.42.31;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.04.07.18.24.48;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.04.07.18.24.48;	author bavison;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.06.30.13.53.16;	author bavison;	state Exp;
+branches;
+next	1.1.1.3;
+
+1.1.1.3
+date	98.07.02.12.48.52;	author bavison;	state Exp;
+branches;
+next	1.1.1.4;
+
+1.1.1.4
+date	98.08.11.15.47.53;	author bavison;	state Exp;
+branches;
+next	1.1.1.5;
+
+1.1.1.5
+date	98.08.28.10.49.55;	author bavison;	state Exp;
+branches;
+next	1.1.1.6;
+
+1.1.1.6
+date	98.09.11.18.27.19;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Add option for num lock setting
+When the kernel does not support *CONFIGURE [No]Num the default is set to 'on' and the gadgets shaded to prevent the user trying to change them when the setting will not be retained.
+* Radio icons to select on/offness
+* Makefile recreated from fragments
+* Service_/OS_ magic numbers changed for defines
+
+Version 0.17. Tagged as 'KbdSetup-0_17'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	Settings.c ********************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Keyboard configuration plug-in
+This file:	GUI <-> settings routines
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+09/12/1997	BJGA	Split from Main
+			Added these headers
+30/06/1998	BJGA	Added support for delete-type option button
+02/07/1998	BJGA	Delete-type CMOS bit now as allocated
+11/08/1998	BJGA	Now refreshes the screen if setting the keyboard
+			caused the current alphabet to be changed
+17/08/1998	BJGA	Uses Message_FontChanged to redraw screen, so the
+			Wimp recaches the desktop font at the same time
+27/08/1998	BJGA	Added support for Win95 key settings, including
+			  settings_UpdateXFromY() functions
+			PC-delete option now applied even if choices file is locked
+11/09/1998	BJGA	Calls keyboards_buildnametable prior to settings display
+
+\**************************************************************************/
+
+/* CLib */
+#include "swis.h"
+#include "Global/OsBytes.h"
+/* Toolbox */
+#include "wimplib.h"
+#include "toolbox.h"
+#include "window.h"
+#include "gadgets.h"
+/* Common */
+#include "cmos.h"
+#include "misc.h"
+#include "str.h"
+/* local headers */
+#include "Main.h"
+#include "Keyboards.h"
+#include "Settings.h"  /* includes prototypes for this file */
+
+const cmos cmos_details [4] = { { 0x0C, 0, 8 },		/* AutoRepeatDelay (if 0 then inactive) */
+				{ 0x0D, 0, 8 },		/* AutoRepeatRate */
+				{ 0x0B, 3, 3 },		/* CapsMode */
+				{ 0x0B, 7, 1 } };       /* NumLock */
+
+
+/******	settings_read() ***************************************************\
+
+Purpose:	Reads current / default settings, reflect them in GUI
+In:		Routine to determine settings (cmos_read or cmos_default)
+
+\**************************************************************************/
+
+void settings_read (int(*get)(cmos item, void *messages))
+{
+  int	value;
+  char	buffer [100];
+//
+  /* a requirement first time round, and a useful re-check subsequently */
+  keyboards_buildnametable (cmos_read (territory_cmos, NULL) ^ 1);
+//
+  if (misc_fileislocked ((char *)status_file))
+  {
+    misc_shadecomponents (1, mainwindow_id, mainwindow_handler_shademin, mainwindow_handler_shademax);
+    misc_shadecomponents (1, mainwindow_id, mainwindow_acorn_shademin, mainwindow_acorn_shademax);
+  }
+  throw (stringset_set_selected (0, mainwindow_id, mainwindow_keyboardhandler, keyboards_get (buffer, sizeof(buffer), get)));
+//
+  ColKeyState = 0; /* always reset to displaying red key functionality after read */
+  throw (radiobutton_set_state (0, mainwindow_id, mainwindow_redkey, 1));
+  settings_UpdateWritablesFromArray ();
+//
+  throw (optionbutton_set_state (0, mainwindow_id, mainwindow_repeat, (value = get (AutoRepeatDelay, &messages)) != 0));
+  misc_shadecomponents (!value, mainwindow_id, mainwindow_repeat_shademin, mainwindow_repeat_shademax);
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_startdelay, value ? get (AutoRepeatDelay, &messages) : cmos_default (AutoRepeatDelay, &messages)));
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_repeatdelay, value ? get (AutoRepeatRate, &messages) : cmos_default (AutoRepeatRate, &messages)));
+//
+  switch (value = get (CapsMode, &messages)) {
+    case 4: throw (radiobutton_set_state (0, mainwindow_id, mainwindow_caps_on, 1)); break;
+    case 2: throw (radiobutton_set_state (0, mainwindow_id, mainwindow_caps_off, 1)); break;
+    case 1: throw (radiobutton_set_state (0, mainwindow_id, mainwindow_caps_shift, 1)); break;
+  }
+//
+  if (_swix (OS_CLI, _IN(0), "STATUS Num") == NULL) {
+    /* Kernel supports [No]Num configure keywords */
+    switch (value = get (NumLock, &messages)) {
+      case 1: throw (radiobutton_set_state (0, mainwindow_id, mainwindow_num_off, 1)); break;
+      case 0: throw (radiobutton_set_state (0, mainwindow_id, mainwindow_num_on, 1)); break;
+    }
+  }
+  else
+  {
+    /* Kernel does not, so it's shaded and always on */
+    throw (radiobutton_set_state (0, mainwindow_id, mainwindow_num_on, 1));
+    misc_shadecomponents (1, mainwindow_id, mainwindow_numlock_shademin, mainwindow_numlock_shademax);
+  }
+}
+
+/******	settings_write() **************************************************\
+
+Purpose:	Reads GUI, reflect in current and configured settings
+Out:		TRUE => operation performed successfully
+
+\**************************************************************************/
+
+BOOL settings_write (void)
+{
+  int value;
+  char string [256];
+//
+  throw (gadget_get_flags (0, mainwindow_id, mainwindow_keyboardhandler, (unsigned int *) &value));
+  if (!(value & Gadget_Faded)) {
+    int pre_alphabet = _swi (OS_Byte, _INR(0,1)|_RETURN(1), OsByte_Alphabet, 127); /* read current alphabet */
+    int post_alphabet;
+    throw (stringset_get_selected (0, mainwindow_id, mainwindow_keyboardhandler, string, sizeof (string), NULL));
+    str_cpy (string, string);
+    keyboards_set (string);
+    post_alphabet = _swi (OS_Byte, _INR(0,1)|_RETURN(1), OsByte_Alphabet, 127); /* read current alphabet */
+    if (post_alphabet != pre_alphabet)
+    {
+      /* Keyboard change caused alphabet change */
+      /* so prod Wimp to recache desktop font and redraw screen */
+      WimpMessage buffer;
+      buffer.hdr.size = 20;
+      buffer.hdr.your_ref = 0;
+      buffer.hdr.action_code = Wimp_MFontChanged;
+      throw (wimp_send_message (17, &buffer, 0, 0, NULL));
+    }
+  }
+  else
+  {
+    /* Reaffirm the current keyboard, so the PC-delete option takes effect */
+    int handler = _swi (OS_Byte, _INR(0,1)|_RETURN(1), OsByte_Alphabet, 255);
+    _swi (OS_Byte, _INR(0,1), OsByte_Alphabet, handler + 128);
+  }
+//
+  throw (optionbutton_get_state (0, mainwindow_id, mainwindow_repeat, &value));
+  if (value) {
+    throw (numberrange_get_value (0, mainwindow_id, mainwindow_startdelay, &value));
+    cmos_write (AutoRepeatDelay, value);
+    _swi (OS_Byte, _INR(0,1), OsByte_KeybRepeatDelay, value);
+    throw (numberrange_get_value (0, mainwindow_id, mainwindow_repeatdelay, &value));
+    cmos_write (AutoRepeatRate, value);
+    _swi (OS_Byte, _INR(0,1), OsByte_KeybRepeatPeriod, value);
+  }
+  else
+  {
+    cmos_write (AutoRepeatDelay, 0);
+    _swi (OS_Byte, _INR(0,1), OsByte_KeybRepeatDelay, 0);
+  }
+//
+  throw (radiobutton_get_state (0, mainwindow_id, mainwindow_caps_off, NULL, &value));
+  switch (value) {
+    case mainwindow_caps_on:
+      cmos_write (CapsMode, 4);
+      _swi (OS_Byte, _INR(0,2), OsByte_RW_KeybStatus, 0, 0x6F);
+      break;
+    case mainwindow_caps_off:
+      cmos_write (CapsMode, 2);
+      _swi (OS_Byte, _INR(0,2), OsByte_RW_KeybStatus, 1<<4, 0x6F);
+      break;
+    case mainwindow_caps_shift:
+      cmos_write (CapsMode, 1);
+      _swi (OS_Byte, _INR(0,2), OsByte_RW_KeybStatus, 1<<7, 0x6F);
+      break;
+  }
+//
+  if (_swix (OS_CLI, _IN(0), "STATUS Num") == NULL) {
+    /* Kernel supports [No]Num configure keywords */
+    throw (radiobutton_get_state (0, mainwindow_id, mainwindow_num_off, NULL, &value));
+    switch (value) {
+      case mainwindow_num_on:
+        cmos_write (NumLock, 0);
+        _swi (OS_Byte, _INR(0,2), OsByte_RW_KeybStatus, 0, 0xFB);
+        break;
+      case mainwindow_num_off:
+        cmos_write (NumLock, 1);
+        _swi (OS_Byte, _INR(0,2), OsByte_RW_KeybStatus, 1<<2, 0xFB);
+        break;
+    }
+  }
+//
+  _swi (OS_Byte, _IN(0), OsByte_UpdateKeyboardLEDs);
+  return TRUE;
+}
+
+/******	settings_UpdateWritablesFromArray() *******************************\
+
+Purpose:	Changes text in key-task writables to show meaning of
+		key-task array indicated by ColKeyState
+
+\**************************************************************************/
+
+void settings_UpdateWritablesFromArray (void)
+{
+  WimpGetCaretPositionBlock caret;
+  ObjectId    focus_window;
+  ComponentId focus_gadget;
+  switch (ColKeyState)
+  {
+    case 0:
+    {
+      throw (writablefield_set_value (0, mainwindow_id, mainwindow_keyalone, Tasks_Red [0]));
+      throw (writablefield_set_value (0, mainwindow_id, mainwindow_ctrlkey,  Tasks_Red [1]));
+      break;
+    }
+    case 1:
+    {
+      throw (writablefield_set_value (0, mainwindow_id, mainwindow_keyalone, Tasks_Green [0]));
+      throw (writablefield_set_value (0, mainwindow_id, mainwindow_ctrlkey,  Tasks_Green [1]));
+      break;
+    }
+    case 2:
+    {
+      throw (writablefield_set_value (0, mainwindow_id, mainwindow_keyalone, Tasks_Blue [0]));
+      throw (writablefield_set_value (0, mainwindow_id, mainwindow_ctrlkey,  Tasks_Blue [1]));
+      break;
+    }
+  }
+
+  throw (wimp_get_caret_position (&caret));
+  throw (window_wimp_to_toolbox (0, caret.window_handle, caret.icon_handle, &focus_window, &focus_gadget));
+  if (focus_window == mainwindow_id)
+  {
+    switch (focus_gadget)
+    {
+      case mainwindow_keyalone:
+      case mainwindow_ctrlkey:
+        /* Reposition caret at and of icon */
+        throw (wimp_set_caret_position (caret.window_handle, caret.icon_handle, 0, 0, -1, 1000));
+    }
+  }
+}
+
+/******	settings_UpdateArrayFromWritables() *******************************\
+
+Purpose:	Reads text from key-task writables and assigns to key-task
+		array indicated by Win95State
+
+\**************************************************************************/
+
+void settings_UpdateArrayFromWritables (void)
+{
+  switch (ColKeyState)
+  {
+    case 0:
+    {
+      throw (writablefield_get_value (0, mainwindow_id, mainwindow_keyalone, Tasks_Red [0], sizeof (Tasks_Red   [0]), NULL));
+      throw (writablefield_get_value (0, mainwindow_id, mainwindow_ctrlkey,  Tasks_Red [1], sizeof (Tasks_Red   [1]), NULL));
+      break;
+    }
+    case 1:
+    {
+      throw (writablefield_get_value (0, mainwindow_id, mainwindow_keyalone, Tasks_Green [0], sizeof (Tasks_Green [0]), NULL));
+      throw (writablefield_get_value (0, mainwindow_id, mainwindow_ctrlkey,  Tasks_Green [1], sizeof (Tasks_Green [1]), NULL));
+      break;
+    }
+    case 2:
+    {
+      throw (writablefield_get_value (0, mainwindow_id, mainwindow_keyalone, Tasks_Blue [0], sizeof (Tasks_Blue [0]), NULL));
+      throw (writablefield_get_value (0, mainwindow_id, mainwindow_ctrlkey,  Tasks_Blue [1], sizeof (Tasks_Blue [1]), NULL));
+      break;
+    }
+  }
+}
+@
+
+
+1.2
+log
+@Resource file change,now refers to "Macro" keys not "Acorn" keys.
+Writeables linked into a circle
+Version number incremented in Messages file
+
+Version 0.13. Tagged as 'KbdSetup-0_13'
+@
+text
+@d41 1
+d56 1
+a56 1
+const cmos cmos_details [3] = { { 0x0C, 0, 8 },		/* AutoRepeatDelay (if 0 then inactive) */
+d58 2
+a59 1
+				{ 0x0B, 3, 3 } };	/* CapsMode */
+d77 1
+a77 1
+  if (misc_fileislocked (status_file))
+d98 14
+d128 1
+a128 1
+    int pre_alphabet = _swi (OS_Byte, _INR(0,1)|_RETURN(1), 71, 127); /* read current alphabet */
+d133 1
+a133 1
+    post_alphabet = _swi (OS_Byte, _INR(0,1)|_RETURN(1), 71, 127); /* read current alphabet */
+d148 2
+a149 2
+    int handler = _swi (OS_Byte, _INR(0,1)|_RETURN(1), 71, 255);
+    _swi (OS_Byte, _INR(0,1), 71, handler + 128);
+d156 1
+a156 1
+    _swi (OS_Byte, _INR(0,1), 11, value);
+d159 1
+a159 1
+    _swi (OS_Byte, _INR(0,1), 12, value);
+d164 1
+a164 1
+    _swi (OS_Byte, _INR(0,1), 11, 0);
+d171 1
+a171 1
+      _swi (OS_Byte, _INR(0,2), 202, 0, 0x6F);
+d175 1
+a175 1
+      _swi (OS_Byte, _INR(0,2), 202, 1<<4, 0x6F);
+d179 1
+a179 1
+      _swi (OS_Byte, _INR(0,2), 202, 1<<7, 0x6F);
+d182 17
+a198 1
+  _swi (OS_Byte, _IN(0), 118);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d26 10
+d42 1
+d72 8
+a79 1
+  if (misc_fileislocked (status_file)) misc_shadecomponents (1, mainwindow_id, mainwindow_handler_shademin, mainwindow_handler_shademax);
+d82 4
+d112 2
+d117 17
+d170 54
+d225 24
+@
+
+
+1.1.1.1
+log
+@Initial commit of Configure plug-in '!KbdSetup' to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Replaced old PC-delete code with new option button (currently does nothing
+pending a CMOS allocation).
+Changed command from *Keyboard to *Country.
+Bugfix: no * command was issued when changing to the default keyboard.
+@
+text
+@a25 1
+30/06/1998	BJGA	Added support for delete-type option button
+d44 1
+a44 1
+const cmos cmos_details [4] = { { 0x0C, 0, 8 },		/* AutoRepeatDelay (if 0 then inactive) */
+d46 1
+a46 2
+				{ 0x0B, 3, 3 },		/* CapsMode */
+				{ 0x8C, 6, 1 } };	/* DeleteType */
+a73 2
+//
+//  throw (optionbutton_set_state (0, mainwindow_id, mainwindow_pc_delete, get (DeleteType, &messages)));
+a86 3
+//
+//  throw (optionbutton_get_state (0, mainwindow_id, mainwindow_pc_delete, &value));
+//  cmos_write (DeleteType, value); /* must happen before *Keyboard gets issued in keyboards_set() */
+@
+
+
+1.1.1.3
+log
+@Now uses allocated CMOS bit for delete type option.
+@
+text
+@a26 1
+02/07/1998	BJGA	Delete-type CMOS bit now as allocated
+d48 1
+a48 1
+				{ 0xC3, 1, 1 } };	/* DeleteType */
+d77 1
+a77 1
+  throw (optionbutton_set_state (0, mainwindow_id, mainwindow_pc_delete, get (DeleteType, &messages)));
+d92 2
+a93 2
+  throw (optionbutton_get_state (0, mainwindow_id, mainwindow_pc_delete, &value));
+  cmos_write (DeleteType, value); /* must happen before *Keyboard gets issued in keyboards_set() */
+@
+
+
+1.1.1.4
+log
+@Now causes the desktop to be redrawn if changing the keyboard causes the
+alphabet to be changed as well.
+
+Keyboard handler menu now lists currently installed keyboard handlers (it
+used to list available countries, excluding a few hard-coded cases).
+@
+text
+@a27 2
+11/08/1998	BJGA	Now refreshes the screen if setting the keyboard
+			caused the current alphabet to be changed
+a33 1
+#include "wimplib.h"
+a97 2
+    int pre_alphabet = _swi (OS_Byte, _INR(0,1)|_RETURN(1), 71, 127); /* read current alphabet */
+    int post_alphabet;
+a100 6
+    post_alphabet = _swi (OS_Byte, _INR(0,1)|_RETURN(1), 71, 127); /* read current alphabet */
+    if (post_alphabet != pre_alphabet)
+    {
+      /* Keyboard change caused alphabet change, so screen needs redrawing */
+      throw (wimp_force_redraw (-1, -0x10000000, -0x10000000, 0x10000000, 0x10000000));
+    }
+@
+
+
+1.1.1.5
+log
+@Added Win95 keys options - drop-sensitive writable icons for each key action.
+
+Options are now read from / written to Choices.Boot.PreDesktop instead of
+Choices.Boot.PreDesk.KbdSetup.
+
+Bugfix: now uses Message_FontChanged to refresh the screen instead of
+Wimp_ForceRedraw. This additionally causes the desktop font to be recached
+appropriate to the new alphabet.
+
+Bugfix: PC-delete option is now applied even if the choices file is locked.
+@
+text
+@a29 5
+17/08/1998	BJGA	Uses Message_FontChanged to redraw screen, so the
+			Wimp recaches the desktop font at the same time
+27/08/1998	BJGA	Added support for Win95 key settings, including
+			  settings_UpdateXFromY() functions
+			PC-delete option now applied even if choices file is locked
+d67 1
+a67 5
+  if (misc_fileislocked (status_file))
+  {
+    misc_shadecomponents (1, mainwindow_id, mainwindow_handler_shademin, mainwindow_handler_shademax);
+    misc_shadecomponents (1, mainwindow_id, mainwindow_acorn_shademin, mainwindow_acorn_shademax);
+  }
+a69 4
+  Win95State = 0; /* always reset to displaying Acorn key functionality after read */
+  throw (radiobutton_set_state (0, mainwindow_id, mainwindow_acornkey, 1));
+  settings_UpdateWritablesFromArray ();
+//
+d109 2
+a110 7
+      /* Keyboard change caused alphabet change */
+      /* so prod Wimp to recache desktop font and redraw screen */
+      WimpMessage buffer;
+      buffer.hdr.size = 20;
+      buffer.hdr.your_ref = 0;
+      buffer.hdr.action_code = Wimp_MFontChanged;
+      throw (wimp_send_message (17, &buffer, 0, 0, NULL));
+a112 6
+  else
+  {
+    /* Reaffirm the current keyboard, so the PC-delete option takes effect */
+    int handler = _swi (OS_Byte, _INR(0,1)|_RETURN(1), 71, 255);
+    _swi (OS_Byte, _INR(0,1), 71, handler + 128);
+  }
+a147 48
+/******	settings_UpdateWritablesFromArray() *******************************\
+
+Purpose:	Changes text in key-task writables to show meaning of
+		key-task array indicated by Win95State
+
+\**************************************************************************/
+
+void settings_UpdateWritablesFromArray (void)
+{
+  WimpGetCaretPositionBlock caret;
+  ObjectId    focus_window;
+  ComponentId focus_gadget;
+  if (Win95State == 0)
+  {
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_keyalone,     Tasks_Acorn [0]));
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_shiftkey,     Tasks_Acorn [1]));
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_ctrlkey,      Tasks_Acorn [2]));
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_ctrlshiftkey, Tasks_Acorn [3]));
+  }
+  else
+  {
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_keyalone,     Tasks_Menu [0]));
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_shiftkey,     Tasks_Menu [1]));
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_ctrlkey,      Tasks_Menu [2]));
+    throw (writablefield_set_value (0, mainwindow_id, mainwindow_ctrlshiftkey, Tasks_Menu [3]));
+  }
+  throw (wimp_get_caret_position (&caret));
+  throw (window_wimp_to_toolbox (0, caret.window_handle, caret.icon_handle, &focus_window, &focus_gadget));
+  if (focus_window == mainwindow_id)
+  {
+    switch (focus_gadget)
+    {
+      case mainwindow_keyalone:
+      case mainwindow_shiftkey:
+      case mainwindow_ctrlkey:
+      case mainwindow_ctrlshiftkey:
+        /* Reposition caret at and of icon */
+        throw (wimp_set_caret_position (caret.window_handle, caret.icon_handle, 0, 0, -1, 0x100000));
+    }
+  }
+}
+
+/******	settings_UpdateArrayFromWritables() *******************************\
+
+Purpose:	Reads text from key-task writables and assigns to key-task
+		array indicated by Win95State
+
+\**************************************************************************/
+a148 17
+void settings_UpdateArrayFromWritables (void)
+{
+  if (Win95State == 0)
+  {
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_keyalone,     Tasks_Acorn [0], sizeof (Tasks_Acorn [0]), NULL));
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_shiftkey,     Tasks_Acorn [1], sizeof (Tasks_Acorn [1]), NULL));
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_ctrlkey,      Tasks_Acorn [2], sizeof (Tasks_Acorn [2]), NULL));
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_ctrlshiftkey, Tasks_Acorn [3], sizeof (Tasks_Acorn [3]), NULL));
+  }
+  else
+  {
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_keyalone,     Tasks_Menu [0], sizeof (Tasks_Menu [0]), NULL));
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_shiftkey,     Tasks_Menu [1], sizeof (Tasks_Menu [1]), NULL));
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_ctrlkey,      Tasks_Menu [2], sizeof (Tasks_Menu [2]), NULL));
+    throw (writablefield_get_value (0, mainwindow_id, mainwindow_ctrlshiftkey, Tasks_Menu [3], sizeof (Tasks_Menu [3]), NULL));
+  }
+}
+@
+
+
+1.1.1.6
+log
+@Internationalised keyboard handler menu.
+Changed Windows 95 key variable names to Key$[C][S]<Acorn|Menu> form.
+@
+text
+@a34 1
+11/09/1998	BJGA	Calls keyboards_buildnametable prior to settings display
+a70 3
+//
+  /* a requirement first time round, and a useful re-check subsequently */
+  keyboards_buildnametable (cmos_read (territory_cmos, NULL) ^ 1);
+@

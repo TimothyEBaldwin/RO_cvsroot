@@ -1,0 +1,319 @@
+head	1.7;
+access;
+symbols
+	PortableHAL-0_81:1.7
+	PortableHAL-0_80:1.6
+	PortableHAL-0_79:1.6
+	PortableHAL-0_78:1.5
+	PortableHAL-0_77:1.5
+	PortableHAL-0_76:1.5
+	PortableHAL-0_75:1.5
+	PortableHAL-0_74:1.4
+	PortableHAL-0_73:1.4
+	PortableHAL-0_72:1.3
+	PortableHAL-0_71:1.2
+	PortableHAL-0_70:1.2
+	PortableHAL-0_69:1.1
+	PortableHAL-0_68:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2017.01.20.22.31.58;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	qVhPdyuQ67yO3LCz;
+
+1.6
+date	2016.03.25.19.51.42;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	abx17HDVT2bEQ30z;
+
+1.5
+date	2015.06.21.11.44.27;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	IKRtvMSE1E9x5iqy;
+
+1.4
+date	2012.11.21.23.33.22;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	dKBlfy1bZaU2iitw;
+
+1.3
+date	2012.02.26.08.56.01;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	oKJakpT3ozi95EUv;
+
+1.2
+date	2011.03.19.18.36.04;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	zF4gdyWX1f2Hlucv;
+
+1.1
+date	2010.01.30.00.07.43;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Disable WFI (Portable_Idle) on ARM11
+Detail:
+  On a Raspberry Pi 1B and 1B+, reading a constant stream of data from the serial port was found to eventually result in a CPU deadlock within the WFI code, consistent with that described in the ARM11 erratum 486865 notice
+  Tweaking the already-implemented workaround for the erratum didn't bring any luck, so I'm going with the fallback approach of disabling WFI completely for ARM11.
+  s/GetAll - Extend the Erratum_486865 switch to support three different modes
+  s/Front - Replace magic number that gave the workaround code size
+  s/StPortable - Check the CPU ID to make sure the Erratum_486865 switch only affects ARM11 CPUs. Add support for disabling WFI on ARM11, and tweak the workaround implementation so that it's now an exact match for that given by ARM.
+Admin:
+  Tested on Raspberry Pi 1 B
+  With WFI enabled the test code used to crash after anywhere between a few minutes to ~20 hours, but with WFI disabled it's survived 48 hours
+
+
+Version 0.81. Tagged as 'PortableHAL-0_81'
+@
+text
+@; Copyright 2010 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; > Sources.GetAll
+
+;---------------------------------------------------------------------------
+;       Portable support code
+;---------------------------------------------------------------------------
+
+;Module_BaseAddr
+
+;---------------------------------------------------------------------------
+;       Get the headers.
+;
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:ModHand
+        GET     Hdr:Services
+        GET     Hdr:FSNumbers
+        GET     Hdr:NewErrors
+        GET     Hdr:MsgTrans
+        GET     Hdr:Proc
+        GET     Hdr:Portable
+        GET     Hdr:HALEntries
+        GET     Hdr:CPUClkDevice
+        GET     Hdr:BMUDevice
+        GET     Hdr:OSMisc
+
+        GET     VersionASM
+
+;---------------------------------------------------------------------------
+;       Define global variables.
+;
+        GBLL    Debug
+Debug           SETL    {FALSE} ;{TRUE}
+
+        GBLL    DebugSpeed
+DebugSpeed      SETL    {FALSE}
+
+ [ DebugSpeed
+DebugTimer * 6 ; Which HAL timer to use with DebugSpeed
+ ]
+
+        GBLL    Speed
+Speed           SETL    {TRUE}
+
+        GBLS    Erratum_486865 ; ARM1176 WFI erratum - workaround needed to avoid deadlock
+                ; NA -> use regular CP15 WFI
+                ; Workaround -> use ARM's erratum workaround
+                ; Disable -> disable WFI
+ [ SupportARMv6 :LAND: NoARMv7
+Erratum_486865  SETS    "Disable" ; On a Raspberry Pi 1B, reading a constant stream of data from the serial port was observed to eventually result in a deadlock within the WFI code (it can take anywhere from several minutes to ~20 hours of testing before failure occurs). Several different tweaks to the routine were tried without success, so I'm going with the safest approach of just disabling WFI for ARM11.
+ |
+Erratum_486865  SETS    "NA"      ; ARMv6 not supported by this module build, so no need for any workarounds
+ ]
+
+;---------------------------------------------------------------------------
+;       Get the sources.
+;
+        GET     Front.s
+        GET     StPortable.s    ;Module header and misc. functions.
+
+
+        END
+@
+
+
+1.6
+log
+@Make Portable_Idle perform a DSB before the WFI, and use the CP15 WFI op on ARMv6. Allow the CPU clock device to vanish and re-appear. Export a C version of the CPUClkDevice header.
+Detail:
+  s/Front, s/GetAll, s/StPortable - Improve Portable_Idle implementation so that it issues a DSB before the WFI, and uses the CP15 WFI (potentially with erratum 486865 workaround) for ARMv6. Adjust handling of CPU clock device in order to allow it to be registered and deregistered at runtime.
+  Makefile, h/CPUClkDevice - Export a C version of the CPUClkDevice header
+Admin:
+  Tested on Raspberry Pi 1B/2B/3B
+
+
+Version 0.79. Tagged as 'PortableHAL-0_79'
+@
+text
+@d59 9
+a67 2
+        GBLL    Erratum_486865 ; ARM1176 WFI erratum - workaround needed to avoid deadlock
+Erratum_486865  SETL    SupportARMv6 :LAND: NoARMv7 ; For simplicity, enable for all ARMv6 machines
+@
+
+
+1.5
+log
+@Minor cleanups
+* A few redundant includes removed
+* Use ObjAsm {TRUE} and {FALSE}
+* Since there's no command table, don't declare the messages file in the module header
+* Use WFI directly instead of DCI &E320F003
+* Remove *FreezeTime command help from messages
+Built, but not tested.
+
+Version 0.75. Tagged as 'PortableHAL-0_75'
+@
+text
+@d39 1
+d59 3
+@
+
+
+1.4
+log
+@Add initial implementation of the new HAL friendly BMU interface
+Detail:
+  hdr/BMUDevice - New header describing layout of BMU HAL devices
+  Makefile - export hdr/BMUDevice, and a C version of hdr/Portable
+  hdr/Portable - Lots of new definitions related to the BMU interface. VirtualRPC BMU vars renamed slightly to match the A4/HAL naming convention (PortableBMUV_) instead of the Stork naming convention (Portable_BMUVar_).
+  s/Front, s/GetAll, s/StPortable - BMU interface implementation. Two new SWIs (Portable_EnumerateBMU & Portable_ReadBMUVariables) are provided, along with a semi backwards compatible Portable_ReadBMUVariable implementation. Code also updated to use OSHW_ constants instead of magic numbers.
+  Resources/UK/Messages - New error message text added
+Admin:
+  Tested in ROM on BB-xM, Pandora, TouchBook
+
+
+Version 0.73. Tagged as 'PortableHAL-0_73'
+@
+text
+@a28 2
+        GET     Hdr:Machine.<Machine>
+        $GetIO
+d36 1
+a36 1
+        GET     Hdr:CPU.Arch
+a37 1
+        GET     Hdr:HALEntries
+a39 2
+        OPT     OptList+OptNoMacros
+
+a44 11
+        GBLL    T
+        GBLL    true
+        GBLL    F
+        GBLL    false
+
+T       SETL    {TRUE}
+F       SETL    {FALSE}
+true    SETL    {TRUE}
+false   SETL    {FALSE}
+
+
+d46 1
+a46 1
+Debug           SETL    false   ;true
+d49 1
+a49 1
+DebugSpeed      SETL    false
+d56 1
+a56 1
+Speed           SETL    true
+@
+
+
+1.3
+log
+@Excess inclusions trimmed.
+
+Version 0.72. Tagged as 'PortableHAL-0_72'
+@
+text
+@d41 1
+@
+
+
+1.2
+log
+@Add code for controlling CPU speed via interacting with a CPUClk HAL device.
+Detail:
+  Makefile, hdr/CPUClkDevice - Add HALDevice_CPUClk descriptor to header exports
+  hdr/Portable - Trim some obsolete definitions, tidy formatting, add Speed2 and (unimplemented) WakeTime SWI numbers, add BatteryTimeRemaining and MaxBatteryTime BMU variables (from VirtualRPC)
+  s/Front, s/GetAll, s/StPortable - Added Portable_Speed and Portable_Speed2 implementations, for controlling CPU speed. Portable_Speed is fully compatible with the old A4 version; all new features are exposed via Portable_Speed2 instead. Also added some debug-only stats logging code to track how much time is spent in various states.
+  Resources/UK/Messages - New error messages.
+Admin:
+  Tested on rev C2 BB, A2 BB-xM, C1 TouchBook.
+  Portable_Speed2 & HALDevice_CPUClk documentation will be on the wiki soon.
+
+
+Version 0.70. Tagged as 'PortableHAL-0_70'
+@
+text
+@a30 1
+        GET     Hdr:KEYV
+a33 2
+        GET     Hdr:CMOS
+        GET     Hdr:HighFSI
+a36 1
+        GET     Hdr:PaletteV
+a37 9
+        GET     Hdr:ADFS
+        GET     Hdr:Variables
+        GET     Hdr:ScrBlank
+        GET     Hdr:PublicWS
+        GET     Hdr:Sound
+        GET     Hdr:Debug
+        GET     Hdr:DevNos
+        GET     Hdr:IIC
+        GET     Hdr:Messages
+@
+
+
+1.1
+log
+@Add initial version of PortableHAL, bare-bones 32bit-safe Portable module
+Detail:
+  Currently only supporte the Portable_Idle and Portable_Features SWIs.
+  Portable_Idle is implemented using the WFI instruction found in ARMv6K+, but the module should compile and run on any architecture.
+Admin:
+  Tested on rev C2 beagleboard
+
+Version 0.68. Tagged as 'PortableHAL-0_68'
+@
+text
+@d52 2
+d76 2
+a77 2
+        GBLL    SwindellCode
+SwindellCode    SETL    false    
+d79 6
+@
+

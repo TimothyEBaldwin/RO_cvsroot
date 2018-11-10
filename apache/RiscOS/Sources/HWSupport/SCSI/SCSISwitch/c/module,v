@@ -1,0 +1,412 @@
+head	1.7;
+access;
+symbols
+	SCSISwitch-2_15:1.7
+	SCSISwitch-2_14:1.6
+	SCSISwitch-2_13:1.5
+	SCSISwitch-2_12:1.5
+	SCSISwitch-2_11:1.4
+	SCSISwitch-2_10:1.3
+	SCSISwitch-2_09:1.3
+	SCSISwitch-2_08:1.3
+	SCSISwitch-2_07:1.3
+	SCSISwitch-2_06:1.2
+	SCSISwitch-2_05:1.2
+	SCSISwitch-2_04:1.2
+	SCSISwitch-2_03:1.2
+	SCSISwitch-2_02:1.2
+	SCSISwitch-2_01:1.1
+	SCSISwitch-2_00:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2018.07.13.22.17.23;	author jballance;	state Exp;
+branches;
+next	1.6;
+commitid	q7gS9rTgvy3DE1KA;
+
+1.6
+date	2018.01.11.20.58.40;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	8reJEFlkBqfk6vmA;
+
+1.5
+date	2016.04.14.20.06.11;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	MPb26JiWwj0OhD2z;
+
+1.4
+date	2013.10.05.09.46.59;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	5eJAMgFdP7WOu58x;
+
+1.3
+date	2011.11.27.18.08.59;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	9IrKdeCLiOCe40Jv;
+
+1.2
+date	2005.03.05.00.51.47;	author jballance;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2003.05.23.13.10.22;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@  Resolved case were pointer could be used while null
+Detail:
+  Some obscure error cases exposed an instance where 2 attempts
+  were made to delink a structure. With no check this caused an abort.
+Admin:
+ tested on iMx6
+
+Version 2.15. Tagged as 'SCSISwitch-2_15'
+@
+text
+@/* Copyright 2003 Tematic Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stddef.h>
+#include <stdio.h>
+
+#include "swis.h"
+#include "debuglib/debuglib.h"
+#include "callx/callx.h"
+#include "Global/Services.h"
+#include "Global/Variables.h"
+
+#include "header.h"
+#include "scsiswitch.h"
+#include "module.h"
+
+void *module_wsp;
+void (*irqtrigger)(void);
+static int msg_struct[4];
+static _kernel_oserror msg_buff;
+#ifdef DEBUGLIB
+#define DEBUG
+#endif
+#ifdef DEBUG
+#undef dprintf
+#define dprintf(...) _dprintf("",__VA_ARGS__)  
+#else
+#undef dprintf
+#define dprintf(...) (void) 0
+#endif
+
+const char *module_lookup(const char *token)
+{
+    if (_swix(MessageTrans_Lookup, _INR(0,7),
+              msg_struct, token, &msg_buff, sizeof(msg_buff), 0, 0, 0, 0) != NULL)
+    {
+        return "";
+    }
+    return (const char *)&msg_buff;
+}
+
+_kernel_oserror *module_error(unsigned err)
+{
+    struct {
+        int errnum;
+        char errmess[8];
+    } token;
+
+    if (err > 256) return (_kernel_oserror *) err;
+
+    token.errnum = SCSI_ErrorBase + err;
+    sprintf(token.errmess, "E%02x", err);
+    return _swix(MessageTrans_ErrorLookup, _INR(0,3),
+              &token, msg_struct, &msg_buff, sizeof(msg_buff));
+}
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+    (void) cmd_tail;
+    (void) podule_base;
+    _kernel_oserror *err = NULL;
+    uint32_t flags;
+
+    module_wsp = pw;
+    debug_initialise ("SCSIDriver", "", 0);
+    debug_set_device(DADEBUG_OUTPUT);
+//    debug_set_device(PRINTF_OUTPUT);
+    debug_set_unbuffered_files (TRUE);
+    debug_set_stamp_debug (TRUE);
+    dprintf("SCSI starting\n");
+
+#ifndef ROM
+    err = _swix(ResourceFS_RegisterFiles, _IN(0), Resources());
+    if (err != NULL) goto failinit;
+#endif
+    err = _swix(MessageTrans_OpenFile, _INR(0,2), msg_struct, Module_MessagesFile, 0);
+    if (err != NULL) goto faildereg;
+
+    /* Transitionary */
+    static const char aliasto[] = "%SCSIDevices";
+    _swix(OS_SetVarVal, _INR(0,4), "Alias$Devices", aliasto, sizeof(aliasto) - 1,
+                                                    0, VarType_LiteralString);
+                                   
+    callx_init(pw);
+
+    if(!_swix(OS_PlatformFeatures,_IN(0)|_OUTR(0,1),0,&flags,&irqtrigger))
+    {
+      if(!(flags & 2))
+        irqtrigger = NULL;
+    }
+
+    _swix(OS_ServiceCall, _IN(1), Service_SCSIStarting);
+
+    return NULL;
+
+faildereg:
+#ifndef ROM
+    _swix(ResourceFS_DeregisterFiles, _IN(0), Resources());
+failinit:
+#endif
+    return err;
+}
+
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+    (void) fatal;
+    (void) podule;
+    (void) pw;
+
+    _swix(OS_ServiceCall, _IN(1), Service_SCSIDying);
+
+    scsi_deregister_all();
+
+    callx_remove_all_callbacks();
+    callx_remove_all_callafters();
+    callx_remove_all_calleverys();
+
+    /* Tidy up the messages (and deregister from ResourceFS if not in ROM) */
+    _swix(MessageTrans_CloseFile, _IN(0), msg_struct);
+#ifndef ROM
+    _swix(ResourceFS_DeregisterFiles, _IN(0), Resources());
+#endif
+
+    return NULL;
+}
+
+void module_service_handler(int service_number, _kernel_swi_regs *r, void *pw)
+{
+    (void) pw;
+#ifndef ROM
+    if (service_number == Service_ResourceFSStarting)
+    {
+        /* Reregister our resources */
+        (*(void (*)(void *, void *, void *, void *))r->r[2])(Resources(), 0, 0, (void *)r->r[3]);
+    }
+#else
+    (void) service_number;
+    (void) r;
+#endif
+}
+
+_kernel_oserror *module_swi_handler(int swi_offset, _kernel_swi_regs *r, void *pw)
+{
+    (void) pw;
+
+    switch (swi_offset)
+    {
+        case SCSI_Version - SCSI_00:
+            return scsi_version(r);
+        case SCSI_Initialise - SCSI_00:
+            return scsi_initialise(r);
+        case SCSI_Control - SCSI_00:
+            return scsi_control(r);
+        case SCSI_Op - SCSI_00:
+            return scsi_op(r);
+        case SCSI_Status - SCSI_00:
+            return scsi_status(r);
+        case SCSI_Reserve - SCSI_00:
+            return scsi_reserve(r);
+        case SCSI_Deregister - SCSI_00:
+            return scsi_deregister(r);
+        case SCSI_Register - SCSI_00:
+            return scsi_register(r);
+    }
+    return module_error(SCSI_SWIunkn);
+}
+
+_kernel_oserror *module_cmd_handler(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+    (void) arg_string;
+    (void) argc;
+    (void) cmd_no;
+    (void) pw;
+
+    /* Only *SCSIDevices */
+    return scsi_devices();
+}
+@
+
+
+1.6
+log
+@Free up some command namespace
+Change command to *ScsiDevices to match the other similar ones (IIC, SDIO, GPIO, SPI, SATA etc) with the intention that *Devices can in future be repurposed to list all subsets.
+For now, alias one to the other during the transition.
+
+Version 2.14. Tagged as 'SCSISwitch-2_14'
+@
+text
+@d32 10
+d77 1
+a77 1
+    debug_set_device(DEBUGIT_OUTPUT);
+d81 1
+@
+
+
+1.5
+log
+@Don't pass silly error numbers to MsgTrans
+Detail:
+  c/module - Don't pass silly error numbers to MessageTrans_ErrorLookup - the kernel will now fault them.
+Admin:
+  Tested on Raspberry Pi 3
+  Fixes a case of "bad error pointer" seen during ROM init
+
+
+Version 2.12. Tagged as 'SCSISwitch-2_12'
+@
+text
+@d22 1
+d79 5
+d175 1
+a175 1
+    /* Only *Devices */
+@
+
+
+1.4
+log
+@Internationalised
+Also lower cased the 'k' of kilobytes to match the kernel and SI.
+
+Version 2.11. Tagged as 'SCSISwitch-2_11'
+@
+text
+@d44 4
+a47 2
+    char token[12];
+    _kernel_oserror *e;
+d50 5
+a54 10
+    
+    sprintf(token, "@@@@@@@@E%02x", err);
+    e = _swix(MessageTrans_ErrorLookup, _INR(0,3),
+              token, msg_struct, &msg_buff, sizeof(msg_buff));
+    if (e->errnum == 0x40404040)
+    {
+        /* Same error number out as went in, looked up OK */
+        msg_buff.errnum = SCSI_ErrorBase + err;
+    }
+    return e;
+@
+
+
+1.3
+log
+@Add missing timeout functionality. Avoid issuing INQUIRY commands with 5 bytes of response data. Rewrite makefile and tidy code a bit.
+Detail:
+  Makefile - Rewritten to use makefile fragments
+  !MkDebug,fd7 - Added script to build softloadable debug version
+  c/svcprint - Removed obsolete file
+  c/cmodule, c/scsi, h/module, h/scsiswitch - Fixed compiler warnings. Implemented missing timeout functionality for drivers which support background transfers. Use Portable_Idle within the foreground-as-background loop to avoid the CPU spinning in a loop so much. Avoid race conditions if a transfer completes at the same time as an escape/timeout event.
+  c/scsi - SCSI_Initialise 2 (determine device) now issues a 36 byte inquiry instead of a 5 byte one. This avoids an issue where some dodgy SCSI devices don't respond properly (or at all) to 5-byte inquiries.
+Admin:
+  Tested in softload on Iyonix
+
+
+Version 2.07. Tagged as 'SCSISwitch-2_07'
+@
+text
+@d16 6
+a23 1
+#include "errors.h"
+a26 4
+#include "swis.h"
+#include "debuglib/debuglib.h"
+#include "callx/callx.h"
+
+d29 30
+d64 2
+d74 7
+a82 1
+    uint32_t flags;
+d92 7
+d115 6
+d124 15
+d162 1
+a162 1
+    return scsi_error(SCSI_SWIunkn);
+@
+
+
+1.2
+log
+@	Modded to build in ROM. Added some debug.
+
+Detail:
+Admin:  for beta release. Tested at Castle. Castle added IP
+
+
+Version 2.02. Tagged as 'SCSISwitch-2_02'
+@
+text
+@d24 1
+d27 1
+d31 3
+d41 9
+d57 4
+d65 4
+d74 2
+d100 5
+@
+
+
+1.1
+log
+@* New SCSIdriver replacement that acts as a dispatcher to multiple hardware
+  drivers (eg SCSI cards, USB mass storage devices, ATAPI devices...).
+* Not totally complete, but functioning sufficiently for SCSIFS.
+* Requires a new C compiler (newer than one in CVS at time of check-in) due
+  to a couple of compiler crashes - if it builds, you're compiler is new
+  enough.
+
+Version 2.00. Tagged as 'SCSISwitch-2_00'
+@
+text
+@d23 1
+d30 5
+@
+

@@ -1,0 +1,816 @@
+head	4.6;
+access;
+symbols
+	CDFS-2_63:4.6
+	CDFS-2_62:4.6
+	CDFS-2_61:4.6
+	CDFS-2_60:4.6
+	CDFS-2_59:4.6
+	CDFS-2_58:4.6
+	CDFS-2_57:4.6
+	CDFS-2_56:4.6
+	CDFS-2_55:4.5
+	CDFS-2_54:4.5
+	CDFS-2_53:4.4
+	CDFS-2_52:4.2
+	CDFS-2_51:4.2
+	CDFS-2_50:4.2
+	CDFS-2_49:4.2
+	CDFS-2_48:4.2
+	RO_5_07:4.2
+	CDFS-2_47:4.2
+	CDFS-2_46:4.2
+	CDFS-2_45:4.2
+	CDFS-2_44:4.2
+	CDFS-2_43:4.2
+	CDFS-2_42:4.2
+	CDFS-2_41:4.2
+	CDFS-2_40:4.2
+	CDFS-2_39:4.2
+	CDFS-2_38:4.2
+	CDFS-2_37:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.6
+date	2012.04.22.15.48.26;	author rsprowson;	state Exp;
+branches;
+next	4.5;
+commitid	bybtPibvH0K2zS1w;
+
+4.5
+date	2012.04.22.11.09.01;	author rsprowson;	state Exp;
+branches;
+next	4.4;
+commitid	MNiwWuPGZIIb1R1w;
+
+4.4
+date	2012.04.21.21.56.36;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+commitid	LsBEkd8YV89lDM1w;
+
+4.3
+date	2012.04.16.21.42.00;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	E6l0nP00WOBxH81w;
+
+4.2
+date	2002.11.04.21.21.42;	author bavison;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2002.11.01.20.15.29;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.6
+log
+@Fix a few bugs
+When lining up the code in 2.52, a few bugs became apparent (now the source was readable).
+* In a handful of places it was assumed SWIs preserved flags, these have been reordered or branched around.
+* The probe of UtilityModule 2.12 has been set to 3.00 and the logic now considers >= 3.00 rather than subtracting 1 from it to deduce the default filename truncation value.
+* Removed support for supplemental filetype table in CDFSNewFileTypePath$File as this has been superceded by the MimeMap module (which CDFS uses). This mirrors the behaviour of DOSFS and LanManFS which consult the MimeMap first then (small) internal table second.
+* Fix stack imbalance when reading the current setting with CDFS_Truncation leading to an abort
+
+Other changes
+* When the MimeMap module is absent ".doc" is taken to be a MS Word document.
+* Changed the manual loads from :INDEX: of R12 to be ADR's or ADRL's so there's less literal pool thrashing.
+* Three Push/Pull sequences to restore registers swapped for LDMIA's (in Directory.s).
+* Reason codes to OS_ SWIs swapped for header file names.
+
+
+Version 2.56. Tagged as 'CDFS-2_56'
+@
+text
+@; Copyright 2002 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; -> ByteCopy.s
+
+
+
+
+
+
+
+
+
+
+
+
+
+; This provides the CD_ByteCopy routine (or did before I stole it for here)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+;**************************************************************************
+; This is a highly optimised routine to move blocks of memory
+; It will deal with unword-aligned source and destinations
+
+; copied from pages 1000 to 1005 of PRM
+
+; R1 -> source                                    RCM was ere
+; R2 -> destination
+; R3 = number of bytes to copy
+
+;**************************************************************************
+
+MyCD_ByteCopy ROUT
+        Push    "r0-r11, r12, r14"
+
+;--------------------------
+; Any bytes to copy ?
+;--------------------------
+        TEQ     r3, #0
+        Pull    "r0-r11, r12, pc", EQ
+
+;--------------------------
+
+copy_bytes
+
+        TST     r2, #3
+        BNE     MovByt100               ; destination not word aligned
+
+MovByt20       ; destination now word aligned. branched back to from below
+
+        TST     r1, #3
+        BNE     MovByt200               ; source not word aligned
+
+; source & destination are now both word aligned
+; count is a byte value ( may not be a whole number of words )
+
+; Quick sort out of what we've got left to do
+
+        SUBS    r3, r3, #4 * 4          ; Four whole words to do (or more) ?
+        BLT     MovByt40                ; no
+
+        SUBS    r3, r3, #8 * 4 - 4 * 4  ; Eight whole words to do (or more) ?
+        BLT     MovByt30
+
+
+MovByt25
+
+        LDMIA   r1!, { r0, r4-r9, r14 } ; NB. Order ! (?)
+        STMIA   r2!, { r0, r4-r9, r14 }
+
+        SUBS    r3, r3, #8 * 4
+        BGE     MovByt25                ; do another 8 words
+
+        CMP     r3, #-8 * 4             ; Quick test rather that chaining down
+        Pull    "r0-r11, r12, pc", EQ   ; finished
+
+
+MovByt30
+
+        ADDS    r3, r3, #8 * 4 - 4 * 4  ; Four whole words to do ?
+        BLT     MovByt40
+
+        LDMIA   r1!, { r0, r4-r5, r14 } ; NB. Order ! (?)
+        STMIA   r2!, { r0, r4-r5, r14 } 
+
+        Pull    "r0-r11, r12, pc", EQ   ; finished
+
+        SUB     r3, r3, #4 * 4
+
+
+MovByt40
+
+        ADDS    r3, r3, #4 * 4 - 2 * 4  ; Two whole words to go ?
+        BLT     MovByt50                 
+
+        LDMIA   r1!, { r0, r14 }        ; NB. Order ! (?)
+        STMIA   r2!, { r0, r14 }
+
+        Pull    "r0-r11, r12, pc", EQ   ; finished
+
+        SUB     r3, r3, #2 * 4
+
+
+MovByt50
+
+        ADDS    r3, r3, #2*4-1*4        ; One whole word to do ?
+        BLT     MovByt60                
+
+        LDR r0, [ r1 ], #4
+        STR r0, [ r2 ], #4
+
+        Pull    "r0-r11, r12, pc", EQ   ; finished
+
+        SUB     r3, r3, #1 * 4
+
+
+MovByt60
+
+        ADDS    r3, r3, #1*4 - 0*4      ; No more to do ?
+        Pull    "r0-r11, r12, pc", EQ   ; finished
+                
+        LDR     r0, [ r1 ]              ; store remaining 1,2 or 3 bytes
+
+
+MovByt70
+
+
+        STRB    r0, [ r2 ], #1
+        MOV     r0, r0, LSR #8
+        SUBS    r3, r3, #1
+        BGT     MovByt70
+
+        Pull    "r0-r11, r12, pc"       ; finished
+
+
+
+;Initial destination not word aligned.Loop doing bytes(1,2, or 3 )until it is
+
+MovByt100
+
+        LDRB    r0, [ r1 ], #1
+        STRB    r0, [ r2 ], #1
+        SUBS    r3, r3, #1
+        Pull    "r0-r11, r12, pc", EQ   ; finished
+                
+        TST     r2, #3
+        BNE     MovByt100
+                
+        B       MovByt20                ; Back to mainline code
+
+
+MovByt200;destination now word aligned,but source isn't. just r14 stacked here
+
+        AND     r12, r1, #3             ; offset
+        BIC     r1, r1, #3              ; Align source
+                                        
+        MOV     r12, r12, LSL #3        ; rshft = 0, *, 16 or 24 only
+                                        
+        RSB     r11, r12, #32           ; lshft = 32, 24, 16 or 8 only
+                                        
+        LDR     r0, [ r1 ], #4          
+        MOV     r0, r0, LSR r12         ; Always have r0 prepared
+
+; Quick sort out of what we've got left to do
+
+        SUBS    r3, r3, #4 * 4          ; Four whole words to do (or more) ?
+        BLT     MovByt240               ; no
+                
+        SUBS    r3, r3, #8*4-4*4        ; Eight whole words to do (or more) ?
+        BLT     MovByt230               ; no
+
+
+
+MovByt225
+
+        LDMIA   r1!, { r4 - r10, r14 }  ; NB. Order !
+        ORR     r0, r0, r4, LSL r11     
+                                        
+        MOV     r4, r4, LSR r12         
+        ORR     r4, r4, r5, LSL r11     
+                                        
+        MOV     r5, r5, LSR r12         
+        ORR     r5, r5, r6, LSL r11     
+                                        
+        MOV     r6, r6, LSR r12         
+        ORR     r6, r6, r7, LSL r11     
+                                        
+        MOV     r7, r7, LSR r12         
+        ORR     r7, r7, r8, LSL r11     
+                                        
+        MOV     r8, r8, LSR r12         
+        ORR     r8, r8, r9, LSL r11     
+                                        
+        MOV     r9, r9, LSR r12         
+        ORR     r9, r9, r10, LSL r11    
+                                        
+        MOV     r10, r10, LSR r12       
+        ORR     r10, r10, r14, LSL r11  
+                                        
+        STMIA   r2!, { r0, r4 - r10 }   
+
+        MOV     r0, r14, LSR r12        ; keep r0 prepared
+                
+        SUBS    r3, r3, #8 * 4
+        BGE     MovByt225               ; do another 8 words
+                
+        CMP     r3, #-8 * 4             ; Quick test
+        Pull    "r0-r11, r12, pc", EQ
+
+
+MovByt230
+
+        ADDS    r3, r3, #8*4 - 4*4      ; Four whole words to do ?
+        BLT     MovByt240
+
+        LDMIA   r1!, { r4 - r6, r14 }   ; NB. Order !
+        ORR     r0, r0, r4, LSL r11     
+                                        
+        MOV     r4, r4, LSR r12         
+        ORR     r4, r4, r5, LSL r11     
+                                        
+        MOV     r5, r5, LSR r12         
+        ORR     r5, r5, r6, LSL r11     
+                                        
+        MOV     r6, r6, LSR r12         
+        ORR     r6, r6, r14, LSL r11    
+                                        
+        STMIA   r2!, { r0, r4 - r6 }    
+
+        Pull    "r0-r11, r12, pc", EQ
+
+        SUB     r3, r3, #4*4            
+        MOV     r0, r14, LSR r12        ; keep r0 prepared
+
+
+MovByt240
+
+        ADDS    r3, r3, #2*4            ; Two whole words to do ?
+        BLT     MovByt250               
+
+
+        LDMIA   r1!, { r4, r14 }        ; NB. Order !
+        ORR     r0, r0, r4, LSL r11
+                
+        MOV     r4, r4, LSR r12
+        ORR     r4, r4, r14, LSL r11
+                
+        STMIA   r2!, { r0, r4 }
+
+        Pull    "r0-r11, r12, pc", EQ
+
+
+        SUB     r3, r3, #2*4            
+        MOV     r0, r14, LSR r12        ; keep r0 prepared
+
+
+MovByt250
+
+        ADDS    r3, r3, #2*4 - 1*4      ; One whole word to go ?
+        BLT     MovByt260               
+                                        
+        LDR     r14, [ r1 ], #4         
+        ORR     r0, r0, r14, LSL r11    
+                                        
+        STR     r0, [ r2 ], #4          
+                                        
+        Pull    "r0-r11, r12, pc", EQ   
+                                        
+        SUB     r3, r3, #1*4            
+        MOV     r0, r14, LSR r12        ; keep r0 prepared
+
+
+MovByt260
+
+        ADDS    r3, r3, #1*4 - 0*4
+        Pull    "r0-r11, r12, pc", EQ
+
+        LDR     r14, [ r1 ]             ; store remaining 1..3 bytes
+        ORR     r0, r0, r14, LSL r11    
+
+
+MovByt270
+
+        STRB    r0, [ r2 ], #1
+        MOV     r0, r0, LSR #8
+        SUBS    r3, r3, #1
+        BGT     MovByt270
+                
+        Pull    "r0-r11, r12, pc"
+
+
+
+        END
+@
+
+
+4.5
+log
+@Exchange local definitions for central ones.
+Hdr:HighFSI LowFSI Services CDROM CMOS UpCall and CDFS now used in preference to local definitions.
+Macro 'Command' used to build the keyword table.
+Some asserts added for safety.
+
+
+Version 2.54. Tagged as 'CDFS-2_54'
+@
+text
+@d322 1
+a322 1
+ END
+@
+
+
+4.4
+log
+@Resolve the 32 assembler warnings
+Mostly by swapping STASH/GRAB for Push/Pull macros.
+Inlined the module header rather than defining it in a header file.
+Renamed "Debug" macro to "DebugInline" to avoid clash with similarly named macro.
+
+Version 2.53. Tagged as 'CDFS-2_53'
+@
+text
+@d62 1
+a62 1
+CD_ByteCopy ROUT
+@
+
+
+4.3
+log
+@Line up sources to normal columns.
+Around 25000 spaces required, but rather easier to read as a result - it has revealed some bugs (not addressed in this commit).
+Not quite binary identical, because an 'addr' of the ambiguous disc name error has moved by 1 byte due to a missing ALIGN directive.
+Not tagged.
+@
+text
+@d63 1
+a63 1
+        STASH   "r0-r11, r12, r14"
+d69 1
+a69 1
+        GRAB    "r0-r11, r12, pc", EQ
+d104 1
+a104 1
+        GRAB    "r0-r11, r12, pc", EQ   ; finished
+d115 1
+a115 1
+        GRAB    "r0-r11, r12, pc", EQ   ; finished
+d128 1
+a128 1
+        GRAB    "r0-r11, r12, pc", EQ   ; finished
+d141 1
+a141 1
+        GRAB    "r0-r11, r12, pc", EQ   ; finished
+d149 1
+a149 1
+        GRAB    "r0-r11, r12, pc", EQ   ; finished
+d162 1
+a162 1
+        GRAB    "r0-r11, r12, pc"       ; finished
+d173 1
+a173 1
+        GRAB    "r0-r11, r12, pc", EQ   ; finished
+d237 1
+a237 1
+        GRAB    "r0-r11, r12, pc", EQ
+d259 1
+a259 1
+        GRAB    "r0-r11, r12, pc", EQ
+d279 1
+a279 1
+        GRAB    "r0-r11, r12, pc", EQ
+d296 1
+a296 1
+        GRAB    "r0-r11, r12, pc", EQ   
+d305 1
+a305 1
+        GRAB    "r0-r11, r12, pc", EQ
+d318 1
+a318 1
+        GRAB    "r0-r11, r12, pc"
+@
+
+
+4.2
+log
+@  Lots of changes for RISC OS 5.
+Detail:
+  * Updated to use objasm, shared makefiles and global headers
+  * Ripped out lots of RISC OS 2 support code so we can see the wood for the
+    trees now
+  * 32-bit compatible (a bit of a slog)
+  * Now has its own resources phase, replacing the use of the CDFSResources
+    module. Also means that messages can now be tokenised properly. For
+    good measure, split out CmdHelp tokens into separate file
+  * Hopefully fixed more bugs along the way than I introduced. I've seen
+    lots of nasty stack imbalances in error cases, but not fixed all of
+    them, I'm afraid
+Admin:
+  Tested briefly on a Risc PC; not enough support modules to run on Tungsten
+  yet.
+
+Version 2.38. Tagged as 'CDFS-2_38'
+@
+text
+@d63 1
+a63 1
+     STASH   "r0-r11, r12, r14"
+d68 2
+a69 2
+     TEQ     r3, #0
+     GRAB    "r0-r11, r12, pc", EQ
+d75 2
+a76 2
+     TST r2, #3
+     BNE MovByt100                  ; destination not word aligned
+d80 2
+a81 2
+     TST r1, #3
+     BNE MovByt200                  ; source not word aligned
+d88 2
+a89 2
+     SUBS r3, r3, #4 * 4         ; Four whole words to do (or more) ?
+     BLT MovByt40                      ; no
+d91 2
+a92 2
+     SUBS r3, r3, #8 * 4 - 4 * 4 ; Eight whole words to do (or more) ?
+     BLT MovByt30
+d97 2
+a98 2
+     LDMIA r1!, { r0, r4 - r9, r14 } ; NB. Order ! (?)
+     STMIA r2!, { r0, r4 - r9, r14 }
+d100 2
+a101 2
+     SUBS r3, r3, #8 * 4
+     BGE MovByt25                      ; do another 8 words
+d103 2
+a104 2
+     CMP r3, #-8 * 4                ; Quick test rather that chaining down
+     GRAB "r0-r11, r12, pc", EQ         ; finished
+d109 2
+a110 2
+     ADDS r3, r3, #8 * 4 - 4 * 4 ; Four whole words to do ?
+     BLT MovByt40
+d112 2
+a113 2
+     LDMIA r1!, { r0, r4 - r5, r14 } ; NB. Order ! (?)
+     STMIA r2!, { r0, r4 - r5, r14 }
+d115 1
+a115 1
+     GRAB "r0-r11, r12, pc", EQ         ; finished
+d117 1
+a117 1
+     SUB r3, r3, #4 * 4
+d122 2
+a123 2
+     ADDS r3, r3, #4 * 4 - 2 * 4   ; Two whole words to go ?
+     BLT MovByt50
+d125 2
+a126 2
+     LDMIA r1!, { r0, r14 } ; NB. Order ! (?)
+     STMIA r2!, { r0, r14 }
+d128 1
+a128 1
+     GRAB "r0-r11, r12, pc", EQ         ; finished
+d130 1
+a130 1
+     SUB r3, r3, #2 * 4
+d135 2
+a136 2
+     ADDS r3, r3, #2*4-1*4       ; One whole word to do ?
+     BLT MovByt60
+d138 2
+a139 2
+     LDR r0, [ r1 ], #4
+     STR r0, [ r2 ], #4
+d141 1
+a141 1
+     GRAB "r0-r11, r12, pc", EQ         ; finished
+d143 1
+a143 1
+     SUB r3, r3, #1 * 4
+d148 4
+a151 4
+     ADDS r3, r3, #1*4 - 0*4      ; No more to do ?
+     GRAB "r0-r11, r12, pc", EQ         ; finished
+
+     LDR r0, [ r1 ]           ; store remaining 1,2 or 3 bytes
+d157 4
+a160 4
+     STRB r0, [ r2 ], #1
+     MOV r0, r0, LSR #8
+     SUBS r3, r3, #1
+     BGT MovByt70
+d162 1
+a162 1
+     GRAB "r0-r11, r12, pc"                 ; finished
+d170 9
+a178 9
+     LDRB r0, [ r1 ], #1
+     STRB r0, [ r2 ], #1
+     SUBS r3, r3, #1
+     GRAB "r0-r11, r12, pc", EQ                ; finished
+
+     TST r2, #3
+     BNE MovByt100
+
+     B MovByt20                      ; Back to mainline code
+d183 9
+a191 9
+     AND r12, r1, #3       ; offset
+     BIC r1, r1, #3      ; Align source
+
+     MOV r12, r12, LSL #3    ; rshft = 0, *, 16 or 24 only
+
+     RSB r11, r12, #32       ; lshft = 32, 24, 16 or 8 only
+
+     LDR r0, [ r1 ], #4
+     MOV r0, r0, LSR r12 ; Always have r0 prepared
+d195 5
+a199 5
+     SUBS r3, r3, #4 * 4       ; Four whole words to do (or more) ?
+     BLT MovByt240                   ; no
+
+     SUBS r3, r3, #8*4-4*4     ; Eight whole words to do (or more) ?
+     BLT MovByt230                   ; no
+d205 33
+a237 33
+     LDMIA r1!, { r4 - r10, r14 } ; NB. Order !
+     ORR r0, r0, r4, LSL r11
+
+     MOV r4, r4, LSR r12
+     ORR r4, r4, r5, LSL r11
+
+     MOV r5, r5, LSR r12
+     ORR r5, r5, r6, LSL r11
+
+     MOV r6, r6, LSR r12
+     ORR r6, r6, r7, LSL r11
+
+     MOV r7, r7, LSR r12
+     ORR r7, r7, r8, LSL r11
+
+     MOV r8, r8, LSR r12
+     ORR r8, r8, r9, LSL r11
+
+     MOV r9, r9, LSR r12
+     ORR r9, r9, r10, LSL r11
+
+     MOV r10, r10, LSR r12
+     ORR r10, r10, r14, LSL r11
+
+     STMIA r2!, { r0, r4 - r10 }
+
+     MOV r0, r14, LSR r12          ; keep r0 prepared
+
+     SUBS r3, r3, #8 * 4
+     BGE MovByt225                            ; do another 8 words
+
+     CMP r3, #-8 * 4                       ; Quick test
+     GRAB   "r0-r11, r12, pc", EQ
+d242 2
+a243 14
+     ADDS r3, r3, #8*4 - 4*4             ; Four whole words to do ?
+     BLT MovByt240
+
+     LDMIA r1!, { r4 - r6, r14 } ; NB. Order !
+     ORR r0, r0, r4, LSL r11
+
+     MOV r4, r4, LSR r12
+     ORR r4, r4, r5, LSL r11
+
+     MOV r5, r5, LSR r12
+     ORR r5, r5, r6, LSL r11
+
+     MOV r6, r6, LSR r12
+     ORR r6, r6, r14, LSL r11
+d245 13
+a257 1
+     STMIA r2!, { r0, r4 - r6 }
+d259 1
+a259 1
+     GRAB   "r0-r11, r12, pc", EQ
+d261 2
+a262 2
+     SUB r3, r3, #4*4
+     MOV r0, r14, LSR r12   ; keep r0 prepared
+d267 2
+a268 2
+     ADDS r3, r3, #2*4           ; Two whole words to do ?
+     BLT MovByt250
+d271 7
+a277 2
+     LDMIA r1!, { r4, r14 } ; NB. Order !
+     ORR r0, r0, r4, LSL r11
+d279 1
+a279 2
+     MOV r4, r4, LSR r12
+     ORR r4, r4, r14, LSL r11
+a280 1
+     STMIA r2!, { r0, r4 }
+d282 2
+a283 5
+     GRAB   "r0-r11, r12, pc", EQ
+
+
+     SUB r3, r3, #2*4
+     MOV r0, r14, LSR r12   ; keep r0 prepared
+d288 12
+a299 12
+     ADDS r3, r3, #2*4 - 1*4     ; One whole word to go ?
+     BLT MovByt260
+
+     LDR r14, [ r1 ], #4
+     ORR r0, r0, r14, LSL r11
+
+     STR r0, [ r2 ], #4
+
+     GRAB   "r0-r11, r12, pc", EQ
+
+     SUB r3, r3, #1*4
+     MOV r0, r14, LSR r12   ; keep r0 prepared
+d304 2
+a305 2
+     ADDS r3, r3, #1*4 - 0*4
+     GRAB   "r0-r11, r12, pc", EQ
+d307 2
+a308 2
+     LDR r14, [ r1 ]          ; store remaining 1..3 bytes
+     ORR r0, r0, r14, LSL r11
+d313 6
+a318 6
+     STRB r0, [ r2 ], #1
+     MOV r0, r0, LSR #8
+     SUBS r3, r3, #1
+     BGT MovByt270
+
+     GRAB   "r0-r11, r12, pc"
+@
+
+
+4.1
+log
+@Manual merge of the RISC OS 4.02 version of CDFS (2.37, based upon Acorn's
+RiscOS/UnU/OS_Core/FileSys/CDFS/CDFS234 version 2.35).
+
+Tagged as 'CDFS-2_37'
+@
+text
+@d69 1
+a69 1
+     GRABS   "r0-r11, r12, pc", EQ
+d104 1
+a104 1
+     GRABS "r0-r11, r12, pc", EQ         ; finished
+d115 1
+a115 1
+     GRABS "r0-r11, r12, pc", EQ         ; finished
+d128 1
+a128 1
+     GRABS "r0-r11, r12, pc", EQ         ; finished
+d141 1
+a141 1
+     GRABS "r0-r11, r12, pc", EQ         ; finished
+d149 1
+a149 1
+     GRABS "r0-r11, r12, pc", EQ         ; finished
+d162 1
+a162 1
+     GRABS "r0-r11, r12, pc"                 ; finished
+d173 1
+a173 1
+     GRABS "r0-r11, r12, pc", EQ                ; finished
+d237 1
+a237 1
+     GRABS   "r0-r11, r12, pc", EQ
+d259 1
+a259 1
+     GRABS   "r0-r11, r12, pc", EQ
+d279 1
+a279 1
+     GRABS   "r0-r11, r12, pc", EQ
+d296 1
+a296 1
+     GRABS   "r0-r11, r12, pc", EQ
+d305 1
+a305 1
+     GRABS   "r0-r11, r12, pc", EQ
+d318 1
+a318 1
+     GRABS   "r0-r11, r12, pc"
+@
+

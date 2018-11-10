@@ -1,0 +1,179 @@
+head	1.2;
+access;
+symbols
+	VFPSupport-0_13:1.2
+	VFPSupport-0_12:1.2
+	VFPSupport-0_11:1.2
+	VFPSupport-0_10:1.2
+	VFPSupport-0_09:1.1
+	VFPSupport-0_08:1.1
+	VFPSupport-0_07:1.1
+	VFPSupport-0_06:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2015.02.08.22.44.45;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	1KgrX5G5wgC61g9y;
+
+1.1
+date	2014.02.08.15.27.42;	author jlee;	state Exp;
+branches;
+next	;
+commitid	x9VDVmUDNhCwkjox;
+
+
+desc
+@@
+
+
+1.2
+log
+@Add support for Cortex-A7 & Cortex-A15 FPUs. Add short vector mode emulation for Cortex-A7, A9, A15
+Detail:
+  Makefile - Simplify decision about whether to include support code. More hardware needs it than not, so have a list of machine types which don't need it rather than a list of machine types which do.
+  hdr/VFPSupport - Add definitions for new VFPSupport_Features reason code
+  hdr/shared - Add some comments for extra clarity
+  s/Instructions - Add support for emulating VFPv3 'VMOV immediate' instruction
+  s/Module - Update hardware detection & support handlers to deal with Cortex-A7, Cortex-A9 and Cortex-A15, all of which report different subarchitectures and differ in method of reporting exceptions despite the fact they basically all have the same requirements as far as support code is concerned (support code only required if we want short vector emulation). Implement the new VFPSupport_Features reason code, which returns information about whether short vectors are supported.
+  s/SupportCode - Extend support code to cope with Cortex-A7, A9, A15 & VMOV imm emulation.
+  Test/features,ffb - Simple test of VFPSupport_Features SWI
+  Test/test7,ffb - Test for VFPv3 'VMOV immediate' handling in scalar & vector mode (HW scalar implementation tested against SW vector implementation)
+Admin:
+  Tested on ARM1176JZF-S, Cortex-A7, Cortex-A8, Cortex-A9
+  Cortex-A15 supported tested 'in theory' by forcing appropriate support code to be installed on Cortex-A9
+
+
+Version 0.10. Tagged as 'VFPSupport-0_10'
+@
+text
+@; 
+; Copyright (c) 2014, RISC OS Open Ltd
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+; 
+
+OldOpt  SETA    {OPT}
+        OPT     OptNoList+OptNoP1List
+
+; Private header containing definitions that are shared with C code via Hdr2H
+
+; Layout of the exception processing workspace
+                  ^ 0
+XCRelocOffset     # 4 ; C relocation offset - must be at the start
+RoundingMode      # 1 ; FPSCR rounding mode field
+XFlags            # 1 ; Extra flags about the exception
+ExceptionFlags    # 1 ; FPSCR cumulative exception flags
+ExceptionEnable   # 1 ; FPSCR trapped exception enable flags
+Reg_D             # 4 ; Operand and result register numbers (*2 for D regs)
+Reg_N             # 4
+Reg_M             # 4
+TheInstruction    # 4 ; Instruction word being manipulated
+TheFPEXC          # 4 ; FPEXC being manipulated
+TheContext        # 4 ; Pointer to context being manipulated
+Workspace         # 4 ; Module workspace pointer
+UserRegisters     # 64 ; R0-R15 for the caller's mode (assuming not FIQ)
+UserPSR           # 4 ; SPSR on entry
+
+        ASSERT    ?UserRegisters = 16*4 ; Hdr2H doesn't do maths
+
+; Flags for use by classify() to indicate the class of a given instruction 
+
+CLASS_NOT_VFP   * 1    ; Not a VFP instruction
+CLASS_NOT_CDP   * 2    ; Is VFP, but not a VFP CDP instruction (i.e. not
+                       ; to be emulated by us)
+CLASS_VFP3      * 4    ; VFPv3 required
+CLASS_VFP4      * 8    ; VFPv4 required
+CLASS_S         * 16   ; Single precision support required
+CLASS_D         * 32   ; Double precision support required
+CLASS_D32       * 64   ; D32 support required
+CLASS_HP        * 128  ; Half precision support required
+CLASS_SQRT      * 256  ; Square root support required
+CLASS_DIV       * 512  ; Divide support required
+
+; Special register numbers
+
+REG_FPSID       * 0
+REG_FPSCR       * 1
+REG_MVFR1       * 6
+REG_MVFR0       * 7
+REG_FPEXC       * 8
+REG_FPINST      * 9
+REG_FPINST2     * 10
+
+        OPT     OldOpt
+        END
+@
+
+
+1.1
+log
+@Add VFPv2 support code
+Detail:
+  This update adds the support code necessary to allow the VFPv2 coprocessor in the Raspberry Pi to be used in its full IEEE-compliant mode, and to add support for the generation of errors on VFP match exceptions (division by zero, etc.)
+  SoftFloat Release 2b (http://www.jhauser.us/arithmetic/SoftFloat.html) is used to perform the floating point calculations in software, ensuring their accuracy.
+  As with FPEmulator, the support code will only be included on machines which require it; at the moment this decision is handled by the makefile, based around the target machine type.
+  Note that the current version of the support code does not implement default NaN or flush-to-zero mode, so it is not a fully accurate emulation of the hardware.
+  Also added a new SWI, VFPSupport_ExceptionDump, for creating and reading a VFP context exception dump, and a new reason code to VFPSupport_Features to query which exception enable bits are supported
+  File changes:
+  - Makefile - Rewritten to use the CModule fragment, and to add the necessary rules for (optionally) building the support code.
+  - Licences - File summarising the different licences used by different portions of the code
+  - Test/test2c,ffb, Test/test3,ffb, Test/test4,ffb, Test/test5,ffb, Test/test6src,ffb - Several test programs for validating behaviour of the support code, mainly focused around unusual causes of exceptions and validating instruction decoding and short vector support
+  - actions/ARMv7_VFP, arctions/common, c/head, cache/classify - decgen files for building the instruction decoder. This decoder is only used for synchronous exceptions, to determine whether the instruction is or isn't a valid VFP instruction. Asynchronous exceptions utilise a simpler, hand-crafted decoder in the assembler sources.
+  - h/classify - Header for the decgen decoder
+  - hdr/shared - Header with some definitions shared between the C and assembler sources (will be Hdr2H'd to generate the C header)
+  - hdr/VFPSupport - Updated with new error numbers, SWI definitions
+  - s/CSupport - Math support functions from the C library sources, required by SoftFloat
+  - s/Errors - Added new error definitions
+  - s/GetAll - Include support code if necessary. Add debug switch, plus optimisation switch for machines with 16 D registers
+  - s/Instructions - Core data processing instruction emulation code. This file is included twice, once for single precision and once for double precision. The code calls through to the SoftFloat routines to perform the calculations.
+  - s/Module - Adjust handling of undefined instruction vector to allow the support code to be installed instead of OldHandler if necessary. Initialise the support code as necessary. Add new SWIs & reason codes.
+  - s/SupportCode - Undefined instruction handler which controls the rest of the support code. Also raises RISC OS errors as necessary (division by zero, etc.)
+  - softfloat/* - The SoftFloat library sources. It's been tweaked in a few places for integration with the assembler support code, but otherwise no changes to the core logic were necessary.
+  - Resources/UK/Messages - Updated with new error text
+Admin:
+  Tested on Raspberry Pi & BB-xM
+  Support code tested using the supplied test routines and the TestFloat tool (http://www.jhauser.us/arithmetic/TestFloat.html)
+
+
+Version 0.06. Tagged as 'VFPSupport-0_06'
+@
+text
+@d37 1
+a37 1
+RoundingMode      # 1
+d39 2
+a40 2
+ExceptionFlags    # 1
+ExceptionEnable   # 1
+d44 2
+a45 2
+TheInstruction    # 4 ; Instruction word being manipulated. Just use context FPINST?
+TheFPEXC          # 4 ; FPEXC being manipulated. Just use context FPEXC?
+@
+

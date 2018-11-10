@@ -1,0 +1,236 @@
+head	4.1;
+access;
+symbols
+	Wimp-5_62:4.1
+	Wimp-5_61:4.1
+	Wimp-5_60:4.1
+	Wimp-5_59:4.1
+	Wimp-5_58:4.1
+	Wimp-5_57:4.1
+	Wimp-5_56:4.1
+	Wimp-5_55:4.1
+	Wimp-5_54:4.1
+	Wimp-5_53:4.1
+	Wimp-5_52:4.1
+	Wimp-5_51:4.1
+	Wimp-5_50:4.1
+	Wimp-5_49:4.1
+	Wimp-5_48:4.1
+	Wimp-5_47-file1ad:4.1
+	Wimp-5_47:4.1
+	Wimp-5_46:4.1
+	Wimp-5_45:4.1
+	Wimp-5_44:4.1
+	Wimp-5_43:4.1
+	Wimp-5_42:4.1
+	Wimp-5_41:4.1
+	Wimp-5_40:4.1
+	Wimp-5_39:4.1
+	Wimp-5_38:4.1
+	Wimp-5_37:4.1
+	Wimp-5_36:4.1
+	Wimp-5_35:4.1
+	Wimp-5_34:4.1
+	Wimp-5_33:4.1
+	Wimp-5_32:4.1
+	Wimp-5_31:4.1
+	Wimp-5_30:4.1
+	Wimp-530-pre4:4.1
+	Wimp-5_30-pre3:4.1
+	Wimp-5_30-pre2:4.1
+	Wimp-5_30-pre1:4.1
+	Wimp-5_29:4.1
+	Wimp-5_28:4.1
+	Wimp-5_27:4.1
+	Wimp-5_26:4.1
+	Wimp-5_25:4.1
+	Wimp-5_24:4.1
+	Wimp-5_23:4.1
+	Wimp-5_22:4.1
+	Wimp-5_21:4.1
+	Wimp-5_20:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.1
+date	2013.03.28.08.07.32;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	6IoKYZf9tBXk5xJw;
+
+
+desc
+@@
+
+
+4.1
+log
+@Add support for wide translation tables for window tool furniture
+With the introduction of 16bpp/32bpp modes it became possible to request tables from ColourTrans which used > 1 byte per colour, but the Wimp wasn't using this extension. Therefore tool sprites designed in 8bpp or less would be quantised horribly when plotted in a 16bpp or 32bpp mode.
+The Wimp now requests and plots with a wide table, and to avoid thrashing ColourTrans so much with the prevalence of individually paletted icon sprites, keeps the table seperately to the icon sprites ones. At worst (in 32bpp) this uses an extra 256x4 bytes of RAM.
+Trace.s: Split out the tracing routines from Wimp10 as it was getting a bit big.
+Tiling.s: Namespace change for the icons versus tools distinction. Removed some unnecessary PC+8/PC+12 confused NOPs.
+Tiling3D.s: Namespace change for the icons versus tools distinction.
+Wimp01.s: New set of variables to track the tool translation tables separately. Various jiggling to keep ADRs in range.
+Wimp02.s: Namespace change. Remove some double handling in Wimp_SetColourMapping.
+Wimp04.s: Namespace change. Made factor rationalisation common to both the icon and tool grinding code. Removed dual use of cachespritedata for both icons and tools. The tintfunc moves to Wimp10. Service_InvalidateCache confusion resolved by adding a new flag to remember that the tools need regenerating rather than just marking the tool list as missing (which subsequently got restored in Tool_SpriteOp without actually doing any palette work.
+Wimp10.s: Label tools_area renamed as it was immensely confusing to have that (which was actually holding the RMA allocation of the tool_list) and tool_area (which contains the sprite area) hanging around. Changed references to use tools-only cachetolspritedata routine. Added 'wide' flags to sprite op and colour trans calls. Tool_SpriteOp changed to actually regenerate the colour tables when they're known invalid (previously the tools list pointer was merely restored and no colour tables used). Trace functions extracted. Resolved confusion as to what recache_tools_trans and recache_tools_trans2 should be doing.
+
+Tested with 4bpp "NewLook" sprites in 4bpp/8bpp/16bpp/32bpp and 8bpp smooth greyscaled "Steel" tool sprites in same modes.
+Also ran a task window doing repeated Service_InvalidateCache calls while monitoring the RMA for leaks.
+Generally navigated around some directories to ensure that inverse icons (during double click) and filer windows (with individually paletted sprites) were being rendered.
+
+Version 5.20. Tagged as 'Wimp-5_20'
+@
+text
+@; Copyright 2013 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; > Trace
+
+; Some extra tracing routines by Jonathan. All preserve all registers and
+; all flags
+
+; HostFS_WriteC * &40102
+
+;---------------------------------------------------------------------------
+trace_char ROUT
+
+; R0 = character to trace
+
+        EntryS  "R0, R1, R2"
+
+        CMP     R0, #32
+        BLT     |trace_char: nonprintable character|
+        CMP     R0, #127
+        BGE     |trace_char: nonprintable character|
+
+|trace_char: printable character|
+        ;write character
+        SWI     HostFS_WriteC
+        ;if it's a backslash, write it again
+        CMP     R0, #"\\"
+        SWIEQ   HostFS_WriteC
+        B       |trace_char: exit|
+
+|trace_char: nonprintable character|
+        CMP     R0, #:CHR: 10
+        BNE     |trace_char: control character|
+
+|trace_char: linefeed|
+        SWI     HostFS_WriteC
+
+        MOV     R0, #:CHR: 13
+        SWI     HostFS_WriteC
+
+        B       |trace_char: exit|
+
+|trace_char: control character|
+        ;save the character
+
+        MOV     R1, R0
+        ADR     R2, |trace_char: digits|
+
+; R1 = character to trace
+; R2 -> representation table
+
+        MOV     R0, #"\\"
+        SWI     HostFS_WriteC
+
+        MOV     R0, #"x"
+        SWI     HostFS_WriteC
+
+        ;trace top nybble
+        MOV     R0, R1, LSR #4
+        LDRB    R0, [R2, R0]
+        SWI     HostFS_WriteC
+
+        ;trace bottom nybble
+        AND     R0, R1, #&F
+        LDRB    R0, [R2, R0]
+        SWI     HostFS_WriteC
+
+|trace_char: exit|
+        EXITS
+
+|trace_char: digits|
+        =     "0123456789ABCDEF"
+        ALIGN
+;---------------------------------------------------------------------------
+trace_string ROUT
+
+; R0 -> string to trace
+
+        EntryS  "R0, R1"
+
+        MOV     R1, R0
+; R1 -> string to trace
+
+        B       |trace_string: end loop|
+|trace_string: start loop|
+        BL      trace_char
+        ADD     R1, R1, #1
+|trace_string: end loop|
+        LDRB    R0, [R1]
+        CMP     R0, #:CHR: 0
+        BNE     |trace_string: start loop|
+
+        EXITS
+;---------------------------------------------------------------------------
+trace_decimal ROUT
+
+; R0 = integer to trace
+
+        EntryS  "R0, R1, R2"
+
+        SUB     SP, SP, #16
+        MOV     R1, SP
+        MOV     R2, #15
+        SWI     OS_ConvertInteger4
+
+        ;trace it
+        BL      trace_string
+        ADD     SP, SP, #16
+
+        EXIT
+;---------------------------------------------------------------------------
+trace_hex ROUT
+
+; R0 = integer to trace
+
+        Push    "R0, R1, R2, LR"
+
+        SUB     SP, SP, #16
+        MOV     R1, SP
+        MOV     R2, #15
+        SWI     OS_ConvertHex8
+
+        ;trace it
+        BL      trace_string
+        ADD     SP, SP, #16
+
+        Pull    "R0, R1, R2, PC",, ^
+;---------------------------------------------------------------------------
+trace_nl ROUT
+
+        EntryS  "R0"
+
+        MOV     R0, #:CHR: 10
+        BL      trace_char
+
+        EXITS
+
+        END
+@

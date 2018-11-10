@@ -1,0 +1,512 @@
+head	1.3;
+access;
+symbols
+	DWCDriver-0_35:1.3
+	DWCDriver-0_34:1.3
+	DWCDriver-0_33:1.3
+	DWCDriver-0_32:1.3
+	DWCDriver-0_31:1.3
+	DWCDriver-0_30:1.3
+	DWCDriver-0_29:1.3
+	DWCDriver-0_28:1.3
+	DWCDriver-0_27:1.3
+	DWCDriver-0_26:1.3
+	DWCDriver-0_24-1:1.3
+	DWCDriver-0_25:1.3
+	DWCDriver-0_24:1.3
+	DWCDriver-0_23:1.3
+	DWCDriver-0_22:1.3
+	DWCDriver-0_21:1.3
+	DWCDriver-0_20:1.3
+	DWCDriver-0_19:1.3
+	DWCDriver-0_18:1.3
+	DWCDriver-0_17:1.3
+	DWCDriver-0_16:1.3
+	DWCDriver-0_15:1.3
+	DWCDriver-0_14:1.3
+	DWCDriver-0_13:1.3
+	DWCDriver-0_12:1.3
+	DWCDriver-0_11:1.3
+	DWCDriver-0_10:1.3
+	DWCDriver-0_09:1.3
+	DWCDriver-0_08:1.2
+	DWCDriver-0_07:1.2
+	DWCDriver-0_06:1.2
+	DWCDriver-0_05:1.2
+	DWCDriver-0_04:1.2
+	DWCDriver-0_03:1.1
+	DWCDriver-0_02:1.1
+	DWCDriver-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2012.09.17.16.34.51;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	DXVFy2WJjyak3Ukw;
+
+1.2
+date	2012.06.24.21.41.57;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	7BXP9gA386QIu0aw;
+
+1.1
+date	2012.06.03.15.14.13;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ZZ9X1FvMWAU11h7w;
+
+
+desc
+@@
+
+
+1.3
+log
+@Update to version 3.00 of DWC_otg
+Detail:
+  This big batch of changes brings us in line with rev 70428950df of the Raspberry Pi Linux github.
+  Briefly:
+  * Deleted HTML docs as they're a waste of space
+  * Dropped the SOF fix (which we never used anyway)
+  * Dropped our implementation of the microframe scheduling patch, in favour of their implementation
+  * Updated to version 3.00 of the DWC sources. Hard to tell what useful changes this brings, due to API tweaks resulting in pretty much every file being littered with changes.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  This new version seems like it might be a bit more sensitive to insufficient power supplies. Beware!
+
+
+Version 0.09. Tagged as 'DWCDriver-0_09'
+@
+text
+@/* Memory Debugging */
+#ifdef DWC_DEBUG_MEMORY
+
+#include "dwc_os.h"
+#include "dwc_list.h"
+
+struct allocation {
+	void *addr;
+	void *ctx;
+	char *func;
+	int line;
+	uint32_t size;
+	int dma;
+	DWC_CIRCLEQ_ENTRY(allocation) entry;
+};
+
+DWC_CIRCLEQ_HEAD(allocation_queue, allocation);
+
+struct allocation_manager {
+	void *mem_ctx;
+	struct allocation_queue allocations;
+
+	/* statistics */
+	int num;
+	int num_freed;
+	int num_active;
+	uint32_t total;
+	uint32_t cur;
+	uint32_t max;
+};
+
+static struct allocation_manager *manager = NULL;
+
+static int add_allocation(void *ctx, uint32_t size, char const *func, int line, void *addr,
+			  int dma)
+{
+	struct allocation *a;
+
+	DWC_ASSERT(manager != NULL, "manager not allocated");
+
+	a = __DWC_ALLOC_ATOMIC(manager->mem_ctx, sizeof(*a));
+	if (!a) {
+		return -DWC_E_NO_MEMORY;
+	}
+
+	a->func = __DWC_ALLOC_ATOMIC(manager->mem_ctx, DWC_STRLEN(func) + 1);
+	if (!a->func) {
+		__DWC_FREE(manager->mem_ctx, a);
+		return -DWC_E_NO_MEMORY;
+	}
+
+	DWC_MEMCPY(a->func, func, DWC_STRLEN(func) + 1);
+	a->addr = addr;
+	a->ctx = ctx;
+	a->line = line;
+	a->size = size;
+	a->dma = dma;
+	DWC_CIRCLEQ_INSERT_TAIL(&manager->allocations, a, entry);
+
+	/* Update stats */
+	manager->num++;
+	manager->num_active++;
+	manager->total += size;
+	manager->cur += size;
+
+	if (manager->max < manager->cur) {
+		manager->max = manager->cur;
+	}
+
+	return 0;
+}
+
+static struct allocation *find_allocation(void *ctx, void *addr)
+{
+	struct allocation *a;
+
+	DWC_CIRCLEQ_FOREACH(a, &manager->allocations, entry) {
+		if (a->ctx == ctx && a->addr == addr) {
+			return a;
+		}
+	}
+
+	return NULL;
+}
+
+static void free_allocation(void *ctx, void *addr, char const *func, int line)
+{
+	struct allocation *a = find_allocation(ctx, addr);
+
+	if (!a) {
+		DWC_ASSERT(0,
+			   "Free of address %p that was never allocated or already freed %s:%d",
+			   addr, func, line);
+		return;
+	}
+
+	DWC_CIRCLEQ_REMOVE(&manager->allocations, a, entry);
+
+	manager->num_active--;
+	manager->num_freed++;
+	manager->cur -= a->size;
+	__DWC_FREE(manager->mem_ctx, a->func);
+	__DWC_FREE(manager->mem_ctx, a);
+}
+
+int dwc_memory_debug_start(void *mem_ctx)
+{
+	DWC_ASSERT(manager == NULL, "Memory debugging has already started\n");
+
+	if (manager) {
+		return -DWC_E_BUSY;
+	}
+
+	manager = __DWC_ALLOC(mem_ctx, sizeof(*manager));
+	if (!manager) {
+		return -DWC_E_NO_MEMORY;
+	}
+
+	DWC_CIRCLEQ_INIT(&manager->allocations);
+	manager->mem_ctx = mem_ctx;
+	manager->num = 0;
+	manager->num_freed = 0;
+	manager->num_active = 0;
+	manager->total = 0;
+	manager->cur = 0;
+	manager->max = 0;
+
+	return 0;
+}
+
+void dwc_memory_debug_stop(void)
+{
+	struct allocation *a;
+
+	dwc_memory_debug_report();
+
+	DWC_CIRCLEQ_FOREACH(a, &manager->allocations, entry) {
+		DWC_ERROR("Memory leaked from %s:%d\n", a->func, a->line);
+		free_allocation(a->ctx, a->addr, NULL, -1);
+	}
+
+	__DWC_FREE(manager->mem_ctx, manager);
+}
+
+void dwc_memory_debug_report(void)
+{
+	struct allocation *a;
+
+	DWC_PRINTF("\n\n\n----------------- Memory Debugging Report -----------------\n\n");
+	DWC_PRINTF("Num Allocations = %d\n", manager->num);
+	DWC_PRINTF("Freed = %d\n", manager->num_freed);
+	DWC_PRINTF("Active = %d\n", manager->num_active);
+	DWC_PRINTF("Current Memory Used = %d\n", manager->cur);
+	DWC_PRINTF("Total Memory Used = %d\n", manager->total);
+	DWC_PRINTF("Maximum Memory Used at Once = %d\n", manager->max);
+	DWC_PRINTF("Unfreed allocations:\n");
+
+	DWC_CIRCLEQ_FOREACH(a, &manager->allocations, entry) {
+		DWC_PRINTF("    addr=%p, size=%d from %s:%d, DMA=%d\n",
+			   a->addr, a->size, a->func, a->line, a->dma);
+	}
+}
+
+/* The replacement functions */
+void *dwc_alloc_debug(void *mem_ctx, uint32_t size, char const *func, int line)
+{
+	void *addr = __DWC_ALLOC(mem_ctx, size);
+
+	if (!addr) {
+		return NULL;
+	}
+
+	if (add_allocation(mem_ctx, size, func, line, addr, 0)) {
+		__DWC_FREE(mem_ctx, addr);
+		return NULL;
+	}
+
+	return addr;
+}
+
+void *dwc_alloc_atomic_debug(void *mem_ctx, uint32_t size, char const *func,
+			     int line)
+{
+	void *addr = __DWC_ALLOC_ATOMIC(mem_ctx, size);
+
+	if (!addr) {
+		return NULL;
+	}
+
+	if (add_allocation(mem_ctx, size, func, line, addr, 0)) {
+		__DWC_FREE(mem_ctx, addr);
+		return NULL;
+	}
+
+	return addr;
+}
+
+void dwc_free_debug(void *mem_ctx, void *addr, char const *func, int line)
+{
+	free_allocation(mem_ctx, addr, func, line);
+	__DWC_FREE(mem_ctx, addr);
+}
+
+void *dwc_dma_alloc_debug(void *dma_ctx, uint32_t size, dwc_dma_t *dma_addr,
+			  char const *func, int line)
+{
+	void *addr = __DWC_DMA_ALLOC(dma_ctx, size, dma_addr);
+
+	if (!addr) {
+		return NULL;
+	}
+
+	if (add_allocation(dma_ctx, size, func, line, addr, 1)) {
+		__DWC_DMA_FREE(dma_ctx, size, addr, *dma_addr);
+		return NULL;
+	}
+
+	return addr;
+}
+
+void *dwc_dma_alloc_atomic_debug(void *dma_ctx, uint32_t size,
+				 dwc_dma_t *dma_addr, char const *func, int line)
+{
+	void *addr = __DWC_DMA_ALLOC_ATOMIC(dma_ctx, size, dma_addr);
+
+	if (!addr) {
+		return NULL;
+	}
+
+	if (add_allocation(dma_ctx, size, func, line, addr, 1)) {
+		__DWC_DMA_FREE(dma_ctx, size, addr, *dma_addr);
+		return NULL;
+	}
+
+	return addr;
+}
+
+void dwc_dma_free_debug(void *dma_ctx, uint32_t size, void *virt_addr,
+			dwc_dma_t dma_addr, char const *func, int line)
+{
+	free_allocation(dma_ctx, virt_addr, func, line);
+	__DWC_DMA_FREE(dma_ctx, size, virt_addr, dma_addr);
+}
+
+#endif /* DWC_DEBUG_MEMORY */
+@
+
+
+1.2
+log
+@Update to latest code from Raspberry Pi github. Improve debugging. Fix race condition that could lead to timeout callbacks inappropriately firing.
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github. Tweaks specific to Broadcom hardware have been placed in BCM2835 #ifdef's to allow them to easily be identified/controlled if we need the driver to support different SoCs in future
+  c/cmodule, c/dwc_common_riscos, c/port, c/softc_device, h/cmodule - Improved debugging code
+  c/softc_device - Schedule timeout before starting transfer instead of after. Fixes issue where a transfer that completes inbetween dwc_otg_hcd_urb_enqueue() and callout_reset() would result in the timeout being enabled even though the transfer is already complete
+  s/triggercbs - Synced with latest USBDriver version for consistency
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Fixes some, if not all, stability issues
+
+
+Version 0.04. Tagged as 'DWCDriver-0_04'
+@
+text
+@d1 3
+d7 1
+a7 5
+/* Memory Debugging */
+#ifdef DEBUG_MEMORY
+
+struct allocation
+{
+d9 1
+d19 2
+a20 2
+struct allocation_manager
+{
+d28 1
+a28 1
+	uint32_t current;
+a31 1
+
+d34 2
+a35 1
+static void add_allocation(uint32_t size, char const* func, int line, void *addr, int dma)
+d37 18
+a54 3
+	struct allocation *a = __DWC_ALLOC_ATOMIC(sizeof(*a));
+	a->func = __DWC_ALLOC_ATOMIC(DWC_STRLEN(func)+1);
+	DWC_MEMCPY(a->func, func, DWC_STRLEN(func)+1);
+a56 1
+	a->addr = addr;
+d61 2
+a62 2
+	manager->num ++;
+	manager->num_active ++;
+d64 4
+a67 3
+	manager->current += size;
+	if (manager->max < manager->current) {
+		manager->max = manager->current;
+d69 2
+d73 1
+a73 1
+static struct allocation *find_allocation(void *addr)
+d76 1
+d78 1
+a78 1
+		if (a->addr == addr) {
+d82 1
+d86 1
+a86 1
+static void free_allocation(void *addr, char const* func, int line)
+d88 6
+a93 3
+	struct allocation *a = find_allocation(addr);
+	if (!a && func && (line >= 0)) {
+		DWC_ASSERT(0, "Free of address %p that was never allocated or already freed %s:%d", addr, func, line);
+d96 1
+d99 5
+a103 5
+	manager->num_active --;
+	manager->num_freed ++;
+	manager->current -= a->size;
+	__DWC_FREE(a->func);
+	__DWC_FREE(a);
+d106 1
+a106 1
+void dwc_memory_debug_start(void)
+d109 8
+a116 2
+	if (manager == NULL) {
+		manager = __DWC_ALLOC(sizeof(*manager));
+d120 1
+d125 1
+a125 1
+	manager->current = 0;
+d127 2
+d134 1
+d139 1
+a139 1
+		free_allocation(a->addr, NULL, -1);
+d142 1
+a142 1
+	__DWC_FREE(manager);
+d148 1
+d153 1
+a153 1
+	DWC_PRINTF("Current Memory Used = %d\n", manager->current);
+d159 2
+a160 1
+		DWC_PRINTF("    addr=%p, size=%d from %s:%d, DMA=%d\n", a->addr, a->size, a->func, a->line, a->dma);
+d164 4
+d169 8
+a177 5
+/* The replacement functions */
+void *dwc_alloc_debug(uint32_t size, char const* func, int line)
+{
+	void *addr = __DWC_ALLOC(size);
+	add_allocation(size, func, line, addr, 0);
+d181 2
+a182 1
+void *dwc_alloc_atomic_debug(uint32_t size, char const* func, int line)
+d184 11
+a194 2
+	void *addr = __DWC_ALLOC_ATOMIC(size);
+	add_allocation(size, func, line, addr, 0);
+d198 1
+a198 1
+void dwc_free_debug(void *addr, char const* func, int line)
+d200 2
+a201 2
+	free_allocation(addr, func, line);
+	__DWC_FREE(addr);
+d204 2
+a205 1
+void *dwc_dma_alloc_debug(uint32_t size, dwc_dma_t *dma_addr, char const *func, int line)
+d207 11
+a217 2
+	void *addr = __DWC_DMA_ALLOC(size, dma_addr);
+	add_allocation(size, func, line, addr, 1);
+d221 2
+a222 1
+void *dwc_dma_alloc_atomic_debug(uint32_t size, dwc_dma_t *dma_addr, char const *func, int line)
+d224 11
+a234 2
+	void *addr = __DWC_DMA_ALLOC_ATOMIC(size, dma_addr);
+	add_allocation(size, func, line, addr, 1);
+d238 2
+a239 1
+void dwc_dma_free_debug(uint32_t size, void *virt_addr, dwc_dma_t dma_addr, char const *func, int line)
+d241 2
+a242 2
+	free_allocation(virt_addr, func, line);
+	__DWC_DMA_FREE(size, virt_addr, dma_addr);
+d245 1
+a245 1
+#endif /* DEBUG_MEMORY */
+@
+
+
+1.1
+log
+@Add initial version of DWCDriver - USB driver for Synopsys DWC OTG controllers
+Detail:
+  A fairly simple wrapper for Synopsys's open source "DWC_otg" Linux driver, based around a GPL-free version of the DWC_otg 2.90a sources received from the Raspberry Pi foundation.
+  Instead of interfacing with the Linux USB stack a new host interface layer has been implemented to allow it to talk to the standard BSD-derived RISC OS stack.
+  RTSupport is used to provide the threading functionality that the DWC driver relies upon.
+  Interesting files:
+  - c/cmodule, h/cmodule - Main module frontend
+  - c/dwc_common_riscos, h/dwc_common_riscos - Implementation of the OS support layer required by the DWC driver
+  - c/dwc_otg_riscos, h/dwc_otg_riscos - Core code for the BSD driver implementation, driver init/shutdown, and for handling calls from the DWC host driver to us
+  - c/port - Some support functions required by BSD-style code inherited from the other USB drivers
+  - c/softc_device - Code to handle requests from the BSD layer to attached USB devices
+  - c/softc_root - Code to handle requests from the BSD layer to the controller root hub
+  - dwc/doc/* - Original Synopsys release notes & user guide pdfs
+  - dwc/driver/*, dwc/dwc_common_port/* - Synopsys code and documentation. A few tweaks were required to allow it to compile under Norcroft, but otherwise it's functionally equivalent to the original sources.
+Admin:
+  Tested in BCM2835 ROM
+  There are a few loose ends still to tidy up (search for "DWCTODO"), mainly regarding implementation of Isochronous support, but otherwise the driver seems stable enough for daily use.
+
+
+Version 0.01. Tagged as 'DWCDriver-0_01'
+@
+text
+@d159 7
+@
+

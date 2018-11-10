@@ -1,0 +1,447 @@
+head	1.6;
+access;
+symbols
+	Sound0HAL-1_88:1.6
+	Sound0HAL-1_87:1.6
+	Sound0HAL-1_86:1.6
+	Sound0HAL-1_85:1.6
+	Sound0HAL-1_84:1.6
+	Sound0HAL-1_83:1.5
+	Sound0HAL-1_82:1.5
+	Sound0HAL-1_81:1.5
+	Sound0HAL-1_80:1.4
+	Sound0HAL-1_79:1.4
+	Sound0HAL-1_78:1.4
+	Sound0HAL-1_77:1.4
+	Sound0HAL-1_76:1.3
+	Sound0HAL-1_75:1.3
+	Sound0HAL-1_74:1.3
+	Sound0HAL-1_73:1.3
+	Sound0HAL-1_72:1.3
+	Sound0HAL-1_71:1.3
+	Sound0HAL-1_70:1.3
+	Sound0HAL-1_69:1.3
+	Sound0HAL-1_68:1.2
+	Sound0HAL-1_67:1.1
+	Sound0HAL-1_66:1.1
+	Sound0HAL-1_65:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2016.06.08.21.32.25;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	l1TutttNkbdKZH9z;
+
+1.5
+date	2015.12.01.20.47.59;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	oU5pl7g7AqO7RhLy;
+
+1.4
+date	2014.06.22.18.24.00;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	4YzwMLnz0jx20yFx;
+
+1.3
+date	2012.03.24.23.00.30;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	CADwVz3oWer3TbYv;
+
+1.2
+date	2012.03.10.09.22.57;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	6OKem9gIlgEvOjWv;
+
+1.1
+date	2010.01.16.03.53.45;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Rename new device selection/enumeration SWIs. Add a way to query the supported sample rates of an arbitrary device. Add user-friendly names for the current HAL-based devices. Protect against level1 & level2 sound handlers that fail to preserve IRQ state.
+Detail:
+  hdr/Sound, s/Sound0:
+  - After some discussion it was decided that "Device" was a bit too generic for the device selection/enumeration SWIs (e.g. could be confusing when also referring to peripheral devices such as headphones or speakers), and so they've been renamed to use "Controller" instead.
+  - Added a new reason code to Sound_ControllerInfo to read the supported sample rates for a controller, similar to Sound_SampleRate 0 & 2
+  - Update IRQ handler to make sure IRQs are still off after calling level 1 (channel) & level 2 (scheduler) handlers - there's evidence that some third-party handlers fail to do this, which original IOMD versions of SoundDMA were tolerant of but newer versions were not.
+  Resources/Germany/Messages, Resources/UK/Messages:
+  - Added user-friendly, localisation-friendly names/descriptions for the current ROM-based devices which this module supports
+Admin:
+  Tested on Raspberry Pi
+  German messages in need of translation.
+
+
+Version 1.84. Tagged as 'Sound0HAL-1_84'
+@
+text
+@; Copyright 2010 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+        SUBT    Exported Sound constants
+
+OldOpt  SETA    {OPT}
+        OPT     OptNoList+OptNoP1List
+
+; ***********************************
+; ***    C h a n g e   L i s t    ***
+; ***********************************
+
+; Date       Name  Description
+; ----       ----  -----------
+; 21-Jun-1988  SKS   Added Service sub-rc's, corrected SoundCMOS definition
+;                    to fit reality
+; 17-May-1994  AMcC  Changed to using the preferred SWI base symbols
+; 29-Sep-1994  AMcC  Added new 16-bit Sound0 SWIs (from DOCN16)
+; 12-Oct-1994  AMcC  Corrected some Sound2 SWI names
+; 06-Mar-2001  ADH   Added Service_Sound reason codes 6 and 7
+;
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+; Software base pointers
+
+SoundLevel0Base         * SoundWorkSpace
+SoundLevel0Reserved     * 16*4
+SoundLevel1Base         * SoundLevel0Base + SoundLevel0Reserved
+
+SoundPhysChannels       * 8
+MaxNVoices              * 32
+SoundSystemNIL          * &00000003
+
+
+; SCCB Sound Channel Control Block
+; 8 words (for LDMIA R9,{R0-R7}) is reasonable
+; size constrained to exactly 256 bytes
+                        ^ 0
+SoundChannelAmpGateB    # 1 ; gate + 7-bit log amp.
+SoundChannelVoiceIndexB # 1 ; index to voice table
+SoundChannelInstanceB   # 1 ; Voice instance no.
+SoundChannelFlagsB      # 1 ; control/status bit flags
+SoundChannelPitch       # 4 ; phase acc
+SoundChannelTimbre      # 4 ; phase acc
+SoundChannelDuration    # 4 ; no. uS? (dec counter)
+SoundChannelUserParam1  # 4 ;
+SoundChannelUserParam2  # 4 ;
+SoundChannelUserParam3  # 4 ;
+SoundChannelUserParam4  # 4 ;
+SoundChannelExtension   # 0 ; START HERE -> 256 BYTES
+SoundChannelCBSize * 256
+SoundChannelCBLSL * 8 ; SHIFT value to index SCCBs
+
+; Level 1 data structure
+; Level1 Sound DMA Control Block
+; This block is skipped for the C header, the constants on the RHS of the # confuse Hdr2H.
+;NoHdr2H{
+                        ^ 0 ; SoundLevel1Base
+SoundLevel1FillPtr      # 4 ; code^
+SoundLevel1FixupPtr     # 4 ; code^
+SoundLevel1LogTable     # 4
+SoundLevel1AmpTable     # 4
+SoundLevel1NChannels    # 1
+SoundLevel1MaxAmp       # 1
+SoundLevel1NVoices      # 1
+SoundLevel1reservedB    # 1
+SoundLevel1MasterPitch  # 4
+SoundLevel1Queue        # 4
+SoundLevel1SPARE        # 4 * 8
+SoundLevel1VoiceTable   # 4 * (1 + MaxNVoices)
+SoundLevel1ChannelTable    # SoundPhysChannels * SoundChannelCBSize
+SoundLevel1ChannelTableEnd # 0
+;NoHdr2H}
+
+
+; Level 2 (VOICE) data structure
+; SVCB Sound Voice Control Block
+                        ^ 0
+SoundVoiceFill          # 4 ; fill continuation entry
+SoundVoiceUpdate        # 4 ; fill (with new params) coroutine entry
+SoundVoiceGateOn        # 4 ; initiallise and fill
+SoundVoiceGateOff       # 4 ; kill/release coroutine entry
+SoundVoiceInst          # 4 ; instantiate voice
+SoundVoiceFree          # 4 ; instance control
+SoundVoiceInstall       # 4 ; code install
+SoundVoiceTitle         # 4 ; name string
+SoundVoiceDSize         # 4 ; instance data segment size
+SoundVoiceIndex         # 4 ; table install segment size
+SoundVoiceCBSize        # 0
+
+
+; Channel Flags Byte: (31:24 of control word)
+;
+;   7                           0
+; +---+---+---+---+---+---+---+---+
+; | Q | K | I | F | A | V | F2| F1|
+; +---+---+---+---+---+---+---+---+
+; Z - Quiet (inactive)
+; K - Kill Pending
+; I - Initialise Pending
+; F - Fill Pending
+; A - Active Flag
+; V - oVerrun Flag
+; F2,F1 - 2-bit Flush Pending counter
+
+SoundChannelGateOff      * 2_10000000 ; carefully priority-encoded
+SoundChannelGateOn       * 2_01000000
+SoundChannelUpdate       * 2_00100000
+SoundChannelReserved     * 2_00010000
+SoundChannelActive       * 2_00001000
+SoundChannelOverrun      * 2_00000100
+SoundChannelFlush2       * 2_00000010
+SoundChannelFlush1       * 2_00000001
+; composites
+SoundChannelFlushPending * 2_00000011
+SoundChannelForceFlush   * 2_00000010
+
+
+; SoundCMOS bit allocation
+
+;   7   6   5   4   3   2   1   0
+; +---+---+---+---+---+---+---+---+
+; | S |     L     |       V       |
+; +---+---+---+---+---+---+---+---+
+
+; S = 0/1 -> speaker off/on
+; L = 3-bit 'loudness' field, 0..7 -> &01..&7F
+; V = 4-bit default channel 0 voice, 0..15 -> 1..16
+
+
+SWIClass SETS Sound0SWI_Name
+
+        ^       Sound0SWI_Base
+
+        AddSWI  Configure
+        AddSWI  Enable
+        AddSWI  Stereo
+        AddSWI  Speaker
+        AddSWI  Mode
+        AddSWI  LinearHandler
+        AddSWI  SampleRate
+        AddSWI  ReadSysInfo
+        AddSWI  SelectDefaultController
+        AddSWI  EnumerateControllers
+        AddSWI  ControllerInfo
+
+        ^       Sound1SWI_Base
+
+        AddSWI  Volume
+        AddSWI  SoundLog
+        AddSWI  LogScale
+        AddSWI  InstallVoice
+        AddSWI  RemoveVoice
+        AddSWI  AttachVoice
+        AddSWI  ControlPacked ; was 'Sound' but not in module!
+        AddSWI  Tuning
+        AddSWI  Pitch
+        AddSWI  Control
+        AddSWI  AttachNamedVoice
+        AddSWI  ReadControlBlock
+        AddSWI  WriteControlBlock
+
+        ^       Sound2SWI_Base
+
+        AddSWI  QInit
+        AddSWI  QSchedule
+        AddSWI  QRemove
+        AddSWI  QFree
+        AddSWI  QSDispatch
+        AddSWI  QTempo
+        AddSWI  QBeat
+        AddSWI  QInterface
+
+
+                                ^       0 ; Sound system service sub-rc's
+Service_SoundLevel0Alive        #       1
+Service_SoundLevel0Dying        #       1
+Service_SoundLevel1Alive        #       1
+Service_SoundLevel1Dying        #       1
+Service_SoundLevel2Alive        #       1
+Service_SoundLevel2Dying        #       1
+Service_SharedSoundAlive        #       1
+Service_SharedSoundDying        #       1
+Service_SoundConfigChanging     #       1
+Service_SoundEnabled            #       1
+Service_SoundDisabled           #       1
+Service_SoundAutoTune           #       1
+
+; Sound_ReadSysInfo reason codes
+; Start from 1 due to braindead Sound0 SWI dispatch not erroring on unknown SWI!
+                                ^       1
+Sound_RSI_Features              #       1
+Sound_RSI_DefaultController     #       1
+
+; Sound_RSI_Features flags
+Sound_RSI_Feature_Service8910         * 1 ; Service calls 8/9/10 generated (SoundConfigChanging, SoundEnabled, SoundDisabled)
+Sound_RSI_Feature_ControllerSelection * 2 ; SelectDefaultController, EnumerateControllers, ControllerInfo SWIs supported
+
+; Sound_ControllerInfo reason codes
+                                ^       0
+Sound_CtlrInfo_DisplayName      #       1
+Sound_CtlrInfo_MixerDevice      #       1
+Sound_CtlrInfo_SampleRates      #       1
+
+
+        OPT     OldOpt
+        END
+@
+
+
+1.5
+log
+@Add device enumeration and selection APIs. Make audio HAL device API more flexible. Add a generic software mixer implementation that can be used for devices where no hardware mixer is available.
+Detail:
+  Makefile - Include new source files. Export a C version of hdr/Sound.
+  Resources/* - Add new error text to messages file and update command help text
+  Version - Update MaxDeviceVersion. Add MinDeviceVersion definition to get rid of a magic constant from the code. Add new switch for whether software mixer support is enabled.
+  hdr/AudioDevice - Extend with audio device API 3 features. Buffer size granularity can now be non-power of 2 values, and CustomDMA can be used in a synchronous manner instead of an asynchronous manner (asynchronous defers buffer filling to an RTSupport routine, synchronous performs it directly from within the callback from the device). Also correct a comment relating to AudioRateTable_Frequency.
+  hdr/Sound - Add new SWIs and reason codes. Protect a portion of the header from being processed by Hdr2H (Hdr2H can't handle it)
+  s/Sound0 - Change default sample rate & buffer size settings to 22050Hz (none of the hardware currently supported by this version of the module supports 20833Hz). Add implementations of the new SWIs and features. Tidy up a couple of other bits.
+  s/Sound0NEON - Refactor post-processing code to add support for the software mixer - code is now generated by macros rather than copy & paste. Fix indentation of some other code sections.
+  s/DeviceList - New file to contain code related to managing the list of audio devices that SoundDMA now keeps.
+  s/SoftMix - New file containing the software mixer device implementation. Implements a single mixer channel to control the overall gain of the sound system. Mixing/volume scaling is performed by the buffer post-processing sequences in Sound0ARM/Sound0NEON, with the optimisation of skipping the processing for a gain of +0dB. Note however that Sound0ARM has yet to be updated and so software mixing is currently only available for the NEON version of the module.
+Admin:
+  Tested in iMX6 ROM
+  German resources are in need of translation
+
+
+Version 1.81. Tagged as 'Sound0HAL-1_81'
+@
+text
+@d154 3
+a156 3
+        AddSWI  SelectDefaultDevice
+        AddSWI  EnumerateDevices
+        AddSWI  DeviceInfo
+d204 1
+a204 1
+Sound_RSI_DefaultDevice         #       1
+d207 2
+a208 2
+Sound_RSI_Feature_Service8910     * 1 ; Service calls 8/9/10 generated (SoundConfigChanging, SoundEnabled, SoundDisabled)
+Sound_RSI_Feature_DeviceSelection * 2 ; SelectDefaultDevice, EnumerateDevices, DeviceInfo SWIs supported
+d210 1
+a210 1
+; Sound_DeviceInfo reason codes
+d212 3
+a214 2
+Sound_DevInfo_DisplayName       #       1
+Sound_DevInfo_MixerDevice       #       1
+@
+
+
+1.4
+log
+@Define Service_Sound reason code for broadcasting automatic tuning state
+Detail:
+  hdr/Sound - Add Service_SoundAutoTune definition, which SoundChannels will issue whenever automatic tuning is enabled or disabled
+Admin:
+  Tested on BB-xM
+
+
+Version 1.77. Tagged as 'Sound0HAL-1_77'
+@
+text
+@d67 2
+d84 1
+d154 3
+d204 1
+d207 7
+a213 1
+Sound_RSI_Feature_Service8910 * 1 ; Service calls 8/9/10 generated (SoundConfigChanging, SoundEnabled, SoundDisabled)
+@
+
+
+1.3
+log
+@Major overhaul
+Detail:
+  s/Sound0ARM - Mulaw-to-linear and mono/oversampling code ripped out of s/Sound0 and moved to its own file. Minor optimisations for ARMv6+
+  s/Sound0NEON - NEON-optimised Mulaw-to-linear and mono/oversampling code
+  Version - Update UseLDRSH switch to depend on NoARMv4 arch flag. Add UseNEON switch.
+  hdr/Sound - Added new sound start/stop/config changing service call & Sound_ReadSysInfo SWI definitions
+  s/Sound0:
+   - Added support for new service calls & Sound_ReadSysInfo SWI
+   - Added support for oversampling
+   - Fixed up stereo reversal to work if NoUnaligned is TRUE
+   - Added support for using the new NEON-optimised buffer/manipulation fill routines. Currently whether to use NEON or not must be selected at compile time.
+   - Added timing/profiling code, controlled via TimingCode switch. Uses a HAL timer to measure performance of various sections of the buffer fill/IRQ handling code
+   - Updated buffer size constraints in Sound0Config to properly cope with oversampling and NEON code
+   - Fixed Sound_SampleRate 3 corrupting the stored sound period value. This would cause Sound_Configure to switch to a different sample rate on next call (even if all 0 parameters were passed)
+   - Fixed finalisation not releasing the DMA channel
+   - Changed buffer fill code to run in an RTSupport routine instead of in the DMAManager DMASync callback (since we're not meant to be enabling IRQs from in there!). Old code resulted in buffer filling going out of sync with DMA if the IRQ timing was right.
+   - Rewrote init/finalisation and sound enable/disable code so things don't fail horribly if one of the required modules (DMAManager, RTSupport, VFPSupport) dies.
+   - Sound will be disabled if one of the required modules dies, but will automatically re-enable as the module(s) become available again.
+  Resources/UK/Messages, Resources/Germany/Messages - New error messages
+Admin:
+  Tested in ROM softload on BB-xM, in both ARM and NEON versions
+  German resources are in need of translation
+
+
+Version 1.69. Tagged as 'Sound0HAL-1_69'
+@
+text
+@d192 1
+@
+
+
+1.2
+log
+@Service call name corrected.
+
+Version 1.68. Tagged as 'Sound0HAL-1_68'
+@
+text
+@d150 1
+d189 11
+@
+
+
+1.1
+log
+@Add initial version of new SoundDMA module, 'Sound0HAL'
+Detail:
+  Based on the Sound0Trid source code, this version of SoundDMA makes use of a new version of the audio controller HAL device API. Briefly:
+  * DMA is handled by the HALified DMAManager
+  * The DMASync callback is used to trigger audio buffer filling
+  * The set of available sample rates is dictated by the audio controller device
+  * Basic support for resetting the audio when an error occurs (e.g. FIFO under/overflow causing stereo channels to be swapped)
+  * Module is now ARMv6/7-safe, due to use of LDR(S)H instead of unaligned loads. This comes at the cost of losing RiscPC compatability. Can be disabled if needed via setting UseLDRSH to false.
+  * To keep the code simple, it only accepts devices which use the new API version.
+  * Sound0Enable now enables IRQs for most of its execution, to allow for supporting slow devices (e.g. IIC communications with the TPS65950). The PRMs describe Sound_Enable as having undefined reentrancy & IRQ state, so this should be OK with regards to code compatability.
+  * The stereo reverse code still needs to be made ARMv6/v7-safe, as well as (preferably) being something that can be selectively enabled at runtime, depending on the audio controller in use
+  * The oversampling code is disabled, much as it was in Sound0Trid.
+  * The pipelining of sample rate changes that Sound0Trid performed is gone - partly to keep the code simple, and partly because it wouldn't work too well with the TPS65950 (due to the intermediate FIFO that the samples pass through, and the fact that the TPS audio codec must be turned off to change the sample rate)
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 1.65. Tagged as 'Sound0HAL-1_65'
+@
+text
+@d187 1
+a187 1
+Servive_SharedSoundDying        #       1
+@
+

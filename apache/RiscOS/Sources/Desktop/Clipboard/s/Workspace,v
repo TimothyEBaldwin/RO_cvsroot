@@ -1,0 +1,269 @@
+head	1.3;
+access;
+symbols
+	Clipboard-0_10:1.3
+	Clipboard-0_09:1.3
+	Clipboard-0_08:1.2
+	Clipboard-0_07:1.2
+	Clipboard-0_06:1.2
+	Clipboard-0_05:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2008.09.16.18.36.56;	author rool;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.02.25.10.57.34;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.02.22.11.58.06;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  Completed the clipboard support part of the Clipboard module.
+  Drag-and-Drop support still needs to be designed and implemented.
+Detail:
+  The initial Clipboard module released by ROOL was in a state of flux due
+  to a redesign of how the module worked. The transition to the new way
+  of doing things was only done partially and needed completing to make the
+  Clipboard module support the clipboard fully. The module also contained
+  26-bit only code.
+
+  - Replaced all the 26-bit code with 32-bit (not mode neutral) code.
+
+  - Completed implementation of Clipboard_GetDataType by adding support for
+    the situation where the Clipboard module doesn't own the clipboard and
+    isn't proxying either. The required StateHandler_DataRequest2 has been
+    implemented also.
+
+  - Fully implemented Clipboard_Get including all the required statehandlers.
+      StateHandler_DataSaveAck
+      StateHandler_RAMFetch1
+      StateHandler_RAMFetch2
+      StateHandler_DataRequest1
+      StateHandler_DataRequest2
+      StateHandler_PutRequest3
+      StateHandler_Paste
+
+  - Modified CopyData routine to allow for clipboard content not being
+    word-aligned and/or its length not being a multiple of four.
+
+  - Removed all the commented out code that was left over from the initial
+    implementation of the Clipboard module.
+
+  - Added GetData to the set of test applications. It displays the clipboard
+    contents if it's of type text (It's best to use short text strings). It's
+    not very polished and it's better to use PutClip and GetClip to test the
+    Clipboard module.
+
+  - Added PutClip to the set of test applications. It can be used test
+    SWI Clipboard_Put. Details on how can be found in its Help file.
+
+  - Added GetClip to the set of test applications. It can be used test
+    SWI Clipboard_Get. Details on how can be found in its Help file.
+Admin:
+  Extensively tested on Iyonix RO 5.11 both external behaviour with PutClip
+  and GetClip as well as the internal behaviour of the statehandler (by using
+  StrongED as the clipboard owner/requester and rigging it to fail at certain
+  points during the datatransfer).
+
+  Briefly tested on RO 4.02, seems to be OK.
+
+  Briefly tested on RO 6.06, seems to be OK. Functionality may be different
+  from 5.11 and 4.02 though due to ClipboardHolder. In particular using the
+  Clipboard module as a proxy is likely to be affected.
+
+Version 0.09. Tagged as 'Clipboard-0_09'
+@
+text
+@; Copyright 1999 Element 14 Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+;  s.Workspace - main workspace layout
+;
+
+
+UserStackSize   *       1024
+
+                ^       0, R12
+MessagesBlock   #       16              ; Module's message file descriptor
+mystack         #       4               ; Pointer to task's stack (in RMA)
+mytaskhandle    #       4               ; Our task handle (0 if not active, -1 if starting)
+OldUpcallHandler #      12              ; Handler workspace
+OldExitHandler  #       12
+OldErrorHandler #       12
+MsgQueue        #       4               ; Linked list of Wimp messages waiting to be delivered (also our pollword)
+
+ClipboardTask   #       4               ; Task handle of our client, or 0 if clipboard owner isn't a client of ours
+ClipboardFlags  #       4               ; Flags as passed to Clipboard_Put
+ClipboardType   #       4               ; Clipboard's data type, or address of data type list
+ClipboardAddr   #       4               ;  ... and its address
+ClipboardLen    #       4               ;  ... and its length
+ClipboardName   #       4               ;  ... and a pointer to its proposed leafname
+
+ [ DragNDrop
+DragTask        #       4               ; Task handle of StartDrag task, or 0 if none
+DragFlags       #       4               ; As passed to Clipboard_StartDrag
+DragSpriteArea  #       4               ; Sprite area (if DragASprite) or renderer (if DragAnObject)
+DragSprite      #       4               ; Sprite name (if DragASprite) or parameter block (if DragAnObject)
+DragWindow      #       4               ; Source window handle (for determining move/copy status)
+DragPtrBBox     #       16              ; Bounding box of pointer (screen-relative OS units)
+DragOutlineBBox #       16              ; Initial bounding box of dragbox outline (screen-relative OS units)
+DragRealBBox    #       16              ; Data's "real" bounding box (pointer-relative millipoints)
+DragLen         #       4               ; Estimated size of data (for use in Message_DataSave)
+DragType        #       4               ; Pointer to data types list
+DragName        #       4               ; Pointer to proposed leafname
+ ]
+
+Actions         #       4               ; Head of singly-linked list of action structures
+
+PollBlock       #       256             ; Poll block
+
+WorkspaceSize   *       :INDEX: @@
+
+
+; Action block layout
+;
+; These contain all pertinent information about each ongoing data transfer operation being performed by the Clipboard,
+; allowing operations to span calls to Wimp_Poll, while allowing multiple transactions to be performed at the same time - for
+; example, when a Message_ClaimEntity 4 is broadcast, more than one task might request the clipboard data type concurrently;
+; or when a drop transaction is being performed, we may be acting on behalf of both sender and receiver at the same time.
+;
+; One of these should be present for each clipboard or data type send or fetch and each drop send or fetch.
+;
+; Any one action can comprise a data load stage, a data save stage, or both; either stage may use either the new protocol
+; (Clipboard_Get / Message_PutRequest / Clipboard_Put / Message_Paste protocol), or the old protocol (Message_DataRequest /
+; Message_DataSave / Message_RAMFetch / Message_RAMTransmit / Message_DataSaveAck / Message_DataLoad / Message_DataLoadAck)
+
+                ^       0
+Act_Next        #       4               ; Link
+Act_State       #       4               ; State word (see below)
+Act_MyRef       #       4               ; my_ref field of last message sent
+Act_Task        #       4               ; Task handle that data is being sent to
+Act_Owner       #       4               ; Task handle of clipboard owner
+Act_Flags       #       4               ; As passed to Clipboard_Get, Clipboard_GetDataType or Clipboard_CatchDrop, else 0
+Act_Window      #       4               ; Destination window handle
+Act_Icon        #       4               ;  ... and icon handle
+Act_X           #       4               ;  ... and x co-ordinate
+Act_Y           #       4               ;  ... and y co-ordinate
+Act_BufAddr     #       4               ; Address of temporary buffer
+Act_BufLen      #       4               ;  ... and its length
+Act_List        #       4               ; Pointer to destination task's data type preferences
+Act_Type        #       4               ; Filetype of clipboard data as sent by clipboard owner
+Act_Name        #       4               ; Pointer to proposed leafname
+Act_TransCount  #       4               ; Index into buffer to start from for next RAMTransmit
+Act_DataRequestRef #    4               ; my_ref field of last DataRequest broadcast received (only used in State_PutRequest1)
+Act_IntFlags    #       4               ; Internal flags:
+                                        ;     Bit 0 set => don't free "temporary" buffer, since it's actually the clipboard!
+Act_Size        *       :INDEX: @@
+
+
+; Action states
+; These refer to the message most recently sent on behalf of this action.
+; See also Doc.StateDiag
+
+                        ^       0
+State_None              #       1
+State_DataSave          #       1
+State_DataSaveAck       #       1
+State_DataLoad          #       1
+State_RAMFetch1         #       1
+State_RAMFetch2         #       1
+State_RAMTransmit       #       1
+State_DataRequest1      #       1
+State_DataRequest2      #       1
+State_PutRequest1       #       1
+State_PutRequest2       #       1
+State_PutRequest3       #       1
+State_Paste             #       1
+State_FirstUnused       #       0
+
+
+; Message queue block layout
+
+                ^       0
+MsgQ_Next       #       4
+MsgQ_EventCode  #       4
+MsgQ_Handle     #       4
+MsgQ_Icon       #       4
+MsgQ_MyRefPtr   #       4
+MsgQ_Data       #       0
+MsgQ_Size       *       :INDEX: @@
+
+                END
+@
+
+
+1.2
+log
+@* Standardised all error blocks to use AddError/MakeErrorBlock macros
+* Routines added for making "safe" copies of data blocks, data type lists
+  and leafnames passed in via the various mechanisms
+* SWI Clipboard_Put and Message_DataRequest handler implemented, and the
+  supporting state handlers
+    State_PutRequest1
+    State_DataSave
+    State_RAMTransmit
+    State_DataLoad
+* SWI Clipboard_GetDataType implemented, and the supporting handler
+    State_PutRequest2
+    (but not State_DataRequest2 yet)
+* Now requires that the caller is an active task
+* Fixed occasional data abort bug in MySendMessage
+* Fixed corruption of wimp event code bug
+* Implemented and added test applications
+
+Version 0.06. Tagged as 'Clipboard-0_06'
+@
+text
+@d77 1
+d85 2
+a86 1
+Act_Type        #       4               ; Pointer to destination task's data type preferences
+@
+
+
+1.1
+log
+@* Task-related initialisation moved from module init to Start routine
+* State handler added, called from SWI, UserMessage, UserMessageAck handlers
+* Implemented NewAction, DeleteAction, DeleteActions, FreeClipboard and
+  FreeMsgQueue
+* DA memory allocation adapted so as not to use max-size "-1" DAs
+* RMA memory allocation functions completed to match DA functions - will now
+  assemble with DA support option turned off!
+
+Version 0.05. Tagged as 'Clipboard-0_05'
+@
+text
+@d33 2
+a34 1
+ClipboardAddr   #       4               ; Address of the clipboard
+a35 1
+ClipboardType   #       4               ;  ... and its data type, or address of data type list
+@

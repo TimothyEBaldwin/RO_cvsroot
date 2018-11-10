@@ -1,0 +1,301 @@
+head	1.3;
+access;
+symbols
+	FontSetup-0_12:1.3
+	FontSetup-0_11:1.2
+	FontSetup-0_10:1.2
+	FontSetup-0_09:1.2
+	FontSetup-0_08:1.2
+	FontSetup-0_07:1.2
+	FontSetup-0_06:1.1.1.3
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.3
+	Ursula_RiscPC:1.1.1.3.0.2
+	bavison_FontSetup-0_05:1.1.1.3
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.3
+	UrsulaBuild_FinalSoftload:1.1.1.3
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.3
+	bavison_FontSetup-0_04:1.1.1.3
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.3
+	bavison_FontSetup-0_03:1.1.1.3
+	bavison_FontSetup-0_02:1.1.1.2
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2013.08.03.07.39.05;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	msZwYnZgAvyuOYZw;
+
+1.2
+date	2002.12.19.22.34.08;	author srevill;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.05.29.14.13.53;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.05.29.14.13.53;	author bavison;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.06.09.10.16.24;	author bavison;	state Exp;
+branches;
+next	1.1.1.3;
+
+1.1.1.3
+date	98.07.02.12.46.13;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Relocate 'desktop font' picker out of the font manager setup
+This plugin is now only concerned with font manager matters.
+
+Version 0.12. Tagged as 'FontSetup-0_12'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	Main.c ************************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Fonts configuration plug-in
+This file:	Overall control
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+20/05/1998	BJGA	Created
+27/05/1998	BJGA	Added fontmerge plug-in status globals
+28/05/1998	BJGA	Added complain, quit_parent, parent_taskhandle
+			and implemented main_startquit
+08/06/1998	BJGA	Removed complain, quit_parent and parent_taskhandle
+02/07/1998	BJGA	Broadcast Message_PlugInQuitAbort before
+			Message_PlugInQuit (protocol change)
+
+\**************************************************************************/
+
+/* CLib */
+#include <stdlib.h>
+/* Toolbox */
+#include "event.h"
+#include "wimplib.h"
+#include "toolbox.h"
+/* Common */
+#include "error.h"
+#include "misc.h"
+/* Local headers */
+#include "Main.h"  /* includes prototypes for this file */
+#include "ToolboxE.h"
+#include "WimpE.h"
+#include "WimpM.h"
+
+#define	WimpVersion	((int) 310)
+
+/* Global variables */
+
+	BOOL		quit = FALSE;
+	ObjectId	mainwindow_id;
+	MessagesFD	messages;
+	BOOL		fontmerge_alive = FALSE;
+	int		fontmerge_taskhandle;
+
+/* Static global variables */
+
+static	WimpPollBlock	poll_block;
+static	IdBlock		id_block;
+
+/******	main() ************************************************************\
+
+In:		Command line option:
+		  -openat x y
+		    specifies initial position to open window at
+
+\**************************************************************************/
+
+#include <stdio.h>
+
+int main (int argc, char *argv[])
+{
+  error_initialise ();
+  throw (toolbox_initialise (0, WimpVersion, wimpm_messages, toolboxe_events,
+    "<FontSetup$Dir>", &messages, &id_block, NULL, NULL, NULL));
+  misc_parsearguments (argc, argv);
+  throw (event_initialise (&id_block));
+  throw (event_set_mask (wimpe_mask));
+
+  wimpm_register ();
+  wimpe_register ();
+  toolboxe_register ();
+
+  error_recover_point();
+  while (!quit)
+  {
+    throw (event_poll (NULL, &poll_block, NULL));
+  }
+  exit (EXIT_SUCCESS);
+}
+
+/******	main_startquit() **************************************************\
+
+Purpose:	General function for asking plug-in for consent for us to
+		quit both us and it
+In:		Flag word to pass in Message_PlugInQuit
+		or -1 to keep the last-used flag word
+
+\**************************************************************************/
+
+void main_startquit (int flags)
+{
+  WimpMessage buffer;
+  static int stored_flags = 0;
+
+  /* Unless we've been called as a result of Message_PlugInQuitContinue, */
+  /* we need to remember the flag word, and abort any existing quit that */
+  /* may not have finished yet! */
+  if (flags != -1)
+  {
+    stored_flags = flags;
+
+    buffer.hdr.size = 24;
+    buffer.hdr.your_ref = 0;
+    buffer.hdr.action_code = Wimp_MPlugInQuitAbort;
+    buffer.data.words [0] = PlugInSystem_Boot;
+    throw (wimp_send_message (18, &buffer, 0, 0, NULL));
+  }
+
+  buffer.hdr.size = 28;
+  buffer.hdr.your_ref = 0;
+  buffer.hdr.action_code = Wimp_MPlugInQuit;
+  buffer.data.words [0] = PlugInSystem_Fonts;
+  buffer.data.words [1] = stored_flags;
+  throw (wimp_send_message (18, &buffer, 0, 0, NULL));
+}
+@
+
+
+1.2
+log
+@UK Res file tweaks.
+Now detects the version of fontmanager running and adjusts the step size
+of the cache limits from 4k to 64k accordingly.
+
+Version 0.07. Tagged as 'FontSetup-0_07'
+@
+text
+@a43 1
+#include "DeskFont.h"
+a54 1
+	ObjectId	fontmenu_id;
+a57 1
+	const char	*status_file = "<Choices$Write>.Boot.PreDesk.FontSetup";
+a86 3
+  /* Initialise ROM font lookup table */
+  DeskFont_BuildRomFontTable ("Resources:$.Fonts", NULL);
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d28 3
+a54 1
+	BOOL		complain = TRUE;
+a59 2
+	BOOL		quit_parent = FALSE;
+	int		parent_taskhandle;
+d85 1
+a85 1
+  
+d89 1
+a89 1
+  
+d92 1
+a92 1
+  
+d114 15
+a128 2
+  
+  if (flags != -1) stored_flags = flags;
+@
+
+
+1.1.1.1
+log
+@Initial import of Configure plug-in '!FontSetup' to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Simplified plug-in quit code: more of the work is now performed by the
+second-level plug-in (ie FontMerge).
+@
+text
+@a27 1
+08/06/1998	BJGA	Removed complain, quit_parent and parent_taskhandle
+d52 1
+d58 2
+@
+
+
+1.1.1.3
+log
+@Fixed event ordering problems that became apparent when click-type window tools
+were re-enabled in the Wimp. This involves a subtle alteration to the plug-in
+quit protocol.
+@
+text
+@a28 2
+02/07/1998	BJGA	Broadcast Message_PlugInQuitAbort before
+			Message_PlugInQuit (protocol change)
+d113 1
+a113 14
+  /* Unless we've been called as a result of Message_PlugInQuitContinue, */
+  /* we need to remember the flag word, and abort any existing quit that */
+  /* may not have finished yet! */
+  if (flags != -1)
+  {
+    stored_flags = flags;
+    
+    buffer.hdr.size = 24;
+    buffer.hdr.your_ref = 0;
+    buffer.hdr.action_code = Wimp_MPlugInQuitAbort;
+    buffer.data.words [0] = PlugInSystem_Boot;
+    throw (wimp_send_message (18, &buffer, 0, 0, NULL));
+  }
+  
+@

@@ -1,0 +1,586 @@
+head	1.8;
+access;
+symbols
+	OMAPVideo-0_41:1.8
+	OMAPVideo-0_40:1.7
+	OMAPVideo-0_39:1.7
+	OMAPVideo-0_38:1.6
+	OMAPVideo-0_37:1.6
+	OMAPVideo-0_36:1.5
+	OMAPVideo-0_35:1.5
+	OMAPVideo-0_34:1.5
+	OMAPVideo-0_33:1.4
+	OMAPVideo-0_32:1.4
+	OMAPVideo-0_31:1.4
+	OMAPVideo-0_30:1.4
+	OMAPVideo-0_29:1.4
+	OMAPVideo-0_28:1.4
+	OMAPVideo-0_27:1.4
+	OMAPVideo-0_26:1.4
+	OMAPVideo-0_25:1.4
+	OMAPVideo-0_24:1.4
+	OMAPVideo-0_23:1.4
+	OMAPVideo-0_22:1.4
+	OMAPVideo-0_21:1.4
+	OMAPVideo-0_20:1.4
+	OMAPVideo-0_19:1.4
+	OMAPVideo-0_18:1.3
+	OMAPVideo-0_17:1.3
+	OMAPVideo-0_16:1.3
+	OMAPVideo-0_15:1.3
+	OMAPVideo-0_14:1.3
+	OMAPVideo-0_13:1.3
+	OMAPVideo-0_12:1.2
+	OMAPVideo-0_11:1.1
+	OMAPVideo-0_10:1.1
+	OMAPVideo-0_09:1.1
+	OMAPVideo-0_08:1.1
+	OMAPVideo-0_07:1.1
+	OMAPVideo-0_06:1.1
+	OMAPVideo-0_05:1.1
+	OMAPVideo-0_04:1.1
+	OMAPVideo-0_03:1.1
+	OMAPVideo-0_02:1.1
+	OMAPVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2018.05.31.21.48.54;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	qHkabDo5zjgySuEA;
+
+1.7
+date	2015.08.14.22.12.32;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	rcLw9SUqzfPpPhxy;
+
+1.6
+date	2015.06.14.13.52.06;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	I7TOmn2EUkLh1ppy;
+
+1.5
+date	2015.05.17.17.50.09;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	J3i0xRSaySaJePly;
+
+1.4
+date	2012.05.06.09.16.44;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	imAmvVvRmuLKWD3w;
+
+1.3
+date	2011.10.23.21.01.51;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	0rwNv0ztfd3f9wEv;
+
+1.2
+date	2011.07.11.22.07.35;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	aeC42JvE4N46R9rv;
+
+1.1
+date	2010.02.28.19.01.15;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@Big refactor, introduce GraphicsV overlay API support
+Detail:
+  This change introduces initial support for the GraphicsV overlay API.
+  RGB & YUV overlays are supported, along with rotation and scaling.
+  Vertical flipping isn't supported yet, and there are still a number of bugs to track down, along with some potential improvements.
+  The code has also been refactored significantly, in an attempt to protect all critical state with spinlocks/mutexes (as appropriate), and to reduce the number of globals so that it's easier to see what's touching what. Previously very little locking was performed, which could lead to issues if VSyncs or synclost interrupts occurred during certain operations. Now, the data should be structured in such a way that this shouldn't cause problems.
+  Notable things:
+  * State which needs to be writable from interrupt handlers is protected by spinlocks
+  * State which needs to be readable from interrupt handlers is protected by reader-writer spinlocks
+  * State which doesn't need to be accessed from interrupt handlers is unprotected (mutexes can be introduced in the future to make the code SMP-safe)
+  * Using non-alpha screen modes for the desktop will currently result in only "basic" overlays being supported (i.e. overlays which appear ontop of the desktop). In some cases this could be improved by falling back to a software pointer, but for now the only way to get Z-Order overlays is to use a screen mode with an alpha channel.
+  * Memory allocation for overlays is abstracted via the buffer interface (h/buffer). This has three implementations: basic buffers for untransformed overlays, VRFB-transformed buffers for OMAP3, and TILER-transformed buffers for OMAP4.
+  * Ultimately all overlay memory is allocated as physically contiguous pages within a PMP - although since TILER contains its own MMU this isn't strictly necessary on OMAP4
+  * Overlay memory is mapped as write-through cacheable for CPU access; experimentation with different cache policies has yet to be performed. However a potential future optimisation would be to perform lazy unmapping of overlay buffers, reducing the map/unmap overhead in well-behaved code which only maps buffers when they're needed
+Admin:
+  Tested on BB-xM, Pandaboard
+
+
+Version 0.41. Tagged as 'OMAPVideo-0_41'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+#include "sdma.h"
+#include "regs.h"
+#include "utils.h"
+#include "consts.h"
+
+#include "DebugLib/DebugLib.h"
+#include "SyncLib/spin.h"
+
+#ifdef DEBUGLIB
+static int sdma_stats[4];
+#endif
+
+static spinlock_t lock = SPIN_INITIALISER;
+
+void sdma_sync(void)
+{
+	/* Note no lock really needed here - the result of this sync only really makes sense if the caller already has a lock of some kind */
+	while(sdmachan->ccr & (DMA4_CCR_ENABLE | DMA4_CCR_RD_ACTIVE | DMA4_CCR_WR_ACTIVE)) {}; /* TODO - Timeout/error checking */
+	dmb(); /* Note that this sync has a dual purpose - syncing for the end of a transter, and syncing for the start of a transfer (since we call sdma_sync before each transfer) */
+}
+
+bool sdma_copyrect(const overlaycfg_t *o, const copyrect_params_t *r, uint32_t baseaddr)
+{
+#ifdef DEBUGLIB
+	if((r->src_left >= o->buf_w) || (r->src_bottom >= o->buf_h) || (r->src_left + r->width + 1 > o->buf_w) || (r->src_bottom + r->height + 1 > o->buf_h) || (r->dest_left >= o->buf_w) || (r->dest_bottom >= o->buf_h) || (r->dest_left + r->width + 1 > o->buf_w) || (r->dest_bottom + r->height + 1 > o->buf_h))
+		dprintf(("","Bad copy rect? src %d,%d dest %d,%d size %d,%d overlay %d,%d\n",r->src_left,r->src_bottom,r->dest_left,r->dest_bottom,r->width+1,r->height+1,o->buf_w,o->buf_h));
+#endif
+	/* Calculate line length & start pos, in bits */
+	uint8_t bpp = pixel_format_bpp[o->format];
+	uint32_t src_x = r->src_left*bpp;
+	uint32_t dest_x = r->dest_left*bpp;
+	uint32_t width = (r->width+1)*bpp;
+	/* Calculate element size from alignment */
+	uint32_t csdp;
+	uint32_t temp = src_x | dest_x | width;
+	if(temp & 7)
+		return false; /* Not byte aligned; abort */
+	if(temp & 8)
+		csdp = DMA4_CSDP_DATA_TYPE_8;
+	else if(temp & 16)
+		csdp = DMA4_CSDP_DATA_TYPE_16;
+	else
+		csdp = DMA4_CSDP_DATA_TYPE_32;
+	/* Convert to bytes */
+	src_x = src_x >> 3;
+	dest_x = dest_x >> 3;
+	width = width >> 3;
+	/* Calculate start/end addresses */
+	uint32_t src_y = baseaddr + o->stride*((o->buf_h-r->src_bottom)-(r->height+1));
+	uint32_t dest_y = baseaddr + o->stride*((o->buf_h-r->dest_bottom)-(r->height+1));
+	src_y += src_x;
+	dest_y += dest_x;
+
+	spin_lock(&lock);
+
+	/* Make sure previous is complete */
+	sdma_sync();
+	/* Start programming registers */
+	sdmachan->cen = width >> csdp; /* Relies on assumption about CSDP location & values! */
+	sdmachan->cfn = r->height+1;
+	if(dest_y <= src_y)
+	{
+		/* Copy in forwards direction, top to bottom */
+		sdmachan->cssa = src_y;
+		sdmachan->cdsa = dest_y;
+		sdmachan->csei = sdmachan->cdei = 1;
+		sdmachan->csfi = sdmachan->cdfi = (o->stride-width)+1;
+#ifdef DEBUGLIB
+		sdma_stats[1]++;
+#endif
+	}
+	else if(src_y+width <= dest_y)
+	{
+		/* Copy in forwards direction, bottom to top */
+		sdmachan->cssa = src_y + o->stride*r->height;
+		sdmachan->cdsa = dest_y + o->stride*r->height;
+		sdmachan->csei = sdmachan->cdei = 1;
+		sdmachan->csfi = sdmachan->cdfi = -width-o->stride+1;
+#ifdef DEBUGLIB
+		sdma_stats[2]++;
+#endif
+	}
+	else
+	{
+#if 1
+		/* Leave this code disabled for now since it's so slow! */
+		spin_unlock(&lock);
+		return false;
+#else
+		/* Copy in backwards direction - this will be slow due to lack of burst transfers */
+		/* Splitting into multiple vertical strips might help, but for that we'd really need a nicer way of chaining channels other than stalling for completion of each strip */
+		sdmachan->cssa = src_y + width-(1<<csdp);
+		sdmachan->cdsa = dest_y + width-(1<<csdp);
+		sdmachan->csei = sdmachan->cdei = 1-(2<<csdp);
+		sdmachan->csfi = sdmachan->cdfi = o->stride+width+1-(2<<csdp);
+#ifdef DEBUGLIB
+		sdma_stats[3]++;
+#endif
+#endif
+	}
+	sdmachan->csdp = csdp | DMA4_CSDP_SRC_PACKED | DMA4_CSDP_SRC_BURST_EN_64BYTES | DMA4_CSDP_DST_PACKED | DMA4_CSDP_DST_BURST_EN_64BYTES | DMA4_CSDP_WRITE_MODE_LAST_NONPOSTED;
+	sdmachan->ccr = DMA4_CCR_ENABLE | DMA4_CCR_SRC_AMODE_DOUBLEINDEX | DMA4_CCR_DST_AMODE_DOUBLEINDEX | DMA4_CCR_PREFETCH;
+
+	spin_unlock(&lock);
+
+	return true;
+}
+
+bool sdma_fillrect(const overlaycfg_t *o, const fillrect_params_t *r, uint32_t baseaddr)
+{
+	uint32_t *oraeor = r->oraeor;
+#ifdef DEBUGLIB
+	if((r->left >= o->buf_w) || (r->top >= o->buf_h) || (r->right >= o->buf_w) || (r->bottom >= o->buf_h) || (r->left > r->right) || (r->bottom > r->top))
+		dprintf(("","Bad fill rect? %d,%d -> %d,%d overlay %d,%d\n",r->left,r->top,r->right,r->bottom,o->buf_w,o->buf_h));
+	if(((uint32_t)oraeor) & 63)
+		dprintf(("","Hmm, oraeor isn't 64 byte aligned\n"));
+#endif
+	uint32_t col = oraeor[1];
+	int row;
+	/* Verify that it's a solid fill
+	   We could handle *some* non-solid fills (e.g. fill every other scanline or every other pixel), but it would be a bit of a hassle to check for that */
+	for(row=0;row<8;row++)
+	{
+		if((oraeor[0] != 0xFFFFFFFF) || (oraeor[1] != col))
+			return false;
+		oraeor += 2;
+	}
+	col = ~col;
+	/* Calculate line length & start pos, in bits */
+	uint8_t bpp = pixel_format_bpp[o->format];
+	uint32_t left = r->left*bpp;
+	uint32_t width = (1+r->right-r->left)*bpp;
+	/* Calculate element size from alignment */
+	uint32_t csdp;
+	uint32_t temp = left | width;
+	bool pattern_16bit = ((col ^ (col<<16)) < 65536); /* True if left halfword == right halfword */
+	bool pattern_8bit = pattern_16bit && ((col ^ (col<<8)) < 0x1000000); /* True if all bytes are identical */
+	if(temp & 7)
+		return false; /* Not byte aligned; abort */
+	if(temp & 8)
+	{
+		if(!pattern_8bit) /* Byte alignment but not byte-size pattern */
+			return false;
+		csdp = DMA4_CSDP_DATA_TYPE_8;
+	}
+	else if((temp & 16) || ((col & 0xFF000000) && ((bpp != 32) || (o->format == PIXELFORMAT_8888_ABGR) || (o->format == PIXELFORMAT_8888_ARGB)))) /* COLOR is a 24bit register, with the top byte treated as zero when performing a 32bit constant fill. So only allow promotion to 32bit data type if top byte is zero, or we're in a non-alpha 32bpp mode */
+	{
+		if(!pattern_16bit) /* Halfword alignment but not halfword-size pattern */
+			return false;
+		csdp = DMA4_CSDP_DATA_TYPE_16;
+	}
+	else
+		csdp = DMA4_CSDP_DATA_TYPE_32;
+
+	spin_lock(&lock);
+
+	/* Make sure previous is complete */
+	sdma_sync();
+	/* Start programming registers */
+	sdmachan->color = col;
+	sdmachan->cen = width>>(3+csdp);
+	sdmachan->cfn = (r->top-r->bottom)+1;
+	sdmachan->cdsa = (left>>3)+baseaddr+o->stride*(o->buf_h-1-r->top);
+	sdmachan->cdei = 1;
+	sdmachan->cdfi = (o->stride-(width>>3))+1;
+	sdmachan->csdp = csdp | DMA4_CSDP_SRC_PACKED | DMA4_CSDP_SRC_BURST_EN_64BYTES | DMA4_CSDP_DST_PACKED | DMA4_CSDP_DST_BURST_EN_64BYTES | DMA4_CSDP_WRITE_MODE_LAST_NONPOSTED;
+	sdmachan->ccr = DMA4_CCR_ENABLE | DMA4_CCR_DST_AMODE_DOUBLEINDEX | DMA4_CCR_CONST_FILL_ENABLE;
+#ifdef DEBUGLIB
+	sdma_stats[0]++;
+#endif
+
+	spin_unlock(&lock);
+
+	return true;
+}
+
+#ifdef DEBUGLIB
+void sdma_dump_sdmaregs(void)
+{
+	DUMPREG(sdma,irqstatus[0]);
+	DUMPREG(sdma,irqstatus[1]);
+	DUMPREG(sdma,irqstatus[2]);
+	DUMPREG(sdma,irqstatus[3]);
+	DUMPREG(sdma,irqenable[0]);
+	DUMPREG(sdma,irqenable[1]);
+	DUMPREG(sdma,irqenable[2]);
+	DUMPREG(sdma,irqenable[3]);
+	DUMPREG(sdma,sysstatus);
+	DUMPREG(sdma,ocp_sysconfig);
+	DUMPREG(sdma,gcr);
+	DUMPREG(sdmachan,ccr);
+	DUMPREG(sdmachan,clnk_ctrl);
+	DUMPREG(sdmachan,cicr);
+	DUMPREG(sdmachan,csr);
+	DUMPREG(sdmachan,csdp);
+	DUMPREG(sdmachan,cen);
+	DUMPREG(sdmachan,cfn);
+	DUMPREG(sdmachan,cssa);
+	DUMPREG(sdmachan,cdsa);
+	DUMPREG(sdmachan,csei);
+	DUMPREG(sdmachan,csfi);
+	DUMPREG(sdmachan,cdei);
+	DUMPREG(sdmachan,cdfi);
+	DUMPREG(sdmachan,csac);
+	DUMPREG(sdmachan,cdac);
+	DUMPREG(sdmachan,ccen);
+	DUMPREG(sdmachan,ccfn);
+	DUMPREG(sdmachan,color);
+	printf("%d fills\n%d copy 1\n%d copy 2\n%d copy 3\n",sdma_stats[0],sdma_stats[1],sdma_stats[2],sdma_stats[3]);
+	memset(sdma_stats,0,sizeof(sdma_stats));
+}
+#endif
+@
+
+
+1.7
+log
+@Add memory barriers to GraphicsV acceleration
+Detail:
+  c/sdma - Use a read/write barrier at the start and end of any DMA op, to ensure things are ready for switching screen memory to Normal, non-cacheable
+  c/cmodule, h/globals - Get the DMB_ReadWrite ARMop ptr on startup
+Admin:
+  Tested on BB-xM, PandaBoard
+
+
+Version 0.39. Tagged as 'OMAPVideo-0_39'
+@
+text
+@d34 2
+d38 1
+d44 2
+d48 1
+d53 1
+a53 1
+bool sdma_copyrect(overlaycfg_t *o, copyrect_params_t *r)
+d56 2
+a57 2
+	if((r->src_left >= o->width) || (r->src_bottom >= o->height) || (r->src_left + r->width + 1 > o->width) || (r->src_bottom + r->height + 1 > o->height) || (r->dest_left >= o->width) || (r->dest_bottom >= o->height) || (r->dest_left + r->width + 1 > o->width) || (r->dest_bottom + r->height + 1 > o->height))
+		dprintf(("","Bad copy rect? src %d,%d dest %d,%d size %d,%d overlay %d,%d\n",r->src_left,r->src_bottom,r->dest_left,r->dest_bottom,r->width+1,r->height+1,o->width,o->height));
+d80 2
+a81 2
+	uint32_t src_y = vdu_init + o->stride*((o->height-r->src_bottom)-(r->height+1));
+	uint32_t dest_y = vdu_init + o->stride*((o->height-r->dest_bottom)-(r->height+1));
+d84 3
+d118 1
+d134 3
+d140 1
+a140 1
+bool sdma_fillrect(overlaycfg_t *o, fillrect_params_t *r)
+d144 2
+a145 2
+	if((r->left >= o->width) || (r->top >= o->height) || (r->right >= o->width) || (r->bottom >= o->height) || (r->left > r->right) || (r->bottom > r->top))
+		dprintf(("","Bad fill rect? %d,%d -> %d,%d overlay %d,%d\n",r->left,r->top,r->right,r->bottom,o->width,o->height));
+d185 3
+d194 1
+a194 1
+	sdmachan->cdsa = (left>>3)+vdu_init+o->stride*(o->height-1-r->top);
+d202 3
+@
+
+
+1.6
+log
+@Misc tweaks
+Detail:
+  c/cmodule, c/sdma, h/regs, h/sdma, omap3/c/omap, omap4/c/omap - Move *SDMARegs handling from c/cmodule to c/sdma. Define DUMPREG in h/regs instead of in each individual file that uses it.
+  omap3/c/dispc_plat, omap4/c/dispc_plat - Fix setting of GO bits in dispc_flush_transparency_cfg()
+  omap4/c/dss - Update comment
+  omap4/c/omap - Use designated initialisers for omapformats array to ensure it stays in sync with enum ordering. Strip dead code.
+Admin:
+  Changes supplied by Willi Theiss
+  Tested on BB-xM
+
+
+Version 0.37. Tagged as 'OMAPVideo-0_37'
+@
+text
+@d44 1
+@
+
+
+1.5
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@d28 4
+d38 1
+a38 1
+int sdma_stats[4];
+d187 37
+@
+
+
+1.4
+log
+@Merge of headers with OMAP4Video
+For the most part, this is just adding "_t" suffixes to all the typedefs.
+The OMAP4 controller registers are in "regs4.h" and OMAP3 in "regs3.h", they are selected between with a compile time switch - hence !MkROM becomes !Ms !MkRom3 and !MkRom4.
+OMAP3 version tested & still works, OMAP4 will not work.
+
+Version 0.19. Tagged as 'OMAPVideo-0_19'
+@
+text
+@d29 1
+d42 1
+a42 1
+bool sdma_copyrect(overlay_t *o, copyrect_params_t *r)
+d49 1
+a49 1
+	uint8_t bpp = overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT];
+d122 1
+a122 1
+bool sdma_fillrect(overlay_t *o, fillrect_params_t *r)
+d143 1
+a143 1
+	uint8_t bpp = overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT];
+d150 1
+a150 1
+	bool pattern_8bit = pattern_16bit && ((col ^ (col<<8)) < 0x1000000); /* True if all bytes are identical */ 
+d159 1
+a159 1
+	else if((temp & 16) || ((col & 0xFF000000) && (bpp != 32))) /* COLOR is a 24bit register, with the top byte treated as zero when performing a 32bit constant fill. So only allow promotion to 32bit data type if top byte is zero. However we do allow nonzero top byte in 32bpp modes, under the assumption that it doesn't matter if the byte gets trashed. */
+@
+
+
+1.3
+log
+@Fix black screen on boot issue. Use C99 number types.
+Detail:
+  c/dss - Fixed the cause of the black screens on boot on OMAP3 machines (DM37xx seems fine). It looks like the cause was due to skipping the step where you disable the LCD output before triggering the DSS reset.
+  c/cmodule, c/dispc, c/dss, c/graphicsv, h/globals - Removed code relating to previous attempts to fix the black screen issue
+  c/cmodule, c/dispc, c/dsi, c/dss, c/graphicsv, c/palette, c/regs, c/sdma, c/venc, h/dsi, h/dss, h/globals, h/graphicsv, h/palette, h/regs - Use the C99 number types instead of u32, u16, etc.
+Admin:
+  Tested on rev C2 BB, rev A2 BB-xM
+
+
+Version 0.13. Tagged as 'OMAPVideo-0_13'
+@
+text
+@d41 1
+a41 1
+bool sdma_copyrect(overlay *o,copyrect_params *r)
+d121 1
+a121 1
+bool sdma_fillrect(overlay *o,fillrect_params *r)
+@
+
+
+1.2
+log
+@Fix GraphicsV_Render operations being performed on wrong screen bank
+Detail:
+  c/cmodule, c/graphicsv, c/sdma, h/globals - Fixed GraphicsV_Render code to perform render ops to the VDU screen bank instead of the display bank.
+  Also disabled the slow left-to-right DMA copy code, since the kernels' assembler loop is many times faster.
+Admin:
+  Tested on rev A2 BB-xM. Fixes issue reported on forums:
+  http://www.riscosopen.org/forum/forums/4/topics/691
+
+
+Version 0.12. Tagged as 'OMAPVideo-0_12'
+@
+text
+@d48 4
+a51 4
+	u8 bpp = overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT];
+	u32 src_x = r->src_left*bpp;
+	u32 dest_x = r->dest_left*bpp;
+	u32 width = (r->width+1)*bpp;
+d53 2
+a54 2
+	u32 csdp;
+	u32 temp = src_x | dest_x | width;
+d68 2
+a69 2
+	u32 src_y = vdu_init + o->stride*((o->height-r->src_bottom)-(r->height+1));
+	u32 dest_y = vdu_init + o->stride*((o->height-r->dest_bottom)-(r->height+1));
+d123 1
+a123 1
+	u32 *oraeor = r->oraeor;
+d127 1
+a127 1
+	if(((u32)oraeor) & 63)
+d130 1
+a130 1
+	u32 col = oraeor[1];
+d142 3
+a144 3
+	u8 bpp = overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT];
+	u32 left = r->left*bpp;
+	u32 width = (1+r->right-r->left)*bpp;
+d146 2
+a147 2
+	u32 csdp;
+	u32 temp = left | width;
+@
+
+
+1.1
+log
+@Add initial version of OMAP video driver module
+Detail:
+  All-new OMAP video driver, written as a module in C.
+  Functionality-wise it's basically the same as the original HAL-based driver, except it provides support for GraphicsV_Render via use of the OMAP SDMA controller, and there's currently no support for GraphicsV_IICOp.
+  However under the hood the module is significantly different, to ensure it can be expanded to expose the full feature set of the video controller once the new GraphicsV API is ready.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.01. Tagged as 'OMAPVideo-0_01'
+@
+text
+@d68 2
+a69 2
+	u32 src_y = o->ba + o->stride*((o->height-r->src_bottom)-(r->height+1));
+	u32 dest_y = o->ba + o->stride*((o->height-r->dest_bottom)-(r->height+1));
+d101 4
+d114 1
+d172 1
+a172 1
+	sdmachan->cdsa = (left>>3)+o->ba+o->stride*(o->height-1-r->top);
+@
+

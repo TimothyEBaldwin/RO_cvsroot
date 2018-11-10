@@ -1,0 +1,1170 @@
+head	1.3;
+access;
+symbols
+	HTMLLib-0_04:1.3
+	HTMLLib-0_03:1.3
+	HTMLLib-0_02:1.3
+	HTMLLib-0_01:1.2
+	ahodgkin_207release:1.2
+	ahodgkin_206release:1.2
+	ahodgkin_205release:1.2
+	ahodgkin_204release:1.2
+	ahodgkin_133beta:1.1.2.12
+	kbracey_126:1.1.2.11
+	kbracey_AW97patch:1.1.2.10
+	ahodgkin_AW97:1.1.2.9
+	Web:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2006.03.13.21.10.18;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.02.17.10.42.19;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.09.30.14.13.44;	author kbracey;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	97.09.30.14.13.45;	author kbracey;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	97.10.06.15.17.43;	author ahodgkin;	state Exp;
+branches;
+next	1.1.2.3;
+
+1.1.2.3
+date	97.10.08.12.33.41;	author kbracey;	state Exp;
+branches;
+next	1.1.2.4;
+
+1.1.2.4
+date	97.10.13.10.01.26;	author kbracey;	state Exp;
+branches;
+next	1.1.2.5;
+
+1.1.2.5
+date	97.10.13.10.45.01;	author ahodgkin;	state Exp;
+branches;
+next	1.1.2.6;
+
+1.1.2.6
+date	97.10.13.10.51.48;	author kbracey;	state Exp;
+branches;
+next	1.1.2.7;
+
+1.1.2.7
+date	97.10.13.13.40.13;	author kbracey;	state Exp;
+branches;
+next	1.1.2.8;
+
+1.1.2.8
+date	97.10.14.13.41.02;	author kbracey;	state Exp;
+branches;
+next	1.1.2.9;
+
+1.1.2.9
+date	97.10.14.14.48.30;	author kbracey;	state Exp;
+branches;
+next	1.1.2.10;
+
+1.1.2.10
+date	97.10.22.14.22.00;	author kbracey;	state Exp;
+branches;
+next	1.1.2.11;
+
+1.1.2.11
+date	97.10.27.18.21.44;	author kbracey;	state Exp;
+branches;
+next	1.1.2.12;
+
+1.1.2.12
+date	97.11.14.15.43.16;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  New build variants; minor API tweaks; const/restrict additions.
+Detail:
+  Builds Unicode versions as well as non-Unicode versions now, and
+  exports them. Required by March 2006 era Browse sources. API tweaks
+  including filling in more info fields with border widths. Tightened
+  up use of const/restrict in various interfaces.
+Admin:
+  Tested under Browse, new facilities work as expected. Builds all
+  four variants (non-Unicode/Unicode, application/module) from clean
+  and returns to clean state with !MkClean.
+
+Version 0.02. Tagged as 'HTMLLib-0_02'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <assert.h>
+#include <stdio.h>     /* For NULL etc */
+#include <ctype.h>
+#include "html2_ext.h" /* For the HTML bits */
+#include "tags.h"      /* for PCDATA */
+#include "struct.h"    /* For the structures */
+#include "string.h"    /* For string handling */
+#include "internal.h"  /* predefinitions of functions */
+#include "elementinf.h"
+#ifdef TonyTables
+#include "HTMLTables.h"
+#endif
+
+HStream *__html_stream_object(StreamTokens *st, char **html, Tag *next_tag)
+{
+    HStream     *ret;
+    elementinfo_object *info;
+    char       *ptr;
+
+    if (!st->usingobjects) return NULL;
+
+    ret=HStreamalloc(st, TAG_OBJECT);
+    if (!ret) return NULL;
+
+    info = (elementinfo_object *)__html_malloc(sizeof(elementinfo_object), 1);
+    if (!info) { __html_free(ret, 0); return NULL; }
+
+    ret->info = (elementinfo *) info;
+    ret->style=__html_stream_style(st);
+    ret->type=__html_stream_type(st, next_tag->type, START);
+    ret->indent = __html_stream_indent(st);
+
+    if (ATTR_SET(WIDTH))
+    {
+        ret->cols = ATTR_VAL(WIDTH) | (1<<24);
+        if (st->curattrs[WIDTH].miscflag)
+            ret->cols |= UNITS_PERCENT << 28;
+        else
+            ret->cols |= UNITS_PIXELS << 28;
+    }
+    if (ATTR_SET(HEIGHT))
+    {
+        ret->rows = ATTR_VAL(HEIGHT) | (1<<24);
+        if (st->curattrs[HEIGHT].miscflag)
+            ret->rows |= UNITS_PERCENT << 28;
+        else
+            ret->rows |= UNITS_PIXELS << 28;
+    }
+
+    ret->maxlen  = ATTR_SET(BORDER) ? ATTR_VAL(BORDER) : (ret->anchor ? 2 : 0);
+    info->border = ret->maxlen;
+
+    switch (ATTR_VAL(ALIGN))
+    {
+        case 1: ret->type|=_html_top<<TYPE_ALIGN_SHIFT; break;
+        case 2: ret->type|=_html_middle<<TYPE_ALIGN_SHIFT; break;
+        case 3: ret->type|=_html_bottom<<TYPE_ALIGN_SHIFT; break;
+        case 4: ret->type|=_html_left<<TYPE_ALIGN_SHIFT; break;
+        case 5: ret->type|=_html_right<<TYPE_ALIGN_SHIFT; break;
+        case 6: ret->type|=_html_centre<<TYPE_ALIGN_SHIFT; break;
+        default:ret->type|=_html_none<<TYPE_ALIGN_SHIFT; break;
+    }
+
+    if (st->_stream_anchor!=NULL) {
+        ret->anchor=st->_stream_anchor->href;
+        ret->name=st->_stream_anchor->name;
+        ret->target=st->_stream_anchor->target;
+        #ifdef CUSTOMER_SPECIAL
+        ret->onclick=st->_stream_anchor->onclick;
+        #endif
+    }
+
+    if (ATTR_SET(NAME))
+        ret->name=ATTR_STR(NAME);
+
+    info->declare  = ATTR_SET(DECLARE);
+    info->classid  = ATTR_STR(CLASSID);
+    if (ATTR_SET(CODEBASE))
+        info->codebase = ATTR_STR(CODEBASE);
+    //else
+    //    info->codebase = st->url;
+    info->data     = ATTR_STR(DATA);
+    info->type     = ATTR_STR(TYPE);
+    if (next_tag->tag_no == TAG_APPLET)
+        info->codetype = "application/java-vm";
+    else
+        info->codetype = ATTR_STR(CODETYPE);
+    info->archive  = ATTR_STR(ARCHIVE);
+    info->standby  = ATTR_STR(STANDBY);
+    info->hspace   = ATTR_VAL(HSPACE);
+    info->vspace   = ATTR_VAL(VSPACE);
+    info->usemap   = ATTR_STR(USEMAP);
+    info->shapes   = ATTR_SET(SHAPES);
+    info->tabindex = ATTR_VAL(TABINDEX);
+
+    info->parent   = st->object;
+    info->maps     = st->maps;
+
+    if (info->usemap || info->shapes)
+        ret->type |= TYPE_ISCLIENTMAP;
+
+    st->object = ret;
+
+    /*
+     * This routine is called with the understanding that it will update
+     * the HTML pointer. Move it to past the next > or the end of the input
+     * whichever is sooner. In theory it should be the former.
+     */
+    ptr=*html + 1;
+    while((*ptr != '\0') && (*ptr != '>') && (*ptr != '<')) ptr++;
+    if (*ptr=='>') ptr++;
+    *html=ptr;
+
+    /*
+     * Hack to stop incomplete objects at the top level appearing
+     */
+    return info->parent ? ret: NULL;
+}
+
+void __html_stream_end_object(StreamTokens *st)
+{
+    if (st->object)
+    {
+        if (!st->object->info->object.parent)
+            st->special_return = st->object;
+
+        st->object = st->object->info->object.parent;
+    }
+}
+
+HStream *__html_stream_param(StreamTokens *st, char **html, Tag *next_tag)
+{
+    HStream    *ret;
+    char       *ptr;
+
+    NOT_USED(next_tag);
+
+    if (!st->usingobjects) return NULL;
+
+    ret=__html_construct_param(st, ATTR_STR(NAME), ATTR_STR(TYPE),
+                                   ATTR_STR(VALUE),
+                                   (paramtype) ATTR_VAL(VALUETYPE));
+
+    /*
+     * This routine is called with the understanding that it will update
+     * the HTML pointer. Move it to past the next > or the end of the input
+     * whichever is sooner. In theory it should be the former.
+     */
+    ptr=*html + 1;
+    while((*ptr != '\0') && (*ptr != '>') && (*ptr != '<')) ptr++;
+    if (*ptr=='>') ptr++;
+    *html=ptr;
+
+    return ret;
+}
+
+HStream *__html_construct_param(StreamTokens *st, const char *name, const char *type,
+                                const char *value, paramtype valuetype)
+{
+    HStream     *ret;
+    elementinfo_param *info;
+
+    ret=HStreamalloc(st, TAG_PARAM);
+
+    if (ret)
+    {
+        info = (elementinfo_param *)__html_malloc(sizeof(elementinfo_param), 1);
+        if (!info) { __html_free(ret, 0); return NULL; }
+
+        ret->info = (elementinfo *) info;
+        ret->style=__html_stream_style(st);
+        ret->type=__html_stream_type(st, TYPE_BODY, START);
+        ret->indent = __html_stream_indent(st);
+
+        info->name      = name;
+        info->type      = type;
+        info->value     = value;
+        info->valuetype = valuetype;
+    }
+
+    return ret;
+}
+
+table_prev_info __html_find_current_object(StreamTokens *st, HStream *current)
+{
+    table_prev_info realcurrent;
+
+    if (!st->object)
+    {
+        realcurrent.prev = current;
+        realcurrent.prevnextptr = &current->next;
+    }
+    else
+    {
+        if (st->object->info->object.hstream)
+        {
+            HStream *h = st->object->info->object.hstream;
+
+            while (h->next) h = h->next;
+
+            realcurrent.prev = h;
+            realcurrent.prevnextptr = &h->next;
+        }
+        else
+        {
+            realcurrent.prev = st->object->info->object.parent;
+            realcurrent.prevnextptr = &st->object->info->object.hstream;
+        }
+    }
+    return realcurrent;
+}
+
+/*
+ * Given an OBJECT token, insert its alternative HTML after it.
+ * Returns a pointer to the token after the OBJECT, after any
+ * insertion.
+ */
+HStream *__html_replace_object(HStream *t)
+{
+    HStream *head, *tail, *next;
+
+    if (t->tagno != TAG_OBJECT)
+        return t->next;
+
+    next = t->next;
+
+    head = t->info->object.hstream;
+
+    if (!head)
+        return next;
+
+    for (tail=head; tail->next; )
+        tail = tail->next;
+
+    t->next = head;
+    head->prev = t;
+
+    tail->next = next;
+    if (next)
+        next->prev = tail;
+
+    t->info->object.hstream = NULL;
+
+    return head;
+}
+
+/*
+ * The loathsome EMBED element. Thankyou, Netscape.
+ * We create an OBJECT token, and fill it with PARAM tokens according
+ * to the extra elements.
+ */
+HStream *__html_stream_embed(StreamTokens *st, char **html, Tag *next_tag)
+{
+    HStream     *ret;
+    elementinfo_object *info;
+    char       *ptr;
+
+    if (!st->usingobjects) return NULL;
+
+    ret=HStreamalloc(st, TAG_OBJECT);
+    if (!ret) return NULL;
+
+    info = (elementinfo_object *)__html_malloc(sizeof(elementinfo_object), 1);
+    if (!info) { __html_free(ret, 0); return NULL; }
+
+    ret->info = (elementinfo *) info;
+    ret->style=__html_stream_style(st);
+    ret->type=__html_stream_type(st, next_tag->type, START);
+    ret->indent = __html_stream_indent(st);
+
+    if (ATTR_SET(WIDTH))
+    {
+        ret->cols = ATTR_VAL(WIDTH) | (1<<24);
+        if (st->curattrs[WIDTH].miscflag)
+            ret->cols |= UNITS_PERCENT << 28;
+        else
+            ret->cols |= UNITS_PIXELS << 28;
+    }
+    if (ATTR_SET(HEIGHT))
+    {
+        ret->rows = ATTR_VAL(HEIGHT) | (1<<24);
+        if (st->curattrs[HEIGHT].miscflag)
+            ret->rows |= UNITS_PERCENT << 28;
+        else
+            ret->rows |= UNITS_PIXELS << 28;
+    }
+
+    ret->maxlen  = ATTR_SET(BORDER) ? ATTR_VAL(BORDER) : (ret->anchor ? 2 : 0);
+    info->border = ret->maxlen;
+
+    switch (ATTR_VAL(ALIGN))
+    {
+        case 1: ret->type|=_html_top<<TYPE_ALIGN_SHIFT; break;
+        case 2: ret->type|=_html_middle<<TYPE_ALIGN_SHIFT; break;
+        case 3: ret->type|=_html_bottom<<TYPE_ALIGN_SHIFT; break;
+        case 4: ret->type|=_html_left<<TYPE_ALIGN_SHIFT; break;
+        case 5: ret->type|=_html_right<<TYPE_ALIGN_SHIFT; break;
+        case 6: ret->type|=_html_centre<<TYPE_ALIGN_SHIFT; break;
+        default:ret->type|=_html_none<<TYPE_ALIGN_SHIFT; break;
+    }
+
+    if (st->_stream_anchor!=NULL) {
+        ret->anchor=st->_stream_anchor->href;
+        ret->name=st->_stream_anchor->name;
+        ret->target=st->_stream_anchor->target;
+        #ifdef CUSTOMER_SPECIAL
+        ret->onclick=st->_stream_anchor->onclick;
+        #endif
+    }
+
+    info->data     = ATTR_STR(DATA);
+    info->parent   = st->object;
+
+    __html_process_embed_attributes(st, next_tag, *html, ret);
+
+    /*
+     * This routine is called with the understanding that it will update
+     * the HTML pointer. Move it to past the next > or the end of the input
+     * whichever is sooner. In theory it should be the former.
+     */
+    ptr=*html + 1;
+    while((*ptr != '\0') && (*ptr != '>') && (*ptr != '<')) ptr++;
+    if (*ptr=='>') ptr++;
+    *html=ptr;
+
+    /*
+     * Hack to stop incomplete objects at the top level appearing
+     */
+    return ret;
+
+}
+
+HStream  *__html_find_map(MapStream *map, const char *name)
+{
+    if (*name == '#')
+        name++;
+
+    for (map = map->next; map; map = map->next)
+    {
+        const char *mapname = map->name;
+        if (*mapname == '#')
+            mapname++;
+
+        if (stricmp(mapname, name) == 0)
+            return map->stream;
+    }
+
+    return NULL;
+}
+@
+
+
+1.2
+log
+@Web branch merged
+@
+text
+@d64 2
+a65 1
+    ret->maxlen = ATTR_SET(BORDER) ? ATTR_VAL(BORDER) : 2;
+d302 2
+a303 1
+    ret->maxlen = ATTR_SET(BORDER) ? ATTR_VAL(BORDER) : 2;
+@
+
+
+1.1
+log
+@file object was initially added on branch Web.
+@
+text
+@d1 361
+@
+
+
+1.1.2.1
+log
+@Turned off CUSTOMER_SPECIAL.
+Changed encoding tables to use FFFF as a null value instead of FFFD.
+Added OBJECT support (more testing required - PARAM not yet done).
+Added AREA support (commented out - MAP not yet done). They come out
+looking like <A></A> elements.
+Souped up mapping to Latin-1 (added lossy tables for Latin Extended
+Additional, CJK Punctuation and Fullwidth forms).
+Added support for <H1 align=...>
+Stripped some superfluous whitespace caused by linefeeds.
+Fixed missing linebreak in "<DT>One<DT>Two" by turning the second DT into
+a BR.
+Removed now unnecessary free(malloc(16384)) bodge.
+Put in CJK code even if UNIFONT not defined (hey - why not?).
+Added code to take direct pointer to table rather than loading it if
+it's in ResourceFS.
+Added support for encoding "x-acorn-latin1".
+Ensured correct handling of OPTIONs when UNIFONT not defined.
+@
+text
+@a0 110
+/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <assert.h>
+#include <stdio.h>     /* For NULL etc */
+#include <ctype.h>
+#include "html2_ext.h" /* For the HTML bits */
+#include "tags.h"      /* for PCDATA */
+#include "struct.h"    /* For the structures */
+#include "string.h"    /* For string handling */
+#include "internal.h"  /* predefinitions of functions */
+#include "elementinf.h"
+#ifdef TonyTables
+#include "HTMLTables.h"
+#endif
+
+HStream *__html_stream_object(StreamTokens *st, char **html, Tag *next_tag)
+{
+    HStream     *ret;
+    elementinfo_object *info;
+    char       *ptr;
+
+    ret=HStreamalloc(TAG_OBJECT);
+
+    if (ret)
+    {
+        info = (elementinfo_object *)__html_malloc(sizeof(elementinfo_object), 1);
+        if (!info) { __html_free(ret, 0); return NULL; }
+
+        ret->info = (elementinfo *) info;
+        ret->style=__html_stream_style(st);
+        ret->type=__html_stream_type(st, next_tag->type, START);
+        ret->indent = __html_stream_indent(st);
+
+        ret->rows = ATTR_VAL(HEIGHT);
+        ret->cols = ATTR_VAL(WIDTH);
+
+        info->declare  = ATTR_SET(DECLARE);
+        info->shapes   = ATTR_SET(SHAPES);
+        info->classid  = ATTR_STR(CLASSID);
+        info->codebase = ATTR_STR(CODEBASE);
+        info->data     = ATTR_STR(DATA);
+        info->type     = ATTR_STR(TYPE);
+        info->codetype = ATTR_STR(CODETYPE);
+        info->archive  = ATTR_STR(ARCHIVE);
+        info->tabindex = ATTR_VAL(TABINDEX);
+
+        info->parent   = st->object;
+
+        st->object = ret;
+    }
+
+    /*
+     * This routine is called with the understanding that it will update
+     * the HTML pointer. Move it to past the next > or the end of the input
+     * whichever is sooner. In theory it should be the former.
+     */
+    ptr=*html + 1;
+    while((*ptr != '\0') && (*ptr != '>') && (*ptr != '<')) ptr++;
+    if (*ptr=='>') ptr++;
+    *html=ptr;
+
+    return ret;
+}
+
+void __html_stream_end_object(StreamTokens *st)
+{
+    if (st->object)
+        st->object = st->object->info->object.parent;
+}
+
+table_prev_info __html_find_current_object(StreamTokens *st, HStream *current)
+{
+    table_prev_info realcurrent;
+
+    if (!st->object)
+    {
+        realcurrent.prev = current;
+        realcurrent.prevnextptr = &current->next;
+    }
+    else
+    {
+        if (st->object->info->object.hstream)
+        {
+            HStream *h = st->object->info->object.hstream;
+
+            while (h->next) h = h->next;
+
+            realcurrent.prev = h;
+            realcurrent.prevnextptr = &h->next;
+        }
+        else
+        {
+            realcurrent.prev = st->object->info->object.parent;
+            realcurrent.prevnextptr = &st->object->info->object.hstream;
+        }
+    }
+    return realcurrent;
+}
+@
+
+
+1.1.2.2
+log
+@Some pages could be parsed in the context of a previous table - fixed.
+Made the 'throw away very tall images' code only do it for images < 6
+pixels wide.
+@
+text
+@d34 1
+a34 1
+    ret=HStreamalloc(st, TAG_OBJECT);
+@
+
+
+1.1.2.3
+log
+@Implemented ordered lists.
+Implemented <Q> ... </Q>.
+Caused a linebreak after </DD>.
+Finished implementing attributes for <OBJECT>.
+Stopped HTML after a </FRAMESET> leaking through.
+Ensured that FRAME and FRAMESET tokens aren't passed up if not using frames.
+
+Removed lots of unnecessary #include "utf8.h" lines from encoding files.
+Ensured unsigned constants used in UTF-8 code.
+Added UTF8_next and UTF8_prev functions.
+@
+text
+@d46 2
+a47 26
+        ret->rows   = ATTR_VAL(HEIGHT);
+        ret->cols   = ATTR_VAL(WIDTH);
+        ret->maxlen = ATTR_SET(BORDER) ? ATTR_VAL(BORDER) : 2;
+
+        switch (ATTR_VAL(ALIGN))
+        {
+            case 1: ret->type|=_html_top<<TYPE_ALIGN_SHIFT; break;
+            case 2: ret->type|=_html_middle<<TYPE_ALIGN_SHIFT; break;
+            case 3: ret->type|=_html_bottom<<TYPE_ALIGN_SHIFT; break;
+            case 4: ret->type|=_html_left<<TYPE_ALIGN_SHIFT; break;
+            case 5: ret->type|=_html_right<<TYPE_ALIGN_SHIFT; break;
+            case 6: ret->type|=_html_centre<<TYPE_ALIGN_SHIFT; break;
+            default:ret->type|=_html_none<<TYPE_ALIGN_SHIFT; break;
+        }
+
+        if (st->_stream_anchor!=NULL) {
+            ret->anchor=st->_stream_anchor->href;
+            ret->name=st->_stream_anchor->name;
+            ret->target=st->_stream_anchor->target;
+            #ifdef CUSTOMER_SPECIAL
+            ret->onclick=st->_stream_anchor->onclick;
+            #endif
+        }
+
+        if (ATTR_SET(NAME))
+            ret->name=ATTR_STR(NAME);
+d50 1
+a56 5
+        info->standby  = ATTR_STR(STANDBY);
+        info->hspace   = ATTR_VAL(HSPACE);
+        info->vspace   = ATTR_VAL(VSPACE);
+        info->usemap   = ATTR_STR(USEMAP);
+        info->shapes   = ATTR_SET(SHAPES);
+@
+
+
+1.1.2.4
+log
+@PARAM and APPLET, take 1.
+@
+text
+@d75 1
+a75 4
+        if (ATTR_SET(CODEBASE))
+            info->codebase = ATTR_STR(CODEBASE);
+        else
+            info->codebase = st->url;
+a108 46
+}
+
+HStream *__html_stream_param(StreamTokens *st, char **html, Tag *next_tag)
+{
+    HStream     *ret;
+    elementinfo_param *info;
+    char       *ptr;
+
+    ret=HStreamalloc(st, TAG_PARAM);
+
+    if (ret)
+    {
+        info = (elementinfo_param *)__html_malloc(sizeof(elementinfo_param), 1);
+        if (!info) { __html_free(ret, 0); return NULL; }
+
+        ret->info = (elementinfo *) info;
+        ret->style=__html_stream_style(st);
+        ret->type=__html_stream_type(st, next_tag->type, START);
+        ret->indent = __html_stream_indent(st);
+
+        info->name      = ATTR_STR(NAME);
+        info->type      = ATTR_STR(TYPE);
+        info->value     = ATTR_STR(VALUE);
+        info->valuetype = (paramtype) ATTR_VAL(VALUETYPE);
+    }
+
+    /*
+     * This routine is called with the understanding that it will update
+     * the HTML pointer. Move it to past the next > or the end of the input
+     * whichever is sooner. In theory it should be the former.
+     */
+    ptr=*html + 1;
+    while((*ptr != '\0') && (*ptr != '>') && (*ptr != '<')) ptr++;
+    if (*ptr=='>') ptr++;
+    *html=ptr;
+
+    return ret;
+}
+
+HStream *__html_stream_applet(StreamTokens *st, char **html, Tag *next_tag)
+{
+    HStream *ret = __html_stream_object(st, html, next_tag);
+
+    ret->info->object.codetype = "application/java-vm";
+
+    return ret;
+@
+
+
+1.1.2.5
+log
+@APPLET and PARAM take 2
+@
+text
+@d77 2
+@
+
+
+1.1.2.6
+log
+@Added % handling to OBJECT width and height
+@
+text
+@d46 2
+a47 17
+        if (ATTR_SET(WIDTH))
+        {
+            return_val->cols = ATTR_VAL(WIDTH) | (1<<24);
+            if (st->curattrs[WIDTH].miscflag)
+                return_val->cols |= UNITS_PERCENT << 28;
+            else
+                return_val->cols |= UNITS_PIXELS << 28;
+        }
+        if (ATTR_SET(HEIGHT))
+        {
+            return_val->rows = ATTR_VAL(HEIGHT) | (1<<24);
+            if (st->curattrs[HEIGHT].miscflag)
+                return_val->rows |= UNITS_PERCENT << 28;
+            else
+                return_val->rows |= UNITS_PIXELS << 28;
+        }
+
+@
+
+
+1.1.2.7
+log
+@Fixed problem with file:/ URLs
+@
+text
+@d48 1
+a48 1
+            ret->cols = ATTR_VAL(WIDTH) | (1<<24);
+d50 1
+a50 1
+                ret->cols |= UNITS_PERCENT << 28;
+d52 1
+a52 1
+                ret->cols |= UNITS_PIXELS << 28;
+d56 1
+a56 1
+            ret->rows = ATTR_VAL(HEIGHT) | (1<<24);
+d58 1
+a58 1
+                ret->rows |= UNITS_PERCENT << 28;
+d60 1
+a60 1
+                ret->rows |= UNITS_PIXELS << 28;
+a91 2
+        //else
+        //    info->codebase = st->url;
+@
+
+
+1.1.2.8
+log
+@Fixed links to "./".
+Ensured incomplete OBJECTs not returned (I hope).
+Stopped newlines being stripped inside PRE.
+Made </P> turn off any paragraph alignment.
+Added HtmlReplaceOBJECT call.
+@
+text
+@a34 1
+    if (!ret) return NULL;
+d36 4
+a39 2
+    info = (elementinfo_object *)__html_malloc(sizeof(elementinfo_object), 1);
+    if (!info) { __html_free(ret, 0); return NULL; }
+d41 4
+a44 4
+    ret->info = (elementinfo *) info;
+    ret->style=__html_stream_style(st);
+    ret->type=__html_stream_type(st, next_tag->type, START);
+    ret->indent = __html_stream_indent(st);
+d46 16
+a61 16
+    if (ATTR_SET(WIDTH))
+    {
+        ret->cols = ATTR_VAL(WIDTH) | (1<<24);
+        if (st->curattrs[WIDTH].miscflag)
+            ret->cols |= UNITS_PERCENT << 28;
+        else
+            ret->cols |= UNITS_PIXELS << 28;
+    }
+    if (ATTR_SET(HEIGHT))
+    {
+        ret->rows = ATTR_VAL(HEIGHT) | (1<<24);
+        if (st->curattrs[HEIGHT].miscflag)
+            ret->rows |= UNITS_PERCENT << 28;
+        else
+            ret->rows |= UNITS_PIXELS << 28;
+    }
+d63 1
+a63 1
+    ret->maxlen = ATTR_SET(BORDER) ? ATTR_VAL(BORDER) : 2;
+d65 10
+a74 10
+    switch (ATTR_VAL(ALIGN))
+    {
+        case 1: ret->type|=_html_top<<TYPE_ALIGN_SHIFT; break;
+        case 2: ret->type|=_html_middle<<TYPE_ALIGN_SHIFT; break;
+        case 3: ret->type|=_html_bottom<<TYPE_ALIGN_SHIFT; break;
+        case 4: ret->type|=_html_left<<TYPE_ALIGN_SHIFT; break;
+        case 5: ret->type|=_html_right<<TYPE_ALIGN_SHIFT; break;
+        case 6: ret->type|=_html_centre<<TYPE_ALIGN_SHIFT; break;
+        default:ret->type|=_html_none<<TYPE_ALIGN_SHIFT; break;
+    }
+d76 8
+a83 8
+    if (st->_stream_anchor!=NULL) {
+        ret->anchor=st->_stream_anchor->href;
+        ret->name=st->_stream_anchor->name;
+        ret->target=st->_stream_anchor->target;
+        #ifdef CUSTOMER_SPECIAL
+        ret->onclick=st->_stream_anchor->onclick;
+        #endif
+    }
+d85 2
+a86 2
+    if (ATTR_SET(NAME))
+        ret->name=ATTR_STR(NAME);
+d88 16
+a103 16
+    info->declare  = ATTR_SET(DECLARE);
+    info->classid  = ATTR_STR(CLASSID);
+    if (ATTR_SET(CODEBASE))
+        info->codebase = ATTR_STR(CODEBASE);
+    //else
+    //    info->codebase = st->url;
+    info->data     = ATTR_STR(DATA);
+    info->type     = ATTR_STR(TYPE);
+    info->codetype = ATTR_STR(CODETYPE);
+    info->archive  = ATTR_STR(ARCHIVE);
+    info->standby  = ATTR_STR(STANDBY);
+    info->hspace   = ATTR_VAL(HSPACE);
+    info->vspace   = ATTR_VAL(VSPACE);
+    info->usemap   = ATTR_STR(USEMAP);
+    info->shapes   = ATTR_SET(SHAPES);
+    info->tabindex = ATTR_VAL(TABINDEX);
+d105 1
+a105 1
+    info->parent   = st->object;
+d107 2
+a108 1
+    st->object = ret;
+d120 1
+a120 4
+    /*
+     * Hack to stop incomplete objects at the top level appearing
+     */
+    return info->parent ? ret: NULL;
+a125 4
+    {
+        if (!st->object->info->object.parent)
+            st->special_return = st->object;
+
+a126 1
+    }
+a201 34
+}
+
+/*
+ * Given an OBJECT token, insert its alternative HTML after it.
+ * Returns a pointer to the token after the OBJECT, after any
+ * insertion.
+ */
+HStream *__html_replace_object(HStream *t)
+{
+    HStream *head, *tail, *next;
+
+    if (t->tagno != TAG_OBJECT)
+        return t->next;
+
+    next = t->next;
+
+    head = t->info->object.hstream;
+
+    if (!head)
+        return next;
+
+    for (tail=head; tail->next; )
+        tail = tail->next;
+
+    t->next = head;
+    head->prev = t;
+
+    tail->next = next;
+    if (next)
+        next->prev = tail;
+
+    t->info->object.hstream = NULL;
+
+    return head;
+@
+
+
+1.1.2.9
+log
+@Previous check-in broke APPLET and OBJECTs inside tables.
+Also, /APPLET didn't work (thought I'd fixed this?)
+Default border for images now 0 if not a link.
+@
+text
+@d95 1
+a95 4
+    if (next_tag->tag_no == TAG_APPLET)
+        info->codetype = "application/java-vm";
+    else
+        info->codetype = ATTR_STR(CODETYPE);
+d168 9
+@
+
+
+1.1.2.10
+log
+@Added EMBED support (creating lookalike OBJECTs).
+Removed startup table initialisation, because latest compiler can do it.
+@
+text
+@a139 25
+    HStream    *ret;
+    char       *ptr;
+
+    NOT_USED(next_tag);
+
+    ret=__html_construct_param(st, ATTR_STR(NAME), ATTR_STR(TYPE),
+                                   ATTR_STR(VALUE),
+                                   (paramtype) ATTR_VAL(VALUETYPE));
+
+    /*
+     * This routine is called with the understanding that it will update
+     * the HTML pointer. Move it to past the next > or the end of the input
+     * whichever is sooner. In theory it should be the former.
+     */
+    ptr=*html + 1;
+    while((*ptr != '\0') && (*ptr != '>') && (*ptr != '<')) ptr++;
+    if (*ptr=='>') ptr++;
+    *html=ptr;
+
+    return ret;
+}
+
+HStream *__html_construct_param(StreamTokens *st, const char *name, const char *type,
+                                const char *value, paramtype valuetype)
+{
+d142 1
+d153 1
+a153 1
+        ret->type=__html_stream_type(st, TYPE_BODY, START);
+d156 4
+a159 4
+        info->name      = name;
+        info->type      = type;
+        info->value     = value;
+        info->valuetype = valuetype;
+d162 10
+a235 80
+}
+
+/*
+ * The loathsome EMBED element. Thankyou, Netscape.
+ * We create an OBJECT token, and fill it with PARAM tokens according
+ * to the extra elements.
+ */
+HStream *__html_stream_embed(StreamTokens *st, char **html, Tag *next_tag)
+{
+    HStream     *ret;
+    elementinfo_object *info;
+    char       *ptr;
+
+    ret=HStreamalloc(st, TAG_OBJECT);
+    if (!ret) return NULL;
+
+    info = (elementinfo_object *)__html_malloc(sizeof(elementinfo_object), 1);
+    if (!info) { __html_free(ret, 0); return NULL; }
+
+    ret->info = (elementinfo *) info;
+    ret->style=__html_stream_style(st);
+    ret->type=__html_stream_type(st, next_tag->type, START);
+    ret->indent = __html_stream_indent(st);
+
+    if (ATTR_SET(WIDTH))
+    {
+        ret->cols = ATTR_VAL(WIDTH) | (1<<24);
+        if (st->curattrs[WIDTH].miscflag)
+            ret->cols |= UNITS_PERCENT << 28;
+        else
+            ret->cols |= UNITS_PIXELS << 28;
+    }
+    if (ATTR_SET(HEIGHT))
+    {
+        ret->rows = ATTR_VAL(HEIGHT) | (1<<24);
+        if (st->curattrs[HEIGHT].miscflag)
+            ret->rows |= UNITS_PERCENT << 28;
+        else
+            ret->rows |= UNITS_PIXELS << 28;
+    }
+
+    ret->maxlen = ATTR_SET(BORDER) ? ATTR_VAL(BORDER) : 2;
+
+    switch (ATTR_VAL(ALIGN))
+    {
+        case 1: ret->type|=_html_top<<TYPE_ALIGN_SHIFT; break;
+        case 2: ret->type|=_html_middle<<TYPE_ALIGN_SHIFT; break;
+        case 3: ret->type|=_html_bottom<<TYPE_ALIGN_SHIFT; break;
+        case 4: ret->type|=_html_left<<TYPE_ALIGN_SHIFT; break;
+        case 5: ret->type|=_html_right<<TYPE_ALIGN_SHIFT; break;
+        case 6: ret->type|=_html_centre<<TYPE_ALIGN_SHIFT; break;
+        default:ret->type|=_html_none<<TYPE_ALIGN_SHIFT; break;
+    }
+
+    if (st->_stream_anchor!=NULL) {
+        ret->anchor=st->_stream_anchor->href;
+        ret->name=st->_stream_anchor->name;
+        ret->target=st->_stream_anchor->target;
+        #ifdef CUSTOMER_SPECIAL
+        ret->onclick=st->_stream_anchor->onclick;
+        #endif
+    }
+
+    info->data     = ATTR_STR(DATA);
+    info->parent   = st->object;
+
+    __html_process_embed_attributes(st, next_tag, *html, ret);
+
+    /*
+     * This routine is called with the understanding that it will update
+     * the HTML pointer. Move it to past the next > or the end of the input
+     * whichever is sooner. In theory it should be the former.
+     */
+    ptr=*html + 1;
+    while((*ptr != '\0') && (*ptr != '>') && (*ptr != '<')) ptr++;
+    if (*ptr=='>') ptr++;
+    *html=ptr;
+
+    return ret;
+
+@
+
+
+1.1.2.11
+log
+@Added objects flag to HtmlParse
+@
+text
+@a33 2
+    if (!st->usingobjects) return NULL;
+
+a144 2
+    if (!st->usingobjects) return NULL;
+
+a262 2
+    if (!st->usingobjects) return NULL;
+
+a327 3
+    /*
+     * Hack to stop incomplete objects at the top level appearing
+     */
+@
+
+
+1.1.2.12
+log
+@MAP and AREA handling - first attempt
+@
+text
+@a109 4
+    info->maps     = st->maps;
+
+    if (info->usemap || info->shapes)
+        ret->type |= TYPE_ISCLIENTMAP;
+a338 18
+}
+
+HStream  *__html_find_map(MapStream *map, const char *name)
+{
+    if (*name == '#')
+        name++;
+
+    for (map = map->next; map; map = map->next)
+    {
+        const char *mapname = map->name;
+        if (*mapname == '#')
+            mapname++;
+
+        if (stricmp(mapname, name) == 0)
+            return map->stream;
+    }
+
+    return NULL;
+@

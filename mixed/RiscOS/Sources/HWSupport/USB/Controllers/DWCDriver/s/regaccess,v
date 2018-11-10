@@ -1,0 +1,415 @@
+head	1.5;
+access;
+symbols
+	DWCDriver-0_35:1.5
+	DWCDriver-0_34:1.5
+	DWCDriver-0_33:1.5
+	DWCDriver-0_32:1.5
+	DWCDriver-0_31:1.5
+	DWCDriver-0_30:1.5
+	DWCDriver-0_29:1.5
+	DWCDriver-0_28:1.5
+	DWCDriver-0_27:1.4
+	DWCDriver-0_26:1.4
+	DWCDriver-0_24-1:1.4
+	DWCDriver-0_25:1.4
+	DWCDriver-0_24:1.4
+	DWCDriver-0_23:1.4
+	DWCDriver-0_22:1.4
+	DWCDriver-0_21:1.4
+	DWCDriver-0_20:1.3
+	DWCDriver-0_19:1.3
+	DWCDriver-0_18:1.3
+	DWCDriver-0_17:1.3
+	DWCDriver-0_16:1.3
+	DWCDriver-0_15:1.3
+	DWCDriver-0_14:1.2
+	DWCDriver-0_13:1.2
+	DWCDriver-0_12:1.2
+	DWCDriver-0_11:1.2
+	DWCDriver-0_10:1.1
+	DWCDriver-0_09:1.1
+	DWCDriver-0_08:1.1
+	DWCDriver-0_07:1.1
+	DWCDriver-0_06:1.1
+	DWCDriver-0_05:1.1
+	DWCDriver-0_04:1.1
+	DWCDriver-0_03:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2016.06.15.19.37.04;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	o8vHBAzzm6eg8Baz;
+
+1.4
+date	2015.10.07.21.00.19;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	qck3WWYzKpNMGdEy;
+
+1.3
+date	2014.06.19.21.31.18;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	Q5Tr8KszgORb8bFx;
+
+1.2
+date	2014.04.26.18.18.25;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	3PdzN60cJJ3zNdyx;
+
+1.1
+date	2012.06.15.00.09.15;	author jlee;	state Exp;
+branches;
+next	;
+commitid	5whdJrlaDMQcDJ8w;
+
+
+desc
+@@
+
+
+1.5
+log
+@Issue CLREX on return from the FIQ handler
+Detail:
+  s/regaccess - Issue CLREX on return from the FIQ handler, just in case we start using exclusive access instructions from within the handler. Update PSR manipulation code to use CPS in preference to MSR.
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.28. Tagged as 'DWCDriver-0_28'
+@
+text
+@; 
+; Copyright (c) 2012, RISC OS Open Ltd
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+; 
+
+        GET     Hdr:ListOpts
+        GET     Hdr:CPU.Arch
+        GET     Hdr:CPU.Generic32
+        GET     Hdr:Macros
+        GET     Hdr:System
+
+        AREA    |C$$code|, CODE, READONLY
+
+        EXPORT  DWC_READ_REG32
+        EXPORT  DWC_READ_REG64
+        EXPORT  DWC_WRITE_REG32
+        EXPORT  DWC_WRITE_REG64
+        EXPORT  DWC_MODIFY_REG32
+
+        EXPORT  mb
+        EXPORT  local_fiq_disable
+        EXPORT  local_fiq_enable
+        EXPORT  |_local_irq_save|
+        EXPORT  local_irq_restore
+
+        EXPORT  install_fiq
+        EXPORT  halcall
+
+        MACRO
+        myDSB
+     [ NoARMv6
+        ! 1, "Don't know what to do on pre-ARMv6!"
+     |
+      [ NoARMv7
+        ; pre-ARMv7, use legacy MCR op
+        MCR     p15,0,a1,c7,c10,4
+      |
+        ; ARMv7+, use DSB instruction
+        DSB
+      ]
+     ]
+        MEND
+        
+; uint32_t DWC_READ_REG32(uint32_t volatile *reg)
+DWC_READ_REG32
+        LDR     a1, [a1]
+        myDSB
+        MOV     pc, lr
+        
+; uint64_t DWC_READ_REG64(uint64_t volatile *reg)
+DWC_READ_REG64
+        LDMIA   a1, {a1-a2}
+        myDSB
+        MOV     pc, lr
+
+; void DWC_WRITE_REG32(uint32_t volatile *reg, uint32_t value)
+DWC_WRITE_REG32
+        myDSB
+        STR     a2, [a1]
+        MOV     pc, lr
+
+; void DWC_WRITE_REG64(uint64_t volatile *reg, uint64_t value)
+DWC_WRITE_REG64
+        myDSB
+        STMIA   a1, {a2-a3}
+        MOV     pc, lr
+
+; void DWC_MODIFY_REG32(uint32_t volatile *reg, uint32_t clear_mask, uint32_t set_mask)
+DWC_MODIFY_REG32
+        MRS     ip, CPSR
+        CPSID   if
+        LDR     a4, [a1]
+        myDSB
+        BIC     a4, a4, a2
+        ORR     a4, a4, a3
+        STR     a4, [a1]
+        MSR     CPSR_c, ip
+        MOV     pc, lr
+
+; void mb(void)
+mb
+        myDSB
+        MOV     pc, lr
+
+; void local_fiq_disable(void)
+local_fiq_disable
+        CPSID   f
+        MOV     pc, lr
+
+; void local_fiq_enable(void)
+local_fiq_enable
+        CPSIE   f
+        MOV     pc, lr
+
+; int _local_irq_save(void)
+|_local_irq_save|
+        MRS     a1, CPSR
+        CPSID   i
+        MOV     pc, lr
+
+; void local_irq_restore(int)
+; Restores both the IRQ and FIQ state
+local_irq_restore
+        MSR     CPSR_c, a1
+        MOV     pc, lr 
+
+; void install_fiq(uint32_t *stack,uint32_t stacksize,void *param1,int param2,void *func)
+; Install our FIQ handler on the FIQ vector
+install_fiq     ROUT
+        STMFD   sp!, {a1-a2,v1-v3,lr}
+        MOV     v1, a3
+        MOV     v2, a4
+        LDR     v3, [sp, #6*4]
+        MOV     a1, #0
+        SWI     XOS_PlatformFeatures
+        TST     a1, #1<<20
+        LDRNE   lr, =&FFFF001C
+        MOVEQ   lr, #&1C
+        ADR     a1, FIQcode
+        ADR     a2, FIQcode_end
+        MOV     a3, lr
+10
+        LDR     a4, [a1], #4
+        STR     a4, [a3], #4
+        CMP     a1, a2
+        BNE     %BT10
+        MOV     a1, #1
+        MOV     a2, lr
+        SWI     XOS_SynchroniseCodeAreas
+        ; Set up the C relocation offsets in the FIQ stack
+        LDMIA   sp, {a1-a2}
+        SUB     a3, sl, #540
+        LDMIA   a3, {a3-a4}
+        STMIA   a1, {a3-a4}
+        ; Set up the FIQ mode registers
+        CPS     #FIQ32_mode
+        ADD     sp, a1, a2
+        ADD     sl, a1, #540
+        MOV     fp, #0
+        MOV     v5, v3 ; i.e. r8
+        MOV     v6, v1
+        MOV     ip, v2
+        CPS     #SVC32_mode
+        LDMFD   sp!, {a1-a2,v1-v3,pc}
+
+FIQcode
+        SUB     lr, lr, #4
+        STMFD   sp!, {a1-a4,ip,lr}
+        MOV     a1, v6
+        MOV     a2, ip
+        myDSB
+        BLX     v5
+        CLREX
+        LDMFD   sp!, {a1-a4,ip,pc}^
+FIQcode_end
+
+; int halcall(int arg,void *func,void *sb)
+halcall
+        STMFD   sp!, {r9,lr}
+        MOV     r9, r2
+        BLX     r1
+        LDMFD   sp!, {r9,pc}
+        
+        END
+@
+
+
+1.4
+log
+@Update to 'FIQ FSM' USB driver
+Detail:
+  Makefile, dwc/* - Updated to latest-ish code from Raspberry Pi github (rev c8baa9702c). Includes the 'FIQ FSM' USB driver, which replaces the older 'FIQ fix'. Note that many files appear to have no functional changes - just trailing whitespace removal to keep things in sync with github.
+  Makefile - add DEBUGLIBS back into the debug libs listing to fix debug builds
+  c/cmodule - Update to work with new FIQ FSM flags
+  c/dwc_otg_riscos - Update to work with new FIQ FSM flags. Update initialisation procedure. Change IRQ handling to try both the HCD & CIL interrupt handlers (HCD can claim interrupt is handled when there's still a CIL interrupt pending). Disable support for falling back to IRQ if the FIQ vector is claimed by someone else - will need new implementation to cope with starting & stopping the FIQ FSM.
+  s/regaccess - Update FIQ veneer & install routine to allow operation with either the dwc_otg_fiq_fsm or dwc_otg_fiq_nop functions.
+Admin:
+  Tested on Raspberry Pi 1 & 2
+
+
+Version 0.21. Tagged as 'DWCDriver-0_21'
+@
+text
+@d94 1
+a94 2
+        ORR     a4, ip, #I32_bit+F32_bit
+        MSR     CPSR_c, a4
+d110 1
+a110 3
+        MRS     a1, CPSR
+        ORR     a1, a1, #F32_bit
+        MSR     CPSR_c, a1
+d115 1
+a115 3
+        MRS     a1, CPSR
+        BIC     a1, a1, #F32_bit
+        MSR     CPSR_c, a1
+d121 1
+a121 2
+        ORR     a2, a1, #I32_bit
+        MSR     CPSR_c, a2
+d159 1
+a159 3
+        MRS     a3, CPSR
+        EOR     a4, a3, #FIQ32_mode :EOR: SVC32_mode
+        MSR     CPSR_c, a4
+d166 1
+a166 1
+        MSR     CPSR_c, a3
+d176 1
+@
+
+
+1.3
+log
+@Enable part one of the FIQ fix
+Detail:
+  This change enables the basic 'FIQ fix', where SOF interrupts are handled by a FIQ handler and all other interrupts are delegated to IRQ.
+  During testing it was observed that when the FIQ fix was enabled, what appears to be the host-side VCHIQ process would randomly die. It could take anywhere from several seconds (including during ROM init) or several hours for this to happen.
+  After much investigation it looks like the cause was the use of the MPHI peripheral as a mechanism to trigger an IRQ from the FIQ handler. Changing the code in dwc_otg_hcd_handle_intr() so that it 'flushes' MPHI more often (after every interrupt instead of after every 60) seemed to reduce the problem, while changing the IRQ generation mechanism to use a different IRQ source (e.g. timer) made the crash go away entirely
+  In the end I've settled on the compromise of using the MPHI peripheral, but in a way in which we only need to poke it once on startup, instead of once for every desired IRQ. Once we have it generating an IRQ we then rely on masking/unmasking the IRQ in the interrupt controller to get the desired effect of downgrading FIQs to IRQs. See the RISCOS_FIQ_DOWNGRADE #define.
+  Changed files:
+  - c/cmodule - Use symbolic constant for the USB controller ID instead of a magic number. Get the MPHI details from HAL_USBControllerInfo. Pay attention to Service_ClaimFIQ/Service_ReleaseFIQ and enable/disable the FIQ fix as appropriate.
+  - c/dwc_common_riscos - Disable some debug functions which were accidentally left in non-debug builds. Change work queue/tasklet thread initialisation to fix a deadlock issue seen on reboot.
+  - c/dwc_otg_riscos - Set up the MPHI and enable/disable the FIQ handler as required
+  - cmhg/modhead - Pay attention to Service_ClaimFIQ/Service_ReleaseFIQ
+  - dwc/driver/c/dwc_otg_hcd_intr, dwc/driver/h/dwc_otg_mphi_fix - RISCOS_FIQ_DOWNGRADE code
+  - dwc/dwc_common_port/h/dwc_os - Make sure __DWC_WARN, __DWC_ERROR, DWC_EXCEPTION are compiled out in non-debug builds
+  - h/dwc_otg_riscos - declare extra functions/variables related to FIQ fix
+  - s/regaccess - Routine to install the FIQ handler on the FIQ vector, and simple HAL call wrapper
+Admin:
+  Tested on Raspberry Pi
+  Requires Kernel-5_35-4_79_2_227, BCM2835-0_34
+
+
+Version 0.15. Tagged as 'DWCDriver-0_15'
+@
+text
+@a49 1
+        IMPORT  dwc_otg_hcd_handle_fiq
+d136 1
+a136 1
+; void install_fiq(uint32_t *stack,uint32_t stacksize)
+d139 4
+a142 1
+        STMFD   sp!, {a1-a2,lr}
+d171 3
+a173 1
+        ADRL    v5, dwc_otg_hcd_handle_fiq ; i.e. r8
+d175 1
+a175 1
+        LDMFD   sp!, {a1-a2,pc}
+d179 3
+a181 1
+        STMFD   sp!, {a1-a4,lr}
+d184 1
+a184 1
+        LDMFD   sp!, {a1-a4,pc}^
+@
+
+
+1.2
+log
+@Update to latest code from Raspberry Pi github
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github (rev e0001dd59d). Includes the fabled 'FIQ fix' code, although the code isn't yet enabled in the RISC OS version of the driver.
+  c/cmodule - Add extra flags for controlling driver behaviour, as required by the new core code
+  c/dwc_otg_riscos - Add some missing driver parameters (although we leave them at default). Handle DWC_E_SHUTDOWN xfer errors, which will now be produced when the driver is shutting down
+  c/softc_device - Disable interrupts around dwc_otg_hcd_urb_enqueue, to mirror behaviour of Linux code (previously, it was the responsibility of the DWC code to disable interrupts for the appropriate part of the operation)
+  s/regaccess - Add some extra IRQ/memory barrier functions required by the new code (mainly the FIQ fix). Make DWC_MODIFY_REG32 operate atomicly (mirrors change in Linux version)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.11. Tagged as 'DWCDriver-0_11'
+@
+text
+@d32 2
+d49 4
+d136 51
+@
+
+
+1.1
+log
+@Add memory barriers to register reads/writes. Reduce frequency of memory allocations.
+Detail:
+  s/regaccess - New file containing assembler register access routines, with memory barriers to protect against the BCM2835 AXI bus returning device loads out-of-order
+  Makefile, dwc/dwc_common_port/h/dwc_os - Updated to use register access functions instead of inline code
+  c/dwc_common_riscos - Added a simple bucket-and-chain data structure to dwc_alloc/dwc_free, to collect free memory blocks and allow them to be reused later, to reduce the load on the heap manager.
+Admin:
+  Tested in BCM2835 ROM
+
+
+Version 0.03. Tagged as 'DWCDriver-0_03'
+@
+text
+@d31 1
+d41 6
+d88 3
+d96 13
+d110 20
+@
+

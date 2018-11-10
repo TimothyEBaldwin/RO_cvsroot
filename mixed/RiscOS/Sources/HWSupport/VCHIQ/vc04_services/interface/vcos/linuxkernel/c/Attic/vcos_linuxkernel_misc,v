@@ -1,0 +1,185 @@
+head	1.2;
+access;
+symbols
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2013.03.03.20.24.06;	author jlee;	state dead;
+branches;
+next	1.1;
+commitid	uNS7q3oyxvlpXnGw;
+
+1.1
+date	2012.08.19.23.33.53;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.2
+log
+@Update to latest version of VCHIQ sources
+Detail:
+  This updates our VCHIQ sources to rev 95009dbb77 of the official sources from the Raspberry Pi Linux github repo.
+  From our perspective, the important changes are:
+  * Provides compatbility with the latest firmware
+  * Not compatible with older firmware (older than around Nov 2012?), including the firmware we've typically been using until now
+  * Clients of the module now need to specify the version number of the service they're communicating with
+  * Source is dual BSD/GPL licenced, with us opting to use the BSD license in order to allow the module to be included in ROM instead of as a softload on disc
+  * Ability to build softload version has been removed from the makefile, as it's now a redundant option
+  File changes:
+  - !MkRom - enable throwback
+  - Makefile - Update for building latest sources. Remove special softload rules. Enable ability to build ROM version.
+  - c/vchiq_riscos, s/asm - Update RISC OS compatbility layer to directly emulate the corresponding Linux calls now that the VCOS abstraction layer has been removed from the VCHIQ sources
+  - h/VCHIQ, h/VCHIQWrap, hdr/VCHIQ - Add the service version number entries to the vchiq_service_t/SERVICE_CREATION_T structs
+  - vc04_services/* - Updated to latest official sources, with relevant changes to allow compilation for RISC OS
+Admin:
+  Tested on Raspberry Pi
+  Updated GPU firmware will likely be required!
+
+
+Version 0.05. Tagged as 'VCHIQ-0_05'
+@
+text
+@/*****************************************************************************
+* Copyright 2009 - 2010 Broadcom Corporation.  All rights reserved.
+*
+* Unless you and Broadcom execute a separate written software license
+* agreement governing use of this software, this software is licensed to you
+* under the terms of the GNU General Public License version 2, available at
+* http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
+*
+* Notwithstanding the above, under no circumstances may you combine this
+* software in any way with any other Broadcom software provided under a
+* license other than the GPL, without Broadcom's express prior written
+* consent.
+*****************************************************************************/
+
+#include "interface/vcos/vcos.h"
+#include <linux/sched.h>
+#include <linux/module.h>
+#include <linux/freezer.h>
+#include <linux/string.h>
+#include <linux/slab.h>
+
+/***************************************************************************** 
+* 
+*        vcos_semaphore_wait_freezable
+*  
+*****************************************************************************/
+
+VCOS_STATUS_T vcos_semaphore_wait_freezable(VCOS_SEMAPHORE_T *sem)
+{
+    int rval, sig_pended = 0;
+    unsigned long flags;
+    struct task_struct *task = current;
+
+    while (1) {
+       rval = down_interruptible((struct semaphore *)sem);
+       if (rval == 0) { /* down now */
+          break;
+       } else {
+          if (freezing(current)) {
+             try_to_freeze();
+          } else {
+             spin_lock_irqsave(&task->sighand->siglock, flags);
+             if (test_tsk_thread_flag(task, TIF_SIGPENDING)) {
+                clear_tsk_thread_flag(task, TIF_SIGPENDING);
+                sig_pended = 1;
+             }
+             spin_unlock_irqrestore(&task->sighand->siglock, flags);
+          }
+       }
+    }
+
+    if (sig_pended) {
+       spin_lock_irqsave(&task->sighand->siglock, flags);
+       set_tsk_thread_flag(task, TIF_SIGPENDING);
+       spin_unlock_irqrestore(&task->sighand->siglock, flags);
+    }
+
+    return 0;
+}
+
+EXPORT_SYMBOL( vcos_semaphore_wait_freezable );
+
+/***************************************************************************** 
+* 
+*  vcos_kmalloc
+*  
+*  We really need to convert malloc to do kmalloc or vmalloc based on the
+*  size, but for now we'll add a separate function.
+*  
+*****************************************************************************/
+
+void *vcos_kmalloc(VCOS_UNSIGNED size, const char *description)
+{
+   (void)description;
+
+   return kmalloc( size, GFP_KERNEL );
+}
+
+/***************************************************************************** 
+* 
+*  vcos_kmalloc
+*  
+*  We really need to convert malloc to do kmalloc or vmalloc based on the
+*  size, but for now we'll add a separate function.
+*  
+*****************************************************************************/
+
+void *vcos_kcalloc(VCOS_UNSIGNED num, VCOS_UNSIGNED size, const char *description)
+{
+   (void)description;
+
+   return kzalloc( num * size, GFP_KERNEL );
+}
+
+/***************************************************************************** 
+* 
+*  vcos_kfree
+*  
+*****************************************************************************/
+
+void vcos_kfree(void *ptr)
+{
+   kfree( ptr );
+}
+
+EXPORT_SYMBOL( vcos_kmalloc );
+EXPORT_SYMBOL( vcos_kcalloc );
+EXPORT_SYMBOL( vcos_kfree );
+
+// END #########################################################################
+// #############################################################################
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@@
+

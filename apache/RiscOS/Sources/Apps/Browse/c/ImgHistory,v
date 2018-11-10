@@ -1,0 +1,1679 @@
+head	1.11;
+access;
+symbols
+	Browse-2_16:1.11
+	Browse-2_15:1.11
+	Browse-2_14:1.11
+	Browse-2_13:1.11
+	Browse-2_12:1.11
+	Browse-2_11:1.11
+	Browse-2_10:1.11
+	Browse-2_09:1.11
+	ahodgkin_208_i4_2:1.10
+	ahodgkin_208_i4:1.8
+	ahodgkin_208_i3:1.8
+	ahodgkin_208_i2:1.8
+	ahodgkin_208_i1:1.8
+	ahodgkin_207release:1.8
+	ahodgkin_206release:1.8
+	ahodgkin_205release:1.7
+	ahodgkin_204release:1.7
+	ahodgkin_202release:1.6
+	ahodgkin_201release:1.5
+	ahodgkin_200release:1.5
+	ahodgkin_133beta:1.5
+	ahodgkin_132beta:1.5
+	ahodgkin_131beta:1.4
+	ahodgkin_130beta:1.3
+	ahodgkin_129:1.3
+	ahodgkin_128beta:1.2
+	ahodgkin_128alpha:1.2;
+locks; strict;
+comment	@# @;
+
+
+1.11
+date	2005.04.26.09.42.34;	author ahodgkin;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	2000.11.14.08.45.06;	author ahodgkin;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	2000.05.31.15.58.38;	author ahodgkin;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	98.07.09.10.27.12;	author ahodgkin;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	98.04.16.08.14.15;	author ahodgkin;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.03.20.12.12.46;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	98.02.06.13.55.17;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	98.01.31.10.55.24;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.12.12.17.12.27;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.11.27.17.50.02;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.11.26.17.23.40;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.11
+log
+@  Huge pile of changes bringing relatively ancient sources up to date.
+Detail:
+  This check-in includes Phoenix version 2.11 (26-Apr-2005); only the
+  debug and JavaScript builds of Phoenix have been tested and resources
+  will definitely be out of date for other versions. The various "!..."
+  scripts have been updated to require a minimum of 2MB with no maximum
+  limit for building, as CC 5.60 is quite RAM hungry.
+Admin:
+  Phoenix 2.11 JS builds OK, works reasonably well. Many outstanding
+  issues of course, as this is a very outdated browser now.
+
+Version 2.09. Tagged as 'Browse-2_09'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    ImgHistory.c                                      */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Remembering image sizes, in case the HTML does    */
+/*          not specify them.                                 */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 22-Nov-1997 (ADH): Created.                       */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include <kernel.h>
+#include <swis.h>
+#include <tboxlibs/flex.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include <tboxlibs/toolbox.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "ChoiceDefs.h"
+#include "History.h"  /* For history_ensure_sane       */
+#include "Images.h"
+#include "Save.h"     /* For Save_ScrapFile definition */
+#include "URLutils.h" /* For FileMethod definition     */
+
+#include "ImgHistory.h"
+
+/* Image history structure. It's so small that these */
+/* are kept in an array (one malloc block).          */
+
+typedef struct imghistory_entry
+{
+  char                    * url;
+  unsigned int              hash;
+
+  int                       os_x;
+  int                       os_y;
+
+  time_t                    last_accessed;
+}
+imghistory_entry;
+
+/* Static variables */
+
+static imghistory_entry * imghistory_base    = NULL;
+int                       imghistory_entries = 0;
+
+/* Local statics */
+
+static int  imghistory_find_entry   (const char ** url_base, int url_offset);
+
+static void imghistory_remove_entry (int entry);
+static int  imghistory_count        (void);
+
+/**************************************************************/
+/* imghistory_find_entry()                                    */
+/*                                                            */
+/* Searches for a given image in the image history, and       */
+/* returns an array index for that image if it is present,    */
+/* else -1.                                                   */
+/*                                                            */
+/* If the parameters seem odd, it may help to realise that    */
+/* this allows a flex block to hold the URL without any       */
+/* worries about flex shifting.                               */
+/*                                                            */
+/* Parameters: Pointer to a pointer to a block containing the */
+/*             image's full URL;                              */
+/*                                                            */
+/*             Offset into the block at which the image lies. */
+/*                                                            */
+/* Returns:    Index in the image history array of the entry  */
+/*             representing the image if found, else -1.      */
+/**************************************************************/
+
+static int imghistory_find_entry(const char ** url_base, int url_offset)
+{
+  int          entry;
+  unsigned int hash;
+
+  if (!imghistory_entries || !url_base) return -1;
+
+  hash = utils_return_hash(*url_base + url_offset);
+
+  /* Go through the array */
+
+  for (entry = 0; entry < imghistory_entries; entry++)
+  {
+    if (imghistory_base[entry].hash == hash)
+    {
+      /* Use strcmp. We're going to be very strict in this; strcmp is not */
+      /* a technically valid way to compare URLs, but it's fast and you   */
+      /* don't need much storage space for the URLs themselves. The image */
+      /* history is not sufficiently important to warrant anything more   */
+      /* robust than this.                                                */
+
+      if (!strcmp(imghistory_base[entry].url, *url_base + url_offset)) return entry;
+    }
+  }
+
+  /* Nothing found */
+
+  return -1;
+}
+
+/**************************************************************/
+/* imghistory_record()                                        */
+/*                                                            */
+/* Records a given image in the image history. If an entry is */
+/* already present for the image, it just updates the entry's */
+/* last_accessed field and ensures the size is set to the     */
+/* given values.                                              */
+/*                                                            */
+/* Parameters: Pointer to a pointer to a block containing the */
+/*             image's full URL;                              */
+/*                                                            */
+/*             Offset into the block at which the image lies; */
+/*                                                            */
+/*             x size of the image, in OS units;              */
+/*                                                            */
+/*             y size of the image, in OS units.              */
+/**************************************************************/
+
+_kernel_oserror * imghistory_record(const char ** url_base, int url_offset, int os_x, int os_y)
+{
+  imghistory_entry * new_base;
+  char             * new_url;
+  int                entry;
+
+  if (!url_base) return NULL;
+
+  /* Don't store scrap file transfer images */
+
+  if (!strncmp(*url_base + url_offset, FileMethod, sizeof(FileMethod) - 1))
+  {
+    char test_url[Limits_URL];
+
+    /* Build the URL we'd be on for a scrap file fetch */
+
+    StrNCpy0(test_url, Save_ScrapFile);
+
+    urlutils_pathname_to_url(test_url, sizeof(test_url));
+
+    /* If it's the same as the URL we've been given, don't store */
+    /* this image in the image history.                          */
+
+    if (!strcmp(*url_base + url_offset, test_url)) return NULL;
+  }
+
+  /* Try to find the item */
+
+  entry = imghistory_find_entry(url_base, url_offset);
+
+  /* Found it */
+
+  if (entry >= 0)
+  {
+    imghistory_base[entry].last_accessed = time(NULL);
+
+    /* Ensure the recorded size matches that given! */
+
+    imghistory_base[entry].os_x = os_x;
+    imghistory_base[entry].os_y = os_y;
+
+    /* That's all we need to do in this case */
+
+    return NULL;
+  }
+
+  /* Oh well, it wasn't there. So have to make a new entry */
+
+  new_base = realloc(imghistory_base, sizeof(imghistory_entry) * (imghistory_entries + 1));
+
+  /* Claim failed, so exit with error */
+
+  if (!new_base) return make_no_memory_error(28);
+
+  /* OK, managed that; set imghistory_base to whatever was returned */
+  /* by realloc but don't increment the items counter yet           */
+
+  imghistory_base = new_base;
+
+  /* Try to allocate space for the URL too */
+
+  new_url = malloc(strlen(*url_base + url_offset) + 1);
+
+  /* If this claim fails, don't bother shrinking the array back; */
+  /* we haven't increased the item count, so things will take    */
+  /* care of themselves on the next addition (assuming that the  */
+  /* lack of memory doesn't prove catastrophic elsewhere!).      */
+
+  if (!new_url) return make_no_memory_error(28);
+
+  /* If we reach here, both claims were successful */
+
+  imghistory_base[imghistory_entries].url           = new_url;
+  imghistory_base[imghistory_entries].os_x          = os_x;
+  imghistory_base[imghistory_entries].os_y          = os_y;
+  imghistory_base[imghistory_entries].last_accessed = time(NULL);
+
+  strcpy(new_url, *url_base + url_offset);
+  imghistory_base[imghistory_entries].hash = utils_return_hash(new_url);
+
+  imghistory_entries ++;
+
+  /* Call expiry functions */
+
+  if (choices.image_expiry_age) imghistory_expire(time(NULL) - choices.image_expiry_age);
+  if (choices.image_max_size)   imghistory_limit(choices.image_max_size);
+
+  #ifdef SINGLE_USER
+
+    /* Finished - exit by saving, if required */
+
+    if (choices.save_image_history == Choices_SaveImageHistory_Always)
+    {
+      return imghistory_save(lookup_choice("ImageHistorySave:Browse:User.Images",0,0));
+    }
+
+  #endif
+
+  return NULL;
+}
+
+/**************************************************************/
+/* imghistory_return_size()                                   */
+/*                                                            */
+/* Returns the size of an image based on the given URL. If    */
+/* the image has no entry in the image history, -1 is         */
+/* returned for the x and y sizes.                            */
+/*                                                            */
+/* Parameters: Pointer to a pointer to a block containing the */
+/*             image's full URL;                              */
+/*                                                            */
+/*             Offset into the block at which the image lies; */
+/*                                                            */
+/*             Pointer to an int, in which the x size of the  */
+/*             image is returned in OS units, or -1 if the    */
+/*             image has no entry in the image history;       */
+/*                                                            */
+/*             Similarly, pointer to an int for the y size.   */
+/*                                                            */
+/* Assumes:    The int pointers may be NULL (but this would   */
+/*             of course be pretty pointless!).               */
+/**************************************************************/
+
+void imghistory_return_size(const char ** url_base, int url_offset, int * os_x, int * os_y)
+{
+  int entry;
+
+  if (os_x) *os_x = -1;
+  if (os_y) *os_y = -1;
+
+  if (!url_base) return;
+
+  /* Try and find the entry for this image */
+
+  entry = imghistory_find_entry(url_base, url_offset);
+
+  /* Not found */
+
+  if (entry < 0) return;
+
+  /* Found, so return the sizes and exit */
+
+  if (os_x) *os_x = imghistory_base[entry].os_x;
+  if (os_y) *os_y = imghistory_base[entry].os_y;
+
+  return;
+}
+
+/**************************************************************/
+/* imghistory_remove_entry()                                  */
+/*                                                            */
+/* Removes an entry from the image history array by copying   */
+/* the last item over it and shrinking the array size.        */
+/*                                                            */
+/* Parameters: Entry number.                                  */
+/**************************************************************/
+
+static void imghistory_remove_entry(int entry)
+{
+  if (entry < 0 || entry >= imghistory_entries) return;
+
+  /* If this is the last item, only need to shrink   */
+  /* the array and decrement the item counter. Else, */
+  /* copy the top item over the one being removed    */
+  /* and then shrink the array.                      */
+
+  if (entry < imghistory_entries - 1)
+  {
+    memcpy(&imghistory_base[entry],
+           &imghistory_base[imghistory_entries - 1],
+           sizeof(imghistory_entry));
+  }
+
+  imghistory_entries --;
+
+  /* Shouldn't fail, but if it does... Well, we ditch the history. */
+
+  imghistory_base = realloc(imghistory_base,
+                            imghistory_entries * sizeof(imghistory_entry));
+
+  /* Finished */
+
+  return;
+}
+
+/**************************************************************/
+/* imghistory_expire()                                        */
+/*                                                            */
+/* Remove all entiries for images which have last been seen   */
+/* before a given time (i.e. are greater than a certain age). */
+/*                                                            */
+/* Parameters: Time (in time() function format) which an      */
+/*             image must not have been visited on or since   */
+/*             for expiry to take place.                      */
+/**************************************************************/
+
+void imghistory_expire(unsigned int time)
+{
+  int entry = 0;
+
+  /* Go through removing items. The removal routine copies the last */
+  /* array item over the one being removed, so we only imcrement    */
+  /* the entry number if nothing has been removed.                  */
+
+  while (entry < imghistory_entries)
+  {
+    if (imghistory_base[entry].last_accessed <= time) imghistory_remove_entry(entry);
+    else entry++;
+  }
+
+  return;
+}
+
+/**************************************************************/
+/* imghistory_count()                                         */
+/*                                                            */
+/* Count the total space used by the image history.           */
+/*                                                            */
+/* Returns:    Space occupied by the image history array and  */
+/*             strings attached to this, including their      */
+/*             terminators, in bytes.                         */
+/**************************************************************/
+
+static int imghistory_count(void)
+{
+  int count = 0;
+  int entry;
+
+  for (entry = 0; entry < imghistory_entries; entry ++)
+  {
+    count += sizeof(imghistory_entry);
+    count += imghistory_base[entry].url ? strlen(imghistory_base[entry].url) + 1 : 0;
+  }
+
+  return count;
+}
+
+/**************************************************************/
+/* imghistory_limit()                                         */
+/*                                                            */
+/* Limit the space occupied by the image history to a given   */
+/* amount.                                                    */
+/*                                                            */
+/* Parameters: Maximum size the history may be, in bytes.     */
+/**************************************************************/
+
+void imghistory_limit(unsigned int size)
+{
+  int entry;
+  int oldest;
+  int found;
+
+  /* Keep removing items as long as the actual size is */
+  /* greater than the maximum size specified.          */
+
+  while (imghistory_count() > size)
+  {
+    /* Find the oldest entry */
+
+    oldest = 0;
+    found  = 0;
+
+    for (entry = 0; entry < imghistory_entries; entry++)
+    {
+      if (
+           imghistory_base[entry].last_accessed < oldest ||
+           !oldest
+         )
+         oldest = imghistory_base[entry].last_accessed, found = entry;
+    }
+
+    /* Remove the oldest entry, if found */
+
+    if (oldest) imghistory_remove_entry(found);
+  }
+
+  /* Finished */
+
+  return;
+}
+
+/**************************************************************/
+/* imghistory_load()                                          */
+/*                                                            */
+/* Loads the global history from the given path. Will raise   */
+/* errors (usually, due to RISC OS C's file I/O, the wrong    */
+/* ones...) if there is a failure during loading, but not if  */
+/* the file refuses to open or the number of items cannot be  */
+/* read from it (i.e. a missing or zero length History file). */
+/*                                                            */
+/* Parameters: Pointer to the full pathname for the history   */
+/*             file.                                          */
+/**************************************************************/
+
+_kernel_oserror * imghistory_load(const char * pathname)
+{
+  FILE        * file;
+  char        * url        = NULL;
+  static char * local_path = NULL;
+  int           last_accessed, os_x, os_y, url_len;
+  int           items, item;
+
+  dprintf(("ImgH", "imghistory_load: Called with '%s'\n", pathname ? pathname : "<NULL>"));
+
+  if (!pathname || !*pathname) return NULL;
+
+  local_path = malloc(strlen(pathname) + 1);
+  if (!local_path) return NULL;
+
+  strcpy(local_path, pathname);
+
+  file = fopen(local_path, "rb");
+
+  if (!file)
+  {
+    free(local_path);
+    return NULL; /* Fail silently - there may be no History file; this is OK */
+  }
+
+  /* Read how many items there are - again file silently, the */
+  /* file may just be zero bytes long.                        */
+
+  dprintf(("ImgH", "imghistory_load: File opened OK\n"));
+
+  if (fscanf(file, "%d\n", &items) == EOF)
+  {
+    fclose(file);
+    free(local_path);
+
+    return NULL;
+  }
+
+  /* Allocate space for the array */
+
+  imghistory_base = malloc(sizeof(imghistory_entry) * items);
+
+  if (!imghistory_base)
+  {
+    fclose(file);
+    free(local_path);
+
+    return make_no_memory_error(29);
+  }
+
+  imghistory_entries = 0; /* We'll increment this as each gets loaded successfully */
+
+  /* Now load each entry's details */
+
+  #ifdef TRACE
+    if (items > 1) dprintf(("ImgH", "imghistory_load: There are %d items\n",items));
+    else           dprintf(("ImgH", "imghistory_load: There is 1 item\n"));
+  #endif
+
+  _swix(Hourglass_On, 0);
+
+  for (item = 0; item < items; item++)
+  {
+    _swix(Hourglass_Percentage,
+          _IN(0),
+
+          (100 * item) / items);
+
+    /* Read the last accessed time and required string lengths */
+
+    if (
+         fscanf(file,
+                "%d,%d,%d,%d\n",
+
+                &last_accessed,
+                &os_x,
+                &os_y,
+                &url_len)
+
+         == EOF
+       )
+       goto imghistory_load_exit;
+
+    /* Allocate buffers for the strings */
+
+    url = malloc(url_len + 1);
+
+    if (!url)
+    {
+      imghistory_entries = item; /* E.g. if item 0 fails to load, we say there are zero entries */
+
+      fclose(file);
+
+      _swix(Hourglass_Off,0);
+
+      free(local_path);
+
+      return make_no_memory_error(29);
+    }
+
+    /* Read the URL */
+
+    if (url_len)
+    {
+      long int reread = ftell(file);
+
+      if (!fread(url, url_len, sizeof(char), file))
+      {
+        goto imghistory_load_exit;
+      }
+      else url_len = history_ensure_sane(file, url, url_len, reread);
+    }
+
+    url[url_len] = 0;
+
+    /* Skip the '\n' */
+
+    if (fgetc(file) == EOF) goto imghistory_load_exit;
+
+    dprintf(("ImgH", "imghistory_load: %04d URL = \0216'%s'\0217\n", item, url));
+
+    /* Now make the entry */
+
+    imghistory_base[item].url  = url;
+    imghistory_base[item].hash = utils_return_hash(url);
+    url                        = NULL; /* Make sure we don't go and free it or something! */
+
+    imghistory_base[item].os_x          = os_x;
+    imghistory_base[item].os_y          = os_y;
+    imghistory_base[item].last_accessed = last_accessed;
+
+    /* Successful addition */
+
+    imghistory_entries ++;
+
+  /* (Closure of 'for' loop) */
+  }
+
+  fclose(file);
+
+  _swix(Hourglass_Off,0);
+
+  free(local_path);
+
+  if (choices.image_expiry_age) imghistory_expire(time(NULL) - choices.image_expiry_age);
+  if (choices.image_max_size)   imghistory_limit(choices.image_max_size);
+
+  return NULL;
+
+  /* Error condition exit */
+
+imghistory_load_exit:
+
+  StrLastE;
+
+  fclose(file);
+
+  _swix(Hourglass_Off,0);
+
+  free(url);
+  free(local_path);
+
+  return &erb;
+}
+
+/**************************************************************/
+/* imghistory_save()                                          */
+/*                                                            */
+/* Saves the global history to the given path.                */
+/*                                                            */
+/* Parameters: Pointer to the full pathname for the history   */
+/*             file.                                          */
+/**************************************************************/
+
+_kernel_oserror * imghistory_save(const char * pathname)
+{
+  static char * local_path = NULL;
+  FILE        * file;
+  int           entry;
+  int           wrote;
+
+  if (!pathname || !*pathname) return NULL;
+
+  /* Canonicalise the path */
+
+  RetError(utils_canonicalise_path(pathname, &local_path));
+
+  /* Ensure it is present */
+
+  {
+    _kernel_oserror * e = utils_build_tree(local_path);
+
+    if (e)
+    {
+      free(local_path);
+      return e;
+    }
+  }
+
+  /* Create the file */
+
+  file = fopen(local_path, "wb");
+
+  if (!file)
+  {
+    free(local_path);
+
+    RetLastE;
+  }
+
+  /* Write the number of items */
+
+  wrote = fprintf(file, "%d\n", imghistory_entries);
+
+  if (wrote <= 0)
+  {
+    StrLastE;
+
+    fclose(file);
+    free(local_path);
+
+    return &erb;
+  }
+
+  /* Write the item contents */
+
+  if (imghistory_entries)
+  {
+    for (entry = 0; entry < imghistory_entries; entry++)
+    {
+      wrote = fprintf(file,
+
+                      "%d,%d,%d,%d\n%s\n",
+
+                      imghistory_base[entry].last_accessed,
+
+                      imghistory_base[entry].os_x,
+                      imghistory_base[entry].os_y,
+
+                      imghistory_base[entry].url ? strlen(imghistory_base[entry].url) : 0,
+                      imghistory_base[entry].url ? imghistory_base[entry].url         : "");
+
+      if (wrote <= 0)
+      {
+        StrLastE;
+
+        fclose(file);
+        free(local_path);
+
+        return &erb;
+      }
+    }
+  }
+
+  /* Close the file and exit */
+
+  fclose(file);
+  free(local_path);
+
+  return NULL;
+}
+
+/**************************************************************/
+/* imghistory_empty()                                         */
+/*                                                            */
+/* Find out whether or not the image history has any entries  */
+/* in it.                                                     */
+/*                                                            */
+/* Returns:    1 if there are no entries (the image history   */
+/*             is empty), else 0.                             */
+/**************************************************************/
+
+int imghistory_empty(void)
+{
+  return !imghistory_entries;
+}
+@
+
+
+1.10
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@d47 1
+a447 1
+  int           result;
+d450 2
+a451 1
+  int           cc, ch;
+d471 1
+a471 1
+  result = fscanf(file, "%d\n", &items);
+d473 1
+a473 1
+  if (result == EOF)
+d497 5
+d513 12
+a524 2
+    result = fscanf(file, "%d,%d,%d,%d\n", &last_accessed, &os_x, &os_y, &url_len);
+    if (result == EOF) goto imghistory_load_exit;
+d545 1
+a545 1
+    for (cc = 0; cc < url_len; cc++)
+d547 1
+a547 1
+      int ch = fgetc(file);
+d549 5
+a553 3
+      if (result == ch) goto imghistory_load_exit;
+
+      url[cc] = (char) ch;
+d560 3
+a562 2
+    ch = fgetc(file);
+    if (result == ch) goto imghistory_load_exit;
+@
+
+
+1.9
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a42 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.8
+log
+@Check-in of Browse v2.06; using very small log file to try and avoid
+CVS crashing. Some of the Resources may well be out of date due to CVS
+locks being in place after earlier server-end core dumps, which I can't
+remove myself.
+
+I'll try and check one file in at the end with the full change log so
+people know what's happened (it's reached about 16K...) - I'll make
+that the TaskObey file '!All' in the top level directory. So for the
+full log, look for the changes on this file.
+@
+text
+@d15 13
+a27 10
+/***************************************************/
+/* File   : ImgHistory.c                           */
+/*                                                 */
+/* Purpose: Remembering image sizes, in case the   */
+/*          HTML doesn't specify it.               */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 22-Nov-97: Created.                    */
+/***************************************************/
+d33 14
+a46 3
+#include "kernel.h"
+#include "swis.h"
+#include "flex.h"
+a47 7
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+
+#include "toolbox.h"
+
+#include "svcprint.h"
+d85 19
+a103 22
+/*************************************************/
+/* imghistory_find_entry()                       */
+/*                                               */
+/* Searches for a given image in the image       */
+/* history, and returns an array index for that  */
+/* image if it is present, else -1.              */
+/*                                               */
+/* If the parameters seem odd, it may help to    */
+/* realise that this allows a flex block to hold */
+/* the URL without any worries about flex        */
+/* shifting.                                     */
+/*                                               */
+/* Parameters: Pointer to a pointer to a block   */
+/*             containing the image's full URL;  */
+/*                                               */
+/*             Offset into the block at which    */
+/*             the image lies.                   */
+/*                                               */
+/* Returns:    Index in the image history array  */
+/*             of the entry representing the     */
+/*             image if found, else -1.          */
+/*************************************************/
+d135 17
+a151 19
+/*************************************************/
+/* imghistory_record()                           */
+/*                                               */
+/* Records a given image in the image history.   */
+/* If an entry is already present for the image, */
+/* it just updates the entry's last_accessed     */
+/* field and ensures the size is set to the      */
+/* given values.                                 */
+/*                                               */
+/* Parameters: Pointer to a pointer to a block   */
+/*             containing the image's full URL;  */
+/*                                               */
+/*             Offset into the block at which    */
+/*             the image lies;                   */
+/*                                               */
+/*             x size of the image, in OS units; */
+/*                                               */
+/*             y size of the image, in OS units. */
+/*************************************************/
+d254 21
+a274 26
+/*************************************************/
+/* imghistory_return_size()                      */
+/*                                               */
+/* Returns the size of an image based on the     */
+/* given URL. If the image has no entry in the   */
+/* image history, -1 is returned for the x and   */
+/* y sizes.                                      */
+/*                                               */
+/* Parameters: Pointer to a pointer to a block   */
+/*             containing the image's full URL;  */
+/*                                               */
+/*             Offset into the block at which    */
+/*             the image lies;                   */
+/*                                               */
+/*             Pointer to an int, in which the x */
+/*             size of the image is returned in  */
+/*             OS units, or -1 if the image has  */
+/*             no entry in the image history;    */
+/*                                               */
+/*             Similarly, pointer to an int for  */
+/*             the y size.                       */
+/*                                               */
+/* Assumes:    The int pointers may be NULL (but */
+/*             this would of course be pretty    */
+/*             pointless!).                      */
+/*************************************************/
+d301 8
+a308 9
+/*************************************************/
+/* imghistory_remove_entry()                     */
+/*                                               */
+/* Removes an entry from the image history       */
+/* array by copying the last item over it and    */
+/* shrinking the array size.                     */
+/*                                               */
+/* Parameters: Entry number.                     */
+/*************************************************/
+d338 10
+a347 12
+/*************************************************/
+/* imghistory_expire()                           */
+/*                                               */
+/* Remove all entiries for images which have     */
+/* last been seen before a given time (i.e. are  */
+/* greater than a certain age).                  */
+/*                                               */
+/* Parameters: Time (in time() function format)  */
+/*             which an image must not have been */
+/*             visited on or since for expiry to */
+/*             take place.                       */
+/*************************************************/
+d366 9
+a374 11
+/*************************************************/
+/* imghistory_count()                            */
+/*                                               */
+/* Count the total space used by the image       */
+/* history.                                      */
+/*                                               */
+/* Returns:    Space occupied by the image       */
+/*             history array and strings         */
+/*             attached to this, including their */
+/*             terminators, in bytes.            */
+/*************************************************/
+d390 8
+a397 9
+/*************************************************/
+/* imghistory_limit()                            */
+/*                                               */
+/* Limit the space occupied by the image history */
+/* to a given amount.                            */
+/*                                               */
+/* Parameters: Maximum size the history may be,  */
+/*             in bytes.                         */
+/*************************************************/
+d434 12
+a445 14
+/*************************************************/
+/* imghistory_load()                             */
+/*                                               */
+/* Loads the global history from the given path. */
+/* Will raise errors (usually, due to RISC OS    */
+/* C's file I/O, the wrong ones...) if there is  */
+/* a failure during loading, but not if the file */
+/* refuses to open or the number of items cannot */
+/* be read from it (i.e. a missing or zero       */
+/* length History file).                         */
+/*                                               */
+/* Parameters: Pointer to the full pathname for  */
+/*             the history file.                 */
+/*************************************************/
+d594 8
+a601 8
+/*************************************************/
+/* imghistory_save()                             */
+/*                                               */
+/* Saves the global history to the given path.   */
+/*                                               */
+/* Parameters: Pointer to the full pathname for  */
+/*             the history file.                 */
+/*************************************************/
+d691 9
+a699 9
+/*************************************************/
+/* imghistory_empty()                            */
+/*                                               */
+/* Find out whether or not the image history has */
+/* any entries in it.                            */
+/*                                               */
+/* Returns:    1 if there are no entries (the    */
+/*             image history is empty), else 0.  */
+/*************************************************/
+@
+
+
+1.7
+log
+@All !Run[D], Choices, Messages, Controls and Res files are up to date.
+
+RefoKeep and RefoHold options added to, respectively, try and maintain
+the line at the top of the visible area when reformatting, and not shrink
+the vertical extent at the start of a reformat to try and avoid flicker
+to the top of the page and back down again when RefoKeep is on. Choices
+front-end implemented, which also allows RefoWait and RefoTime to be set.
+Unfortunately for various reasons this doesn't help the page jumping when
+unsized images come in (but RefoHold can improve matters...) - roll on
+the image history.
+
+DragToScroll and NoScrollBars options added for frames; included new
+pointer type, Mouse_Shape_DTS, so relevant Controls file entries done
+and Sprites[22] files updated as required. Noticed some builds have
+a low-res ptr_link with a mask - mask removed.
+
+Named anchor following fixed up somewhat - anchors near the bottom of
+the page shouldn't be displayed, and then pulled down when the fetcher
+releases null polls and ensures the y extent is correct (this through
+implementing the min_height field in the browser_data structure).
+
+RefoHang was never implemented and there seems little point to it now,
+so the entry for it has been removed from the global choices structure
+and all Choices files.
+
+Markers menus should work properly now (in last check-in they would not
+update correctly if Adjust was used on the entries).
+
+URI handler usage now a lot more sensible, with configuration of how the
+browser uses the module from both a Utils menu submenu (sic) and the
+Choices dialogue.
+
+Slightly dodgy 'hang around waiting for user input' stuff for the Cookies
+dialogue box: All fetches are suspended; the fetcher remembers some info
+about its state at the time the cookie came in, and restores it later; it
+will only do this for one fetch at a time. It's necessary to single-thread
+the fetcher at this point anyway, since other fetches may have a
+dependency on the cookie that is hanging in mid-air at that point. As part
+of this, some of the fetcher code has been split out into separate
+functions (to try and 'black box' the code a bit). Anyway, Cookie Query
+dialogue box now implemented with appropriate Choices file entry and
+UI work in the Choices dialogue box.
+
+Phoenix build Choices rearranged. Can now choose when the image history
+is saved from the front end. Added also MSIE 4-style table option menu
+for JPEG support (OS only, OS if it can handle it, internal only).
+
+Should be a bit faster at loading the history - though 95% of the time
+is spent in SWI URL_ParseURL. URL descriptions are stored more
+efficiently as part of this - one malloc block instead of several
+small blocks. The minimum block size for malloc blocks typically leads
+to a significantly smaller startup wimpslot depending on the visit
+history size.
+
+Nasty bug in image system fixed. If an image size came in and a reformat
+was to take place, the line the image lies in is found and the reformat
+progresses from there. Unforunately, this didn't check to see if the
+token can't be found in the line list, so it'd reformat from the top
+of the page...! This would happen if, for example, an image halfway down
+the page came in whilst a reformat for an image higher up had just begun.
+
+In Choices.c, made choices_set_timetype_field, choices_set_uri_field,
+choices_set_plugin_field, choices_set_cookie_field, and
+choices_set_jpeg_field static (so they're not declared in Choices.h now).
+
+Two memory leaks plugged in URL comparison routines in URLutils.c
+(calling free() url_description instead of urlutils_free_descripton()).
+
+Client pull reload handler was setting the reload flag if reloading
+the same page, but forgetting to turn on reload_lock so
+fetchpage_postprocessed was clearing the reload state... Similarly,
+Ctrl+Shift+SELECT-Click on a link when the Controls file 'UseSmall'
+entry is 'no' would not have reloaded as it should. Both fixed.
+
+Frames shouldn't be so keen on acquiring horizontal scroll bars and never
+letting them go when their width is decreased now. Frames set up for
+'scrolling="yes"' will not start with no scroll bars and then gain them
+shortly afterwards, causing flicker and two reformats - they'll start
+with, and continue to hold, both scroll bars.
+
+Pointer shouldn't flicker when over a frame border whilst other fetches
+are progressing now.
+@
+text
+@d593 2
+d602 1
+a602 1
+  RetLastE;
+d656 2
+d661 1
+a661 1
+    RetLastE;
+d684 2
+d689 1
+a689 1
+        RetLastE;
+@
+
+
+1.6
+log
+@Programming warehouse link removed from all hotlists - the page has gone.
+
+Some compile-time hacks in place to use MemLib, a dynamic area based
+malloc replacement which shrinks its heap when possible. All builds
+have these switched off at the moment. Seemed to work with just Browse,
+though there would be problems with message blocks stored in dynamic
+areas because of the Wimp's '&3800000' check - however, it failed when
+HTMLLib was made to use it, too. Don't know why yet.
+
+ItemInfo.[c/h] source added, with Res file additions for testbed Browse
+and Phoenix.
+
+Small fetch windows now work properly regardless of toolbar settings
+in the Choices.
+
+Reload now reloads all images too, rather than only reloading them for
+as long as the main page was being fetched.
+
+Added a simple 'Find' facility.
+
+Realised that event handlers in eventlib are called in reverse order
+of registration, so the miscellaneous event handler is now registered
+first rather than last.
+
+Multiuser code added (most only active if SINGLE_USER is undefined). As
+part of this, hotlist code now knows about read-only items (done for the
+Customer-style 'Resources' file, but works generally anyway).
+handle_add_hotlist doesn't try to save the hotlist itself anymore (the
+hotlist_add function does all that through hotlist_modified anyway).
+
+Customer build Choices and Controls updated slightly (e.g. ClaimHelp
+off, hotlist to save on quit only).
+
+Customer build now uses Phoenix-style buttons. Sprites files which
+worked at the time (but will probably be out of date now) and included
+most of the original Customer-style sprites are in
+'Utils.Icons.Customer'.
+
+Choices, Messages and Res files for all builds now stripped down to only
+single user items or single plus multiuser for Customer build and testbed
+build. Before, all contained a few multiuser bits in at least the Choices
+file if not more.
+
+Grammatical error ("Fetching frames contents" (sic.)) corrected in
+default message, Toolbars.c, and all of the Messages files.
+
+Customer build brought back to a servicable level (including
+implementation of the Find dialogue box with animation and fixing
+up authorisation and 'Stop' state in the tristate). Quite a few
+missing #ifndef REMOTE_HOTLIST bits from hotlist code added...
+
+Customer build will not use <Choices$Write> or Boot:Choices for any
+file finding now. UseProxy defaults to 'yes', MaxImages to 2. Res
+file includes Proxy Address setting (save_save_choices() now writes
+the ProxyAddress line).
+@
+text
+@d62 1
+a62 1
+  unsigned int              last_accessed;
+d352 1
+a352 3
+/*             take place - so to expire 1 day   */
+/*             old images, say, you'd pass       */
+/*             time() - 60*60*24.                */
+@
+
+
+1.5
+log
+@*Don't* try to load FilterManager 0.18 in !Run[D] files. Requires
+WindowManager 3.98. Sets URI handler environment variables for
+http, ftp and gopher.
+
+Fixed 'doesn't reformat for unsized images' bug - only happens when the
+deferred reformatter is enabled, hadn't remembered to check this in my
+debug build where this is turned off. Oops.
+
+Caret position in forms could get left behind despite attempts to rectify
+this in v1.31 - now fixed (and faster, fortunately).
+
+Hourglass + percentage displayed for History and Image History when
+loading - it can take a while for very big histories, though in
+practice you only see the visit history loading (has to do a lot
+more work, and is thus quite a bit slower than the image history).
+
+POST forms worked when targetted to frames, but were broken when
+not targetted! (Forms data inherited from one browser to the same
+browser; ended up freeing the flex block...). Fixed.
+
+Now support 303 response code (redirect to GET). Treated as 301, i.e.
+not support if STRICT_PARSER is defined, otherwise drops through to
+the 302 handling code.
+
+Pointer shouldn't get stuck in odd shapes when going to a new page now;
+it gets reset to a standard shape every time the null handler that
+checks the position is called, though (whether or not the handler thinks
+the pointer is over a different token, if that token is NULL, it sets
+the standard shape). A possible work around would be for a browser to
+remember the pointer shape too; that's for the future, though.
+
+Early stage table formatting functions could blow themselves apart if
+tables_count_table decided there were no rows, columns or both. A
+net table size of zero cells is now dealt with; slow, partial table
+fetches in multiple windows with image loading turned on will now
+*hopefully* be stable, where v1.31 would have bombed out repeatedly.
+
+A nested frameset within one document will now inherit the border
+width (frame spacing) and border colour of its parent. This is done
+by copying the maxlen and indent fields of the parent token over
+the child, and note it's done in the browser (fetch_preprocess_token),
+not HTMLLib.
+
+Border colour on a FRAMESET now used, with the first colour on any
+FRAME within it overriding, as in NN 4 and MSIE 4.
+
+<LI> bullets really do stick to the text next to them now (I'd done
+that in an experimental piece of code and forgotten to merge it back
+before the last check-in).
+
+Browse$HotlistURL/URIFile and Browse$HomeURL/URIFile now work from
+_TaskName in the Messages file, and are thus of the generic form
+<App>$HotlistURL etc. - Docs.Notes and Docs.User updated appropriately.
+
+Event 0x11d00 through to 0x11d7f will make the browser look up Controls
+file entries 'JumpTo00' through to 'JumpTo7f' and read a URL from them.
+This will be fetched in the ancestor window of the source of the event,
+or a new window if such an ancestor can't be found [for Daytona demo].
+
+NB: Nasty frames-related crash at http://www.teledanmark.dk/menu/start.htm
+is *not* fixed in this source. NOBR is not supported.
+@
+text
+@d238 1
+a238 1
+  /* Finished; exit by saving, if required */
+d240 1
+a240 4
+  if (choices.save_image_history == Choices_SaveImageHistory_Always)
+  {
+    return imghistory_save(lookup_choice("ImageHistorySave:Browse:User.Images",0,0));
+  }
+d242 4
+a245 1
+  /* Otherwise, exit quietly */
+d247 3
+a249 1
+  else return NULL;
+@
+
+
+1.4
+log
+@Check for WindowManager 3.97 and ensure Unicode$Path is set in all
+!Run[D] files, don't set the Alias$@@PrintType_FF4 variable, and updated
+Customer build ROM obey file variants. Various other changes to
+the Run files for new module versions, updated paths to support
+new positions of choices, hotlist and histories (see later), etc.
+
+!Sprites[22] files hold small !app icons for some variants, and
+an ic_browse sprite. Some variants now have a Sprites and Sprites22
+file instead of just Sprites, with the former containing various
+mode 12 or 15 specific sprites.
+
+Text files dragged to the URL writable are treated as ANT URL files. This
+relies on URLBarWrit (Toolbars.h) being a unique ID, which it should be,
+but beware of the Hotlist and Choices numberspaces...
+
+INPUT TYPE=BUTTON supported. Form items without a FORM tag are now shown
+(as MSIE 4, but not NN 4).
+
+'*', '-', '@@', '_' and '.' are not escaped when submitting forms now. The
+Web interface to the IMDb now works.
+
+INPUT TYPE=HIDDEN items will not affect the line height anymore - so
+http://www.hotmail.com/ now has correctly aligned writable icons, for
+example. Similarly, TAG_FORM and TAG_FORM_END items could push up
+line height and don't anymore.
+
+HRs with a specified pixel width will now influence the size of a table
+cell (they didn't before).
+
+BRs now checked by tagno field when the browser needs to know something
+was an actual BR tag rather than just a line break signal, and by the
+style bit entry when only the indication of a line break is required.
+
+Table widths of 0 or 0% are ignored.
+
+Trace.c updated to report height and background fields in a table_stream.
+
+fm_putsl() writes a terminator into the string; the Forms.c routines were
+calling this for displaying INPUT TYPE=PASSWORD fields using the FE_PassCode
+literal string (a line of stars). This write into a read only data area
+would make the debugger fault the access. A local char array is now used
+instead, to get round this (note the use of var[]=literal rather than
+var[sizeof(literal)]; strcpy(var, literal) due to some weird compiler bug
+that copies the wrong thing into 'var' under some (undefined...)
+circumstances).
+
+Text areas don't scroll back to the top line when clicked in anymore;
+single line writables don't scroll back to the left either. When
+reentering a text area from 'above', the caret appears at the top line
+rather than 'somewhere further down'...
+
+ARROWS_MOVE_OUT compile time option at the top of Forms.c defines whether
+you must press Tab/Shift+Tab to move between writable fields in forms or
+if up/down will drop out of them, though if keyboard control is on this
+is enforced (or you get trapped inside the form!).
+
+urlutils_filetype_from_url now uses MimeMap module.
+
+If fetcher is told a page is text, it'll check for a filename extension and
+may choose to use this instead (e.g. it may find it's HTML instead). This
+is to try and get around duff servers... (e.g. http://www.batalarms.co.uk/).
+
+Save dialogues shouldn't flicker when options that don't change the
+filetype are selected (before, the draggable sprite was always reset for
+each selection). Noticed the erroneous setting of a static variable in
+SaveFile.c by a call to this by SaveObject.c, and so added a flag to
+savefile_set_filetype to deal with this - would have been possible to get
+the wrong filetype sent to applications or at best the wrong filetype
+sprite in the dialogue without that.
+
+The caret shouldn't jump out of a form back to the URL writable if the page
+reformats now.
+
+Table background colours now supported (as in the colour you see in the
+border space if the cellspacing is large enough; this is as in MSIE, not
+as in Navigator). Drawfile output routines updated accordingly.
+
+Corrected erroneous use of wimpt_dx() / wimpt_dy() in a couple of places
+in Images.c, which meant that (say) 1x1 images didn't work correctly in
+medium resolution display modes.
+
+Now have support for save as text (component ID and event 0x12) and save
+as Draw (component ID and event 0x13) buttons. Dubious conditions for
+greying and ungreying the print, save source and view source buttons and
+menu options sorted out as part of implementing the same for the two new
+buttons; added greying out of their associated menu items in passing.
+
+Turned kerning on in draw file objects (does mean a rather heinous
+increase in file size, but this is the only way to ensure the draw file
+matches the visible page).
+
+Comments before functions in SaveDraw.c are now complete and up to date.
+
+Image and visit histories now generate a crude hash number to speed up
+searching for items. It does give a speed increase, though it's a
+disappointingly small one.
+
+Issue of left/right margins and cellpaddings sorted out. Now have
+redraw_left/right_margin for finding out the basic gap you must leave.
+redraw_left/right_gap then gives any extra indentation for LI, BLOCKQUOTE
+or whatever. The last two can be subtracted from the display width to
+get an available page width for any section of text. Note that
+redraw_left_gap replaces redraw_margin. The redraw_start_x function
+uses the above to work out where a line's left hand edge should be,
+taking account of left/right/centre alignment. HRs have been fixed now
+(they were quite broken in v1.30, I think) based on this new model and
+the behaviour of MSIE/NN 4.
+
+Fixed width of cells with no contents - cell padding values wouldn't
+have worked properly as the reformatter returns 0 rather than the left
+hand margin size if given no stream.
+
+Removed FM_Absolute flags for Font_Paint (spotted by DBrown) - sets bit
+2, which is reserved...?
+
+IMG width and height in % terms now works correctly; a % of available
+width (after margins and indents) or height on the main page or for
+a table cell, if the image lies in one. Because of the chicken-and-egg
+problem with the latter, the cell must specify a width and/or height
+for things to work properly. If this is not done, you'll usually end
+up with a 1:1 scaled image (as in Navigator 4, rather than ending up
+with no image or even no cell (!), as in MSIE 4).
+
+HEIGHT attribute on a TABLE tag is supported, but only in a crude
+fashion; the extra height (if there is any) is distributed over the
+rows in a linear fashion. This is probably all you have to do in
+practice, but I haven't checked. To maintain a notion of min/max
+height as well as width would of course require a great deal more
+work...
+
+If using client pull to reload a page with a fragment ('...#name')
+specified, then the reload wouldn't work on the same page; it'd just
+jump to the fragment position. This won't happen if b->reloading is
+set now (so works in conjunction with client pull on the same page
+forcing a non-cached fetch). Similarly, if POSTing to such a URL,
+a fetch will proceed (both these fixes done originally for
+http://jupiter.beseen.com/chat/rooms/g/1678/).
+
+browser_inherit split to browser_inherit and browser_inherit_post_data;
+the code for the latter didn't clear any post_data in the child before
+copying from the parent either, and could cause flex errors (now fixed).
+
+Res file for Ursula ('Desktop' Browse) build tweaked - bits in the
+font choices dialogue renamed, and button bar rearranged to hold the
+new Save As Draw button. Other builds have had Save As Draw and
+Save As Text buttons added, or not, depending upon availability of
+suitable sprites, required UI simplicity, etc.
+
+Now have:
+
+  Browse$ChoicesFile
+  Browse$ControlsFile
+  Browse$ChoicesSave
+  Browse$ControlsSave
+
+(the last two are new) for loading and saving of the Choices or Controls
+files. If unset, <App$Dir>.Choices or <App$Dir>.Controls will be set.
+E.g., you could set Browse$ChoicesFile to be:
+
+  <App$Dir>.Choices,Choices:WWW.(app).Choices
+
+for loading and
+
+  <Choices$Write>.WWW.(app).Choices
+
+for saving. (The browser never saves Controls at the moment, so the
+relevant variable above isn't effectively implemented, but could be
+in future). Similarly, to support asymetric loading/saving of the Hotlist,
+there are HotlistSave, HistorySave and ImageHistorySave entries in Choices
+to complement HotlistPath, HistoryPath and ImageHistoryPath (which are used
+for loading). save_save_choices will create directories as needed to obtain
+the given path (and has also been fixed in various areas that hadn't been
+tested out until now; e.g. zero termination of the AppName$ChoicesFile
+variable expansion...). !Run[D] files updated appropriately.
+
+Table widthing code rewritten. Slower, but a lot better on the whole.
+Still has some problems - still needs a final 'make sure nothing is
+below minimum width' scan, which it should be possible to do without.
+No time to fix this at present!
+
+The reformatter will now 'glue together' an LI token followed by any
+non-LI token; so a bullet point followed by an item should not be able to
+have a line break inserted after the bullet because of very tight width
+constraints (it could before - yuk...).
+
+'about:' brings up a page about the browser and any Plug-Ins, as with
+Navigator (for example).
+
+URI files support titles, as per spec. version 8. Saving a current
+location to the Hotlist will thus give a sensible title now (unless
+you're in a frame, so there's no title to get...). Of course, v1.00
+files without a title still work.
+
+Note that NOBR is *not* supported in this build and this combined with
+the new table widther may cause problems on some sites (e.g. Microsoft's
+home page!).
+@
+text
+@d512 2
+d516 5
+d535 3
+d580 2
+d594 2
+@
+
+
+1.3
+log
+@Note that the 'Docs' documentation (possibly contrary to previous
+log messages) still hasn't been updated with the new SaveFile
+stuff, and function header comments have yet to be written for
+SaveFile.c.
+
+Fixed urlutils_pathname_to_url - OS_GSTrans doesn't like the same
+input buffer as output buffer (fairly obvious, but I was living in
+the hope of not having to duplicate the input path string).
+
+Image history will not cache scrap file images anymore. Browser's
+image handling library won't cross reference them either.
+
+When dragging a single item from the hotlist to a Filer window, the
+code now checks Ctrl - if held down, a URL file is written, else a
+URI file. The state of any option buttons or radios in the last
+Save File dialogue that was opened is no longer relevant...!
+
+history_save_as_html could write out broken files when titles
+for items in the History were not present. Fixed.
+
+Hourglass switched on for hotlist and history saving as HTML;
+hotlist_save_entries no longer closes the output file on error
+(it should be done by the caller, since the caller is responsible
+for opening the file and passing the FILE * pointer to
+hotlist_save_entries).
+@
+text
+@d57 1
+d103 2
+a104 1
+  int entry;
+d108 3
+a110 1
+  /* Go through the array. Slow linear search for the moment... */
+d114 7
+a120 5
+    /* Use strcmp. We're going to be very strict in this; strcmp is not */
+    /* a technically valid way to compare URLs, but it's fast and you   */
+    /* don't need much storage space for the URLs themselves. The image */
+    /* history is not sufficiently important to warrant anything more   */
+    /* robust than this.                                                */
+d122 2
+a123 1
+    if (!strcmp(imghistory_base[entry].url, *url_base + url_offset)) return entry;
+d229 1
+d242 1
+a242 1
+    return imghistory_save(lookup_choice("ImageHistoryPath:Browse:User.Images",0,0));
+d553 3
+a555 2
+    imghistory_base[item].url = url;
+    url                       = NULL; /* Make sure we don't go and free it or something! */
+d607 8
+a614 2
+  local_path = malloc(strlen(pathname) + 1);
+  if (!local_path) return NULL;
+d616 6
+a621 1
+  strcpy(local_path, pathname);
+@
+
+
+1.2
+log
+@Image history can be emptied from the History menu.
+
+Significant reduction in number of times reformatter is called during
+a table widthing session results in a dramatic speed increase for nested
+tables (e.g. 64 deep with a paragraph of text in the deepest table takes
+about two seconds to load with near-instantaneous subsequent reformats,
+as opposed to taking optimistically 28 days for a 32 deep table!).
+This code relies on a very big stack of assumptions...
+
+Save as plain text implemented.
+
+Choices, Messages and Res files brought up to date where necessary.
+Version number taken to 1.28, 04-Dec-97 (so I don't forget later,
+basically...).
+@
+text
+@d46 2
+d151 18
+@
+
+
+1.1
+log
+@Forgot to add in ImgHistory.c / h last time. Note also that only the Browse
+and Ursula resources are up to date at this point - bits are missing from
+the other builds.
+@
+text
+@a72 1
+static void imghistory_expire       (unsigned int time);
+a73 1
+static void imghistory_limit        (unsigned int size);
+d327 1
+a327 1
+static void imghistory_expire(unsigned int time)
+d380 1
+a380 1
+static void imghistory_limit(unsigned int size)
+d386 2
+a387 1
+  /* Keep removing items until we come in under the required size */
+d389 1
+a389 1
+  while (size <= imghistory_count())
+d640 15
+@

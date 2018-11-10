@@ -1,0 +1,997 @@
+head	1.8;
+access;
+symbols
+	Generic-0_11:1.8
+	Generic-0_10:1.8
+	Generic-0_09:1.8
+	Generic-0_08:1.7
+	Generic-0_07:1.6
+	Generic-0_06:1.6
+	sbrodie_Expresso_final_190298:1.5
+	sbrodie_GenericFetcher_0_04:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2007.09.22.20.22.39;	author srevill;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2000.07.20.15.05.34;	author sbrodie;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.09.16.12.47.53;	author sbrodie;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	98.02.18.10.32.54;	author sbrodie;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	98.02.11.19.34.18;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.02.11.11.59.36;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.02.05.20.00.07;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.01.29.18.32.22;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.01.29.18.32.22;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@  Made MemCheck stuff optional.
+Detail:
+  This component wouldn't build in the ROOL release because it required the
+  MemCheck library which is a part of the Dr Smiths Toolkit (we can't
+  release that). Unfortunately, Dr Smiths was installed in another build on
+  the build machine so the dependency wasn't spotted.
+
+  Now this feature is compiled conditionally upon the existence of the
+  MemCheck_MEMCHECK symbol at build time.
+Admin:
+  Tested on IYONIX build machine with clean ROOL build environment.
+Notes:
+  Changes by Steve Revill.
+
+Version 0.09. Tagged as 'Generic-0_09'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Generic (c.module)
+ *
+ * THIS FILE REQUIRES CUSTOMISATION
+ *
+ * © Acorn Computers Ltd. 1997
+ *
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "kernel.h"
+#include "swis.h"
+#include "sys/errno.h"
+#include "module.h"
+#include "GenericHdr.h"
+#include "utils.h"
+#include "protocol.h"
+#include "connect.h"
+
+#ifdef MemCheck_MEMCHECK
+#  include "MemCheck:MemCheck.h"
+#endif
+
+#if CMHG_VERSION < 516
+#define CMHG_CONST
+#else
+#define CMHG_CONST const
+#endif
+
+/* TinySupport SWIs.  This does not work if any library static data
+ * is used within the module.  This means errno (__errno) and __ctype
+ * (as used by any macro call to is.... functions)  If you re-enable
+ * this SWI call, this module will fail to work at all.
+ */
+#define NO_TINYSTUBS
+
+#ifdef ROM
+#ifndef NO_TINYSTUBS
+static _kernel_oserror *__ROM;
+#define TinySupport_Share       (0x82c43)
+#define TinySupport_Die         (0x82c41)
+#endif
+#endif
+
+#define NO_SUCH_SWI     (0x1E6)
+
+#define URL_PROTOCOL_REGISTER 0x83e20
+#define URL_PROTOCOL_DEREGISTER 0x83e21
+
+#ifndef ROM
+extern int messages_file(void);
+#endif
+
+#ifndef ROM
+#ifdef DEFINE_ERRNO
+int __errno;
+#endif
+#endif
+
+
+static int callback_pending_flag;
+
+/* Sets clibrary_realloc_routine_is_buggy to 1 if RISC OS 3.1 or earlier (ROM realloc is broken) */
+static int clibrary_realloc_routine_is_buggy;
+static void module_check_os_version(void)
+{
+        int os;
+        (void) _swix(OS_Byte, _INR(0,2)|_OUT(1), 129, 0, 255, &os);
+        clibrary_realloc_routine_is_buggy = (os <= 0xA4);
+}
+
+
+static int registered;
+
+static _kernel_oserror *try_to_register(void)
+{
+        _kernel_oserror *e;
+
+        if (registered) return NULL;
+        e = _swix(URL_PROTOCOL_REGISTER, _INR(0,4), 0,
+                GenericFetcher_00,
+                CONNECT_DEFAULT_PROTOCOL_NAME ":",
+                Module_VersionNumber, Module_Help " © Acorn");
+        if (e == NULL) {
+                registered = 1;
+        }
+        return e;
+}
+
+static _kernel_oserror *try_to_deregister(void)
+{
+        if (!registered) {
+                return NULL;
+        }
+        else {
+                registered = 0;
+                return _swix(URL_PROTOCOL_DEREGISTER, _INR(0,1), 0, GenericFetcher_00);
+        }
+}
+
+static _kernel_oserror *register_with_url(void)
+{
+        _kernel_oserror *e;
+
+        e = try_to_register();
+        if (e == NULL) return e;
+        if (e->errnum != NO_SUCH_SWI) return e;
+        #ifndef ROM
+        e = _swix(OS_Module, _INR(0,1), 1 /* Load */, "System:Modules.Network.URL.URL");
+        return try_to_register();
+        #else
+        return NULL;
+        #endif
+}
+
+/*************************************************************/
+/* _kernel_oserror *module_init(char *cmd_fail, int podu...  */
+/*************************************************************/
+/* Start up and register ourselves with the URL module       */
+/*************************************************************/
+_kernel_oserror *module_init(CMHG_CONST char *cmd_tail, int podule_base, void *pw)
+{
+        _kernel_oserror *e;
+
+        (void) podule_base;
+        (void) cmd_tail;
+
+        #ifdef ROM
+        #ifndef NO_TINYSTUBS
+        __ROM = _swix(TinySupport_Share, _IN(0), pw);
+        #endif
+        #endif
+
+        debug_initialise("Generic", 0, 0);
+        debug_output_device(DEBUGIT_OUTPUT);
+
+        registered = 0;
+        callback_pending_flag = 0;
+
+        session_init();
+        module_check_os_version();
+
+#ifdef MemCheck_MEMCHECK
+        MemCheck_InitNoDebug();
+        MemCheck_SetQuitting(0,0);
+        MemCheck_RedirectToFilename("adfs::4.Trace.Genericmem");
+        MemCheck_InterceptSCLStringFunctions();
+        MemCheck_RegisterMiscBlock((void *)0x01c0001c,8164);
+        MemCheck_SetStoreMallocFunctions(1);
+        MemCheck_SetReportFrees(1);
+        MemCheck_SetChecking(0,0);
+#endif
+
+        e = register_with_url();
+        if (e) {
+                #ifndef ROM
+                if (e->errnum == NO_SUCH_SWI) {
+                        _kernel_oserror *newe = find_error();
+                        newe->errnum = 0x115; /* NeedMod */
+                        strcpy(newe->errmess, "NeedMod");
+                        e = _swix(MessageTrans_ErrorLookup, _INR(0,7), newe, 0, 0, 0, Module_Title, "URL", 0, 0);
+                }
+                #endif
+                return e;
+        }
+
+        #ifndef ROM
+        e = _swix(ResourceFS_RegisterFiles, _IN(0), messages_file());
+        if (e) {
+                (void) try_to_deregister();
+                return e;
+        }
+        #endif
+
+        if (getenv(Module_Title "$Path")) {
+                e = messages_file_open(Module_Title ":Messages");
+        }
+        else {
+                e = messages_file_open("Resources:$.Resources.URL." "Generic" ".Messages");
+        }
+
+        if (e) {
+                #ifndef ROM
+                (void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+                #endif
+                (void) try_to_deregister();
+                return e;
+        }
+
+        callback_pending_flag = 0;
+        /* Set up a callevery */
+        e = _swix(OS_CallEvery, _INR(0,2), 15*100-1, callevery_entry, pw);
+        if (e) {
+                messages_file_close();
+                #ifndef ROM
+                (void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+                #endif
+                (void) try_to_deregister();
+                return e;
+        }
+
+        return NULL;
+}
+
+
+void service_handler(int service_number, _kernel_swi_regs *r, void *pw)
+{
+        dprintf(("module_1", "Service &%X: R0 = %d for URL version  %03d\n", service_number, r->r[0], r->r[2]));
+        (void) pw;
+        (void) service_number;
+
+        switch (r->r[0]) {
+                case 0:
+                        (void) try_to_register();
+                        break;
+                case 1:
+                        (void) try_to_deregister();
+                        break;
+                default:
+                        break;
+        }
+}
+
+
+_kernel_oserror *module_kill(int fatal, int podule, void *pw)
+{
+        (void) fatal;
+        (void) podule;
+
+        (void) _swix(OS_RemoveTickerEvent, _INR(0,1), callevery_entry, pw);
+        if (callback_pending_flag) {
+                (void) _swix(OS_RemoveCallBack, _INR(0,1), callback_entry, pw);
+        }
+        messages_file_close();
+        #ifndef ROM
+        (void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+        #endif
+
+        ses_kill_all();
+
+       (void) try_to_deregister();
+
+        #ifdef ROM
+        #ifndef NO_TINYSTUBS
+        if(!__ROM) _swix(TinySupport_Die, 0);
+        #endif
+        #endif
+
+        return NULL;
+}
+
+
+_kernel_oserror *swi_handler(int swi_offset, _kernel_swi_regs *r, void *pw)
+{
+        (void) pw;
+
+        switch (swi_offset) {
+                case GenericFetcher_GetData - GenericFetcher_00:
+                        return(generic_start(r));
+
+                case GenericFetcher_Status - GenericFetcher_00:
+                        return(generic_status(r));
+
+                case GenericFetcher_ReadData - GenericFetcher_00:
+                        return(generic_readdata(r));
+
+                case GenericFetcher_Stop - GenericFetcher_00:
+                       return (generic_stop(r));
+
+                default:
+                        return(error_BAD_SWI);
+        }
+}
+
+
+int callback_handler(_kernel_swi_regs *r, void *pw)
+{
+        (void) pw;
+        (void) r;
+
+        if (!callback_pending_flag) {
+                return 1;
+        }
+
+        callback_pending_flag = 0;
+        return 1;
+}
+
+int callevery_handler(_kernel_swi_regs *r, void *pw)
+{
+        (void) r;
+        if (callback_pending_flag) {
+                return 1;
+        }
+        callback_pending_flag = 1;
+        (void) _swix(OS_AddCallBack, _INR(0,1), callback_entry, pw);
+        return 1;
+}
+
+/* RISC OS 3.1 SVC mode realloc is broken, so we must provide our own */
+char *module_realloc(void *ptr, size_t size)
+{
+        dprintf(("module_1", "module_realloc(%p, %d)\n", ptr, size));
+        if (!clibrary_realloc_routine_is_buggy) return realloc(ptr, size);
+
+        if (ptr == NULL) {
+                return malloc(size);
+        }
+        if (size == 0) {
+                free(ptr);
+                return NULL;
+        }
+        else {
+                const int *rma_block = ptr;
+                const size_t newsize = size - (rma_block[-1] - 4);
+                char *newptr;
+
+                if (_swix(OS_Module, _IN(0)|_INR(2,3)|_OUT(2), 0xD, ptr, newsize, &newptr) != NULL) {
+                        return NULL;
+                }
+
+                return newptr;
+        }
+}
+@
+
+
+1.7
+log
+@  Modified to use DebugLib
+Detail:
+  Since these modifications were made before customising the code as the
+    LDAP module, there seems little point doing that all again, so this
+    is the latest DebugLib-enabled version of the generic fetcher.
+Admin:
+  Module builds and runs (albeit not doing anything much)
+
+Version 0.08. Tagged as 'Generic-0_08'
+@
+text
+@d35 3
+a37 1
+#include "MemCheck:MemCheck.h"
+d158 1
+d167 1
+@
+
+
+1.6
+log
+@Removed TinyStubs stuff; moved module to srccommit format
+
+Version 0.06. Tagged as 'Generic-0_06'
+@
+text
+@d53 2
+a54 2
+#define TinySupport_Share	(0x82c43)
+#define TinySupport_Die		(0x82c41)
+d58 1
+a58 1
+#define NO_SUCH_SWI	(0x1E6)
+d80 3
+a82 3
+	int os;
+	(void) _swix(OS_Byte, _INR(0,2)|_OUT(1), 129, 0, 255, &os);
+	clibrary_realloc_routine_is_buggy = (os <= 0xA4);
+d90 1
+a90 1
+	_kernel_oserror *e;
+d92 9
+a100 9
+	if (registered) return NULL;
+	e = _swix(URL_PROTOCOL_REGISTER, _INR(0,4), 0,
+		GenericFetcher_00,
+		CONNECT_DEFAULT_PROTOCOL_NAME ":",
+		Module_VersionNumber, Module_Help " © Acorn 1998 (Built: " Module_Date ")");
+	if (e == NULL) {
+		registered = 1;
+	}
+	return e;
+d105 7
+a111 7
+	if (!registered) {
+		return NULL;
+	}
+	else {
+		registered = 0;
+		return _swix(URL_PROTOCOL_DEREGISTER, _INR(0,1), 0, GenericFetcher_00);
+	}
+d116 1
+a116 1
+	_kernel_oserror *e;
+d118 9
+a126 9
+	e = try_to_register();
+	if (e == NULL) return e;
+	if (e->errnum != NO_SUCH_SWI) return e;
+	#ifndef ROM
+	e = _swix(OS_Module, _INR(0,1), 1 /* Load */, "System:Modules.Network.URL.URL");
+	return try_to_register();
+	#else
+	return NULL;
+	#endif
+d132 1
+a132 1
+/* Start up and register ourselves with the URL module	     */
+d136 1
+a136 1
+	_kernel_oserror *e;
+d138 2
+a139 2
+	(void) podule_base;
+	(void) cmd_tail;
+d141 71
+a211 70
+      	#ifdef ROM
+      	#ifndef NO_TINYSTUBS
+    	__ROM = _swix(TinySupport_Share, _IN(0), pw);
+    	#endif
+	#endif
+
+	registered = 0;
+	callback_pending_flag = 0;
+
+	session_init();
+	module_check_os_version();
+
+	MemCheck_InitNoDebug();
+	MemCheck_SetQuitting(0,0);
+	MemCheck_RedirectToFilename("adfs::4.Trace.Genericmem");
+	MemCheck_InterceptSCLStringFunctions();
+	MemCheck_RegisterMiscBlock((void *)0x01c0001c,8164);
+	MemCheck_SetStoreMallocFunctions(1);
+	MemCheck_SetReportFrees(1);
+	MemCheck_SetChecking(0,0);
+
+	e = register_with_url();
+	if (e) {
+		#ifndef ROM
+		if (e->errnum == NO_SUCH_SWI) {
+			_kernel_oserror *newe = find_error();
+			const size_t length = strlen(strcpy(newe->errmess, e->errmess));
+
+			newe->errnum = NO_SUCH_SWI;
+			strncat(newe->errmess, " (Load the URL module)", sizeof(newe->errmess) - length);
+			return newe;
+		}
+		#endif
+		return e;
+	}
+
+	#ifndef ROM
+	e = _swix(ResourceFS_RegisterFiles, _IN(0), messages_file());
+	if (e) {
+		(void) try_to_deregister();
+		return e;
+	}
+	#endif
+
+	if (getenv(Module_Title "$Path")) {
+		e = messages_file_open(Module_Title ":Messages");
+	}
+	else {
+		e = messages_file_open("Resources:$.Resources.URL." "Generic" ".Messages");
+	}
+
+	if (e) {
+		#ifndef ROM
+		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+		#endif
+		(void) try_to_deregister();
+		return e;
+	}
+
+	callback_pending_flag = 0;
+	/* Set up a callevery */
+	e = _swix(OS_CallEvery, _INR(0,2), 15*100-1, callevery_entry, pw);
+	if (e) {
+		messages_file_close();
+		#ifndef ROM
+		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+		#endif
+		(void) try_to_deregister();
+		return e;
+	}
+d213 1
+a213 1
+	return NULL;
+d219 14
+a232 16
+	#ifdef TRACE
+	protocol_debug("Service &%X: R0 = %d for URL version  %03d\n", service_number, r->r[0], r->r[2]);
+	#endif
+	(void) pw;
+	(void) service_number;
+
+	switch (r->r[0]) {
+		case 0:
+			(void) try_to_register();
+			break;
+		case 1:
+			(void) try_to_deregister();
+			break;
+		default:
+			break;
+	}
+d238 2
+a239 2
+	(void) fatal;
+	(void) podule;
+d241 8
+a248 8
+	(void) _swix(OS_RemoveTickerEvent, _INR(0,1), callevery_entry, pw);
+	if (callback_pending_flag) {
+		(void) _swix(OS_RemoveCallBack, _INR(0,1), callback_entry, pw);
+	}
+	messages_file_close();
+	#ifndef ROM
+	(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+	#endif
+d250 1
+a250 1
+	ses_kill_all();
+d256 3
+a258 3
+    	if(!__ROM) _swix(TinySupport_Die, 0);
+    	#endif
+	#endif
+d260 1
+a260 1
+	return NULL;
+d266 1
+a266 1
+	(void) pw;
+d268 3
+a270 3
+	switch (swi_offset) {
+		case GenericFetcher_GetData - GenericFetcher_00:
+			return(generic_start(r));
+d272 2
+a273 2
+		case GenericFetcher_Status - GenericFetcher_00:
+			return(generic_status(r));
+d275 2
+a276 2
+		case GenericFetcher_ReadData - GenericFetcher_00:
+			return(generic_readdata(r));
+d278 2
+a279 2
+		case GenericFetcher_Stop - GenericFetcher_00:
+		       return (generic_stop(r));
+d281 3
+a283 3
+		default:
+			return(error_BAD_SWI);
+	}
+d289 2
+a290 2
+	(void) pw;
+	(void) r;
+d292 3
+a294 3
+	if (!callback_pending_flag) {
+		return 1;
+	}
+d296 2
+a297 2
+	callback_pending_flag = 0;
+	return 1;
+d302 7
+a308 7
+	(void) r;
+	if (callback_pending_flag) {
+		return 1;
+	}
+	callback_pending_flag = 1;
+	(void) _swix(OS_AddCallBack, _INR(0,1), callback_entry, pw);
+	return 1;
+d314 18
+a331 20
+	#ifdef TRACE
+	protocol_debug("module_realloc(%p, %d)\n", ptr, size);
+	#endif
+	if (!clibrary_realloc_routine_is_buggy) return realloc(ptr, size);
+
+	if (ptr == NULL) {
+		return malloc(size);
+	}
+	if (size == 0) {
+		free(ptr);
+		return NULL;
+	}
+	else {
+		const int *rma_block = ptr;
+		const size_t newsize = size - (rma_block[-1] - 4);
+		char *newptr;
+
+		if (_swix(OS_Module, _IN(0)|_INR(2,3)|_OUT(2), 0xD, ptr, newsize, &newptr) != NULL) {
+			return NULL;
+		}
+d333 2
+a334 2
+		return newptr;
+	}
+@
+
+
+1.5
+log
+@Version number increase for all modules for final Expresso release.
+@
+text
+@d43 7
+d51 1
+d53 3
+d141 4
+a144 2
+	#ifdef ROM
+	__ROM = _swix(0xa2c43, _IN(0), pw);
+d255 4
+a258 2
+       #ifdef ROM
+	if(!__ROM) _swix(0xa2c41, 0);
+@
+
+
+1.4
+log
+@Dependency on Syslog removed
+Const-ness of veneers modified on the basis of the CMHG version number to
+avoid build problems.
+@
+text
+@d57 1
+d59 1
+@
+
+
+1.3
+log
+@Build process improvements :
+* Standardised make process in common with other protocol modules.
+* Resources put into standard structure for internationalisation
+@
+text
+@d37 6
+d121 1
+a121 1
+_kernel_oserror *module_init(const char *cmd_tail, int podule_base, void *pw)
+@
+
+
+1.2
+log
+@* Build structure standardised to allow ROM and RAM builds
+* Instructions for customisation updated to reflect creating new fetcher
+  modules from this CVS generic template module.
+@
+text
+@d30 1
+a30 1
+#include "GenericMod.h"
+d37 3
+a39 1
+int __errno;
+d46 9
+d61 3
+a63 3
+        int os;
+        (void) _swix(OS_Byte, _INR(0,2)|_OUT(1), 129, 0, 255, &os);
+        clibrary_realloc_routine_is_buggy = (os <= 0xA4);
+d71 1
+a71 1
+        _kernel_oserror *e;
+d77 1
+a77 1
+		Module_VersionNumber, Module_Help " © Acorn 1997 (Built: " Module_Date ")");
+d79 1
+a79 1
+	        registered = 1;
+d81 1
+a81 1
+        return e;
+d86 5
+a90 5
+        if (!registered) {
+                return NULL;
+        }
+        else {
+                registered = 0;
+d92 1
+a92 1
+        }
+d97 1
+a97 1
+        _kernel_oserror *e;
+d102 1
+d105 3
+d113 1
+a113 1
+/* Start up and register ourselves with the URL module       */
+d117 1
+a117 1
+    	_kernel_oserror *e;
+d119 6
+a124 2
+    	(void) podule_base;
+    	(void) cmd_tail;
+d132 15
+a146 14
+  	MemCheck_InitNoDebug();
+        MemCheck_SetQuitting(0,0);
+  	MemCheck_RedirectToFilename("adfs::4.Trace.Genericmem");
+  	MemCheck_InterceptSCLStringFunctions();
+  	MemCheck_RegisterMiscBlock((void *)0x01c0001c,8164);
+  	MemCheck_SetStoreMallocFunctions(1);
+  	MemCheck_SetReportFrees(1);
+  	MemCheck_SetChecking(0,0);
+
+  	e = register_with_url();
+  	if (e) {
+  	        if (e->errnum == NO_SUCH_SWI) {
+  	                _kernel_oserror *newe = find_error();
+  	                const size_t length = strlen(strcpy(newe->errmess, e->errmess));
+d148 1
+a148 1
+  	                newe->errnum = NO_SUCH_SWI;
+d151 19
+a169 26
+  	        }
+    		return e;
+    	}
+
+  	e = _swix(ResourceFS_RegisterFiles, _IN(0), messages_file());
+  	if (e) {
+  	        (void) try_to_deregister();
+    		return e;
+        }
+
+  	e = messages_file_open("Resources:$.Resources." Module_Title ".Messages");
+  	if (e) {
+    		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+  	        (void) try_to_deregister();
+    		return e;
+    	}
+
+  	callback_pending_flag = 0;
+  	/* Set up a callevery */
+  	e = _swix(OS_CallEvery, _INR(0,2), 15*100-1, callevery_entry, pw);
+  	if (e) {
+    		messages_file_close();
+    		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+  	        (void) try_to_deregister();
+    		return e;
+        }
+d171 21
+a191 1
+  	return NULL;
+d197 5
+a201 5
+        #ifdef TRACE
+        protocol_debug("Service &%X: R0 = %d for URL version  %03d\n", service_number, r->r[0], r->r[2]);
+        #endif
+        (void) pw;
+        (void) service_number;
+d204 8
+a211 8
+	        case 0:
+	        	(void) try_to_register();
+	        	break;
+	        case 1:
+	        	(void) try_to_deregister();
+	        	break;
+	        default:
+	        	break;
+d218 2
+a219 2
+    	(void) fatal;
+    	(void) podule;
+d222 7
+a228 5
+    	if (callback_pending_flag) {
+      		(void) _swix(OS_RemoveCallBack, _INR(0,1), callback_entry, pw);
+    	}
+    	messages_file_close();
+    	(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+d234 5
+a238 1
+    	return NULL;
+d246 3
+a248 3
+  	switch (swi_offset) {
+     		case GenericFetcher_GetData - GenericFetcher_00:
+       			return(generic_start(r));
+d250 2
+a251 2
+     		case GenericFetcher_Status - GenericFetcher_00:
+       			return(generic_status(r));
+d253 2
+a254 2
+     		case GenericFetcher_ReadData - GenericFetcher_00:
+       			return(generic_readdata(r));
+d256 1
+a256 1
+     		case GenericFetcher_Stop - GenericFetcher_00:
+d259 3
+a261 3
+     		default:
+       			return(error_BAD_SWI);
+        }
+d267 2
+a268 2
+    	(void) pw;
+    	(void) r;
+d270 3
+a272 3
+    	if (!callback_pending_flag) {
+      		return 1;
+      	}
+d274 1
+a274 1
+    	callback_pending_flag = 0;
+d280 7
+a286 7
+        (void) r;
+  	if (callback_pending_flag) {
+   		return 1;
+   	}
+  	callback_pending_flag = 1;
+  	(void) _swix(OS_AddCallBack, _INR(0,1), callback_entry, pw);
+  	return 1;
+d292 3
+a294 3
+        #ifdef TRACE
+        protocol_debug("module_realloc(%p, %d)\n", ptr, size);
+        #endif
+d297 5
+a301 5
+        if (ptr == NULL) {
+                return malloc(size);
+        }
+        if (size == 0) {
+                free(ptr);
+d303 1
+a303 1
+        }
+d305 3
+a307 3
+	        const int *rma_block = ptr;
+	        const size_t newsize = size - (rma_block[-1] - 4);
+	        char *newptr;
+d310 1
+a310 1
+		        return NULL;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 1
+a19 1
+ * 
+d37 2
+d61 1
+a61 1
+        
+d87 2
+a88 2
+        
+	e = try_to_register(); 
+d103 1
+a103 1
+    
+d140 1
+a140 1
+  
+d257 1
+a257 1
+	        
+d273 1
+a273 1
+		
+@
+
+
+1.1.1.1
+log
+@Import from SrcFiler of Browser fetchers
+@
+text
+@@

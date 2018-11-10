@@ -1,0 +1,347 @@
+head	1.5;
+access;
+symbols
+	OMAPVideo-0_41:1.5
+	OMAPVideo-0_40:1.4
+	OMAPVideo-0_39:1.4
+	OMAPVideo-0_38:1.4
+	OMAPVideo-0_37:1.4
+	OMAPVideo-0_36:1.4
+	OMAPVideo-0_35:1.4
+	OMAPVideo-0_34:1.4
+	OMAPVideo-0_33:1.3
+	OMAPVideo-0_32:1.3
+	OMAPVideo-0_31:1.3
+	OMAPVideo-0_30:1.3
+	OMAPVideo-0_29:1.3
+	OMAPVideo-0_28:1.3
+	OMAPVideo-0_27:1.3
+	OMAPVideo-0_26:1.3
+	OMAPVideo-0_25:1.3
+	OMAPVideo-0_24:1.3
+	OMAPVideo-0_23:1.3
+	OMAPVideo-0_22:1.3
+	OMAPVideo-0_21:1.3
+	OMAPVideo-0_20:1.3
+	OMAPVideo-0_19:1.3
+	OMAPVideo-0_18:1.2
+	OMAPVideo-0_17:1.2
+	OMAPVideo-0_16:1.2
+	OMAPVideo-0_15:1.2
+	OMAPVideo-0_14:1.2
+	OMAPVideo-0_13:1.2
+	OMAPVideo-0_12:1.1
+	OMAPVideo-0_11:1.1
+	OMAPVideo-0_10:1.1
+	OMAPVideo-0_09:1.1
+	OMAPVideo-0_08:1.1
+	OMAPVideo-0_07:1.1
+	OMAPVideo-0_06:1.1
+	OMAPVideo-0_05:1.1
+	OMAPVideo-0_04:1.1
+	OMAPVideo-0_03:1.1
+	OMAPVideo-0_02:1.1
+	OMAPVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.05.31.21.48.54;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	qHkabDo5zjgySuEA;
+
+1.4
+date	2015.05.17.17.50.09;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	J3i0xRSaySaJePly;
+
+1.3
+date	2012.05.06.09.16.44;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	imAmvVvRmuLKWD3w;
+
+1.2
+date	2011.10.23.21.01.51;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	0rwNv0ztfd3f9wEv;
+
+1.1
+date	2010.02.28.19.01.15;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Big refactor, introduce GraphicsV overlay API support
+Detail:
+  This change introduces initial support for the GraphicsV overlay API.
+  RGB & YUV overlays are supported, along with rotation and scaling.
+  Vertical flipping isn't supported yet, and there are still a number of bugs to track down, along with some potential improvements.
+  The code has also been refactored significantly, in an attempt to protect all critical state with spinlocks/mutexes (as appropriate), and to reduce the number of globals so that it's easier to see what's touching what. Previously very little locking was performed, which could lead to issues if VSyncs or synclost interrupts occurred during certain operations. Now, the data should be structured in such a way that this shouldn't cause problems.
+  Notable things:
+  * State which needs to be writable from interrupt handlers is protected by spinlocks
+  * State which needs to be readable from interrupt handlers is protected by reader-writer spinlocks
+  * State which doesn't need to be accessed from interrupt handlers is unprotected (mutexes can be introduced in the future to make the code SMP-safe)
+  * Using non-alpha screen modes for the desktop will currently result in only "basic" overlays being supported (i.e. overlays which appear ontop of the desktop). In some cases this could be improved by falling back to a software pointer, but for now the only way to get Z-Order overlays is to use a screen mode with an alpha channel.
+  * Memory allocation for overlays is abstracted via the buffer interface (h/buffer). This has three implementations: basic buffers for untransformed overlays, VRFB-transformed buffers for OMAP3, and TILER-transformed buffers for OMAP4.
+  * Ultimately all overlay memory is allocated as physically contiguous pages within a PMP - although since TILER contains its own MMU this isn't strictly necessary on OMAP4
+  * Overlay memory is mapped as write-through cacheable for CPU access; experimentation with different cache policies has yet to be performed. However a potential future optimisation would be to perform lazy unmapping of overlay buffers, reducing the map/unmap overhead in well-behaved code which only maps buffers when they're needed
+Admin:
+  Tested on BB-xM, Pandaboard
+
+
+Version 0.41. Tagged as 'OMAPVideo-0_41'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include "Global/RISCOS.h"
+#include "Global/HALEntries.h"
+#include "swis.h"
+
+#include "DebugLib/DebugLib.h"
+
+#include "regs.h"
+#include "consts.h"
+
+volatile struct dss_regs      *dss;
+volatile struct dispc_regs    *dispc;
+volatile struct rfbi_regs     *rfbi;
+volatile struct venc_regs     *venc;
+volatile struct dsi_regs      *dsi;
+volatile struct dsi_phy_regs  *dsi_phy;
+volatile struct dsi_pll_regs  *dsi_pll;
+volatile struct sdma_regs     *sdma;
+volatile struct sdmachan_regs *sdmachan; /* Only using 1 channel */
+
+uint32_t ban_hardware_update = BHUB_OFF;
+
+#ifdef DEBUGLIB
+static int failedupdates=0;
+#endif
+
+/* Atomic update of ban flags */
+void set_ban(uint32_t flags)
+{
+	int irqs = _kernel_irqs_disabled();
+	if(!irqs)
+		_kernel_irqs_off();
+	ban_hardware_update |= flags;
+	if(!irqs)
+		_kernel_irqs_on();
+}
+
+void clear_ban(uint32_t flags)
+{
+	int irqs = _kernel_irqs_disabled();
+	if(!irqs)
+		_kernel_irqs_off();
+	ban_hardware_update &= ~flags;
+#ifdef DEBUGLIB
+	if(!ban_hardware_update && failedupdates)
+		dprintf(("","clear_ban: %d updates failed due to ban\n",failedupdates));
+	failedupdates = 0;
+#endif
+	if(!irqs)
+		_kernel_irqs_on();
+}
+
+bool begin_quick_hardware_update(int *irqstate)
+{
+	*irqstate = _kernel_irqs_disabled();
+	if(!*irqstate)
+		_kernel_irqs_off();
+	if(ban_hardware_update)
+	{
+#ifdef DEBUGLIB
+		failedupdates++;
+#endif
+		if(!*irqstate)
+			_kernel_irqs_on();
+		return false;
+	}
+	return true;
+}
+
+void end_quick_hardware_update(int irqstate)
+{
+	if(!irqstate)
+		_kernel_irqs_on();
+}
+
+bool begin_slow_hardware_update(int *irqstate)
+{
+	int irqs = _kernel_irqs_disabled();
+	if(!irqs)
+		_kernel_irqs_off();
+	if(ban_hardware_update)
+	{
+#ifdef DEBUGLIB
+		failedupdates++;
+#endif
+		if(!irqs)
+			_kernel_irqs_on();
+		return false;
+	}
+	/* Else we're free to update; disable video IRQ and re-enable global IRQs */
+	/* This is a bit naughty, really we should properly handle the case where it's a shared IRQ */
+	_kernel_oserror *e = _swix(OS_Hardware, _IN(0) | _INR(8,9) | _OUT(0), dev->dev.devicenumber&~(1u<<31), OSHW_CallHAL, EntryNo_HAL_IRQDisable, irqstate);
+#ifdef DEBUGLIB
+	if(e)
+		failedupdates++;
+#endif
+	if(!irqs)
+		_kernel_irqs_on();
+#ifdef DEBUGLIB
+	else
+		dprintf(("","begin_slow_hardware_update: Warning, IRQs disabled!\n")); /* Warn if IRQs were disabled all entry - slow updates could be too slow to allow IRQs to be off globally */
+#endif
+	return (e?false:true);
+}
+
+void end_slow_hardware_update(int irqstate)
+{
+	if(irqstate)
+		_swix (OS_Hardware, _IN(0) | _INR(8,9), dev->dev.devicenumber&~(1u<<31), OSHW_CallHAL, EntryNo_HAL_IRQEnable);
+}
+@
+
+
+1.4
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@d35 1
+a35 1
+#include "videodevice.h"
+@
+
+
+1.3
+log
+@Merge of headers with OMAP4Video
+For the most part, this is just adding "_t" suffixes to all the typedefs.
+The OMAP4 controller registers are in "regs4.h" and OMAP3 in "regs3.h", they are selected between with a compile time switch - hence !MkROM becomes !Ms !MkRom3 and !MkRom4.
+OMAP3 version tested & still works, OMAP4 will not work.
+
+Version 0.19. Tagged as 'OMAPVideo-0_19'
+@
+text
+@d37 9
+a45 9
+volatile dss_regs_t      *dss;
+volatile dispc_regs_t    *dispc;
+volatile rfbi_regs_t     *rfbi;
+volatile venc_regs_t     *venc;
+volatile dsi_regs_t      *dsi;
+volatile dsi_phy_regs_t  *dsi_phy;
+volatile dsi_pll_regs_t  *dsi_pll;
+volatile sdma_regs_t     *sdma;
+volatile sdmachan_regs_t *sdmachan; /* Only using 1 channel */
+d118 1
+a118 1
+	_kernel_oserror *e = _swix(OS_Hardware, _IN(0) | _INR(8,9) | _OUT(0), dev->dev.devicenumber&~(1u<<31), 0, EntryNo_HAL_IRQDisable, irqstate);
+d135 1
+a135 1
+		_swix (OS_Hardware, _IN(0) | _INR(8,9), dev->dev.devicenumber&~(1u<<31), 0, EntryNo_HAL_IRQEnable);
+@
+
+
+1.2
+log
+@Fix black screen on boot issue. Use C99 number types.
+Detail:
+  c/dss - Fixed the cause of the black screens on boot on OMAP3 machines (DM37xx seems fine). It looks like the cause was due to skipping the step where you disable the LCD output before triggering the DSS reset.
+  c/cmodule, c/dispc, c/dss, c/graphicsv, h/globals - Removed code relating to previous attempts to fix the black screen issue
+  c/cmodule, c/dispc, c/dsi, c/dss, c/graphicsv, c/palette, c/regs, c/sdma, c/venc, h/dsi, h/dss, h/globals, h/graphicsv, h/palette, h/regs - Use the C99 number types instead of u32, u16, etc.
+Admin:
+  Tested on rev C2 BB, rev A2 BB-xM
+
+
+Version 0.13. Tagged as 'OMAPVideo-0_13'
+@
+text
+@d37 9
+a45 9
+volatile dss_regs *dss;
+volatile dispc_regs *dispc;
+volatile rfbi_regs *rfbi;
+volatile venc_regs *venc;
+volatile dsi_regs *dsi;
+volatile dsi_phy_regs *dsi_phy;
+volatile dsi_pll_regs *dsi_pll;
+volatile sdma_regs *sdma;
+volatile sdmachan_regs *sdmachan;
+@
+
+
+1.1
+log
+@Add initial version of OMAP video driver module
+Detail:
+  All-new OMAP video driver, written as a module in C.
+  Functionality-wise it's basically the same as the original HAL-based driver, except it provides support for GraphicsV_Render via use of the OMAP SDMA controller, and there's currently no support for GraphicsV_IICOp.
+  However under the hood the module is significantly different, to ensure it can be expanded to expose the full feature set of the video controller once the new GraphicsV API is ready.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.01. Tagged as 'OMAPVideo-0_01'
+@
+text
+@d47 1
+a47 1
+u32 ban_hardware_update = BHUB_OFF;
+d54 1
+a54 1
+void set_ban(u32 flags)
+d64 1
+a64 1
+void clear_ban(u32 flags)
+@
+

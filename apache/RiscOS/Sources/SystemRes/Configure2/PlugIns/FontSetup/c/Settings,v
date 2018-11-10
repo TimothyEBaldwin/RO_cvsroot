@@ -1,0 +1,489 @@
+head	1.4;
+access;
+symbols
+	FontSetup-0_12:1.4
+	FontSetup-0_11:1.3
+	FontSetup-0_10:1.3
+	FontSetup-0_09:1.3
+	FontSetup-0_08:1.3
+	FontSetup-0_07:1.2
+	FontSetup-0_06:1.1.1.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.1
+	Ursula_RiscPC:1.1.1.1.0.2
+	bavison_FontSetup-0_05:1.1.1.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.1
+	UrsulaBuild_FinalSoftload:1.1.1.1
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.1
+	bavison_FontSetup-0_04:1.1.1.1
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.1
+	bavison_FontSetup-0_03:1.1.1.1
+	bavison_FontSetup-0_02:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2013.08.03.07.39.05;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	msZwYnZgAvyuOYZw;
+
+1.3
+date	2003.01.22.17.16.30;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2002.12.19.22.34.08;	author srevill;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.05.29.14.13.53;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.05.29.14.13.53;	author bavison;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.08.28.15.38.32;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Relocate 'desktop font' picker out of the font manager setup
+This plugin is now only concerned with font manager matters.
+
+Version 0.12. Tagged as 'FontSetup-0_12'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	Settings.c ********************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Fonts configuration plug-in
+This file:	GUI <-> settings routines
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+20/05/1998	BJGA	Created
+27/05/1998	BJGA	Initial faded-out values are now forcibly constrained
+			by "parent" fontmax setting
+28/05/1998	BJGA	Implemented settings_write
+28/08/1998	BJGA	Strips encoding information from font identifier
+			returned by fontmenu_get_font()
+
+\**************************************************************************/
+
+/* CLib */
+#include "swis.h"
+/* Toolbox */
+#include "toolbox.h"
+#include "window.h"
+#include "gadgets.h"
+/* Common */
+#include "cmos.h"
+#include "misc.h"
+#include "str.h"
+/* Support */
+#include "RMVersion/RMVersion.h"
+/* local headers */
+#include "Main.h"
+#include "Settings.h"  /* includes prototypes for this file */
+
+const cmos cmos_details [6] = { { 0xCA, 0, 8 },		/* FontMax2 EOR 12 */
+				{ 0xCB, 0, 8 },		/* FontMax3 EOR 24 */
+				{ 0xCC, 0, 8 },		/* FontMax4 */
+				{ 0xCD, 0, 8 },		/* FontMax5 */
+				{ 0x86, 0, 8 },		/* FontSize / 4 */
+				{ 0xC8, 0, 8 } };	/* FontMax / fontstepsizeK */
+
+/* Global variables */
+unsigned int	fontstepsize = 4;
+
+/******	setup_gadgets_by_fontmanager() ************************************\
+
+Purpose:	Different versions of the Font Manager module place different
+		interpretations upon the CMOS values for the configured font
+		maximum size. For example, versions < 3.42
+		multiply the stored value by 4 KB whereas versions >= 4.32
+		will multiply it by 64 KB.
+In:		-
+Out:		-
+
+\**************************************************************************/
+
+void setup_gadgets_by_fontmanager (void)
+{
+  unsigned int version;
+
+  /* Font cache size is defined in multiples of n KB depending upon FontManager version */
+  throw (rmversion (rmversion_RAM, "FontManager", &version));
+  if (version >= 0x34200)
+    fontstepsize = 64;
+  else
+    fontstepsize = 4;
+
+  throw (numberrange_set_bounds (0x7, mainwindow_id, mainwindow_cacheinit, 0, 255*4, 4, 0));
+  throw (numberrange_set_bounds (0x7, mainwindow_id, mainwindow_cachelimit, 0, 255*fontstepsize, fontstepsize, 0));
+}
+
+/******	settings_read() ***************************************************\
+
+Purpose:	Reads current / default settings, reflect them in GUI
+In:		Routine to determine settings (cmos_read or cmos_default)
+
+\**************************************************************************/
+
+void settings_read (int(*get)(cmos item, void *messages))
+{
+  int	value,
+  	fontmax2,
+  	fontmax3,
+  	fontmax4,
+  	fontmax5;
+
+  fontmax2 = get (FontMax2, &messages) ^ 12;
+  throw (optionbutton_set_state (0, mainwindow_id, mainwindow_cachebitsoption, fontmax2 != 0));
+  misc_shadecomponents (!fontmax2, mainwindow_id, mainwindow_cachebits_shademin, mainwindow_cachebits_shademax);
+  if (fontmax2 == 0)
+  {
+    fontmax2 = cmos_default (FontMax2, &messages) ^ 12;
+  }
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_cachebits, fontmax2));
+
+  fontmax3 = get (FontMax3, &messages) ^ 24;
+  throw (optionbutton_set_state (0, mainwindow_id, mainwindow_antialiasoption, fontmax3 != 0));
+  misc_shadecomponents (!fontmax3, mainwindow_id, mainwindow_antialias_shademin, mainwindow_antialias_shademax);
+  if (fontmax3 == 0)
+  {
+    fontmax3 = cmos_default (FontMax3, &messages) ^ 24;
+    fontmax3 = (fontmax3 <= fontmax2) ? fontmax3 : fontmax2;
+  }
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_antialias, fontmax3));
+
+  fontmax4 = get (FontMax4, &messages);
+  throw (optionbutton_set_state (0, mainwindow_id, mainwindow_horizaaoption, fontmax4 != 0));
+  misc_shadecomponents (!fontmax4, mainwindow_id, mainwindow_horizaa_shademin, mainwindow_horizaa_shademax);
+  if (fontmax4 == 0)
+  {
+    fontmax4 = (12 <= fontmax3) ? 12 : fontmax3;
+  }
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_horizaa, fontmax4));
+
+  fontmax5 = get (FontMax5, &messages);
+  throw (optionbutton_set_state (0, mainwindow_id, mainwindow_vertaaoption, fontmax5 != 0));
+  misc_shadecomponents (!fontmax5, mainwindow_id, mainwindow_vertaa_shademin, mainwindow_vertaa_shademax);
+  if (fontmax5 == 0)
+  {
+    fontmax5 = (12 <= fontmax3) ? 12 : fontmax3;
+  }
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_vertaa, fontmax5));
+
+  value = get (FontSize, &messages) * 4;
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_cacheinit, value));
+
+  value = get (FontMax, &messages) * fontstepsize;
+  throw (numberrange_set_value (0, mainwindow_id, mainwindow_cachelimit, value));
+}
+
+/******	settings_write() **************************************************\
+
+Purpose:	Reads GUI, reflect in current and configured settings
+Out:		TRUE => operation performed successfully
+
+\**************************************************************************/
+
+BOOL settings_write (void)
+{
+  int fontsize,
+      fontmax,
+      fontmax1,
+      fontmax2,
+      fontmax3,
+      fontmax4,
+      fontmax5,
+      value;
+  char string [256];
+
+  throw (numberrange_get_value (0, mainwindow_id, mainwindow_cachelimit, &fontmax));
+  fontmax /= fontstepsize;
+  cmos_write (FontMax, fontmax);
+
+  fontmax1 = _swi (Font_ReadFontMax, _RETURN(1)); /* remember current setting of FontMax1 */
+
+  throw (numberrange_get_value (0, mainwindow_id, mainwindow_cachebits, &fontmax2));
+  throw (optionbutton_get_state (0, mainwindow_id, mainwindow_cachebitsoption, &value));
+  if (fontmax2 > 255) fontmax2 = 255;
+  if (fontmax2 < 1)   fontmax2 = 1;
+  if (value == 0)     fontmax2 = 0;
+  cmos_write (FontMax2, fontmax2 ^ 12);
+
+  throw (numberrange_get_value (0, mainwindow_id, mainwindow_antialias, &fontmax3));
+  throw (optionbutton_get_state (0, mainwindow_id, mainwindow_antialiasoption, &value));
+  if (fontmax3 > 255) fontmax3 = 255;
+  if (fontmax3 < 1)   fontmax3 = 1;
+  if (value == 0)     fontmax3 = 0;
+  cmos_write (FontMax3, fontmax3 ^ 24);
+
+  throw (numberrange_get_value (0, mainwindow_id, mainwindow_horizaa, &fontmax4));
+  throw (optionbutton_get_state (0, mainwindow_id, mainwindow_horizaaoption, &value));
+  if (fontmax4 > 255) fontmax4 = 255;
+  if (fontmax4 < 1)   fontmax4 = 1;
+  if (value == 0)     fontmax4 = 0;
+  cmos_write (FontMax4, fontmax4);
+
+  throw (numberrange_get_value (0, mainwindow_id, mainwindow_vertaa, &fontmax5));
+  throw (optionbutton_get_state (0, mainwindow_id, mainwindow_vertaaoption, &value));
+  if (fontmax5 > 255) fontmax5 = 255;
+  if (fontmax5 < 1)   fontmax5 = 1;
+  if (value == 0)     fontmax5 = 0;
+  cmos_write (FontMax5, fontmax5);
+
+  /* Now update the Font Manager's current FontMax settings.
+     Doing this in one go is a lot faster than using four *Configure commands! */
+  _swi (Font_SetFontMax, _INR(0,7), fontmax, fontmax1, fontmax2, fontmax3, fontmax4, fontmax5, 0, 0);
+
+  throw (numberrange_get_value (0, mainwindow_id, mainwindow_cacheinit, &fontsize));
+  cmos_write (FontSize, fontsize / 4 );
+  sprintf (string, "ChangeDynamicArea -FontSize %dK", fontsize);
+  _swix (OS_CLI, _IN(0), string);
+
+  return TRUE;
+}
+@
+
+
+1.3
+log
+@Correct the "initial font cache size" multiplier.
+Rectangular pixel sprites added.
+
+Version 0.08. Tagged as 'FontSetup-0_08'
+@
+text
+@a36 1
+#include "fontmenu.h"
+a45 1
+#include "DeskFont.h"
+d49 1
+a49 2
+const cmos cmos_details [7] = { { 0x8C, 1, 4 },		/* WimpFont */
+				{ 0xCA, 0, 8 },		/* FontMax2 EOR 12 */
+a100 10
+  value = get (WimpFont, &messages);
+  if (value > 0 || get == cmos_default)
+  {
+    DeskFont_GetByNumber (value);
+  }
+  else
+  {
+    DeskFont_GetByName (status_file);
+  }
+
+a163 29
+  throw (fontmenu_get_font (0, fontmenu_id, string, sizeof(string), NULL));
+  {
+    /* Strip out the encoding information ("\E" and/or "\e") */
+    const char *rd = string;
+    char *wr = string;
+    do
+    {
+      if (*rd == '\\' && (*(rd+1) == 'E' || *(rd+1) == 'e'))
+      {
+        /* Skip qualifier */
+        do
+        {
+          rd++;
+        }
+        while (*rd != '\\' && *rd >= ' ');
+      }
+      else
+      {
+        /* Copy byte down */
+        *wr = *rd;
+        rd++;
+        wr++;
+      }
+    }
+    while (*rd >= ' ');
+    *wr = '\0';
+  }
+  DeskFont_Set (status_file, string);
+
+@
+
+
+1.2
+log
+@UK Res file tweaks.
+Now detects the version of fontmanager running and adjusts the step size
+of the cache limits from 4k to 64k accordingly.
+
+Version 0.07. Tagged as 'FontSetup-0_07'
+@
+text
+@d56 1
+a56 1
+				{ 0x86, 0, 8 },		/* FontSize / fontstepsizeK */
+d66 1
+a66 1
+		cache size and maximum size. For example, versions < 3.42
+d85 1
+a85 1
+  throw (numberrange_set_bounds (0x7, mainwindow_id, mainwindow_cacheinit, 0, 255*fontstepsize, fontstepsize, 0));
+d151 1
+a151 1
+  value = get (FontSize, &messages) * fontstepsize;
+d245 1
+a245 1
+  cmos_write (FontSize, fontsize / fontstepsize );
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d28 2
+d44 2
+d56 2
+a57 2
+				{ 0x86, 0, 8 },		/* FontSize / 4K */
+				{ 0xC8, 0, 8 } };	/* FontMax / 4K */
+d59 29
+d103 1
+a103 1
+  
+d113 1
+a113 1
+  
+d122 1
+a122 1
+  
+d132 1
+a132 1
+  
+d141 1
+a141 1
+  
+d151 1
+a151 1
+  value = get (FontSize, &messages) * 4;
+d154 1
+a154 1
+  value = get (FontMax, &messages) * 4;
+d176 1
+a176 1
+  
+d178 26
+d205 1
+a205 1
+  
+d207 1
+a207 1
+  fontmax >>= 2;
+d209 1
+a209 1
+  
+d211 1
+a211 1
+  
+d218 1
+a218 1
+  
+d225 1
+a225 1
+  
+d232 1
+a232 1
+  
+d239 1
+a239 1
+  
+d243 1
+a243 1
+  
+d245 1
+a245 1
+  cmos_write (FontSize, fontsize >> 2);
+d248 1
+a248 1
+  
+@
+
+
+1.1.1.1
+log
+@Initial import of Configure plug-in '!FontSetup' to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Window object gadgets now sorted in component order.
+Bugfix: encoding information is no longer stored in Wimp$Font, so the alphabet
+can be set independently.
+@
+text
+@a27 2
+28/08/1998	BJGA	Strips encoding information from font identifier
+			returned by fontmenu_get_font()
+a144 26
+  {
+    /* Strip out the encoding information ("\E" and/or "\e") */
+    const char *rd = string;
+    char *wr = string;
+    do
+    {
+      if (*rd == '\\' && (*(rd+1) == 'E' || *(rd+1) == 'e'))
+      {
+        /* Skip qualifier */
+        do
+        {
+          rd++;
+        }
+        while (*rd != '\\' && *rd >= ' ');
+      }
+      else
+      {
+        /* Copy byte down */
+        *wr = *rd;
+        rd++;
+        wr++;
+      }
+    }
+    while (*rd >= ' ');
+    *wr = '\0';
+  }
+@

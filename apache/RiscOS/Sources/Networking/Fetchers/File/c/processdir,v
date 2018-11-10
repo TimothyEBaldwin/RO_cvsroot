@@ -1,0 +1,327 @@
+head	1.4;
+access;
+symbols
+	File-0_49:1.4
+	File-0_48:1.3
+	File-0_47:1.2
+	File-0_46:1.1
+	File-0_45:1.1
+	File-0_44:1.1
+	File-0_43:1.1
+	File-0_42:1.1
+	File-0_41:1.1
+	File-0_40:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2018.09.25.17.10.36;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	k8h20GpcDBhVzvTA;
+
+1.3
+date	2013.05.26.16.32.32;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	4eCp56xpOXK1Z9Rw;
+
+1.2
+date	2012.04.14.21.06.46;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	2ylzPc3rM6SdAS0w;
+
+1.1
+date	2000.07.06.10.11.15;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Fix handle leak on error and string termination
+processdir.c: add explicit terminator after strncpy()
+readdata.c: don't leak 'fp'
+Found by cppcheck static analysis.
+
+Version 0.49. Tagged as 'File-0_49'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * © Pace Micro Technology plc. 2000
+ *
+ */
+#include "stdio.h"	/* file handling */
+#include "stdlib.h"	/* for malloc/calloc */
+#include "kernel.h"	/* registers */
+#include "swis.h"	/* swis */
+#include "Interface/MimeMap.h"
+#include "string.h"	/* string handling */
+#include "module.h"	/* Module name etc */
+#include "VersionNum"
+
+#define HEADER_1 \
+  "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\"><HTML><HEAD>" \
+  "<META NAME=GENERATOR CONTENT=\"File Fetcher/" Module_MajorVersion "\">" \
+  "<TITLE>"
+#define HEADER_2 "</TITLE><BASE HREF=\""
+#define HEADER_3 "\"></HEAD><BODY><PRE>\n"
+#define HEADER_4  "Parent directory   <IMG SRC=\"file:/Resources:$/Resources/URL/URL/images/" \
+  "internal-gopher-menu\" WIDTH=18 HEIGHT=18 BORDER=0> <A HREF=\"../\">..</A>"
+#define FOOTER_1 "\n</PRE></BODY></HTML>"
+
+#define OBJECT_D1 "<IMG SRC=\"file:/Resources:$/Resources/URL/URL/images/" \
+  "internal-gopher-menu\" WIDTH=18 HEIGHT=18 BORDER=0> <A HREF=\""
+#define OBJECT_F1 "<IMG SRC=\"file:/Resources:$/Resources/URL/URL/images/" \
+  "internal-gopher-"
+#define OBJECT_D2 ""
+#define OBJECT_F2 "\" WIDTH=18 HEIGHT=18 BORDER=0> <A HREF=\""
+#define OBJECT_2 "\">"
+#define OBJECT_3 "</A>\n"
+
+/* This macro is used to determine the amount of space required to store
+ * the details of an object in the buffer.
+ */
+#define OBJECT_DATA OBJECT_F1 OBJECT_F2 OBJECT_2 OBJECT_3 \
+  "12:34:56 Jan 31 2000" "Application" "   1234567890"
+
+typedef struct {
+  unsigned int load;
+  unsigned int exec;
+  unsigned int len;
+  unsigned int attr;
+  unsigned int objtype;
+  unsigned int filetype;
+  char         filename[1];
+} data_ptr;
+
+/* RISC OS 3.1 SVC mode realloc is broken, so we must provide our own */
+static void *module_realloc(void *ptr, size_t size)
+{
+        #ifdef TRACE
+        protocol_debug("module_realloc(%p, %d)\n", ptr, size);
+        #endif
+        if (ptr == NULL) {
+                return malloc(size);
+        }
+        if (size == 0) {
+                free(ptr);
+		return NULL;
+        }
+	else {
+	        const int *rma_block = ptr;
+	        const size_t newsize = size - (rma_block[-1] - 4);
+	        char *newptr;
+
+		if (_swix(OS_Module, _IN(0)|_INR(2,3)|_OUT(2), 0xD, ptr, newsize, &newptr) != NULL) {
+		        return NULL;
+		}
+
+		return newptr;
+	}
+}
+
+static char *file_gen_process_object(char *buffer, char *data)
+{
+  data_ptr *dp = (void *) data;
+  const int is_file = (dp->objtype & 1);
+  const char *obj = is_file ? OBJECT_F1 : OBJECT_D1;
+  const char *obj2 = is_file ? OBJECT_F2 : OBJECT_D2;
+  static char mimetype[256];
+  char date_str[24];
+  char size_str[16];
+  int date[2];
+  _kernel_oserror *e;
+  char *slash = (dp->objtype & 1) ? "": "/";
+
+  date[0] = dp->exec; date[1] = dp->load;
+
+  if (!is_file) {
+    *mimetype = '\0';
+  }
+  else if ((e = _swix(MimeMap_Translate,_INR(0,3),MMM_TYPE_RISCOS,dp->filetype,MMM_TYPE_MIME,mimetype)) != NULL) {
+    strcpy(mimetype, "unknown");
+  }
+  else if (strncmp(mimetype, "text/", 5) == 0) {
+    strcpy(mimetype, "text");
+  }
+  else if (strncmp(mimetype, "audio/", 6) == 0) {
+    strcpy(mimetype, "sound");
+  }
+  else if (strncmp(mimetype, "video/", 6) == 0) {
+    strcpy(mimetype, "movie");
+  }
+  else if (strncmp(mimetype, "application/", 12) == 0) {
+    strcpy(mimetype, "binary");
+  }
+  else if (strncmp(mimetype, "image/", 6) == 0) {
+    strcpy(mimetype, "image");
+  }
+  else {
+    strcpy(mimetype, "unknown");
+  }
+
+  e = _swix(OS_ConvertStandardDateAndTime, _INR(0,2), date, date_str, sizeof(date_str));
+  if (e) {
+    strncpy(date_str, e->errmess, sizeof(date_str));
+    date_str[sizeof(date_str) - 1] = '\0';
+  }
+
+  if (_swix(OS_ConvertFixedFileSize, _INR(0,2), dp->len, size_str, sizeof(size_str))) {
+    *size_str = '\0';
+  }
+
+  sprintf(buffer, "%s  %-22.22s %s%s%s%s%s%s%s%s",
+    size_str, date_str, obj, mimetype, obj2, dp->filename, slash, OBJECT_2, dp->filename, OBJECT_3);
+
+  return buffer;
+}
+
+/*
+ * This file contains the routines needed to generate dir listings
+ */
+char *file_gen_dir_listing(Session *s, char *dirname, char *url)
+{
+  const size_t quantum = 16*1024;
+  /* Too long for us to cope?  Give up! */
+  if (strlen(dirname) > (quantum / 2)) {
+    return NULL;
+  }
+  else {
+    char *result = calloc(1, quantum);
+    char *slash = (url[strlen(url)-1] == '/') ? "" : "/";
+    size_t current_size = quantum;
+    size_t used = 0;
+    char *buffer = malloc(quantum);
+
+    if (result && buffer) {
+      int offset = 0, read;
+
+      used += sprintf(result, HEADER_1 "%s" HEADER_2 "%s%s" HEADER_3, dirname, url, slash);
+      if (strchr(dirname, '.')) {
+        used += sprintf(result + used, "%-17.17s%s\n", "", HEADER_4);
+      }
+      while (offset != -1 && result) {
+        if (_swix(OS_GBPB, _INR(0,6)|_OUTR(3,4), 12, dirname, buffer,
+          256 /* entry count */, offset, quantum, 0, &read, &offset)) {
+            used = 0;
+            break;
+        }
+        else {
+          char *ptr = buffer;
+          while (read-- > 0 && result) {
+            char *newres;
+            size_t namelen = strlen(ptr + 24);
+            if (used + 2 * namelen + sizeof(OBJECT_DATA) > current_size) {
+              current_size += quantum;
+              newres = module_realloc(result, current_size);
+              if (!newres) {
+                free(result);
+                result = NULL;
+                break;
+              }
+              result = newres;
+            }
+            newres = file_gen_process_object(result + used, ptr);
+            used += strlen(result + used);
+            ptr = ptr + 24 + ((namelen + 4) & ~3);
+            if (newres == NULL) {
+              used = 0;
+              free(result);
+              result = NULL;
+              break;
+            }
+          }
+        }
+      }
+      if (result) {
+        used += sprintf(result + used, "%s", FOOTER_1);
+      }
+    }
+
+    free(buffer);
+    if (used == 0) {
+      free(result);
+      result = NULL;
+    }
+#ifdef DEBUG
+    if (result) {
+      FILE *f = fopen("ADFS::4.$.outputfile", "w");
+      if (f) {
+        fputs(result, f);
+        fclose(f);
+      }
+    }
+#endif
+    s->filetype = 0xFAF;
+    s->size = used;
+    s->offset = 0;
+    return result;
+  }
+}
+@
+
+
+1.3
+log
+@Remove excess inclusion of <errno.h> or sys/errno.h
+Weren't actually being used, therefore no net code change.
+Built, but not tested.
+
+Version 0.48. Tagged as 'File-0_48'
+@
+text
+@d132 1
+@
+
+
+1.2
+log
+@Changed to use MimeMap header file.
+Compiles, but not tested.
+
+Version 0.47. Tagged as 'File-0_47'
+@
+text
+@a24 1
+#include "errno.h"	/* Include errno variable */
+@
+
+
+1.1
+log
+@  File module can now generate directory listings.
+Detail:
+  A long forgotten wishlist item that finally got implemented last night.
+Admin:
+  Tested briefly by browsing around a hard disc or two.
+
+Version 0.40. Tagged as 'File-0_40'
+@
+text
+@d23 1
+d108 1
+a108 1
+  else if ((e = _swix(MimeMap_Translate,_INR(0,3),0,dp->filetype,2,mimetype)) != NULL) {
+@
+

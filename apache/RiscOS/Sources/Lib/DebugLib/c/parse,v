@@ -1,0 +1,551 @@
+head	1.3;
+access;
+symbols
+	DebugLib-0_72:1.3
+	DebugLib-0_71:1.3
+	DebugLib-0_70:1.3
+	DebugLib-0_69:1.3
+	DebugLib-0_68:1.3
+	DebugLib-0_67:1.3
+	DebugLib-0_66:1.3
+	DebugLib-0_65:1.3
+	DebugLib-0_64:1.3
+	RO_5_07:1.3
+	DebugLib-0_63:1.3
+	DebugLib-0_62:1.3
+	DebugLib-0_61:1.3
+	DebugLib-0_60:1.2
+	DebugLib-0_59:1.2
+	DebugLib-0_58:1.2
+	DebugLib-0_57:1.2
+	dellis_autobuild_BaseSW:1.2
+	DebugLib-0_56:1.2
+	DebugLib-0_55:1.2
+	DebugLib-0_54:1.2
+	DebugLib-0_53:1.2
+	DebugLib-0_52:1.2
+	DebugLib-0_51:1.2
+	DebugLib-0_50:1.2
+	DebugLib-0_49:1.2
+	sbrodie_sedwards_16Mar2000:1.2
+	DebugLib-0_48:1.2
+	DebugLib-0_47:1.2
+	DebugLib-0_46:1.1
+	dcotton_autobuild_BaseSW:1.3
+	DebugLib-0_45:1.1
+	DebugLib-0_44:1.1
+	DebugLib-0_43:1.1
+	DebugLib-0_42:1.1
+	DebugLib-0_41:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2001.09.17.10.53.31;	author jberanek;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.01.21.10.56.41;	author jberanek;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.09.08.13.40.16;	author jberanek;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  Updated Copyrights, tidied comment header blocks
+Detail:
+  Updated Copyright messages to show range of years, up to 2001...a bit
+ late in the year for that...
+
+  Tidied a few file header comment blocks.
+
+Admin:
+  Built on RiscPC.
+
+
+Version 0.61. Tagged as 'DebugLib-0_61'
+@
+text
+@/* Copyright 1999 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************************/
+/* File:    options.c                                                     */
+/* Purpose: Level string parser                                           */
+/*                                                                        */
+/* Copyright [1999-2001] Pace Micro Technology PLC.  All rights reserved. */
+/*                                                                        */
+/* The copyright in this material is owned by Pace Micro Technology PLC   */
+/* ("Pace").  This material is regarded as a highly confidential trade    */
+/* secret of Pace.  It may not be reproduced, used, sold or in any        */
+/* other way exploited or transferred to any third party without the      */
+/* prior written permission of Pace.                                      */
+/**************************************************************************/
+
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "parse.h"
+
+static char *debug_skip_ws (char *c)
+{
+  while (*c && isspace(*c))
+  {
+    ++c;
+  }
+  return c;
+}
+
+static unsigned int debug_parse_bit_spec(char *spec, int ex, unsigned int bits)
+{
+  int prefix;
+  char *next;
+
+  prefix = strspn(spec, "0123456789-, ");
+  if (spec[prefix])
+  {
+    /* Faulty character */
+#ifdef TEST
+    fprintf(stderr, "Invalid character in bit spec: `%s'\n", spec);
+#endif
+    return bits;
+  }
+
+  for (; *spec; spec=next)
+  {
+    int min,max, cm1, cm2, cm3;
+    prefix = strcspn(spec, ",");
+    next = spec + prefix;
+    if (*next)
+    {
+      *next++ = '\0';
+    }
+    prefix = sscanf(spec, "%d%n-%n%d%n", &min, &cm1, &cm2, &max, &cm3);
+    if (prefix == 0)
+    {
+#ifdef TEST
+      fprintf(stderr, "Unable to parse bit spec: `%s'\n", spec);
+#endif
+      continue; /* error */
+    }
+    if (prefix == 1)
+    {
+      /* Fake a range */
+      max = min;
+      cm3 = cm1;
+    }
+    if (min > max)
+    {
+      int tmp = max;
+      max = min;
+      min = tmp;
+    }
+    if (min < 0 || max > 9)
+    {
+#ifdef TEST
+      fprintf(stderr, "Out of range (%d, %d)\n", min, max);
+#endif
+      continue;
+    }
+    if (ex)
+    {
+      bits |= _LEVELS_EXCLUDED(min, max);
+    }
+    else
+    {
+      bits |= _LEVELS_INCLUDED(min, max);
+    }
+  }
+
+  return bits;
+}
+
+void debug_parse_levels(debug_level_setter callback, char *c)
+{
+  char *area, *next, z;
+  int prefix;
+  unsigned int bits;
+
+  for (; c && *c; c = next)
+  {
+    next = NULL;
+    bits = 0;
+    area = debug_skip_ws(c);
+    prefix = strcspn(area, ",(");
+    z = area[prefix];
+    if (z == ',')
+    {
+      next = area + prefix + 1;
+    }
+    c = area + prefix;
+    *c++ = '\0'; /* Terminate the area name */
+    if (z != '(')
+    {
+      (*callback)(area, _LEVELS_INCLUDED(0,9));
+      continue;
+    }
+    prefix = strcspn(c, ")");
+    if (!c[prefix])
+    {
+      /* No matching ) - panic */
+#ifdef TEST
+      printf("panic - no matching )\n");
+#endif
+      return;
+    }
+    next = c + prefix;
+    *next++ = '\0';
+    next = debug_skip_ws(next);
+    bits = debug_parse_bit_spec(c, 0, bits);
+    if (*next == '(')
+    {
+      ++next;
+      prefix = strcspn(next, ")");
+      if (!next[prefix])
+      {
+        return;
+      }
+      next[prefix] = '\0';
+      bits = debug_parse_bit_spec(next, 1, bits);
+      next += prefix + 1;
+    }
+
+    (*callback)(area, bits);
+
+    next = debug_skip_ws(next);
+    if (*next == ',')
+    {
+      next = debug_skip_ws(next + 1);
+    }
+    else
+    {
+      if (*next) return;
+    }
+  }
+}
+
+
+#ifdef TEST
+
+static void level_dumper(const char *area, unsigned int level)
+{
+  unsigned int i;
+  printf("Area: >>%s<<\n", area);
+  printf("  Included: ");
+  for (i=0; i<10; ++i)
+  {
+    if (_LEVEL_INCLUDED(i) & level)
+      putchar(i + '0');
+    else
+      putchar(' ');
+  }
+  printf("   Excluded: ");
+  for (i=0; i<10; ++i)
+  {
+    if (_LEVEL_EXCLUDED(i) & level)
+      putchar(i + '0');
+    else
+      putchar(' ');
+  }
+  putchar('\n');
+}
+
+static const char *tests[] =
+{
+  "UILib()(0-9)",
+  "AreaA,AreaB",
+  "AreaC(0-4)",
+  "AreaD(1-9)(0-4)",
+  "UILib()(),Spong()(1),Bar(6,7,4-8,1-2,9-9)",
+  "ErrorBig(10)",
+  "ErrorSym(-1)",
+  "",
+  "(4)",
+};
+
+int main(void)
+{
+  char test[BUFSIZ + 1];
+  int i;
+
+  test[BUFSIZ] = '\0';
+  for (i=0; i<(sizeof(tests)/sizeof(*tests)); ++i)
+  {
+    strncpy(test, tests[i], BUFSIZ);
+    printf("********************\nTest %d: >>>%s<<<\n", i, test);
+    debug_parse_levels(level_dumper, test);
+  }
+
+  return 0;
+}
+#endif
+@
+
+
+1.2
+log
+@  Tidy-up
+Detail:
+  Stewart's checkin about LibVersion reminded me I'd done some tidying
+  (including the LibVersion thing) and not checked it in.  So here it is.
+
+  Tidied Makefile, added standard headers to all the c and h files,
+  including the regulation copyright message.
+
+  Changed options.c so that it fits the coding style of the rest of
+  DebugLib (naughty Stewart).
+
+  Improved "strdup" routine.
+
+  Moved stripdepend call into Makefile.
+
+Admin:
+  Built and tested.
+
+
+Version 0.47. Tagged as 'DebugLib-0_47'
+@
+text
+@d15 12
+a26 12
+/************************************************************************/
+/* File:    options.c                                                   */
+/* Purpose: Level string parser                                         */
+/*                                                                      */
+/* Copyright [1999] Pace Micro Technology PLC.  All rights reserved.    */
+/*                                                                      */
+/* The copyright in this material is owned by Pace Micro Technology PLC */
+/* ("Pace").  This material is regarded as a highly confidential trade  */
+/* secret of Pace.  It may not be reproduced, used, sold or in any      */
+/* other way exploited or transferred to any third party without the    */
+/* prior written permission of Pace.                                    */
+/************************************************************************/
+@
+
+
+1.1
+log
+@ * Improved DebugLib's area handling system.  Lines of debug may now belong
+   to multiple "areas" of code, each at a specific level.  The filtering of
+   debug at runtime is now done with a much more flexible system,
+   areas/levels are masked in/out based on a new format for the
+   DebugLib$Level_<taskname> system variable.  The description of this
+   format has not made it into the StrongHelp document, it will go into
+   this, and into the DebugLib web docs ASAP.
+
+ * Added a new option to allow the area/level prefix in debug output to
+   be padded to a particular width.  This makes the prefix much more
+   useable.  The prefixing is turned on with the option
+   "debug_set_area_level_prefix", and the padding controlled with
+   "debug_set_area_pad_limit".
+
+ * Added test cases for new levelling scheme into CLI test harness.
+
+ * Updated StrongHelp manual somewhat.
+
+
+Version 0.41. Tagged as 'DebugLib-0_41'
+@
+text
+@d15 13
+a27 4
+/* DebugLib
+ *
+ * Level string parser
+ */
+d37 1
+a37 1
+static char *debug_skip_ws(char *c)
+d39 5
+a43 2
+        while (*c && isspace(*c)) ++c;
+        return c;
+d48 2
+a49 2
+        int prefix;
+        char *next;
+d51 4
+a54 3
+        prefix = strspn(spec, "0123456789-, ");
+        if (spec[prefix]) {
+                /* Faulty character */
+d56 1
+a56 1
+		fprintf(stderr, "Invalid character in bit spec: `%s'\n", spec);
+d58 2
+a59 2
+                return bits;
+        }
+d61 12
+a72 9
+	for (; *spec; spec=next) {
+	        int min,max, cm1, cm2, cm3;
+		prefix = strcspn(spec, ",");
+		next = spec + prefix;
+		if (*next) {
+		        *next++ = '\0';
+		}
+		prefix = sscanf(spec, "%d%n-%n%d%n", &min, &cm1, &cm2, &max, &cm3);
+		if (prefix == 0) {
+d74 1
+a74 1
+			fprintf(stderr, "Unable to parse bit spec: `%s'\n", spec);
+d76 16
+a91 13
+		        continue; /* error */
+		}
+		if (prefix == 1) {
+		        /* Fake a range */
+		        max = min;
+		        cm3 = cm1;
+		}
+		if (min > max) {
+		        int tmp = max;
+		        max = min;
+		        min = tmp;
+		}
+	        if (min < 0 || max > 9) {
+d93 1
+a93 1
+			fprintf(stderr, "Out of range (%d, %d)\n", min, max);
+d95 11
+a105 9
+	                continue;
+	        }
+	        if (ex) {
+	                bits |= _LEVELS_EXCLUDED(min, max);
+	        }
+	        else {
+	                bits |= _LEVELS_INCLUDED(min, max);
+	        }
+	}
+d107 1
+a107 1
+	return bits;
+d112 26
+a137 22
+        char *area, *next, z;
+        int prefix;
+        unsigned int bits;
+
+	for (; c && *c; c = next) {
+	        next = NULL;
+	        bits = 0;
+	        area = debug_skip_ws(c);
+		prefix = strcspn(area, ",(");
+		z = area[prefix];
+		if (z == ',') {
+		        next = area + prefix + 1;
+		}
+		c = area + prefix;
+		*c++ = '\0'; /* Terminate the area name */
+		if (z != '(') {
+		        (*callback)(area, _LEVELS_INCLUDED(0,9));
+		        continue;
+		}
+		prefix = strcspn(c, ")");
+		if (!c[prefix]) {
+		        /* No matching ) - panic */
+d139 1
+a139 1
+		        printf("panic - no matching )\n");
+d141 31
+a171 28
+		        return;
+		}
+		next = c + prefix;
+		*next++ = '\0';
+		next = debug_skip_ws(next);
+		bits = debug_parse_bit_spec(c, 0, bits);
+		if (*next == '(') {
+		        ++next;
+		        prefix = strcspn(next, ")");
+		        if (!next[prefix]) {
+		                return;
+		        }
+		        next[prefix] = '\0';
+		        bits = debug_parse_bit_spec(next, 1, bits);
+		        next += prefix + 1;
+		}
+
+		(*callback)(area, bits);
+
+		next = debug_skip_ws(next);
+		if (*next == ',') {
+		        next = debug_skip_ws(next + 1);
+		}
+		else {
+		        if (*next) return;
+		}
+
+	}
+d179 19
+a197 13
+        unsigned int i;
+        printf("Area: >>%s<<\n", area);
+        printf("  Included: ");
+        for (i=0; i<10; ++i) {
+                if (_LEVEL_INCLUDED(i) & level) putchar(i + '0');
+                else putchar(' ');
+        }
+        printf("   Excluded: ");
+        for (i=0; i<10; ++i) {
+                if (_LEVEL_EXCLUDED(i) & level) putchar(i + '0');
+                else putchar(' ');
+        }
+        putchar('\n');
+d200 11
+a210 10
+static const char *tests[] = {
+        "UILib()(0-9)",
+        "AreaA,AreaB",
+        "AreaC(0-4)",
+        "AreaD(1-9)(0-4)",
+        "UILib()(),Spong()(1),Bar(6,7,4-8,1-2,9-9)",
+        "ErrorBig(10)",
+        "ErrorSym(-1)",
+        "",
+        "(4)",
+d215 2
+a216 2
+        char test[BUFSIZ + 1];
+        int i;
+d218 7
+a224 6
+	test[BUFSIZ] = '\0';
+	for (i=0; i<(sizeof(tests)/sizeof(*tests)); ++i) {
+	        strncpy(test, tests[i], BUFSIZ);
+	        printf("********************\nTest %d: >>>%s<<<\n", i, test);
+		debug_parse_levels(level_dumper, test);
+	}
+d226 1
+a226 1
+	return 0;
+@
+

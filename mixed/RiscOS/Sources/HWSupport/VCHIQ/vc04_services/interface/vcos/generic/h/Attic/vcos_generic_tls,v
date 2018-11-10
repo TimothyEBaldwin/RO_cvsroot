@@ -1,0 +1,229 @@
+head	1.2;
+access;
+symbols
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2013.03.03.20.23.49;	author jlee;	state dead;
+branches;
+next	1.1;
+commitid	uNS7q3oyxvlpXnGw;
+
+1.1
+date	2012.08.19.23.33.41;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.2
+log
+@Update to latest version of VCHIQ sources
+Detail:
+  This updates our VCHIQ sources to rev 95009dbb77 of the official sources from the Raspberry Pi Linux github repo.
+  From our perspective, the important changes are:
+  * Provides compatbility with the latest firmware
+  * Not compatible with older firmware (older than around Nov 2012?), including the firmware we've typically been using until now
+  * Clients of the module now need to specify the version number of the service they're communicating with
+  * Source is dual BSD/GPL licenced, with us opting to use the BSD license in order to allow the module to be included in ROM instead of as a softload on disc
+  * Ability to build softload version has been removed from the makefile, as it's now a redundant option
+  File changes:
+  - !MkRom - enable throwback
+  - Makefile - Update for building latest sources. Remove special softload rules. Enable ability to build ROM version.
+  - c/vchiq_riscos, s/asm - Update RISC OS compatbility layer to directly emulate the corresponding Linux calls now that the VCOS abstraction layer has been removed from the VCHIQ sources
+  - h/VCHIQ, h/VCHIQWrap, hdr/VCHIQ - Add the service version number entries to the vchiq_service_t/SERVICE_CREATION_T structs
+  - vc04_services/* - Updated to latest official sources, with relevant changes to allow compilation for RISC OS
+Admin:
+  Tested on Raspberry Pi
+  Updated GPU firmware will likely be required!
+
+
+Version 0.05. Tagged as 'VCHIQ-0_05'
+@
+text
+@/*
+ * Copyright (c) 2010-2011 Broadcom. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
+/*=============================================================================
+VideoCore OS Abstraction Layer - generic thread local storage
+=============================================================================*/
+
+#ifndef VCOS_GENERIC_TLS_H
+#define VCOS_GENERIC_TLS_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "interface/vcos/vcos_types.h"
+
+/**
+  * \file
+  *
+  * Do an emulation of Thread Local Storage. The platform needs to
+  * provide a way to set and get a per-thread pointer which is
+  * where the TLS data itself is stored.
+  *
+  *
+  * Each thread that wants to join in this scheme needs to call
+  * vcos_tls_thread_register().
+  *
+  * The platform needs to support the macros/functions
+  * _vcos_tls_thread_ptr_set() and _vcos_tls_thread_ptr_get().
+  */
+
+#ifndef VCOS_WANT_TLS_EMULATION
+#error Should not be included unless TLS emulation is defined
+#endif
+
+/** Number of slots to reserve per thread. This results in an overhead
+  * of this many words per thread.
+  */
+#define VCOS_TLS_MAX_SLOTS 4
+
+/** TLS key. Allocating one of these reserves the client one of the 
+  * available slots.
+  */
+typedef VCOS_UNSIGNED VCOS_TLS_KEY_T;
+
+/** TLS per-thread structure. Each thread gets one of these
+  * if TLS emulation (rather than native TLS support) is
+  * being used.
+  */
+typedef struct VCOS_TLS_THREAD_T
+{
+   void *slots[VCOS_TLS_MAX_SLOTS];
+} VCOS_TLS_THREAD_T;
+
+/*
+ * Internal APIs 
+ */
+
+/** Register this thread's TLS storage area. */
+VCOSPRE_ void VCOSPOST_ vcos_tls_thread_register(VCOS_TLS_THREAD_T *);
+
+/** Create a new TLS key */
+VCOSPRE_ VCOS_STATUS_T VCOSPOST_ vcos_generic_tls_create(VCOS_TLS_KEY_T *key);
+
+/** Delete a TLS key */
+VCOSPRE_ void VCOSPOST_ vcos_generic_tls_delete(VCOS_TLS_KEY_T tls);
+
+/** Initialise the TLS library */
+VCOSPRE_ VCOS_STATUS_T VCOSPOST_ vcos_tls_init(void);
+
+/** Deinitialise the TLS library */
+VCOSPRE_ void VCOSPOST_ vcos_tls_deinit(void);
+
+#if defined(VCOS_INLINE_BODIES)
+
+#undef VCOS_ASSERT_LOGGING_DISABLE
+#define VCOS_ASSERT_LOGGING_DISABLE 1
+
+/*
+ * Implementations of public API functions
+ */
+
+/** Set the given value. Since everything is per-thread, there is no need
+  * for any locking.
+  */
+VCOS_INLINE_IMPL
+VCOS_STATUS_T vcos_tls_set(VCOS_TLS_KEY_T tls, void *v) {
+   VCOS_TLS_THREAD_T *tlsdata = _vcos_tls_thread_ptr_get();
+   vcos_assert(tlsdata); /* Fires if this thread has not been registered */
+   if (tls<VCOS_TLS_MAX_SLOTS)
+   {
+      tlsdata->slots[tls] = v;
+      return VCOS_SUCCESS;
+   }
+   else
+   {
+      vcos_assert(0);
+      return VCOS_EINVAL;
+   }
+}
+
+/** Get the given value. No locking required.
+  */
+VCOS_INLINE_IMPL
+void *vcos_tls_get(VCOS_TLS_KEY_T tls) {
+   VCOS_TLS_THREAD_T *tlsdata = _vcos_tls_thread_ptr_get();
+   vcos_assert(tlsdata); /* Fires if this thread has not been registered */
+   if (tls<VCOS_TLS_MAX_SLOTS)
+   {
+      return tlsdata->slots[tls];
+   }
+   else
+   {
+      vcos_assert(0);
+      return NULL;
+   }
+}
+
+VCOS_INLINE_IMPL
+VCOS_STATUS_T vcos_tls_create(VCOS_TLS_KEY_T *key) {
+   return vcos_generic_tls_create(key);
+}
+
+VCOS_INLINE_IMPL
+void vcos_tls_delete(VCOS_TLS_KEY_T tls) {
+   vcos_generic_tls_delete(tls);
+}
+
+#undef VCOS_ASSERT_LOGGING_DISABLE
+#define VCOS_ASSERT_LOGGING_DISABLE 0
+
+#endif /* VCOS_INLINE_BODIES */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+
+
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@@
+

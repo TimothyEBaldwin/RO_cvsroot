@@ -1,0 +1,1570 @@
+head	1.5;
+access;
+symbols
+	OMAP3-0_55:1.4
+	OMAP3-0_54:1.4
+	OMAP3-0_53:1.3
+	OMAP3-0_52:1.2
+	OMAP3-0_51:1.2
+	OMAP3-0_50:1.2
+	OMAP3-0_49:1.1
+	OMAP3-0_48:1.1
+	OMAP3-0_47:1.1
+	OMAP3-0_46:1.1
+	OMAP3-0_45:1.1
+	OMAP3-0_44:1.1
+	OMAP3-0_43:1.1
+	OMAP3-0_42:1.1
+	OMAP3-0_41:1.1
+	OMAP3-0_40:1.1
+	OMAP3-0_39:1.1
+	OMAP3-0_38:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2012.01.07.21.22.15;	author rsprowson;	state dead;
+branches;
+next	1.4;
+commitid	ZJYg3muaiybPOhOv;
+
+1.4
+date	2011.12.11.20.05.45;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	qwIOyJsuN21ngOKv;
+
+1.3
+date	2011.12.06.00.53.07;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	GOsa7uJEOvnW24Kv;
+
+1.2
+date	2011.11.06.13.51.25;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	xDHSfy5FwWIFjhGv;
+
+1.1
+date	2011.01.23.22.48.10;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Prep for SDFS and support for hardware CMOS adapter board.
+To avoid conflicting use of the SDIO controller by higher level filing system (and the need for a HAL to somehow ask for a disc to be reinserted) this HAL onwards supports hardware CMOS attached via the JTAG connector.
+On power up the presence and size of EEPROM is detected (sizes from 256 to 2048 bytes are understood corresponding to 24AA02 to 24AA16 family of parts).
+If no EEPROM is found the HAL falls back to permitting a CMOS file to be loaded off the SD card, but crucially this is done by uboot before FileCore starts.
+If no EEPROM is found, or the CMOS file looks suspicious, some fake CMOS is made and the kernel defaults used.
+The "ProbeEESize" switch enables size probing, otherwise 256 bytes is assumed.
+The "TryLoadedCMOS" switch enables use of a CMOS file from the SD card, if that's off and nothing is found the HAL declares that there is no CMOS at all!
+The respective boot script needs the line
+  fatload mmc 0:1 0x4020F000 cmos
+adding to it, though the filename 'cmos' is arbitrary and only used as a suggestion.
+
+Version 0.56. Tagged as 'OMAP3-0_56'
+@
+text
+@/* Copyright 2011 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "common.h"
+#include "NVMem.h"
+#include "fat.h"
+
+#ifdef DEBUG_ENABLED
+#define DEBUG_SRCMDLINE
+#define DEBUG_CHANGECLOCKDIVIDER
+//#define DEBUG_WAITFORCMDI
+#endif
+
+#define CMOS_BYTES_NETT 2048
+#define CMOS_BYTES_GROSS (CMOS_BYTES_NETT + 4)
+#define DEFAULT_BOOT_DOLLAR_OSVERSION 510
+#define MAX_BOOT_DOLLAR_OSVERSION 1024
+
+// SD/MMC commands
+#define CMD0   0x00000000
+#define CMD1   0x01020000
+#define CMD2   0x02090000
+#define CMD3   0x031A0000
+#define CMD5   0x05020000
+#define CMD6   0x061B0000
+#define CMD7   0x071A0000
+#define CMD8   0x081A0000
+#define CMD9   0x09090000
+#define CMD16  0x101A0000
+#define CMD17  0x113A0016
+#define CMD18  0x123A0033
+#define CMD23  0x171A0000
+#define CMD24  0x183A0000
+#define CMD25  0x193A0023
+#define CMD55  0x371A0000
+#define ACMD41 0x29020000
+
+// The CAPA register
+#define MMCHS_CAPA_VS18_1 26
+#define MMCHS_CAPA_VS30_1 25
+#define MMCHS_CAPA_VS33_1 24
+#define MMCHS_CAPA_SRS_1  23
+#define MMCHS_CAPA_DS_1   22
+#define MMCHS_CAPA_HSS_1  21
+#define MMCHS_CAPA_MBL_2  16
+#define MMCHS_CAPA_TCU_1  7
+
+static inline uint min_uint (uint ui1, uint ui2)
+{
+  return (ui1 < ui2) ? ui1 : ui2;
+}
+
+extern void HAL_CounterDelay(int delay_microseconds);
+extern void* memset (void*, int, size_t);
+extern int ReadTimeForNVRAM (struct RTCTime*);
+
+int NVMem_C_read (ws* wsptr)
+{
+  uint uiDump = 0;
+  union data_area data_main;
+  int found = 0;
+  uint FirstCluster = 0;
+  uint Offset = 0;
+  uint FileSize = 0;
+  uint RealFileSize = 0;
+  uint BytesLoaded = 0;
+  uint DirEntryCluster = 0;
+  int DirEntryBlock = 0;
+  struct block_cache FATbc;
+  uchar file_buffer[CMOS_BYTES_GROSS];
+  uint block_length = 0;
+  uint BDOSVersion = 0;
+
+  FATbc.blocknum = -1; // Impossible value
+  InterfaceAndCard_Init (wsptr);
+
+  // Search for one of "CMOS" and "CMOS.DAT"
+  dprintf ("Searching for a CMOS file\n");
+  found = FindDirectoryEntry (wsptr, "cmos", &data_main, &DirEntryCluster, &DirEntryBlock, &FATbc);
+  if (found < 0)
+  {
+    found = FindDirectoryEntry (wsptr, "cmos.dat", &data_main, &DirEntryCluster, &DirEntryBlock, &FATbc);
+  }
+  if (found >= 0)
+  {
+    dprintf ("We found a match at index %d\n", found);
+    FileSize = GetUInt (&data_main, (found * 32) + 28);
+    RealFileSize = FileSize; // Keep the declared file length for checking validity of last 4 bytes
+    dprintf ("File size = %u\n", FileSize);
+    if (FileSize > CMOS_BYTES_GROSS)
+    {
+      FileSize = CMOS_BYTES_GROSS;
+      dprintf ("File size reduced to %u\n", FileSize);
+    }
+    FirstCluster = GetUShort (&data_main, (found * 32) + 26);
+    if (wsptr->FATType == FATTYPE_FAT32)
+    {
+      FirstCluster += GetUShort (&data_main, (found * 32) + 20) << 16;
+    }
+    dprintf ("First cluster = %u\n", FirstCluster);
+    Offset = 0;
+    BytesLoaded = 0;
+    memset (file_buffer, 0, sizeof (file_buffer));
+    do
+    {
+      ReadBlockClustered (wsptr, &FirstCluster, &Offset, &data_main, &FATbc);
+      //print_block_data (&data_main);
+      block_length = min_uint (FileSize - BytesLoaded, 512);
+      memcpy (&file_buffer[BytesLoaded], &data_main.byte[0], block_length);
+      BytesLoaded += block_length;
+    } while (BytesLoaded < FileSize);
+    // Sanity check if the last 4 bytes are a plausible Boot$OSVersion
+    if (FileSize == CMOS_BYTES_GROSS)
+    {
+      BDOSVersion = file_buffer[CMOS_BYTES_NETT] + (file_buffer[CMOS_BYTES_NETT + 1] << 8)
+        + (file_buffer[CMOS_BYTES_NETT + 2] << 16) + (file_buffer[CMOS_BYTES_NETT + 3] << 24);
+      if ((BDOSVersion >= DEFAULT_BOOT_DOLLAR_OSVERSION)
+        && (BDOSVersion <= MAX_BOOT_DOLLAR_OSVERSION))
+      {
+        wsptr->BootDollarOSVersion = BDOSVersion;
+        dprintf ("Boot$OSVersion read from file: %u\n", BDOSVersion);
+      }
+      else
+      {
+        wsptr->BootDollarOSVersion = DEFAULT_BOOT_DOLLAR_OSVERSION;
+        dprintf ("Implausible Boot$OSVersion read from file: %u, replaced with default\n",
+          BDOSVersion);
+      }
+    }
+    else
+    {
+      wsptr->BootDollarOSVersion = DEFAULT_BOOT_DOLLAR_OSVERSION;
+      dprintf ("File length not as expected (%u); Boot$OSVersion set to default\n", FileSize);
+    }
+    // Copy from local buffer to NVRAMCache
+    memcpy (wsptr->NVRAMCache, &file_buffer, CMOS_BYTES_NETT);
+  }
+  else
+  {
+    dprintf ("Didn't find a CMOS file\n");
+    // Return all zeros
+    memset (wsptr->NVRAMCache, 0, CMOS_BYTES_NETT);
+    wsptr->BootDollarOSVersion = DEFAULT_BOOT_DOLLAR_OSVERSION;
+  }
+
+  return uiDump;
+}
+
+int NVMem_C_write (ws* wsptr)
+{
+  union data_area data_main;
+  int found = 0;
+  uint FirstCluster = 0;
+  uint FileSize = 0;
+  uint DirEntryCluster = 0;
+  int DirEntryBlock = 0;
+  struct block_cache FATbc;
+  uint Date = 0;
+  uint Time = 0;
+  uchar file_buffer[CMOS_BYTES_GROSS];
+
+  FATbc.blocknum = -1; // Impossible value
+  InterfaceAndCard_Init (wsptr);
+
+  // Search for one of "CMOS" and "CMOS.DAT"
+  found = FindDirectoryEntry (wsptr, "cmos", &data_main, &DirEntryCluster, &DirEntryBlock, &FATbc);
+  if (found < 0)
+  {
+    found = FindDirectoryEntry (wsptr, "cmos.dat", &data_main, &DirEntryCluster, &DirEntryBlock, &FATbc);
+  }
+
+  // Whether we found a match or not, we're going to need the system date & time
+  GetDOSDateAndTimeFromRTC (&Date, &Time);
+  dprintf ("Date = %x, time = %x\n", Date, Time);
+  // Copy the data into the file buffer
+  memcpy (&file_buffer, wsptr->NVRAMCache, CMOS_BYTES_NETT);
+  // Add the Boot$OSVersion to the end
+  file_buffer[CMOS_BYTES_NETT] = (wsptr->BootDollarOSVersion) & 0xFF;
+  file_buffer[CMOS_BYTES_NETT + 1] = ((wsptr->BootDollarOSVersion) >> 8) & 0xFF;
+  file_buffer[CMOS_BYTES_NETT + 2] = ((wsptr->BootDollarOSVersion) >> 16) & 0xFF;
+  file_buffer[CMOS_BYTES_NETT + 3] = ((wsptr->BootDollarOSVersion) >> 24) & 0xFF;
+
+  if (found >= 0)
+  {
+    dprintf ("We found a match at index %d\n", found);
+    FileSize = GetUInt (&data_main, (found * 32) + 28);
+    dprintf ("File size = %u\n", FileSize);
+    FirstCluster = GetUShort (&data_main, (found * 32) + 26);
+    if (wsptr->FATType == FATTYPE_FAT32)
+    {
+      FirstCluster += GetUShort (&data_main, (found * 32) + 20) << 16;
+    }
+    dprintf ("First cluster = %u\n", FirstCluster);
+    WriteToFile (wsptr, file_buffer, CMOS_BYTES_GROSS, &FirstCluster, &data_main, &FATbc);
+    UpdateShortDirectoryEntry (wsptr, Date, Time, CMOS_BYTES_GROSS, found,
+      &DirEntryCluster, &DirEntryBlock, &data_main, &FATbc);
+    dprintf ("Directory block rewritten\n");
+  }
+  else
+  {
+    dprintf ("We didn't find a match\n");
+    found = FindEmptyDirectoryEntry (wsptr, &data_main, &DirEntryCluster, &DirEntryBlock, &FATbc);
+    if(found != -1)
+    {
+      dprintf ("Empty directory entry at cluster %u, block %d, index %d\n",
+        DirEntryCluster, DirEntryBlock, found);
+      FirstCluster = 0;
+      WriteToFile (wsptr, file_buffer, CMOS_BYTES_GROSS, &FirstCluster, &data_main, &FATbc);
+      CreateShortDirectoryEntry (wsptr, "CMOS", Date, Time, CMOS_BYTES_GROSS, found, FirstCluster,
+        &DirEntryCluster, &DirEntryBlock, &data_main, &FATbc);
+      dprintf ("Directory block written\n");
+    }
+    else
+    {
+      dprintf ("Failed to find empty directory entry, not writing CMOS file\n");
+    }
+  }
+
+  return 0;
+}
+
+
+int InterfaceAndCard_Init (ws* wsptr)
+{
+  uint uiDump = 0;
+  int i = 0;
+  int iLoopCounter = 0;
+  bool bDone = false;
+  uint uiVoltageWindow = 0;
+  uint uiRCA = 0; // Relative Card Address
+  union data_area data_main;
+  char volume_label[12] = "";
+  char fattype[9] = "";
+  bool bCTO = false;
+
+  dprintf ("Workspace = %X, a1 = %X\n", (uint) sb, (uint) wsptr);
+
+  // Enable the MMCHS1 interface and functional clocks
+  uiDump = *(wsptr->PRCM_CM_ICLKEN1_CORE);
+//  dprintf("PRCM_CM_ICLKEN1_CORE is %08X\n",uiDump);
+  *(wsptr->PRCM_CM_ICLKEN1_CORE) = uiDump | 0x01000000;
+  uiDump = *(wsptr->PRCM_CM_ICLKEN1_CORE);
+//  dprintf("PRCM_CM_ICLKEN1_CORE is %08X\n",uiDump);
+
+  uiDump = *(wsptr->PRCM_CM_FCLKEN1_CORE);
+//  dprintf("PRCM_CM_FCLKEN1_CORE is %08X\n",uiDump);
+  *(wsptr->PRCM_CM_FCLKEN1_CORE) = uiDump | 0x01000000;
+  uiDump = *(wsptr->PRCM_CM_FCLKEN1_CORE);
+//  dprintf("PRCM_CM_FCLKEN1_CORE is %08X\n",uiDump);
+
+  // Software reset the controller
+  uiDump = *(wsptr->MMCHS1_SYSSTATUS);
+//  dprintf("PRCM_CMMMCHS1_SYSSTATUS is %08X\n",uiDump);
+  *(wsptr->MMCHS1_SYSCONFIG) = 0x00000002; // Activate the reset
+  uiDump = *(wsptr->MMCHS1_SYSSTATUS);
+//  dprintf("PRCM_CMMMCHS1_SYSSTATUS is %08X\n",uiDump);
+  for (i = 0, bDone = false; (i < 10000) && !bDone; i++)
+  {
+    uiDump = *(wsptr->MMCHS1_SYSSTATUS);
+    if (uiDump & 1)
+    {
+      bDone = true;
+    }
+  }
+  dprintf ("Exited software reset loop with i = %d\n", i);
+
+  // Get the current value of CAPA
+//  dprintf ("About to read from MMCHS1_CAPA(%08p)\n", (void *) wsptr->MMCHS1_CAPA);
+  uiDump = *(wsptr->MMCHS1_CAPA);
+
+  /*
+  dprintf ("Value read from CAPA = %08X\n", uiDump);
+  dprintf ("VS18: %d (must be 1)\n",get_bitfield(uiDump,MMCHS_CAPA_VS18_1,1));
+  dprintf ("VS30: %d (must be 1)\n",get_bitfield(uiDump,MMCHS_CAPA_VS30_1,1));
+  dprintf ("VS33: %d (must be 0)\n",get_bitfield(uiDump,MMCHS_CAPA_VS33_1,1));
+  dprintf ("SRS : %d (suspend-resume-functionality)\n",get_bitfield(uiDump,MMCHS_CAPA_SRS_1,1));
+  dprintf ("DS  : %d (DMA support)\n",get_bitfield(uiDump,MMCHS_CAPA_DS_1,1));
+  dprintf ("HSS : %d (HighSpeedSupport)\n",get_bitfield(uiDump,MMCHS_CAPA_HSS_1,1));
+  dprintf ("MBL : %d (0:512,1:1024,2:2048 MaxBlockLength)\n",get_bitfield(uiDump,MMCHS_CAPA_MBL_2,2));
+  dprintf ("TCU : %d (0:kHz,1:MHzTimeoutClockUnit)\n",get_bitfield(uiDump,MMCHS_CAPA_TCU_1,1));
+  */
+  *(wsptr->MMCHS1_CAPA) = uiDump | 0x06000000; // Activate VS18 and VS30
+
+  // MMCHS default controller initialisation (22.6.1.3.1.4, p3134)
+
+  // 1) Set default voltage support to 1.8V - set MMCHS1_HCTL[11:9] to 0x5
+  *(wsptr->MMCHS1_HCTL) = set_bitfield (*(wsptr->MMCHS1_HCTL), 9, 3, 0x5);
+  // note: 0x5 for 1.8V operation results in 0xA00 according to register explanation
+  // not 0xB00 as stated in the step-by step Manual portion!!
+  // 2) MMC bus to open drain -> set MMCHS1_CON[0] to 1
+  *(wsptr->MMCHS1_CON) = set_bitfield (*(wsptr->MMCHS1_CON), 0, 1, 1);
+  // 3) MMC data bus width to 1 -> set MMCHS1_HCTL[1] to 0
+  *(wsptr->MMCHS1_HCTL) = set_bitfield (*(wsptr->MMCHS1_HCTL), 1, 1, 0);
+  // 4) MMC Card's power off -> set MMCHS1_HCTL[8] to 0  //???
+  *(wsptr->MMCHS1_HCTL) = set_bitfield (*(wsptr->MMCHS1_HCTL), 8, 1, 0);
+  // 5) MMC Card's Clock is on : we switch off first, enable the clock and switch on again
+  change_clock_divider (wsptr, 640);
+  // 6) MMCHS1 controller bus power up -> set MMCHS1_HCTL[8] to 1
+  *(wsptr->MMCHS1_HCTL) = set_bitfield (*(wsptr->MMCHS1_HCTL), 8, 1, 1);
+
+  uiDump = *(wsptr->MMCHS1_CON);
+  *(wsptr->MMCHS1_CON) = uiDump | 0x00000002; // set INIT to 1
+  *(wsptr->MMCHS1_CMD) = 0; // Send Dummy command
+  // Wait.  The TRM says 1 ms.
+  // NOTE - This call assumes the counter has already been initialised.
+  HAL_CounterDelay (1000); // Wait at least 1 ms
+
+  SoftwareResetCMDLine (wsptr);
+  WaitForCMDI (wsptr);
+  // The STAT register should have bit 1 set.  In turn
+  // we should set bit 1 to clear the status.
+  uiDump = *(wsptr->MMCHS1_STAT);
+  dprintf ("Stage 1, STAT = %d\n", uiDump);
+  *(wsptr->MMCHS1_STAT) = uiDump;
+
+  // MMCHS Controller Pre-card Identification Configuration
+  // (22.6.1.3.1.6, p3134)
+
+  change_clock_divider (wsptr, 240); // Should give 500 kHz
+  *(wsptr->MMCHS1_CON) = 0x00000001; // Set MMC bus open drain
+
+  // MMC Card Identification (22.6.1.3.2, p3135)
+  // Send CMD0
+  *(wsptr->MMCHS1_CON) = 0x00000001; // MMC bus still open drain
+  *(wsptr->MMCHS1_IE)  = 0x00040001; // Enable CC and CEB events to occur
+  // Don't set ISE as we aren't servicing interrupts!
+  // Clear all status bits
+  read_and_clear_stat (wsptr);
+  WaitForCMDI (wsptr);
+  *(wsptr->MMCHS1_ARG) = 0; // Set argument to 0
+  i = SendSDMMCCommand(wsptr, CMD0);
+//  dprintf ("Result of CMD0 is %d\n", i);
+  uiDump = read_and_clear_stat(wsptr);
+//  dprintf ("CMD0 gives status %08X\n", uiDump);
+
+  // Send CMD5
+  //*(wsptr->MMCHS1_CON) = 0x00000001; // MMC bus still open drain
+  //*(wsptr->MMCHS1_IE) = 0x00050001; // Enable CC, CTO and CEB events to occur
+  // Don't set ISE!
+  //i = SendSDMMCCommand(CMD5);
+  //dprintf ("Result of CMD5 is %d\n", i);
+  //uiDump = *(wsptr->MMCHS1_RSP10);
+  //printf ("CMD5 gives response %08x\n", uiDump);
+  //if (uiDump != 0)
+  //{
+  //  dprintf ("Card appears to be an SDIO card\n");
+  //  return 0;
+  //}
+
+  *(wsptr->MMCHS1_IE) = 0x00050001; // Enabe CC, CTO and CEB events
+  for (iLoopCounter = 0, bDone = false; (iLoopCounter < 32) && !bDone; iLoopCounter++)
+  {
+    read_and_clear_stat (wsptr);
+    WaitForCMDI (wsptr);
+    *(wsptr->MMCHS1_ARG) = 0x00FF8000; // OCR - JEDEC p 113/131
+    i = SendSDMMCCommand (wsptr, CMD1); // Send op cond
+#ifdef DEBUG_MMC_COMMANDS
+    dprintf ("Result of CMD1 is %d\n", i);
+#endif
+    uiDump = read_and_clear_stat (wsptr);
+#ifdef DEBUG_MMC_COMMANDS
+    dprintf ("CMD1 gives status %08X\n", uiDump);
+#endif
+    if (uiDump & 0x00010000) // CTO?
+    {
+      bCTO = true;
+      bDone = true;
+    }
+    uiDump = *(wsptr->MMCHS1_RSP10);
+#ifdef DEBUG_MMC_COMMANDS
+    dprintf ("CMD1 gives response %08X\n", uiDump);
+#endif
+    if (uiDump & 0x80000000) bDone = true;
+  }
+  if (!bCTO)
+  {
+    // If CMD1 didn't time out, it's an MMC.
+    wsptr->CardType = CARDTYPE_MMC;
+  }
+
+  // If bCTO is true, it's an SD or SDHC card, so perform this
+  // initialisation:
+  if (bCTO)
+  {
+    // Send CMD8
+    WaitForCMDI (wsptr);
+    *(wsptr->MMCHS1_IE) = 0x100F0001; // Enable CERR, CIE, CCRC, CC, CTO and CEB events to occur
+    *(wsptr->MMCHS1_ARG) = 0x000001AA; // Voltage select = 1, check pattern = AA
+    i = SendSDMMCCommand (wsptr, CMD8);
+#ifdef DEBUG_MMC_COMMANDS
+    dprintf ("Result of CMD8 is %d\n", i);
+#endif
+    uiDump = read_and_clear_stat(wsptr);
+#ifdef DEBUG_MMC_COMMANDS
+    dprintf ("CMD8 gives status %08X\n", uiDump);
+#endif
+    uiDump = *(wsptr->MMCHS1_RSP10);
+#ifdef DEBUG_MMC_COMMANDS
+    dprintf ("CMD8 gives response %08X\n", uiDump);
+#endif
+
+    // Now we must loop round issuing CMD55 followed by ACMD41 until
+    // the response to ACMD41 has the top bit set.
+    for (iLoopCounter = 0, bDone = false, uiVoltageWindow = 0;
+            (iLoopCounter < 5000) && !bDone; iLoopCounter++)
+    {
+      // The arg MUST be set to 0
+      WaitForCMDI (wsptr);
+      *(wsptr->MMCHS1_ARG) = 0x00000000; // RCA
+      *(wsptr->MMCHS1_IE) = 0x100F0001; //   Enable CERR, CIE, CCRC, CC, CTO and CEB events to occur
+      i = SendSDMMCCommand (wsptr, CMD55);
+      //dprintf ("Result of CMD55 is %d\n", i);
+      //dprintf ("CMD55 gives status %08X\n", read_and_clear_stat());
+      read_and_clear_stat (wsptr);
+      uiDump = *(wsptr->MMCHS1_RSP10);
+      //dprintf ("CMD55 gives response %08X\n", uiDump);
+
+      //SoftwareResetCMDLine ();
+
+      // Send ACMD41 with HCS = 1 and the voltage window in bits 23:0
+      WaitForCMDI (wsptr);
+      *(wsptr->MMCHS1_ARG) = uiVoltageWindow | 0x40000000;
+      i = SendSDMMCCommand (wsptr, ACMD41);
+      //dprintf ("Result of ACMD41 is %d\n", i);
+      //dprintf ("ACMD41 gives status %08X\n", read_and_clear_stat());
+      read_and_clear_stat (wsptr);
+      uiVoltageWindow = *(wsptr->MMCHS1_RSP10);
+      //dprintf ("ACMD41 gives response %08X\n", uiVoltageWindow);
+
+      // Check the top bit
+      bDone = ((uiVoltageWindow & 0x80000000) != 0);
+      if ((uiVoltageWindow & 0x40000000) != 0)
+      {
+        wsptr->CardType = CARDTYPE_SDHC;
+      }
+      else
+      {
+        wsptr->CardType = CARDTYPE_SD;
+      }
+      uiVoltageWindow &= 0x00FFFFFF;
+    }
+    dprintf ("Exited the card initialisation loop with counter = %d\n", iLoopCounter);
+    dprintf ("Card %s High Capacity\n", (wsptr->CardType == CARDTYPE_SDHC) ? "IS" : "is NOT");
+  }
+
+  // Let's try a CMD2.
+  WaitForCMDI (wsptr);
+  *(wsptr->MMCHS1_ARG) = 0; // Stuff bits, PLSS p60/49
+  i = SendSDMMCCommand (wsptr, CMD2);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("Result of CMD2 is %d\n", i);
+#endif
+  uiDump = read_and_clear_stat(wsptr);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD2 gives status %08X\n", uiDump);
+  // This time there are 128 bits of response, so:
+  dprintf ("Bits 127..96: %08X\n", *(wsptr->MMCHS1_RSP76));
+  dprintf ("Bits  95..64: %08X\n", *(wsptr->MMCHS1_RSP54));
+  dprintf ("Bits  63..32: %08X\n", *(wsptr->MMCHS1_RSP32));
+  dprintf ("Bits  31.. 0: %08X\n", *(wsptr->MMCHS1_RSP10));
+#endif
+
+  // Now CMD3, which will give us a new RCA (Relative Card Address).
+  WaitForCMDI (wsptr);
+  *(wsptr->MMCHS1_ARG) = 0;
+  *(wsptr->MMCHS1_IE) = 0x100F0001;
+  i = SendSDMMCCommand (wsptr, CMD3);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("Result of CMD3 is %d\n", i);
+#endif
+  uiDump = read_and_clear_stat(wsptr);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD3 gives status %08X\n", uiDump);
+#endif
+  uiDump = *(wsptr->MMCHS1_RSP10);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD3 gives response %08X\n", uiDump);
+#endif
+  uiRCA = (uiDump >> 16) & 0xFFFF;
+  dprintf ("RCA = %08X\n", uiRCA);
+
+  change_clock_divider (wsptr, 12); // Should give 8 MHz
+
+  // Now CMD9, which will give us the CSD register's contents
+  WaitForCMDI (wsptr);
+  *(wsptr->MMCHS1_CON) = 0; // Bus is in push-pull mode
+  *(wsptr->MMCHS1_ARG) = uiRCA << 16;
+  *(wsptr->MMCHS1_IE) = 0x00070001; // CCRC, CC, CTO and CEB events
+  i = SendSDMMCCommand (wsptr, CMD9);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("Result of CMD9 is %d\n", i);
+#endif
+  uiDump = read_and_clear_stat(wsptr);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD9 gives status %08X\n", uiDump);
+  // This time there are 128 bits of response, so:
+  dprintf ("Bits 127..96: %08X\n", *(wsptr->MMCHS1_RSP76));
+  dprintf ("Bits  95..64: %08X\n", *(wsptr->MMCHS1_RSP54));
+  dprintf ("Bits  63..32: %08X\n", *(wsptr->MMCHS1_RSP32));
+  dprintf ("Bits  31.. 0: %08X\n", *(wsptr->MMCHS1_RSP10));
+#endif
+
+  // Issue CMD7 to select the card
+  WaitForCMDI (wsptr);
+  *(wsptr->MMCHS1_ARG) = uiRCA << 16; // Selects this card
+  i = SendSDMMCCommand (wsptr, CMD7);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("Result of CMD7 is %d\n", i);
+#endif
+  uiDump = read_and_clear_stat(wsptr);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD7 gives status %08X\n", uiDump);
+#endif
+  uiDump = *(wsptr->MMCHS1_RSP10);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD7 gives response %08X\n", uiDump);
+#endif
+
+  // Issue CMD16 to set the block length to 512 bytes
+  // We don't need to do this for SDHC, as it's fixed
+  // by specification at 512, but it shouldn't cause
+  // any error to do so
+  WaitForCMDI (wsptr);
+  *(wsptr->MMCHS1_ARG) = 512; // Block length
+  i = SendSDMMCCommand (wsptr, CMD16);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("Result of CMD16 is %d\n", i);
+#endif
+  uiDump = read_and_clear_stat(wsptr);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD16 gives status %08X\n", uiDump);
+#endif
+  uiDump = *(wsptr->MMCHS1_RSP10);
+#ifdef DEBUG_MMC_COMMANDS
+  dprintf ("CMD16 gives response %08X\n", uiDump);
+#endif
+
+  ReadBlockAbsolute (wsptr, 0, &data_main);
+  //print_block_data (&data_main);
+
+  wsptr->volume_base = GetUInt (&data_main, 454);
+  dprintf ("Base of first partition is 0x%X\n", wsptr->volume_base);
+
+  ReadBlockOfPartition (wsptr, 0, &data_main);
+  //print_block_data (&data_main);
+
+  // Get the drive parameters from the BPB
+  // Code is largely translated from my !ROFS
+  wsptr->BPB_BytsPerSec = GetUShort (&data_main, 0x0B);
+  wsptr->BPB_SecPerClus = data_main.byte[0x0D];
+  wsptr->bytespercluster = wsptr->BPB_BytsPerSec * wsptr->BPB_SecPerClus;
+  wsptr->BPB_RsvdSecCnt = GetUShort (&data_main, 0x0E);
+  wsptr->offset_to_FAT1 = wsptr->BPB_RsvdSecCnt;
+  wsptr->BPB_NumFATs = data_main.byte[0x10];
+  wsptr->BPB_RootEntCnt = GetUShort (&data_main, 0x11);
+  wsptr->BPB_TotSec16 = GetUShort (&data_main, 0x13);
+  wsptr->RootDirSectors = (wsptr->BPB_RootEntCnt * 32) / wsptr->BPB_BytsPerSec;
+  wsptr->BPB_FATSz16 = GetUShort (&data_main, 0x16);
+  wsptr->BPB_FATSz32 = GetUShort (&data_main, 0x24);
+  if (wsptr->BPB_FATSz16 == 0)
+  {
+    wsptr->FATSz = wsptr->BPB_FATSz32;
+  }
+  else
+  {
+    wsptr->FATSz = wsptr->BPB_FATSz16;
+  }
+  wsptr->offset_to_root_dir = wsptr->offset_to_FAT1 + (wsptr->BPB_NumFATs * wsptr->FATSz);
+  wsptr->FirstDataSector = wsptr->offset_to_root_dir + wsptr->RootDirSectors;
+  wsptr->BPB_TotSec32 = GetUInt (&data_main, 0x20);
+  // Either BPB_TotSec16 or BPB_TotSec32 should be 0; the other one is
+  // the total sectors count.
+  if (wsptr->BPB_TotSec16 == 0)
+  {
+    wsptr->TotSec = wsptr->BPB_TotSec32;
+  }
+  else
+  {
+    wsptr->TotSec = wsptr->BPB_TotSec16;
+  }
+  // Calculate the number of clusters in a FAT, from which we
+  // choose FAT16 or FAT32 organisation
+  wsptr->DataSec = wsptr->TotSec - (wsptr->BPB_RsvdSecCnt + (wsptr->BPB_NumFATs * wsptr->FATSz) + wsptr->RootDirSectors);
+  wsptr->CountOfClusters = wsptr->DataSec / wsptr->BPB_SecPerClus;
+  if (wsptr->CountOfClusters < 4085)
+  {
+    wsptr->FATType = FATTYPE_FAT12;
+  }
+  else if (wsptr->CountOfClusters < 65525)
+  {
+    wsptr->FATType = FATTYPE_FAT16;
+  }
+  else
+  {
+    wsptr->FATType = FATTYPE_FAT32;
+  }
+  if (wsptr->FATType == FATTYPE_FAT32)
+  {
+    wsptr->BPB_RootClus = GetUInt (&data_main, 44);
+    strncpy (volume_label, (char*) &(data_main.byte[71]), 11);
+    strncpy (fattype, (char*) &(data_main.byte[82]), 8);
+    wsptr->bytesperFATentry = 4;
+  }
+  else
+  {
+    wsptr->BPB_RootClus = 0; // Defined to prevent error
+    strncpy (volume_label, (char*) &(data_main.byte[43]), 11);
+    strncpy (fattype, (char*) &(data_main.byte[54]), 8);
+    wsptr->bytesperFATentry = 2;
+  }
+
+#ifdef DEBUG_ENABLED
+  // Textify that lot
+  dprintf ("Sector size            = %d\n", wsptr->BPB_BytsPerSec);
+  dprintf ("Sectors per cluster    = %d\n", wsptr->BPB_SecPerClus);
+  dprintf ("Bytes per cluster      = %d\n", wsptr->bytespercluster);
+  dprintf ("Reserved sectors       = %d\n", wsptr->BPB_RsvdSecCnt);
+  dprintf ("Offset to FAT1         = %d\n", wsptr->offset_to_FAT1);
+  dprintf ("Number of FATs         = %d\n", wsptr->BPB_NumFATs);
+  dprintf ("Number of root entries = %d\n", wsptr->BPB_RootEntCnt);
+  dprintf ("Total sectors (16)     = %d\n", wsptr->BPB_TotSec16);
+  dprintf ("Total sectors (32)     = %d\n", wsptr->BPB_TotSec32);
+  dprintf ("Sectors in root dir    = %d\n", wsptr->RootDirSectors);
+  dprintf ("Sectors per FAT (16)   = %d\n", wsptr->BPB_FATSz16);
+  dprintf ("Sectors per FAT (32)   = %d\n", wsptr->BPB_FATSz32);
+  dprintf ("Sectors per FAT        = %d\n", wsptr->FATSz);
+  dprintf ("Offset to root dir     = %d\n", wsptr->offset_to_root_dir);
+  dprintf ("Total sectors          = %d\n", wsptr->TotSec);
+  dprintf ("Data sectors           = %d\n", wsptr->DataSec);
+  dprintf ("Count of clusters      = %d\n", wsptr->CountOfClusters);
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT12:
+    dprintf ("FAT organisation       = FAT12\n");
+    break;
+    case FATTYPE_FAT16:
+    dprintf ("FAT organisation       = FAT16\n");
+    break;
+    case FATTYPE_FAT32:
+    dprintf ("FAT organisation       = FAT32\n");
+    break;
+    case FATTYPE_UNKNOWN:
+    dprintf ("FAT organisation       = UNKNOWN!!!\n");
+    break;
+    default:
+    dprintf ("FAT organisation       = ILLEGAL VALUE!!!\n");
+    break;
+  }
+  dprintf ("Root cluster           = %d\n", wsptr->BPB_RootClus);
+  dprintf ("Volume label           = %s\n", volume_label);
+  dprintf ("FAT type string        = %s\n", fattype);
+  dprintf ("Bytes per FAT entry    = %d\n", wsptr->bytesperFATentry);
+#endif
+
+  return 0;
+}
+
+/******************************************************************
+*          GetUInt
+*   This reads an unsigned int, little endian, from a data_area.
+*   In:     byte offset to first (LS) byte
+*           pointer to data_area union
+*   Return: uint
+******************************************************************/
+uint GetUInt (const union data_area *da, uint uiOfs)
+{
+  return da->byte[uiOfs] + (da->byte[uiOfs + 1] << 8)
+    + (da->byte[uiOfs + 2] << 16) + (da->byte[uiOfs + 3] << 24);
+}
+
+/******************************************************************
+*          GetUShort
+*   This reads an unsigned short, little endian, from a data_area.
+*   In:     byte offset to first (LS) byte
+*           data_area union
+*   Return: uint
+******************************************************************/
+uint GetUShort (const union data_area *da, uint uiOfs)
+{
+  return da->byte[uiOfs] + (da->byte[uiOfs + 1] << 8);
+}
+
+/******************************************************************
+*          PutUInt
+*   This writes a uint, little endian, to a data_area.
+*   In:     uint to be written
+*   In:     pointer to data_area union
+*   In:     byte offset to first (LS) byte
+*   Return: void
+******************************************************************/
+void PutUInt (uint val, union data_area* da, uint uiOfs)
+{
+  if (uiOfs >= 509)
+  {
+    dprintf ("PutUInt: excessive offset: %u\n", uiOfs);
+  }
+  else
+  {
+    da->byte[uiOfs] = val & 0xFF;
+    da->byte[uiOfs + 1] = (val >> 8) & 0xFF;
+    da->byte[uiOfs + 2] = (val >> 16) & 0xFF;
+    da->byte[uiOfs + 3] = (val >> 24) & 0xFF;
+  }
+}
+
+/******************************************************************
+*          PutUShort
+*   This writes a ushort, little endian, to a data_area.
+*   In:     uint to be written
+*   In:     pointer to data_area union
+*   In:     byte offset to first (LS) byte
+*   Return: void
+******************************************************************/
+void PutUShort (uint val, union data_area* da, uint uiOfs)
+{
+  if (uiOfs >= 511)
+  {
+    dprintf ("PutUShort: excessive offset: %u\n", uiOfs);
+  }
+  else
+  {
+    da->byte[uiOfs] = val & 0xFF;
+    da->byte[uiOfs + 1] = (val >> 8) & 0xFF;
+#ifdef PRINT_DIAGNOSTICS
+    dprintf ("PutUShort\n");
+#endif
+  }
+}
+
+/******************************************************************
+*          ReadBlockAbsolute
+*   This reads one block of data from the SD/SDHC card.
+*   In:     pointer to ws
+*           block number
+*           data_area union
+*   Return: true if data were read successfully,
+*           false if any error occurred while reading
+******************************************************************/
+bool ReadBlockAbsolute (ws* wsptr, uint uiBlockNum, union data_area* da)
+{
+  bool bRetVal = false;
+  uint uiDump = 0;
+  int i = 0;
+
+  // Issue CMD17 to read a block at address 0.
+  //dprintf ("PSTATE before = %08X\n", *(wsptr->MMCHS1_PSTATE));
+  *(wsptr->MMCHS1_BLK) = 512 + (1 << 16); // 1 block of 512 bytes
+  if (wsptr->CardType == CARDTYPE_SDHC)
+  {
+    *(wsptr->MMCHS1_ARG) = uiBlockNum; // Block address for SDHC
+  }
+  else
+  {
+    *(wsptr->MMCHS1_ARG) = uiBlockNum << 9; // Byte address for SD
+  }
+  i = SendSDMMCCommand (wsptr, CMD17);
+  //dprintf ("Result of CMD17 is %d\n", i);
+  //dprintf ("CMD17 gives status %08X\n", read_and_clear_stat ());
+  uiDump = *(wsptr->MMCHS1_RSP10);
+  //dprintf ("CMD17 gives response %08X\n", uiDump);
+  // At this point, the read shoud have completed,
+  // and there should be a block waiting to be collected.
+  // Read the PSTATE register.
+  //dprintf ("PSTATE after = %08X\n", *(wsptr->MMCHS1_PSTATE));
+  bRetVal = WaitForDataReady (wsptr);
+  //dprintf ("PSTATE after = %08X\n", *(wsptr->MMCHS1_PSTATE));
+
+  for (i = 0; i < 128; i++)
+  {
+    da->word[i] = *(wsptr->MMCHS1_DATA);
+  }
+  return bRetVal;
+}
+
+/******************************************************************
+*          ReadBlockOfPartition
+*   This reads one block of data from the SD/SDHC card.
+*   In:     pointer to ws
+*           block number (relative to base of current partition)
+*           data_area union
+*   Return: true if data were read successfully,
+*           false if any error occurred while reading
+******************************************************************/
+bool ReadBlockOfPartition (ws* wsptr, uint uiBlockNum, union data_area* da)
+{
+  return ReadBlockAbsolute (wsptr, uiBlockNum + wsptr->volume_base, da);
+}
+
+/******************************************************************
+*          WriteBlockAbsolute
+*   This writes one block of data to the SD/SDHC card.
+*   In:     pointer to ws
+*           block number (relative to card as a whole)
+*           data_area union
+*   Return: true if data were written successfully,
+*           false if any error occurred while writing
+******************************************************************/
+bool WriteBlockAbsolute (ws* wsptr, uint uiBlockNum, union data_area* da)
+{
+  bool bRetVal = false;
+  //uint uiDump = 0;
+  uint ui = 0;
+  int i = 0;
+
+  // Curiously, the OMAP35 TRM says to issue the command before
+  // transferring the data, same as for read.
+
+  // Issue CMD24 to write a block.
+  //printf ("PSTATE before = %08X\n", read_word (MMCHS1_PSTATE));
+  WaitForCMDI (wsptr);
+  *(wsptr->MMCHS1_BLK) = 512 + (1 << 16); // 1 block of 512 bytes
+  if (wsptr->CardType == CARDTYPE_SDHC)
+  {
+    *(wsptr->MMCHS1_ARG) = uiBlockNum; // Block address for SDHC
+  }
+  else
+  {
+    *(wsptr->MMCHS1_ARG) = uiBlockNum << 9; // Byte address for SD and MMC
+  }
+  i = SendSDMMCCommand (wsptr, CMD24);
+  //printf ("Result of CMD24 is %d\n", i);
+  if (!WaitForWriteBufferReady (wsptr))
+  {
+    return false;
+  }
+  //printf ("WriteBlockAbsolute: status is %08X\n", read_word (MMCHS1_STAT));
+  //printf ("PSTATE before = %08X\n", read_word (MMCHS1_PSTATE));
+  for (i = 0; i < 128; ui++)
+  {
+    *(wsptr->MMCHS1_DATA) = da->word[i++];
+  }
+  //printf ("CMD24 gives status %08X\n", read_and_clear_stat ());
+  //uiDump = read_word (MMCHS1_RSP10);
+  //printf ("CMD24 gives response %08X\n", uiDump);
+  // At this point, the write should have completed.
+  // Read the PSTATE register.
+  //printf ("PSTATE after = %08X\n", read_word (MMCHS1_PSTATE));
+  //delay (2); // Wait 2 ticks
+  for (ui = 0, bRetVal = false; (ui < 1000000) && !bRetVal; ui++)
+  {
+    if (get_bitfield (*(wsptr->MMCHS1_PSTATE), 8, 1) == 0)
+    bRetVal = true;
+  }
+#ifdef PRINT_DIAGNOSTICS
+  printf ("Exited loop with ui = %u\n", ui);
+#endif
+  //printf ("PSTATE after wait = %08X\n", read_word (MMCHS1_PSTATE));
+  return bRetVal;
+}
+
+/******************************************************************
+*          WriteBlockOfPartition
+*   This writes one block of data to the SD/SDHC card.
+*   In:     pointer to ws
+*           block number (relative to base of current partition)
+*           data_area union
+*   Return: true if data were written successfully,
+*           false if any error occurred while writing
+******************************************************************/
+bool WriteBlockOfPartition (ws* wsptr, uint uiBlockNum, union data_area* da)
+{
+  return WriteBlockAbsolute (wsptr, uiBlockNum + wsptr->volume_base, da);
+}
+
+/******************************************************************
+*          WaitForDataReady
+*   This waits for the data ready bit in PSTATE.
+*   In:     pointer to ws
+*   Return: true if data became ready within the timeout,
+*           false if the loop has timed out waiting
+******************************************************************/
+bool WaitForDataReady (ws* wsptr)
+{
+  bool bRetVal = false;
+  uint ui = 0;
+
+  for (ui = 0, bRetVal = false; (ui < 1000000) & !bRetVal; ui++)
+  {
+    if (get_bitfield (*(wsptr->MMCHS1_PSTATE), 11, 1) != 0)
+    {
+      bRetVal = true;
+    }
+  }
+  //dprintf ("WaitForDataReady returns with loop counter = %d\n", ui);
+  return bRetVal;
+}
+
+/******************************************************************
+*          WaitForWriteBufferReady
+*   This waits for the buffer write enable bit in PSTATE.
+*   In:     void
+*   Return: true if BWE became ready within the timeout,
+*           false if the loop has timed out waiting
+******************************************************************/
+bool WaitForWriteBufferReady (ws* wsptr)
+{
+  bool bRetVal = false;
+  uint ui = 0;
+
+  for (ui = 0, bRetVal = false; (ui < 10000000) & !bRetVal; ui++)
+  {
+    if (get_bitfield (*(wsptr->MMCHS1_PSTATE), 10, 1) != 0)
+    {
+      bRetVal = true;
+    }
+  }
+  //printf ("WaitForWriteBufferReady returns with loop counter = %d\n", ui);
+  return bRetVal;
+}
+
+void print_block_data (union data_area* da)
+{
+#ifdef DEBUG_ENABLED
+  char s[100] = "";
+  char ss[20] = "";
+  int inner = 0;
+  int outer = 0;
+  unsigned char c = 0;
+
+  for (outer = 0; outer < 512; outer += 16)
+  {
+    s[0] = '\0'; // Null string
+    for (inner = 0; inner < 16; inner++)
+    {
+      sprintf (ss, "%02X ", da->byte[outer + inner]);
+      strcat (s, ss);
+    }
+    for (inner = 0; inner < 16; inner++)
+    {
+      c = da->byte[outer + inner];
+      if (( c >= 32) && (c < 127))
+      {
+        ss[inner] = c;
+      }
+      else
+      {
+        ss[inner] = '.';
+      }
+    }
+    ss[16] = '\0'; // Null terminate the string
+    strcat (s, ss);
+    dprintf ("%s\n", s);
+  }
+  dprintf ("\n");
+#else
+  (void) da;
+#endif
+}
+
+/******************************************************************
+*          WaitForCMDI
+*   See p3126.  This waits for the PSTATE CMDI bit to be clear.
+*   In:     pointer to ws struct
+*   Return: void, but not until either the CMDI bit is clear or
+*           the loop has timed out waiting.
+******************************************************************/
+void WaitForCMDI (ws* wsptr)
+{
+  uint uiDump = 0;
+  uint uiUI = 0;
+  bool bDone = false;
+
+  // See if the command line is in use
+  for (uiUI = 0, bDone = false; (uiUI < 1000000) & !bDone; uiUI++)
+  {
+    uiDump = *(wsptr->MMCHS1_PSTATE);
+    if ((uiDump & 0x00000001) == 0)
+    {
+      bDone = true;
+    }
+  }
+#ifdef DEBUG_WAITFORCMDI
+  dprintf ("Wait for CMDI exited with counter = %d\n", uiUI);
+#endif
+}
+
+/******************************************************************
+*          SoftwareResetCMDLine
+*   Sends a software reset to the mmci_cmd line.
+*   In:     pointer to ws struct
+*   Return: void, but not until either the software reset has
+*           completed, or the loop has timed out.
+******************************************************************/
+void SoftwareResetCMDLine (ws* wsptr)
+{
+  uint uiDump = 0, uiUI = 0;
+
+  // Set SYSCTL[25] and wait until it returns to 0.
+  // We're going to return from within these braces, so
+  // we no longer need uiUI - we can re-use it as a
+  // timeout counter while waiting for SYSCTL[25] to return to 0.
+  uiDump = *(wsptr->MMCHS1_SYSCTL);
+  *(wsptr->MMCHS1_SYSCTL) = uiDump | 0x02000000;
+  for (uiUI = 0; uiUI < 10000000; uiUI++)
+  {
+    uiDump = *(wsptr->MMCHS1_SYSCTL);
+    if ((uiDump & 0x02000000) == 0)
+    {
+#ifdef DEBUG_SRCMDLINE
+      dprintf ("SoftwareResetCMDLine succeeded\n");
+#endif
+      return; // Normal return
+    }
+  }
+#ifdef DEBUG_SRCMDLINE
+  dprintf ("SoftwareResetCMDLine timed out\n");
+#endif
+}
+
+/******************************************************************
+*          SendSDMMCCommand
+*   See p3126.  This sends an SD/MMC command to the card.
+*   In:     uiCmd (uint) - SD/MMC command
+*   Return: -1 if something times out,
+*           0..3 if a response is present.
+******************************************************************/
+int SendSDMMCCommand (ws* wsptr, uint uiCmd)
+{
+  uint uiDump = 0;
+  uint uiUI = 0;
+  bool bDone = false;
+  bool bCTO = false, bCCRC = false, bCC = false;
+
+  // See if the command line is in use
+  for (uiUI = 0, bDone = false; (uiUI < 1000000) & !bDone; uiUI++)
+  {
+    uiDump = *(wsptr->MMCHS1_PSTATE);
+    if ((uiDump & 0x00000001) == 0)
+    {
+      bDone = true;
+    }
+  }
+#ifdef DEBUG_SENDSDMMCCOMMAND
+  dprintf ("SendSDMMCCommand wait for CMDI exited with counter = %d\n", uiUI);
+#endif
+  // If bDone is still false, the loop has timed out waiting, so return -1
+  if (!bDone)
+  {
+    dprintf ("SendSDMMCCommand timed out at the top\n");
+    return -1;
+  }
+  // Still here? Must be ready to accept the command.
+  *(wsptr->MMCHS1_CMD) = uiCmd;
+  // Wait until either complete or timed out
+  for (uiUI = 0, bDone = false; (uiUI < 1000000) & !bDone; uiUI++)
+  {
+    uiDump = *(wsptr->MMCHS1_STAT);
+    // Get the boolean state of the CTO, CCRC and CC bits
+    bCTO = (uiDump & 0x00010000) != 0;
+    bCCRC = (uiDump & 0x00020000) != 0;
+    bCC = (uiDump & 0x00000001) != 0;
+    if (bCTO)
+    {
+      // Set SYSCTL[25] and wait until it returns to 0.
+      // We're going to return from within these braces, so
+      // we no longer need uiUI - we can re-use it as a
+      // timeout counter while waiting for SYSCTL[25] to return to 0.
+      uiDump = *(wsptr->MMCHS1_SYSCTL);
+      *(wsptr->MMCHS1_SYSCTL) = uiDump | 0x02000000;
+      for (uiUI = 0; uiUI < 10000000; uiUI++)
+      {
+        uiDump = *(wsptr->MMCHS1_SYSCTL);
+        if ((uiDump & 0x02000000) == 0)
+        {
+          return 0; // Normal return
+        }
+      }
+      dprintf ("SendSDMMCCommand timed out at the middle\n");
+      return -1; // Timed out waiting for SYSCTL[25] to clear
+    }
+    if (bCC)
+    {
+      // Read and return the CMD[17:16] bits.  It's not clear to me how they could
+      // ever differ from the same bits in uiCmd, but let's do as they say.
+      return (*(wsptr->MMCHS1_CMD) >> 16) & 0x03;
+    }
+  }
+  dprintf ("SendSDMMCCommand timed out at the bottom; uiUI = %d\n", uiUI);
+  return -1;
+}
+
+uint get_bitfield (uint value, uint bitnum, uint numbits)
+{
+  //get bitfield value starting from lowest bitnum using numbits bits in 32 bit word
+  return (value>>bitnum) & ((1<<numbits)-1);
+}
+
+
+uint set_bitfield (uint value, uint bitnum, uint numbits, uint bitfield)
+{
+  // set a bitmask at specified location inside 32 bit word
+  // example: set_bitfield(0xffffffff,16,4,0xC); gives 0xFFFCFFFF
+  uint field = (1<<numbits)-1;
+  return (value & ~(field << bitnum)) | (bitfield << bitnum);
+}
+
+/******************************************************************
+*          read_and_clear_stat
+*   Clears all the status bits.
+*   In:     wsptr - pointer to ws struct.
+*   Return: void
+******************************************************************/
+uint read_and_clear_stat (ws* wsptr)
+{
+  uint uiStat = 0;
+  uiStat = *(wsptr->MMCHS1_STAT);
+  *(wsptr->MMCHS1_STAT) = uiStat;
+  return uiStat;
+}
+
+/******************************************************************
+*          change_clock_divider
+*   See p3128.  This changes the clock divider part of the SYSCTL register.
+*   In:     wsptr - pointer to ws struct.
+*   In:     uiRatio (uint) - New ratio, right justified
+*   Return: void
+******************************************************************/
+void change_clock_divider (ws* wsptr, uint uiRatio)
+{
+  uint uiUI = 0, uiDump = 0, uiCounter = 0;
+  bool bDone = false;
+
+  // Clear the SYSCTL CEN bit
+  uiUI = *(wsptr->MMCHS1_SYSCTL);
+  set_bitfield (uiUI, 2, 1, 0);
+  *(wsptr->MMCHS1_SYSCTL) = uiUI;
+
+  // Set the new ratio
+  uiUI = set_bitfield (uiUI, 6, 10, (uiRatio & 0x3ff)); // Clip to make sure no problem caused by excessive values
+  uiUI = set_bitfield (uiUI, 0, 1, 1); // Set ICE
+#ifdef DEBUG_CHANGECLOCKDIVIDER
+  dprintf ("Writing %08X to SYSCTL\n", uiUI);
+#endif
+  *(wsptr->MMCHS1_SYSCTL) = uiUI;
+
+  // Loop round until SYSCTL ICS bit is 1, or until timeout
+  for (uiCounter = 0, bDone = false; (uiCounter < 10000000) && !bDone; uiCounter++)
+  {
+    uiDump = *(wsptr->MMCHS1_SYSCTL);
+    bDone = ((uiDump & 0x02) != 0);
+  }
+
+  // Regardless of whether the setting has succeeded or failed, set the SYSCTL CEN bit again
+  uiUI = set_bitfield (uiUI, 2, 1, 1);
+#ifdef DEBUG_CHANGECLOCKDIVIDER
+  dprintf ("Writing %08X to SYSCTL\n", uiUI);
+#endif
+  *(wsptr->MMCHS1_SYSCTL) = uiUI;
+
+  // Print a diagnostic of success or failure
+#ifdef DEBUG_CHANGECLOCKDIVIDER
+  if (bDone)
+  {
+    dprintf ("change_clock_divider succeeded; counter = %d\n", uiCounter);
+  }
+  else
+  {
+    dprintf ("change_clock_divider failed\n");
+  }
+#endif
+}
+
+/******************************************************************
+*          GetDOSDateAndTimeFromRTC
+*   Read the RTC and create DOS-format date and time from it.
+*   In:     DatePtr (uint*) - pointer to uint for DOS date.
+*   In:     TimePtr (uint*) - pointer to uint for DOS time.
+*   Return: void
+******************************************************************/
+void GetDOSDateAndTimeFromRTC (uint* DatePtr, uint* TimePtr)
+{
+  uint Year, Month, Day, Hour, Minute, Second;
+  struct RTCTime rtcTime;
+  int found;
+
+  found = ReadTimeForNVRAM (&rtcTime);  // 0 if success, non-0 if failure
+//  dprintf ("%02X%02X-%02X-%02X %02X:%02X:%02X.%02X (%d)\n", rtcTime.YearHigh, rtcTime.YearLow,
+//    rtcTime.Month, rtcTime.DayOfMonth, rtcTime.Hours, rtcTime.Minutes, rtcTime.Seconds,
+//    rtcTime.Centiseconds, found);
+
+  if (found == 0)
+  {
+    Hour = BCD2Bin (rtcTime.Hours);
+    Minute = BCD2Bin (rtcTime.Minutes);
+    Second = BCD2Bin (rtcTime.Seconds);
+    // The range is 0..127, corresponding to 1980..2107
+    // MS-DOS epoch is 1980-01-01
+    Year = (BCD2Bin (rtcTime.YearHigh) * 100) + BCD2Bin (rtcTime.YearLow) - 1980;
+    Month = BCD2Bin (rtcTime.Month);
+    Day = BCD2Bin (rtcTime.DayOfMonth);
+  }
+  else
+  {
+    // Set to MS-DOS epoch
+    Hour = 0;
+    Minute = 0;
+    Second = 0;
+    Year = 0;
+    Month = 1;
+    Day = 1;
+  }
+  *TimePtr = (Hour << 11) + (Minute << 5) + (Second / 2);
+  *DatePtr = (Year << 9) + (Month << 5) + Day;
+}
+
+/******************************************************************
+*          BCD2Bin
+*   Convert a BCD byte to its binary value.
+*   In:     uc (uchar) - BCD value.
+*   Return: binary value of uc.
+******************************************************************/
+uchar BCD2Bin(uchar uc)
+{
+  return (10 * ((uc >> 4) & 0x0F) + (uc & 0x0F));
+}
+@
+
+
+1.4
+log
+@NVMem fixes
+Detail:
+  c/NVMem - Fixed NVMem_C_write() to skip creating a CMOS file if the directory is full
+  c/fat - Fixed FindDirectoryEntry() to ensure short_name[] is always terminated properly
+  s/NVMemory - Only update the CMOS file if bytes have changed
+  s/Boot - Fixed beagleboard revision detection GPIOs not being configured correctly
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.54. Tagged as 'OMAP3-0_54'
+@
+text
+@@
+
+
+1.3
+log
+@NVMem tweaks and fixes
+Detail:
+  c/fat - Fixed ReadRootDirectoryBlock and WriteRootDirectoryBlock when dealing with FAT32 cards
+  c/NVMem - Ensure FATbc.blocknum is initialised to an invalid value inside NVMem_C_write
+  c/NVMem, c/far, h/NVMem - Change GetUInt() and GetUShort() to take data_area pointers instead of passing by reference, to reduce stack thrashing
+Admin:
+  Tested on rev A2 BB-xM
+  Fixes supplied by Willi Theiss
+
+
+Version 0.53. Tagged as 'OMAP3-0_53'
+@
+text
+@d214 14
+a227 7
+    dprintf ("Empty directory entry at cluster %u, block %d, index %d\n",
+      DirEntryCluster, DirEntryBlock, found);
+    FirstCluster = 0;
+    WriteToFile (wsptr, file_buffer, CMOS_BYTES_GROSS, &FirstCluster, &data_main, &FATbc);
+    CreateShortDirectoryEntry (wsptr, "CMOS", Date, Time, CMOS_BYTES_GROSS, found, FirstCluster,
+      &DirEntryCluster, &DirEntryBlock, &data_main, &FATbc);
+    dprintf ("Directory block written\n");
+@
+
+
+1.2
+log
+@Add Dave Higton's CMOS save code
+Detail:
+  Makefile - fixed warning about StdRules being included twice (via CModule)
+  c/NVMem, c/fat, h/NVMem, h/common, h/fat, hdr/StaticWS, s/NVMemory, s/RTC - Added Dave Higton's code to create/update the 'CMOS' file on NVRAM writes
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.50. Tagged as 'OMAP3-0_50'
+@
+text
+@d98 1
+a98 1
+    FileSize = GetUInt (data_main, (found * 32) + 28);
+d106 1
+a106 1
+    FirstCluster = GetUShort (data_main, (found * 32) + 26);
+d109 1
+a109 1
+      FirstCluster += GetUShort (data_main, (found * 32) + 20) << 16;
+d173 1
+d197 1
+a197 1
+    FileSize = GetUInt (data_main, (found * 32) + 28);
+d199 1
+a199 1
+    FirstCluster = GetUShort (data_main, (found * 32) + 26);
+d202 1
+a202 1
+      FirstCluster += GetUShort (data_main, (found * 32) + 20) << 16;
+d545 1
+a545 1
+  wsptr->volume_base = GetUInt (data_main, 454);
+d553 1
+a553 1
+  wsptr->BPB_BytsPerSec = GetUShort (data_main, 0x0B);
+d556 1
+a556 1
+  wsptr->BPB_RsvdSecCnt = GetUShort (data_main, 0x0E);
+d559 2
+a560 2
+  wsptr->BPB_RootEntCnt = GetUShort (data_main, 0x11);
+  wsptr->BPB_TotSec16 = GetUShort (data_main, 0x13);
+d562 2
+a563 2
+  wsptr->BPB_FATSz16 = GetUShort (data_main, 0x16);
+  wsptr->BPB_FATSz32 = GetUShort (data_main, 0x24);
+d574 1
+a574 1
+  wsptr->BPB_TotSec32 = GetUInt (data_main, 0x20);
+d603 1
+a603 1
+    wsptr->BPB_RootClus = GetUInt (data_main, 44);
+d669 1
+a669 1
+uint GetUInt (union data_area da, uint uiOfs)
+d671 2
+a672 2
+  return da.byte[uiOfs] + (da.byte[uiOfs + 1] << 8)
+    + (da.byte[uiOfs + 2] << 16) + (da.byte[uiOfs + 3] << 24);
+d682 1
+a682 1
+uint GetUShort (union data_area da, uint uiOfs)
+d684 1
+a684 1
+  return da.byte[uiOfs] + (da.byte[uiOfs + 1] << 8);
+@
+
+
+1.1
+log
+@Add Dave Higton's SD/MMC & CMOS code
+Detail:
+  c/NVMem, c/fat, h/NVMem, h/common, h/fat - C code for reading a 'CMOS' file off the SD card on boot, for use as a CMOS RAM image
+  c/CLib - Added extra functions needed by the SD/MMC driver
+  s/NVMemory - Implementation of the HAL NVRAM API, for reading/writing the loaded CMOS file. The read/write functions handle RISC OS's CMOS address mangling, so that CMOS files saved by *SaveCMOS can be used as-is.
+  hdr/StaticWS - Updated with workspace needed by the new code
+  s/Boot - Initialise the CMOS cache on boot
+  s/Stubs - Removed the stub NVRAM function
+  Makefile - Added the new files
+Admin:
+  Tested on rev A2 BB-xM.
+
+
+Version 0.38. Tagged as 'OMAP3-0_38'
+@
+text
+@d25 5
+d44 1
+d65 2
+d71 158
+a236 3
+  int found = 0;
+  uint FirstCluster = 0;
+  uint Offset = 0;
+a237 2
+  uint FileSize = 0;
+  uint BytesLoaded = 0;
+d243 1
+a243 1
+  dprintf("PRCM_CM_ICLKEN1_CORE is %08X\n",uiDump);
+d246 1
+a246 1
+  dprintf("PRCM_CM_ICLKEN1_CORE is %08X\n",uiDump);
+d249 1
+a249 1
+  dprintf("PRCM_CM_FCLKEN1_CORE is %08X\n",uiDump);
+d252 1
+a252 1
+  dprintf("PRCM_CM_FCLKEN1_CORE is %08X\n",uiDump);
+d256 1
+a256 1
+  dprintf("PRCM_CMMMCHS1_SYSSTATUS is %08X\n",uiDump);
+d259 1
+a259 1
+  dprintf("PRCM_CMMMCHS1_SYSSTATUS is %08X\n",uiDump);
+d271 1
+a271 1
+  dprintf ("About to read from MMCHS1_CAPA(%08p)\n", (void *) wsptr->MMCHS1_CAPA);
+d274 1
+a274 1
+//  /*
+d284 1
+a285 1
+//  */
+d335 1
+a335 1
+  dprintf ("Result of CMD0 is %d\n", i);
+d337 1
+a337 1
+  dprintf ("CMD0 gives status %08X\n", uiDump);
+d360 1
+d362 1
+d364 1
+d366 1
+d373 1
+d375 1
+d393 1
+d395 1
+d397 1
+d399 1
+d401 1
+d403 1
+d453 1
+d455 1
+d457 1
+d464 1
+d471 1
+d473 1
+d475 1
+d477 1
+d479 1
+d481 1
+d493 1
+d495 1
+d497 1
+d504 1
+d510 1
+d512 1
+d514 1
+d516 1
+d518 1
+d520 1
+d529 1
+d531 1
+d533 1
+d535 1
+d537 1
+d539 1
+d658 1
+a658 38
+  // Search for one of "CMOS", "CMOS." and "CMOS.DAT"
+  found = FindDirectoryEntry (wsptr, "cmos", &data_main);
+  if (found < 0)
+  {
+    found = FindDirectoryEntry (wsptr, "cmos.", &data_main);
+  }
+  if (found < 0)
+  {
+    found = FindDirectoryEntry (wsptr, "cmos.dat", &data_main);
+  }
+  if (found >= 0)
+  {
+    dprintf ("We found a match at index %d\n", found);
+    FileSize = GetUInt (data_main, (found * 32) + 28);
+    dprintf ("File size = %u\n", FileSize);
+    if (FileSize > 2048)
+    {
+      FileSize = 2048;
+      dprintf ("File size reduced to %u\n", FileSize);
+    }
+    FirstCluster = GetUShort (data_main, (found * 32) + 26);
+    if (wsptr->FATType == FATTYPE_FAT32)
+    {
+      FirstCluster += GetUShort (data_main, (found * 32) + 20) << 16;
+    }
+    dprintf ("First cluster = %u\n", FirstCluster);
+    Offset = 0;
+    BytesLoaded = 0;
+    do
+    {
+      ReadBlockClustered (wsptr, &FirstCluster, &Offset, &data_main);
+      //print_block_data (&data_main);
+      memcpy (&wsptr->NVRAMCache[BytesLoaded], &data_main.byte[0], min_uint (FileSize - BytesLoaded, 512));
+      BytesLoaded += 512;
+    } while (BytesLoaded < FileSize);
+  }
+
+  return uiDump;
+d687 47
+d778 9
+d793 76
+d891 23
+d1014 1
+a1014 1
+*          SendMMCCommand
+d1165 54
+@
+

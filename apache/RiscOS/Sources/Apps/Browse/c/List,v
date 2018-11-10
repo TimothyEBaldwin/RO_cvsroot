@@ -1,0 +1,1782 @@
+head	1.4;
+access;
+symbols
+	Browse-2_16:1.4
+	Browse-2_15:1.4
+	Browse-2_14:1.4
+	Browse-2_13:1.4
+	Browse-2_12:1.4
+	Browse-2_11:1.4
+	Browse-2_10:1.4
+	Browse-2_09:1.4
+	ahodgkin_208_i4_2:1.4
+	ahodgkin_208_i4:1.2
+	ahodgkin_208_i3:1.2
+	ahodgkin_208_i2:1.2
+	ahodgkin_208_i1:1.2;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2000.11.14.08.45.06;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.05.31.15.58.40;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.09.02.13.10.24;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.30.15.51.51;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    List.c                                            */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Handle dialogue boxes showing a list of items     */
+/*          (e.g. for proxy exclusions). This actually spans  */
+/*          two Res file objects - the main list and          */
+/*          transient "add new item" dialogue boxes.          */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 19-Mar-1999 (ADH): Created.                       */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include <tboxlibs/toolbox.h>
+#include <tboxlibs/window.h>
+#include <tboxlibs/menu.h>
+#include <tboxlibs/ScrollList.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "Choices.h"
+#include "ChoiceDefs.h"
+#include "Menus.h"
+#include "TGutils.h"
+#include "Windows.h"
+
+#include "List.h"
+
+/* Local statics */
+
+static ObjectId window_id = NULL_ObjectId;
+
+/* Array of known list types. Arrange the Choices file token names */
+/* (second field) in order of decreasing length. Where there is    */
+/* more than one item of the same length, arrange in ascending     */
+/* alphabetical order.                                             */
+/*                                                                 */
+/* For list_known's definition, see List.h.                        */
+
+static list_known known[] = {
+                              { CD_ExcludeHTTPBt,  "LOProxyExcludehttp", NULL },
+                              { CD_ExcludeFTPBt,   "LOProxyExcludeftp",  NULL },
+                              { CD_ExcludeAnyBt,   "LOProxyExclusions",  NULL },
+                              { CD_CookieAcceptBt, "LOCookieAccept",     NULL },
+                              { CD_CookieRejectBt, "LOCookieReject",     NULL },
+                              { CD_NoPlugInsBt,    "LONoPlugIns",        NULL },
+                              { CD_NoScriptsBt,    "LONoScripts",        NULL },
+                              { CD_NoImagesBt,     "LONoImages",         NULL },
+                              { CD_NoTablesBt,     "LONoTables",         NULL }
+                            };
+
+/* Structure to hold details of what a List Add dialogue is open for */
+
+typedef struct list_add_for
+{
+  ObjectId parent;
+  char     initial_text[Limits_List_Item];
+  int      list_item;
+
+} list_add_for;
+
+/* Static function prototypes */
+
+static int               list_parent_is_closing                (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+static int               list_ok                               (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               list_cancel                           (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               list_add_add                          (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               list_add_cancel                       (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+static _kernel_oserror * list_closing                          (ObjectId self, ObjectId parent);
+static _kernel_oserror * list_add_closing                      (ObjectId self);
+
+static int               list_select_all_handler               (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               list_clear_selection_handler          (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               list_add_item_handler                 (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               list_remove_item_handler              (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               list_scrolllist_event_handler         (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+static _kernel_oserror * list_fill_from_comma_separated_string (ObjectId self, char * items);
+static _kernel_oserror * list_fill_from_array_index            (ObjectId self, int index);
+
+/**************************************************************/
+/* list_get_known_items()                                     */
+/*                                                            */
+/* Get a pointer to the array created above that holds the    */
+/* types of lists we know about.                              */
+/*                                                            */
+/* This should really only be of use to very specialised      */
+/* functions, e.g. the Choices file saver.                    */
+/*                                                            */
+/* Parameters: Pointer to an int which is filled in with      */
+/*             sizeof(array), since you can't do this         */
+/*             externally on the value the function returns   */
+/*             directly.                                      */
+/*                                                            */
+/* Returns:    Pointer to the list_known array.               */
+/*                                                            */
+/* Assumes:    The int pointer is mandatory; it may not be    */
+/*             NULL.                                          */
+/**************************************************************/
+
+const list_known * list_get_known_items(int * entries)
+{
+  *entries = (sizeof(known) / sizeof(known[0]));
+  return known;
+}
+
+/**************************************************************/
+/* list_get_malloc_list_string()                              */
+/*                                                            */
+/* The List dialogue is rather unusual in that it floats      */
+/* separately from the panes in the Choices dialogue box. It  */
+/* applies in some areas to a specific subset of an           */
+/* infinitely extensible series of Choices file tokens, e.g.  */
+/* "ProxyExclude<protocol>". Rather than have a load of       */
+/* string pointer entries in the global_choices structure     */
+/* which are really only there because of exactly what we     */
+/* support in this source file, this source provides instead  */
+/* - and maintains - the relevant strings. This function lets */
+/* you read them.                                             */
+/*                                                            */
+/* For any list which you think may be in a List dialogue     */
+/* box, call here rather than calling lookup_choice to get    */
+/* your own local malloc allocated copy of the relevant       */
+/* string. Don't forget to free it later! If the token you    */
+/* give isn't one recognised by this code, it'll get looked   */
+/* up from the Choices file for you.                          */
+/*                                                            */
+/* Parameters: Choices file token you want to get the value   */
+/*             of.                                            */
+/*                                                            */
+/* Returns:    Pointer to a copy of the value the given       */
+/*             Choices file token represents, either from the */
+/*             Choices file itself or from an overriding      */
+/*             value held locally. You should free this       */
+/*             string when you've finished with it. If you    */
+/*             get NULL back, memory allocation failed. If    */
+/*             the token isn't found in the Choices file      */
+/*             you'll get an empty string back (which can     */
+/*             also happen, of course, if the token is        */
+/*             present but happens to have a zero length      */
+/*             value associated).                             */
+/**************************************************************/
+
+char * list_get_malloc_list_string(const char * token)
+{
+  int          index = 0;
+  const char * tkn   = NULL;
+
+  /* Find out what list, if any, this is for */
+
+  while (index < (sizeof(known) / sizeof(known[0])) && !tkn)
+  {
+    if (!strcmp(known[index].choices_token, token)) tkn = token;
+    else index++;
+  }
+
+  /* If we didn't find it or we don't have a local string to override */
+  /* the Choices file entry, use that Choices file value.             */
+
+  if (!tkn || !known[index].local_value)
+  {
+    char * ret;
+
+    *lasttokn = '\0';
+    ret = lookup_choice((char *) token, 0, 0);
+
+    /* Was the token found in the Choices file? */
+
+    if (!strcmp(ret, "!")) return utils_strdup("");
+    else                   return utils_strdup(ret);
+  }
+
+  /* We found a local string to return */
+
+  return utils_strdup(known[index].local_value);
+}
+
+/**************************************************************/
+/* list_to_be_shown()                                         */
+/*                                                            */
+/* Called before the List dialogue box is displayed.          */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+int list_to_be_shown(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  int          index = 0;
+  const char * tkn   = NULL;
+
+  /* Find out what list, if any, this is for */
+
+  // Can do this better; arrange component IDs to map to an array
+  // index. Just have to do simple limit checking then. Still,
+  // optimisation here is a lot less important than in
+  // list_get_malloc_list_string!
+
+  while (index < (sizeof(known) / sizeof(known[0])) && !tkn)
+  {
+    if (idb->parent_component == known[index].reference) tkn = known[index].choices_token;
+    else index ++;
+  }
+
+  if (!tkn)
+  {
+    /* Don't recognise the parent component ID */
+
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Normal;
+
+      sprintf(erb.errmess,
+              "Parent component 0x%08x unknown in list_to_be_shown",
+              idb->parent_component);
+
+      ChkError(&erb);
+
+    #endif
+
+    return 0;
+  }
+  else
+  {
+    ChkError(toolbox_set_client_handle(0, idb->self_id, (void *) index));
+    ChkError(list_fill_from_array_index(idb->self_id, index));
+  }
+
+  /* Grey out Remove for now, as there's nothing selected to start with */
+
+  set_gadget_state(idb->self_id, ListRemove, 1);
+
+  /* Event handlers - first, for menu items / key shortcuts. */
+  /* Need to keep this list in sync with deregistration code */
+  /* in list_cancel.                                         */
+
+  ChkError(event_register_toolbox_handler(-1,
+                                          EListMenuSelectAll,
+                                          list_select_all_handler,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(-1,
+                                          EListMenuClearSelection,
+                                          list_clear_selection_handler,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(-1,
+                                          EListMenuAdd,
+                                          list_add_item_handler,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(-1,
+                                          EListMenuRemove,
+                                          list_remove_item_handler,
+                                          NULL));
+
+  /* Now for the buttons. Since this is object-specific, any     */
+  /* handlers will be automatically deregistered in list_cancel. */
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EListOK,
+                                          list_ok,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EListCancel,
+                                          list_cancel,
+                                          NULL));
+
+  /* Similarly, an object-specific handler for the ScrollList gadget */
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          ScrollList_Selection,
+                                          list_scrolllist_event_handler,
+                                          NULL));
+
+  /* An unusual one - we need to hide *ourselves* if the Choices pane */
+  /* that opened us disappears. Don't forget to deregister it later!  */
+
+  ChkError(event_register_toolbox_handler(idb->parent_id,
+                                          ECD_SubWindowToClose,
+                                          list_parent_is_closing,
+                                          NULL));
+
+  window_id = idb->self_id;
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_parent_is_closing()                                   */
+/*                                                            */
+/* Eeek, our parent window is closing - time for bed...       */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_parent_is_closing(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  if (window_id != NULL_ObjectId) toolbox_hide_object(0, window_id);
+  return 1;
+}
+
+/**************************************************************/
+/* list_add_to_be_shown()                                     */
+/*                                                            */
+/* Called before the List Add dialogue box is displayed.      */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+int list_add_to_be_shown(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  char newitem[Limits_List_Item];
+
+  /* Process the writable field value */
+
+  ChkError(windows_process_component_text(idb->self_id,
+                                          ListAddWrit,
+                                          newitem,
+                                          sizeof(newitem),
+                                          0,
+                                          1));
+
+  /* Event handlers */
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EListAddAdd,
+                                          list_add_add,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EListAddCancel,
+                                          list_add_cancel,
+                                          NULL));
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_ok()                                                  */
+/*                                                            */
+/* Called when OK is activated for the List dialogue box.     */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_ok(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  _kernel_oserror * e;
+  char              field[Limits_List_Item];
+  char            * composite;
+  char            * temp;
+  int               item;
+  int               index;
+  int               count = list_count_items(idb->self_id);
+  size_t            len;
+
+  ChkError(toolbox_get_client_handle(0, idb->self_id, (void *) &index));
+
+  if (index >= 0 && index < (sizeof(known) / sizeof(known[0])))
+  {
+    /* First thing is to take the separate items in the scrolling */
+    /* list and compose them back into a comma separated string.  */
+
+    composite = malloc(1);
+    if (!composite) ChkError(make_no_memory_error(38));
+    *composite = '\0';
+
+    for (item = 0; item < count; item++)
+    {
+      e = scrolllist_get_item_text(0,
+                                   idb->self_id,
+                                   ListScrollList,
+                                   field,
+                                   sizeof(field),
+                                   item,
+                                   NULL);
+
+      if (e)
+      {
+        free(composite);
+        ChkError(e);
+      }
+
+      /* Need to extend buffer to keep existing string, new string, */
+      /* a terminator, and a ',' separator.                         */
+
+      len  = strlen(composite) + strlen(field) + 1 + (item > 0 ? 1 : 0);
+      temp = realloc(composite, len);
+
+      if (!temp)
+      {
+        free(composite);
+        ChkError(make_no_memory_error(38));
+      }
+      else composite = temp;
+
+      /* Add the item to the string */
+
+      if (item > 0) strcat(composite, ",");
+      strcat(composite, field);
+    }
+
+    /* Use this string, discarding any previous value */
+
+    free(known[index].local_value);
+    known[index].local_value = composite;
+  }
+
+  ChkError(list_closing(idb->self_id, idb->parent_id));
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_cancel()                                              */
+/*                                                            */
+/* Called when Cancel is activated for the List dialogue box. */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_cancel(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  int index;
+
+  ChkError(toolbox_get_client_handle(0, idb->self_id, (void *) (&index)));
+  ChkError(list_fill_from_array_index(idb->self_id, index));
+  ChkError(list_closing(idb->self_id, idb->parent_id));
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_add_add()                                             */
+/*                                                            */
+/* Called when Add is activated for the List Add dialogue     */
+/* box.                                                       */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_add_add(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  list_add_for * attached;
+  char           field[Limits_List_Item];
+
+  ChkError(writablefield_get_value(0,
+                                   idb->self_id,
+                                   ListAddWrit,
+                                   field,
+                                   sizeof(field),
+                                   NULL));
+
+  if (*field)
+  {
+    ChkError(toolbox_get_client_handle(0,
+                                       idb->self_id,
+                                       (void *) (&attached)));
+
+    if (attached && attached->parent != NULL_ObjectId)
+    {
+      /* We're open for a specific item in the list, so change its text */
+      /* and update the attached list_add_for data                      */
+
+      ChkError(scrolllist_set_item_text(0,
+                                        attached->parent,
+                                        ListScrollList,
+                                        field,
+                                        attached->list_item));
+
+      StrNCpy0(attached->initial_text, field);
+    }
+    else if (window_id != NULL_ObjectId)
+    {
+      /* We're open for no specific item, so add to the top */
+
+      ChkError(scrolllist_add_item(ScrollList_AddItem_MakeVisible,
+                                   window_id,
+                                   ListScrollList,
+                                   field,
+                                   NULL,
+                                   NULL,
+                                   0));
+    }
+  }
+
+  ChkError(list_add_closing(idb->self_id));
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_add_cancel()                                          */
+/*                                                            */
+/* Called when Cancel is activated for the List Add dialogue  */
+/* box.                                                       */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_add_cancel(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  ChkError(list_add_closing(idb->self_id));
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_closing()                                             */
+/*                                                            */
+/* If the List dialogue box may be closing, call this to do   */
+/* various tidy-up actions which are the same for any source  */
+/* of closure (e.g. "OK" and "Cancel").                       */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue;                */
+/*                                                            */
+/*             Object ID of its parent, or NULL_ObjectId if   */
+/*             there is no parent in this case.               */
+/**************************************************************/
+
+static _kernel_oserror * list_closing(ObjectId self, ObjectId parent)
+{
+  WimpGetPointerInfoBlock info;
+  ObjectId                add;
+
+  RetError(wimp_get_pointer_info(&info));
+
+  /* Are we closing the window? (SELECT or Return pressed) */
+
+  if ((info.button_state & Wimp_MouseButtonSelect) || !info.button_state)
+  {
+    /* Deregister all event handlers registered on the */
+    /* EListToBeShown event.                           */
+
+    event_deregister_toolbox_handlers_for_object(self);
+
+    event_deregister_toolbox_handler(-1,
+                                     EListMenuSelectAll,
+                                     list_select_all_handler,
+                                     NULL);
+
+    event_deregister_toolbox_handler(-1,
+                                     EListMenuSelectAll,
+                                     list_select_all_handler,
+                                     NULL);
+
+    event_deregister_toolbox_handler(-1,
+                                     EListMenuClearSelection,
+                                     list_clear_selection_handler,
+                                     NULL);
+
+    event_deregister_toolbox_handler(-1,
+                                     EListMenuAdd,
+                                     list_add_item_handler,
+                                     NULL);
+
+    if (parent != NULL_ObjectId)
+    {
+      event_deregister_toolbox_handler(parent,
+                                       ECD_SubWindowToClose,
+                                       list_parent_is_closing,
+                                       NULL);
+    }
+
+    /* Ensure the object is hidden (may be a keyboard shortcut  */
+    /* so the dialogue vaninshing is not assured automatically) */
+
+    toolbox_hide_object(0, self);
+    window_id = NULL_ObjectId;
+  }
+
+  /* Closing or not closing, an event like this may mean any */
+  /* List Add dialogue is out of date                        */
+
+  if (!toolbox_create_object(0, "ListAdd", &add))
+  {
+    /* It's a shared object, so creating it just increments the */
+    /* reference count.                                         */
+
+    toolbox_hide_object(0, add);
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* list_add_closing()                                         */
+/*                                                            */
+/* If the List Add dialogue box may be closing, call this to  */
+/* do various tidy-up actions which are the same for any      */
+/* source of closure (e.g. "OK" and "Cancel").                */
+/*                                                            */
+/* This process includes checking the object's client handle  */
+/* - free() is called on this.                                */
+/*                                                            */
+/* Parameters: Object ID of the List Add dbox.                */
+/**************************************************************/
+
+static _kernel_oserror * list_add_closing(ObjectId self)
+{
+  WimpGetPointerInfoBlock   info;
+  list_add_for            * attached;
+
+  RetError(wimp_get_pointer_info(&info));
+  RetError(toolbox_get_client_handle(0, self, (void *) (&attached)));
+
+  /* Are we closing the window? (SELECT or Return pressed) */
+
+  if ((info.button_state & Wimp_MouseButtonSelect) || !info.button_state)
+  {
+    event_deregister_toolbox_handlers_for_object(self);
+
+    /* Ensure the object is hidden (may be a keyboard shortcut  */
+    /* so the dialogue vaninshing is not assured automatically) */
+
+    toolbox_hide_object(0, self);
+
+    /* Free any attached list_add_for structure */
+
+    free(attached);
+    RetError(toolbox_set_client_handle(0, self, NULL));
+
+    /* Clear the writable */
+
+    RetError(writablefield_set_value(0,
+                                     self,
+                                     ListAddWrit,
+                                     ""));
+  }
+  else
+  {
+    char   current[Limits_List_Item];
+    char * new = attached ? attached->initial_text : "";
+
+    /* Not closing, so reset the writable */
+
+    RetError(writablefield_get_value(0,
+                                     self,
+                                     ListAddWrit,
+                                     current,
+                                     sizeof(current),
+                                     NULL));
+
+    if (strcmp(current, new))
+    {
+      RetError(writablefield_set_value(0,
+                                       self,
+                                       ListAddWrit,
+                                       new));
+    }
+  }
+
+  /* Finished */
+
+  return NULL;
+}
+
+/**************************************************************/
+/* list_select_all_handler()                                  */
+/*                                                            */
+/* Handle an EListSelectAll event from a menu item with a     */
+/* List dialogue as its parent or a key shortcut invoked from */
+/* a List dialogue.                                           */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_select_all_handler(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  if (window_id != NULL_ObjectId) list_select_all(window_id);
+  return 1;
+}
+
+/**************************************************************/
+/* list_clear_selection_handler()                             */
+/*                                                            */
+/* Handle an EListClearSelection event from a menu item with  */
+/* a List dialogue as its parent or a key shortcut invoked    */
+/* from a List dialogue.                                      */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_clear_selection_handler(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  if (window_id != NULL_ObjectId) list_clear_selection(window_id);
+  return 1;
+}
+
+/**************************************************************/
+/* list_add_item_handler()                                    */
+/*                                                            */
+/* Handle an EListAdd event from a menu item with a List      */
+/* dialogue as its parent or a key shortcut invoked from a    */
+/* List dialogue.                                             */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler,    */
+/* though only the 'handle' field is used. The handle can     */
+/* point to a list_add_for structure if the dialogue box is   */
+/* open for a specific ScrollList item rather than to add a   */
+/* new item. The 'initial_text' field has its contents        */
+/* appended to the writable field of the dialogue box, and    */
+/* the address of the structure is set as the client handle   */
+/* for the object (so you can get at it in other event        */
+/* handlers).                                                 */
+/**************************************************************/
+
+static int list_add_item_handler(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  ObjectId list_add;
+
+  /* Create the dialogue box. */
+
+  ChkError(toolbox_create_object(0, "ListAdd", &list_add));
+
+  /* Append text in the writable if asked to do so. */
+
+  if (handle)
+  {
+    char   field[Limits_List_Item];
+    char * add = ((list_add_for *) handle)->initial_text;
+
+    if (
+         !writablefield_get_value(0,
+                                  list_add,
+                                  ListAddWrit,
+                                  field,
+                                  sizeof(field),
+                                  NULL)
+
+         && (strlen(field) + strlen(add) + 1 < sizeof(field))
+       )
+    {
+      strcat(field, add);
+
+      writablefield_set_value(0,
+                              list_add,
+                              ListAddWrit,
+                              field);
+    }
+
+    ChkError(toolbox_set_client_handle(0, list_add, handle));
+  }
+
+  /* Show the new dialogue box - the ToBeShown handler does the rest. */
+
+  ChkError(toolbox_show_object(Toolbox_ShowObject_AsMenu,
+                               list_add,
+                               Toolbox_ShowObject_Centre,
+                               NULL,
+                               NULL_ObjectId,
+                               NULL_ComponentId));
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_remove_item_handler()                                 */
+/*                                                            */
+/* Handle an EListRemove event from a menu item with a List   */
+/* dialogue as its parent or a key shortcut invoked from a    */
+/* List dialogue.                                             */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_remove_item_handler(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  if (window_id != NULL_ObjectId) list_remove_selected(window_id);
+  return 1;
+}
+
+/**************************************************************/
+/* list_scrolllist_event_handler()                            */
+/*                                                            */
+/* Handles events for the ScrollList gadget in a List         */
+/* dialogue box. Specifically, checks for items being         */
+/* selected / deselected and updates various UI components as */
+/* required.                                                  */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int list_scrolllist_event_handler(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  ScrollListSelectionEvent * sel = (ScrollListSelectionEvent *) event;
+
+  if (list_count_selected(idb->self_id) > 0) set_gadget_state(idb->self_id, ListRemove, 0);
+  else                                       set_gadget_state(idb->self_id, ListRemove, 1);
+
+  ChkError(list_setup_menu(idb->self_id));
+
+  /* If this was a double-click, need to open a List Add dialogue */
+  /* for that entry                                               */
+
+  if (sel->flags & ScrollList_Selection_Flags_DoubleClick)
+  {
+    list_add_for * item = (list_add_for *) malloc(sizeof(list_add_for));
+
+    if (!item) ChkError(make_no_memory_error(37));
+    else item->list_item = sel->item;
+
+    item->parent = idb->self_id;
+
+    /* When given to list_add_item_handler, the block allocated above */
+    /* gets attached to the List Add dialogue box as a client handle  */
+    /* and is freed whenever the List Add dialogue closes.            */
+
+    ChkError(scrolllist_get_item_text(0,
+                                      idb->self_id,
+                                      idb->self_component,
+                                      item->initial_text,
+                                      sizeof(item->initial_text),
+                                      sel->item,
+                                      NULL));
+
+    list_add_item_handler(0, NULL, NULL, (void *) item);
+  }
+
+  return 1;
+}
+
+/**************************************************************/
+/* list_fill_from_comma_separated_string()                    */
+/*                                                            */
+/* Given a string of items separated by commas, write the     */
+/* items into a List dialogue. Items of zero length are not   */
+/* written.                                                   */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue;                */
+/*                                                            */
+/*             Pointer to the NUL terminated string           */
+/*             containing the comma separated items - this    */
+/*             string will be written to and corrupted on     */
+/*             exit. If the string given is just a single     */
+/*             exclamation mark, this is not entered into the */
+/*             list - allows the result of a call to e.g.     */
+/*             lookup_token to be passed in directly.         */
+/**************************************************************/
+
+static _kernel_oserror * list_fill_from_comma_separated_string(ObjectId self, char * items)
+{
+  unsigned int   flags;
+  char         * at;
+  int            index = 0;
+
+  /* Set the gadget to allow multiple selections */
+
+  RetError(scrolllist_get_state(0, self, ListScrollList, &flags));
+  RetError(scrolllist_set_state(0, self, ListScrollList, flags | ScrollList_MultipleSelections));
+
+  /* Delete any old items */
+
+  RetError(scrolllist_delete_items(0, self, ListScrollList, 0, -1));
+
+  /* Is this a null / empty string or just '!'? */
+
+  if (!items || !*items || !strcmp(items, "!")) return NULL;
+
+  /* If not, add the items */
+
+  do
+  {
+    at = strtok(index ? NULL : items, ",");
+
+    if (at) RetError(scrolllist_add_item(0,
+                                         self,
+                                         ListScrollList,
+                                         at,
+                                         NULL,
+                                         NULL,
+                                         index++));
+  }
+  while (at);
+
+  return NULL;
+}
+
+/**************************************************************/
+/* list_fill_from_array_index()                               */
+/*                                                            */
+/* Given an index into the 'known' array of list_known        */
+/* structures (see top of this file), write the relevant      */
+/* items into a List dialogue via.                            */
+/* list_fill_from_comma_separated_string.                     */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue;                */
+/*                                                            */
+/*             Index into array (this is limit checked so     */
+/*             invalid values can be passed safely - the      */
+/*             function just exits if the value is invalid).  */
+/**************************************************************/
+
+static _kernel_oserror * list_fill_from_array_index(ObjectId self, int index)
+{
+  if (index >= 0 && index < (sizeof(known) / sizeof(known[0])))
+  {
+    char * string = list_get_malloc_list_string(known[index].choices_token);
+
+    if (string)
+    {
+      _kernel_oserror * e;
+
+      e = list_fill_from_comma_separated_string(self, string);
+      free(string);
+
+      return e;
+    }
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* list_count_items()                                         */
+/*                                                            */
+/* Returns the number of items present in the scrolling list  */
+/* of the given List dialogue.                                */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue.                */
+/*                                                            */
+/* Returns:    Number of items in the scrolling list. Returns */
+/*             0 if there's an error as well as if there are  */
+/*             no items in the list.                          */
+/**************************************************************/
+
+int list_count_items(ObjectId self)
+{
+  return tgutils_count_items(self, ListScrollList);
+}
+
+/**************************************************************/
+/* list_count_selected()                                      */
+/*                                                            */
+/* Returns the number of items selected in the scrolling list */
+/* of the given List dialogue.                                */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue.                */
+/*                                                            */
+/* Returns:    Number of items selected in the list. Returns  */
+/*             0 if there's an error as well as if there are  */
+/*             no items in the list.                          */
+/**************************************************************/
+
+int list_count_selected(ObjectId self)
+{
+  return tgutils_count_selected(self, ListScrollList);
+}
+
+/**************************************************************/
+/* list_select_all()                                          */
+/*                                                            */
+/* Select all items in the ScrollList component of the given  */
+/* List dialogue box.                                         */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue.                */
+/**************************************************************/
+
+_kernel_oserror * list_select_all(ObjectId self)
+{
+  return tgutils_select_all(self, ListScrollList);
+}
+
+/**************************************************************/
+/* list_clear_selection()                                     */
+/*                                                            */
+/* Deselect all items in the ScrollList component of the      */
+/* given List dialogue box.                                   */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue.                */
+/**************************************************************/
+
+_kernel_oserror * list_clear_selection(ObjectId self)
+{
+  return tgutils_clear_selection(self, ListScrollList);
+}
+
+/**************************************************************/
+/* list_remove_selected()                                     */
+/*                                                            */
+/* Remove all selected items in the ScrollList component of   */
+/* the given List dialogue box.                               */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue.                */
+/**************************************************************/
+
+_kernel_oserror * list_remove_selected(ObjectId self)
+{
+  return tgutils_remove_selected(self, ListScrollList);
+}
+
+/**************************************************************/
+/* list_setup_menu()                                          */
+/*                                                            */
+/* Ensure the relevant items are greyed or ungreyed in the    */
+/* menu attached to the List dialogue box (if any).           */
+/*                                                            */
+/* Parameters: Object ID of the List dialogue.                */
+/**************************************************************/
+
+_kernel_oserror * list_setup_menu(ObjectId self)
+{
+  ObjectId menu = NULL_ObjectId;
+
+  window_get_menu(0, self, &menu);
+
+  if (menu != NULL_ObjectId)
+  {
+    int items    = list_count_items    (self);
+    int selected = list_count_selected (self);
+
+    /* Can't clear a selection or remove items if nothing is selected */
+
+    menu_set_fade(0, menu, ListMenuClearSelection, !selected);
+    menu_set_fade(0, menu, ListMenuRemove,         !selected);
+
+    /* 'Select all' should be greyed if all items are selected or */
+    /* there are no items to select in the first place            */
+
+    if (!items || items == selected) menu_set_fade(0, menu, ListMenuSelectAll, 1);
+    else                             menu_set_fade(0, menu, ListMenuSelectAll, 0);
+  }
+
+  return NULL;
+}
+@
+
+
+1.3
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a46 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.2
+log
+@Long overdue check-in of intermediate browser build, from continued "out
+of hours" work. Forgot to add a few files last time too.
+
+List dialogue box handler complete, and exclusion lists implemented
+within the main browser code. Full documentation in Choices file.
+Save routine knows all about it but is now getting very slow - must
+come up with a better scheme; for now, it puts the hourglass on...
+
+StripExtensions option controls auto stripping of filename extensions.
+
+More sensible ancestor / frame selection for keyboard shortcut items
+and the save dialogues - having selected a frame won't lock you into
+it for F3 and related shortcuts now (input focus in URL writable ->
+get ancestor details, input focus in frame -> get frame details). F4
+works in frames. F5 now generally present for 'view source' with a
+corresponding menu entry in the File menu.
+
+Odd thing in later Res files; there's no action set for Adjust clicks
+on the main ToolAction items in the button bar. Very odd. Nothing
+appears to be set in v2.07 either, yet adjust-click works. Even
+stranger. Anyway, added in the relevant event details (same as for
+Select click in all cases) and this fixes the problem.
+
+Background colours in the TABLE tag ignored the "don't print any
+backgrounds" Print Style setting. Fixed. Meanwhile, the "black
+text with no backgrounds" option wasn't getting this right either;
+fixed this also.
+
+Event logging implemented; HTTP errors and script output via.
+window.print extension. No internal error output yet.
+
+Faith:Never behaviour extended. If ever a server sends something with
+no content type or an unhandleable type, the browser will try and get a
+filetype from the URL. If it gets text or HTML, it'll render the file.
+Else it'll save it. Hacks around IIS 4's lack of a content type field
+in the Marketeye login stuff, and similar other slightly broken sites.
+@
+text
+@d15 15
+a29 13
+/***************************************************/
+/* File   : List.c                                 */
+/*                                                 */
+/* Purpose: Handle dialogue boxes showing a list   */
+/*          of items (e.g. for proxy exclusions).  */
+/*          This actually spans two Res file       */
+/*          objects - the main list and transient  */
+/*          'add new item' dialogue boxes.         */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 19-Mar-99: Created.                    */
+/***************************************************/
+d35 2
+a36 1
+#include "swis.h"
+d38 13
+a50 8
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+
+#include "toolbox.h"
+#include "window.h"
+#include "menu.h"
+#include "ScrollList.h"
+a51 1
+#include "svcprint.h"
+d117 19
+a135 21
+/*************************************************/
+/* list_get_known_items()                        */
+/*                                               */
+/* Get a pointer to the array created above that */
+/* holds the types of lists we know about.       */
+/*                                               */
+/* This should really only be of use to very     */
+/* specialised functions, e.g. the Choices file  */
+/* saver.                                        */
+/*                                               */
+/* Parameters: Pointer to an int which is filled */
+/*             in with sizeof(array), since you  */
+/*             can't do this externally on the   */
+/*             value the function returns        */
+/*             directly.                         */
+/*                                               */
+/* Returns:    Pointer to the list_known array.  */
+/*                                               */
+/* Assumes:    The int pointer is mandatory; it  */
+/*             may not be NULL.                  */
+/*************************************************/
+d143 36
+a178 42
+/*************************************************/
+/* list_get_malloc_list_string()                 */
+/*                                               */
+/* The List dialogue is rather unusual in that   */
+/* it floats separately from the panes in the    */
+/* Choices dialogue box. It applies in some      */
+/* areas to a specific subset of an infinitely   */
+/* extensible series of Choices file tokens,     */
+/* e.g. "ProxyExclude<protocol>". Rather than    */
+/* have a load of string pointer entries in the  */
+/* global_choices structure which are really     */
+/* only there because of exactly what we support */
+/* in this source file, this source provides     */
+/* instead - and maintains - the relevant        */
+/* strings. This function lets you read them.    */
+/*                                               */
+/* For any list which you think may be in a List */
+/* dialogue box, call here rather than calling   */
+/* lookup_choice to get your own local malloc    */
+/* allocated copy of the relevant string. Don't  */
+/* forget to free it later! If the token you     */
+/* give isn't one recognised by this code, it'll */
+/* get looked up from the Choices file for you.  */
+/*                                               */
+/* Parameters: Choices file token you want to    */
+/*             get the value of.                 */
+/*                                               */
+/* Returns:    Pointer to a copy of the value    */
+/*             the given Choices file token      */
+/*             represents, either from the       */
+/*             Choices file itself or from an    */
+/*             overriding value held locally.    */
+/*             You should free this string when  */
+/*             you've finished with it. If you   */
+/*             get NULL back, memory allocation  */
+/*             failed. If the token isn't found  */
+/*             in the Choices file you'll get an */
+/*             empty string back (which can also */
+/*             happen, of course, if the token   */
+/*             is present but happens to have a  */
+/*             zero length value associated).    */
+/*************************************************/
+d214 7
+a220 9
+/*************************************************/
+/* list_to_be_shown()                            */
+/*                                               */
+/* Called before the List dialogue box is        */
+/* displayed.                                    */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d325 7
+a331 9
+/*************************************************/
+/* list_parent_is_closing()                      */
+/*                                               */
+/* Eeek, our parent window is closing - time for */
+/* bed...                                        */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d339 7
+a345 9
+/*************************************************/
+/* list_add_to_be_shown()                        */
+/*                                               */
+/* Called before the List Add dialogue box is    */
+/* displayed.                                    */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d375 7
+a381 9
+/*************************************************/
+/* list_ok()                                     */
+/*                                               */
+/* Called when OK is activated for the List      */
+/* dialogue box.                                 */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d451 7
+a457 9
+/*************************************************/
+/* list_cancel()                                 */
+/*                                               */
+/* Called when Cancel is activated for the List  */
+/* dialogue box.                                 */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d470 8
+a477 9
+/*************************************************/
+/* list_add_add()                                */
+/*                                               */
+/* Called when Add is activated for the List Add */
+/* dialogue box.                                 */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d529 8
+a536 9
+/*************************************************/
+/* list_add_cancel()                             */
+/*                                               */
+/* Called when Cancel is activated for the List  */
+/* Add dialogue box.                             */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d545 12
+a556 14
+/*************************************************/
+/* list_closing()                                */
+/*                                               */
+/* If the List dialogue box may be closing, call */
+/* this to do various tidy-up actions which are  */
+/* the same for any source of closure (e.g. "OK" */
+/* and "Cancel").                                */
+/*                                               */
+/* Parameters: Object ID of the List dialogue;   */
+/*                                               */
+/*             Object ID of its parent, or       */
+/*             NULL_ObjectId if there is no      */
+/*             parent in this case.              */
+/*************************************************/
+d623 12
+a634 13
+/*************************************************/
+/* list_add_closing()                            */
+/*                                               */
+/* If the List Add dialogue box may be closing,  */
+/* call this to do various tidy-up actions which */
+/* are the same for any source of closure (e.g.  */
+/* "OK" and "Cancel").                           */
+/*                                               */
+/* This process includes checking the object's   */
+/* client handle - free() is called on this.     */
+/*                                               */
+/* Parameters: Object ID of the List Add dbox.   */
+/*************************************************/
+d695 9
+a703 10
+/*************************************************/
+/* list_select_all_handler()                     */
+/*                                               */
+/* Handle an EListSelectAll event from a menu    */
+/* item with a List dialogue as its parent or a  */
+/* key shortcut invoked from a List dialogue.    */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d711 9
+a719 11
+/*************************************************/
+/* list_clear_selection_handler()                */
+/*                                               */
+/* Handle an EListClearSelection event from a    */
+/* menu item with a List dialogue as its parent  */
+/* or a key shortcut invoked from a List         */
+/* dialogue.                                     */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d727 17
+a743 19
+/*************************************************/
+/* list_add_item_handler()                       */
+/*                                               */
+/* Handle an EListAdd event from a menu item     */
+/* with a List dialogue as its parent or a key   */
+/* shortcut invoked from a List dialogue.        */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler, though only the 'handle' field */
+/* is used. The handle can point to a            */
+/* list_add_for structure if the dialogue box is */
+/* open for a specific ScrollList item rather    */
+/* than to add a new item. The 'initial_text'    */
+/* field has its contents appended to the        */
+/* writable field of the dialogue box, and the   */
+/* address of the structure is set as the client */
+/* handle for the object (so you can get at it   */
+/* in other event handlers).                     */
+/*************************************************/
+d794 9
+a802 10
+/*************************************************/
+/* list_remove_item_handler()                    */
+/*                                               */
+/* Handle an EListRemove event from a menu item  */
+/* with a List dialogue as its parent or a key   */
+/* shortcut invoked from a List dialogue.        */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d810 10
+a819 11
+/*************************************************/
+/* list_scrolllist_event_handler()               */
+/*                                               */
+/* Handles events for the ScrollList gadget in a */
+/* List dialogue box. Specifically, checks for   */
+/* items being selected / deselected and updates */
+/* various UI components as required.            */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d860 17
+a876 20
+/*************************************************/
+/* list_fill_from_comma_separated_string()       */
+/*                                               */
+/* Given a string of items separated by commas,  */
+/* write the items into a List dialogue. Items   */
+/* of zero length are not written.               */
+/*                                               */
+/* Parameters: Object ID of the List dialogue;   */
+/*                                               */
+/*             Pointer to the NUL terminated     */
+/*             string containing the comma       */
+/*             separated items - this string     */
+/*             will be written to and corrupted  */
+/*             on exit. If the string given is   */
+/*             just a single exclamation mark,   */
+/*             this is not entered into the list */
+/*             - allows the result of a call to  */
+/*             e.g. lookup_token to be passed in */
+/*             directly.                         */
+/*************************************************/
+d916 14
+a929 15
+/*************************************************/
+/* list_fill_from_array_index()                  */
+/*                                               */
+/* Given an index into the 'known' array of      */
+/* list_known structures (see top of this file), */
+/* write the relevant items into a List dialogue */
+/* via. list_fill_from_comma_separated_string.   */
+/*                                               */
+/* Parameters: Object ID of the List dialogue;   */
+/*                                               */
+/*             Index into array (this is limit   */
+/*             checked so invalid values can be  */
+/*             passed safely - the function just */
+/*             exits if the value is invalid).   */
+/*************************************************/
+d951 12
+a962 13
+/*************************************************/
+/* list_count_items()                            */
+/*                                               */
+/* Returns the number of items present in the    */
+/* scrolling list of the given List dialogue.    */
+/*                                               */
+/* Parameters: Object ID of the List dialogue.   */
+/*                                               */
+/* Returns:    Number of items in the scrolling  */
+/*             list. Returns 0 if there's an     */
+/*             error as well as if there are no  */
+/*             items in the list.                */
+/*************************************************/
+d969 12
+a980 13
+/*************************************************/
+/* list_count_selected()                         */
+/*                                               */
+/* Returns the number of items selected in the   */
+/* scrolling list of the given List dialogue.    */
+/*                                               */
+/* Parameters: Object ID of the List dialogue.   */
+/*                                               */
+/* Returns:    Number of items selected in the   */
+/*             list. Returns 0 if there's an     */
+/*             error as well as if there are no  */
+/*             items in the list.                */
+/*************************************************/
+d987 8
+a994 8
+/*************************************************/
+/* list_select_all()                             */
+/*                                               */
+/* Select all items in the ScrollList component  */
+/* of the given List dialogue box.               */
+/*                                               */
+/* Parameters: Object ID of the List dialogue.   */
+/*************************************************/
+d1001 8
+a1008 8
+/*************************************************/
+/* list_clear_selection()                        */
+/*                                               */
+/* Deselect all items in the ScrollList          */
+/* component of the given List dialogue box.     */
+/*                                               */
+/* Parameters: Object ID of the List dialogue.   */
+/*************************************************/
+d1015 8
+a1022 8
+/*************************************************/
+/* list_remove_selected()                        */
+/*                                               */
+/* Remove all selected items in the ScrollList   */
+/* component of the given List dialogue box.     */
+/*                                               */
+/* Parameters: Object ID of the List dialogue.   */
+/*************************************************/
+d1029 8
+a1036 9
+/*************************************************/
+/* list_setup_menu()                             */
+/*                                               */
+/* Ensure the relevant items are greyed or       */
+/* ungreyed in the menu attached to the List     */
+/* dialogue box (if any).                        */
+/*                                               */
+/* Parameters: Object ID of the List dialogue.   */
+/*************************************************/
+@
+
+
+1.1
+log
+@Intermediate check-in; building a browser from this gives you something
+between 2.07 and 2.08. Only the Phoenix JavaScript resources are fully
+up to date.
+
+I *think* these are the changes since the last check-in:
+
+When saved as a Draw file, horizontal rules were plotted one page width
+too far to the right (wonder when that started happening?!). Fixed. In
+addition, DrawFiles now accepted as OBJECTs - they weren't in the
+recognised filetype list before. Doh.
+
+Table size calculator tables_count_table would overestimate the number
+of cells where ROWSPAN was present and there were other rows below the
+one spanned. Fixed. In certain odd cases (e.g. optimised image exports
+as HTML tables (!!) from the Gimp) this can save vast amounts of RAM.
+
+Fixed problem where printing stops in the middle of a document. Redraw
+engine pagination code was written in the days where lines couldn't
+have gaps between them; they can now. If a gap fell at the bottom of
+a page the engine would look down, see no line straddling or touching
+the page edge, and assume there was nothing more. This case is now
+correctly handled.
+
+Made sure desktop and testbed Browse Res files had up-to-date Encoding
+menus (v2.07 Phoenix has different menus from v2.07 Browse by oversight).
+
+URL auto-completion piggy-backed onto manual completion code; any string
+without '.', '/' or ':' in it gets run through completion to see if a
+more meaningful item can be produced - "www" special cased out though.
+
+New List dialogue box handler, used for proxy exclusions etc.
+(incomplete), complete with appropriate Res file objects.
+@
+text
+@d51 1
+d60 6
+a65 11
+/* Structure to hold details of a known type of list */
+
+typedef struct list_known
+{
+  ComponentId   reference;
+  const char  * choices_token;
+  char        * local_value;
+
+} list_known;
+
+/* Array of known list types */
+d68 9
+a76 10
+                              { CD_ExcludeHTTPBt,  "ProxyExcludehttp", NULL },
+                              { CD_ExcludeFTPBt,   "ProxyExcludeftp",  NULL },
+                              { CD_ExcludeAnyBt,   "ProxyExclusions",  NULL },
+                              { CD_CookieAcceptBt, "CookieAccept",     NULL },
+                              { CD_CookieRejectBt, "CookieReject",     NULL },
+                              { CD_NoImagesBt,     "NoImages",         NULL },
+                              { CD_NoPlugInsBt,    "NoPlugIns",        NULL },
+                              { CD_NoScriptsBt,    "NoScripts",        NULL },
+
+                              { NULL_ComponentId,  NULL,               NULL }
+d91 2
+d98 1
+a98 1
+static _kernel_oserror * list_closing                          (ObjectId self);
+d108 29
+d188 1
+a188 1
+  while (known[index].choices_token && !tkn)
+d237 1
+a237 1
+  while (known[index].reference != NULL_ComponentId && !tkn)
+d247 11
+a257 2
+    // Want to close the dialogue, or raise an error or something -
+    // source of dialogue unknown. See Menus.c?
+a262 7
+    char * string;
+
+    /* Do recognise the parent component ID, so store the index into the */
+    /* array of list_known structures as the List dialogue object's      */
+    /* client handle and fill the ScrollList gadget with the relevant    */
+    /* items.                                                            */
+
+d264 1
+a264 12
+
+    string = list_get_malloc_list_string(tkn);
+
+    if (string)
+    {
+      _kernel_oserror * e;
+
+      e = list_fill_from_comma_separated_string(idb->self_id, string);
+      free(string);
+
+      ChkError(e);
+    }
+d315 8
+d329 16
+d394 62
+a455 1
+  ChkError(list_closing(idb->self_id));
+d472 5
+a476 1
+  ChkError(list_closing(idb->self_id));
+d561 1
+a561 1
+/* If the List dialogue box is closing, call     */
+d566 5
+a570 1
+/* Parameters: Object ID of the List dialogue.   */
+d573 1
+a573 1
+static _kernel_oserror * list_closing(ObjectId self)
+d576 1
+d609 8
+d621 1
+d624 10
+a633 1
+  window_id = NULL_ObjectId;
+d641 4
+a644 4
+/* If the List Add dialogue box is closing, call */
+/* this to do various tidy-up actions which are  */
+/* the same for any source of closure (e.g. "OK" */
+/* and "Cancel").                                */
+d724 1
+a724 1
+  if (window_id != NULL_ObjectId) list_select_all (window_id);
+d742 1
+a742 1
+  if (window_id != NULL_ObjectId) list_clear_selection (window_id);
+d828 1
+a828 1
+  if (window_id != NULL_ObjectId) list_remove_selected (window_id);
+d943 36
+d994 1
+a994 11
+  unsigned int count;
+
+  if (
+       scrolllist_count_items(0,
+                              self,
+                              ListScrollList,
+                              &count)
+     )
+     return 0;
+
+  return count;
+d1013 1
+a1013 15
+  int offset = -1;
+  int count  = 0;
+
+  while (
+          !scrolllist_get_selected(0,
+                                   self,
+                                   ListScrollList,
+                                   offset,
+                                   &offset)
+
+          && offset >= 0
+        )
+        count++;
+
+  return count;
+d1027 1
+a1027 4
+  return scrolllist_select_item(ScrollList_SelectionChangingMethod_SendEvent | ScrollList_SelectionChangingMethod_OnAll,
+                                self,
+                                ListScrollList,
+                                0);
+d1041 1
+a1041 4
+  return scrolllist_deselect_item(ScrollList_SelectionChangingMethod_SendEvent | ScrollList_SelectionChangingMethod_OnAll,
+                                  self,
+                                  ListScrollList,
+                                  0);
+d1055 1
+a1055 26
+  int offset;
+
+  do
+  {
+    /* Find a selected item */
+
+    RetError(scrolllist_get_selected(0,
+                                     self,
+                                     ListScrollList,
+                                     -1,
+                                     &offset));
+
+    /* If we gone one, remove it */
+
+    if (offset >= 0)
+    {
+      RetError(scrolllist_delete_items(ScrollList_SelectionChangingMethod_SendEvent | ScrollList_DeleteItems_DoNotJumpToTop,
+                                       self,
+                                       ListScrollList,
+                                       offset,
+                                       offset));
+    }
+  }
+  while (offset >= 0);
+
+  return NULL;
+@

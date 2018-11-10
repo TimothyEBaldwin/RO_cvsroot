@@ -1,0 +1,346 @@
+head	1.1;
+access;
+symbols
+	VFPSupport-0_13:1.1
+	VFPSupport-0_12:1.1
+	VFPSupport-0_11:1.1
+	VFPSupport-0_10:1.1
+	VFPSupport-0_09:1.1
+	VFPSupport-0_08:1.1
+	VFPSupport-0_07:1.1
+	VFPSupport-0_06:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2014.02.08.15.27.53;	author jlee;	state Exp;
+branches;
+next	;
+commitid	x9VDVmUDNhCwkjox;
+
+
+desc
+@@
+
+
+1.1
+log
+@Add VFPv2 support code
+Detail:
+  This update adds the support code necessary to allow the VFPv2 coprocessor in the Raspberry Pi to be used in its full IEEE-compliant mode, and to add support for the generation of errors on VFP match exceptions (division by zero, etc.)
+  SoftFloat Release 2b (http://www.jhauser.us/arithmetic/SoftFloat.html) is used to perform the floating point calculations in software, ensuring their accuracy.
+  As with FPEmulator, the support code will only be included on machines which require it; at the moment this decision is handled by the makefile, based around the target machine type.
+  Note that the current version of the support code does not implement default NaN or flush-to-zero mode, so it is not a fully accurate emulation of the hardware.
+  Also added a new SWI, VFPSupport_ExceptionDump, for creating and reading a VFP context exception dump, and a new reason code to VFPSupport_Features to query which exception enable bits are supported
+  File changes:
+  - Makefile - Rewritten to use the CModule fragment, and to add the necessary rules for (optionally) building the support code.
+  - Licences - File summarising the different licences used by different portions of the code
+  - Test/test2c,ffb, Test/test3,ffb, Test/test4,ffb, Test/test5,ffb, Test/test6src,ffb - Several test programs for validating behaviour of the support code, mainly focused around unusual causes of exceptions and validating instruction decoding and short vector support
+  - actions/ARMv7_VFP, arctions/common, c/head, cache/classify - decgen files for building the instruction decoder. This decoder is only used for synchronous exceptions, to determine whether the instruction is or isn't a valid VFP instruction. Asynchronous exceptions utilise a simpler, hand-crafted decoder in the assembler sources.
+  - h/classify - Header for the decgen decoder
+  - hdr/shared - Header with some definitions shared between the C and assembler sources (will be Hdr2H'd to generate the C header)
+  - hdr/VFPSupport - Updated with new error numbers, SWI definitions
+  - s/CSupport - Math support functions from the C library sources, required by SoftFloat
+  - s/Errors - Added new error definitions
+  - s/GetAll - Include support code if necessary. Add debug switch, plus optimisation switch for machines with 16 D registers
+  - s/Instructions - Core data processing instruction emulation code. This file is included twice, once for single precision and once for double precision. The code calls through to the SoftFloat routines to perform the calculations.
+  - s/Module - Adjust handling of undefined instruction vector to allow the support code to be installed instead of OldHandler if necessary. Initialise the support code as necessary. Add new SWIs & reason codes.
+  - s/SupportCode - Undefined instruction handler which controls the rest of the support code. Also raises RISC OS errors as necessary (division by zero, etc.)
+  - softfloat/* - The SoftFloat library sources. It's been tweaked in a few places for integration with the assembler support code, but otherwise no changes to the core logic were necessary.
+  - Resources/UK/Messages - Updated with new error text
+Admin:
+  Tested on Raspberry Pi & BB-xM
+  Support code tested using the supplied test routines and the TestFloat tool (http://www.jhauser.us/arithmetic/TestFloat.html)
+
+
+Version 0.06. Tagged as 'VFPSupport-0_06'
+@
+text
+@/*
+   This file has been modified for use in VFPSupport
+*/
+
+/*============================================================================
+
+This C header file is part of the SoftFloat IEC/IEEE Floating-point Arithmetic
+Package, Release 2b.
+
+Written by John R. Hauser.  This work was made possible in part by the
+International Computer Science Institute, located at Suite 600, 1947 Center
+Street, Berkeley, California 94704.  Funding was partially provided by the
+National Science Foundation under grant MIP-9311980.  The original version
+of this code was written as part of a project to build a fixed-point vector
+processor in collaboration with the University of California at Berkeley,
+overseen by Profs. Nelson Morgan and John Wawrzynek.  More information
+is available through the Web page `http://www.cs.berkeley.edu/~jhauser/
+arithmetic/SoftFloat.html'.
+
+THIS SOFTWARE IS DISTRIBUTED AS IS, FOR FREE.  Although reasonable effort has
+been made to avoid it, THIS SOFTWARE MAY CONTAIN FAULTS THAT WILL AT TIMES
+RESULT IN INCORRECT BEHAVIOR.  USE OF THIS SOFTWARE IS RESTRICTED TO PERSONS
+AND ORGANIZATIONS WHO CAN AND WILL TAKE FULL RESPONSIBILITY FOR ALL LOSSES,
+COSTS, OR OTHER PROBLEMS THEY INCUR DUE TO THE SOFTWARE, AND WHO FURTHERMORE
+EFFECTIVELY INDEMNIFY JOHN HAUSER AND THE INTERNATIONAL COMPUTER SCIENCE
+INSTITUTE (possibly via similar legal warning) AGAINST ALL LOSSES, COSTS, OR
+OTHER PROBLEMS INCURRED BY THEIR CUSTOMERS AND CLIENTS DUE TO THE SOFTWARE.
+
+Derivative works are acceptable, even for commercial purposes, so long as
+(1) the source code for the derivative work includes prominent notice that
+the work is derivative, and (2) the source code includes prominent notice with
+these four paragraphs for those parts of this code that are retained.
+
+=============================================================================*/
+
+/*----------------------------------------------------------------------------
+| The macro `FLOATX80' must be defined to enable the extended double-precision
+| floating-point format `floatx80'.  If this macro is not defined, the
+| `floatx80' type will not be defined, and none of the functions that either
+| input or output the `floatx80' type will be defined.  The same applies to
+| the `FLOAT128' macro and the quadruple-precision format `float128'.
+*----------------------------------------------------------------------------*/
+//#define FLOATX80
+//#define FLOAT128
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE floating-point types.
+*----------------------------------------------------------------------------*/
+typedef unsigned int float32;
+typedef unsigned long long float64;
+#ifdef FLOATX80
+typedef struct {
+    unsigned long long low;
+    unsigned short high;
+} floatx80;
+#endif
+#ifdef FLOAT128
+typedef struct {
+    unsigned long long low, high;
+} float128;
+#endif
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE floating-point underflow tininess-detection mode.
+| This is now fixed using a #define to help strip dead code
+|
+| Note: Different VFP implementations use different modes. For VFP11 it's
+| after_rounding, for Cortex-A8 it's before_rounding.
+*----------------------------------------------------------------------------*/
+#define float_detect_tininess float_tininess_after_rounding
+enum {
+    float_tininess_after_rounding  = 0,
+    float_tininess_before_rounding = 1
+};
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE floating-point rounding mode.
+| This is stored SL-relative in the exception workspace struct
+*----------------------------------------------------------------------------*/
+INLINE signed char get_float_rounding_mode(void)
+{
+    signed char result;
+    __asm
+    {
+        LDRB    result,[sl,#RoundingMode]
+    }
+    return result;
+}
+#define float_rounding_mode (get_float_rounding_mode())
+enum {
+    float_round_nearest_even = 0,
+    float_round_up           = 1,
+    float_round_down         = 2,
+    float_round_to_zero      = 3
+};
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE floating-point exception flags.
+| These are stored SL-relative in the exception workspace struct
+*----------------------------------------------------------------------------*/
+INLINE signed char *float_exception_flags_ptr(void)
+{
+    signed char *result;
+    __asm
+    {
+        ADD     result,sl,#ExceptionFlags
+    }
+    return result;
+}
+#define float_exception_flags (*float_exception_flags_ptr())
+enum {
+    float_flag_invalid   =  1,
+    float_flag_divbyzero =  2,
+    float_flag_overflow  =  4,
+    float_flag_underflow =  8,
+    float_flag_inexact   = 16
+};
+
+/*----------------------------------------------------------------------------
+| Routine to raise any or all of the software IEC/IEEE floating-point
+| exception flags.
+*----------------------------------------------------------------------------*/
+extern void float_raise( signed char );
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE integer-to-floating-point conversion routines.
+*----------------------------------------------------------------------------*/
+float32 int32_to_float32( int );
+float64 int32_to_float64( int );
+#ifdef FLOATX80
+floatx80 int32_to_floatx80( int );
+#endif
+#ifdef FLOAT128
+float128 int32_to_float128( int );
+#endif
+float32 int64_to_float32( long long );
+float64 int64_to_float64( long long );
+#ifdef FLOATX80
+floatx80 int64_to_floatx80( long long );
+#endif
+#ifdef FLOAT128
+float128 int64_to_float128( long long );
+#endif
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE single-precision conversion routines.
+*----------------------------------------------------------------------------*/
+int float32_to_int32( float32 );
+int float32_to_int32_round_to_zero( float32 );
+long long float32_to_int64( float32 );
+long long float32_to_int64_round_to_zero( float32 );
+float64 float32_to_float64( float32 );
+#ifdef FLOATX80
+floatx80 float32_to_floatx80( float32 );
+#endif
+#ifdef FLOAT128
+float128 float32_to_float128( float32 );
+#endif
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE single-precision operations.
+*----------------------------------------------------------------------------*/
+float32 float32_round_to_int( float32 );
+float32 float32_add( float32, float32 );
+float32 float32_sub( float32, float32 );
+float32 float32_mul( float32, float32 );
+float32 float32_div( float32, float32 );
+float32 float32_rem( float32, float32 );
+float32 float32_sqrt( float32 );
+char float32_eq( float32, float32 );
+char float32_le( float32, float32 );
+char float32_lt( float32, float32 );
+char float32_eq_signaling( float32, float32 );
+char float32_le_quiet( float32, float32 );
+char float32_lt_quiet( float32, float32 );
+char float32_is_signaling_nan( float32 );
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE double-precision conversion routines.
+*----------------------------------------------------------------------------*/
+int float64_to_int32( float64 );
+int float64_to_int32_round_to_zero( float64 );
+long long float64_to_int64( float64 );
+long long float64_to_int64_round_to_zero( float64 );
+float32 float64_to_float32( float64 );
+#ifdef FLOATX80
+floatx80 float64_to_floatx80( float64 );
+#endif
+#ifdef FLOAT128
+float128 float64_to_float128( float64 );
+#endif
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE double-precision operations.
+*----------------------------------------------------------------------------*/
+float64 float64_round_to_int( float64 );
+float64 float64_add( float64, float64 );
+float64 float64_sub( float64, float64 );
+float64 float64_mul( float64, float64 );
+float64 float64_div( float64, float64 );
+float64 float64_rem( float64, float64 );
+float64 float64_sqrt( float64 );
+char float64_eq( float64, float64 );
+char float64_le( float64, float64 );
+char float64_lt( float64, float64 );
+char float64_eq_signaling( float64, float64 );
+char float64_le_quiet( float64, float64 );
+char float64_lt_quiet( float64, float64 );
+char float64_is_signaling_nan( float64 );
+
+#ifdef FLOATX80
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE extended double-precision conversion routines.
+*----------------------------------------------------------------------------*/
+int floatx80_to_int32( floatx80 );
+int floatx80_to_int32_round_to_zero( floatx80 );
+long long floatx80_to_int64( floatx80 );
+long long floatx80_to_int64_round_to_zero( floatx80 );
+float32 floatx80_to_float32( floatx80 );
+float64 floatx80_to_float64( floatx80 );
+#ifdef FLOAT128
+float128 floatx80_to_float128( floatx80 );
+#endif
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE extended double-precision rounding precision.  Valid
+| values are 32, 64, and 80.
+*----------------------------------------------------------------------------*/
+extern signed char floatx80_rounding_precision;
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE extended double-precision operations.
+*----------------------------------------------------------------------------*/
+floatx80 floatx80_round_to_int( floatx80 );
+floatx80 floatx80_add( floatx80, floatx80 );
+floatx80 floatx80_sub( floatx80, floatx80 );
+floatx80 floatx80_mul( floatx80, floatx80 );
+floatx80 floatx80_div( floatx80, floatx80 );
+floatx80 floatx80_rem( floatx80, floatx80 );
+floatx80 floatx80_sqrt( floatx80 );
+char floatx80_eq( floatx80, floatx80 );
+char floatx80_le( floatx80, floatx80 );
+char floatx80_lt( floatx80, floatx80 );
+char floatx80_eq_signaling( floatx80, floatx80 );
+char floatx80_le_quiet( floatx80, floatx80 );
+char floatx80_lt_quiet( floatx80, floatx80 );
+char floatx80_is_signaling_nan( floatx80 );
+
+#endif
+
+#ifdef FLOAT128
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE quadruple-precision conversion routines.
+*----------------------------------------------------------------------------*/
+int float128_to_int32( float128 );
+int float128_to_int32_round_to_zero( float128 );
+long long float128_to_int64( float128 );
+long long float128_to_int64_round_to_zero( float128 );
+float32 float128_to_float32( float128 );
+float64 float128_to_float64( float128 );
+#ifdef FLOATX80
+floatx80 float128_to_floatx80( float128 );
+#endif
+
+/*----------------------------------------------------------------------------
+| Software IEC/IEEE quadruple-precision operations.
+*----------------------------------------------------------------------------*/
+float128 float128_round_to_int( float128 );
+float128 float128_add( float128, float128 );
+float128 float128_sub( float128, float128 );
+float128 float128_mul( float128, float128 );
+float128 float128_div( float128, float128 );
+float128 float128_rem( float128, float128 );
+float128 float128_sqrt( float128 );
+char float128_eq( float128, float128 );
+char float128_le( float128, float128 );
+char float128_lt( float128, float128 );
+char float128_eq_signaling( float128, float128 );
+char float128_le_quiet( float128, float128 );
+char float128_lt_quiet( float128, float128 );
+char float128_is_signaling_nan( float128 );
+
+#endif
+
+@

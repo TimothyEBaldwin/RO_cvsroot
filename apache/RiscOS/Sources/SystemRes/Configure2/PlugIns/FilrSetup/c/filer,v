@@ -1,0 +1,445 @@
+head	1.6;
+access;
+symbols
+	FilrSetup-0_27:1.6
+	FilrSetup-0_26:1.4
+	FilrSetup-0_25:1.4
+	FilrSetup-0_24:1.4
+	FilrSetup-0_23:1.4
+	FilrSetup-0_22:1.4
+	FilrSetup-0_21:1.3
+	FilrSetup-0_20:1.3
+	FilrSetup-0_19:1.2
+	FilrSetup-0_18:1.2
+	FilrSetup-0_17:1.2
+	FilrSetup-0_16:1.2
+	FilrSetup-0_15:1.2
+	FilrSetup-0_14:1.2
+	FilrSetup-0_13:1.1.1.3
+	FilrSetup-0_12:1.1.1.3
+	FilrSetup-0_11:1.1.1.3
+	FilrSetup-0_10:1.1.1.3
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.3
+	Ursula_RiscPC:1.1.1.3.0.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.3
+	UrsulaBuild_FinalSoftload:1.1.1.3
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.3
+	rleggett_FilrSetup-0_09:1.1.1.3
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-17Jun1998:1.1.1.2
+	rleggett_FilrSetup-0_08:1.1.1.2
+	rthornb_UrsulaBuild-03Jun1998:1.1.1.2
+	rthornb_UrsulaBuild-27May1998:1.1.1.2
+	rthornb_UrsulaBuild-21May1998:1.1.1.2
+	rthornb_UrsulaBuild_01May1998:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2018.08.27.19.32.43;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	lZhO3iujSZFgEEPA;
+
+1.4
+date	2013.07.20.14.31.23;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	jGCpafuTdHaQxdYw;
+
+1.3
+date	2013.01.17.21.31.33;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	6aiWAyYDITTFMBAw;
+
+1.2
+date	2010.01.07.21.47.54;	author rool;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.04.14.10.33.27;	author rleggett;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.04.14.10.33.27;	author rleggett;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.05.19.16.06.39;	author rleggett;	state Exp;
+branches;
+next	1.1.1.3;
+
+1.1.1.3
+date	98.07.22.10.56.38;	author rleggett;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Fix handle leak on error
+filer.c: if the destination file couldn't be opened, don't leak the source file
+Found by cppcheck static analysis.
+
+Version 0.27. Tagged as 'FilrSetup-0_27'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*---------------------------------------------------------------------------*/
+/* File:    c.filer                                                          */
+/* Purpose: Non WIMP, but Filer specific code                                */
+/* Author:  Richard Leggett                                                  */
+/* History: 12-Nov-97: RML: Begun.                                           */
+/*          22-Jul-98: RML: Fixed bug with how_many_characters calculation.  */
+/*                                                                           */
+/* Copyright © 1997 Acorn Computers Ltd., Cambridge, UK.                     */
+/*---------------------------------------------------------------------------*/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "swis.h"
+#include "Interface/HighFSI.h"
+#include "Global/FileTypes.h"
+#include "toolbox.h"
+#include "common.h"
+#include "defines.h"
+
+#define MaxTermination 72000*10
+#define ReadFontHandle 8
+
+
+/*---------------------------------------------------------------------------*
+ * how_many_characters                                                       *
+ *                                                                           *
+ * Given a length of OS Units, decide how many characters in the current     *
+ * desktop font will fit in the length.                                      *
+ *                                                                           *
+ * In: os_units = length.                                                    *
+ *                                                                           *
+ * Returns: Approximate number of characters which will fit in length.       *
+ *---------------------------------------------------------------------------*/
+
+int how_many_characters(int os_units)
+{
+    int m_width;
+    int i_width;
+    int av_width;
+    int system_font_handle;
+
+    if (os_units>10000) os_units=10000;
+
+    if (_swix(Wimp_ReadSysInfo, _IN(0)|_OUT(0), ReadFontHandle, &system_font_handle)) return 0;
+    if (system_font_handle==0) return os_units/16;
+
+    if (_swix(Font_CharBBox, _INR(0,2)|_OUT(3), system_font_handle, 'M', 1<<4, &m_width)) return 0;
+    if (_swix(Font_CharBBox, _INR(0,2)|_OUT(3), system_font_handle, 'I', 1<<4, &i_width)) return 0;
+
+    av_width = (m_width + i_width) / 2;
+    if (av_width==0) return 0;
+
+    return 1 + (os_units / av_width);
+}
+
+
+/*---------------------------------------------------------------------------*
+ * ignore_string                                                             *
+ *                                                                           *
+ * Decide if a string in the choices file should be ignored (because we're   *
+ * going to output an updated version)                                       *
+ *                                                                           *
+ * In: string -> the string                                                  *
+ *                                                                           *
+ * Returns: 1 if ignore, 0 not to ignore                                     *
+ *---------------------------------------------------------------------------*/
+
+static int ignore_string(char *string)
+{
+    if (strncmpa(string, "Filer_Options", 13)==0) return 1;
+    if (strncmpa(string, "Filer_Truncation", 16)==0) return 1;
+    if (strncmpa(string, "Filer_Layout", 12)==0) return 1;
+    if (strncmpa(string, "Filer_DClickHold", 16)==0) return 1;
+
+    return 0;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * write_filer_choices                                                       *
+ *                                                                           *
+ * Given a *Filer_Options, *Filer_Truncation, *Filer_DClickHold and          *
+ * *Filer_Layout command, amend the choices file to have these commands.     *
+ *                                                                           *
+ * In: options_command -> *Filer_Options string                              *
+ *     truncation_command -> *Filer_Truncation string                        *
+ *     layout_command -> *Filer_Layout string                                *
+ *     dclickhold_command -> *Filer_DClickHold string                        *
+ *---------------------------------------------------------------------------*/
+
+_kernel_oserror* write_filer_choices(char* options_command, char* truncation_command, char* layout_command, char* dclickhold_command)
+{
+    FILE *source_fp;
+    FILE *dest_fp;
+    char  string[256];
+    int   more = 1;
+
+    source_fp = fopen(ChoicesFileRO, "r");
+    dest_fp = fopen(ScrapFile, "w");
+    if (!dest_fp)
+    {
+        if (source_fp) fclose(source_fp);
+        return common_error(messages_lookup("ChoicesFileNotOpen"));
+    }
+
+    /* Write the commands into the choices file */
+    fputs(options_command, dest_fp); fputc(NewLine, dest_fp);
+    fputs(truncation_command, dest_fp); fputc(NewLine, dest_fp);
+    fputs(layout_command, dest_fp); fputc(NewLine, dest_fp);
+    fputs(dclickhold_command, dest_fp); fputc(NewLine, dest_fp);
+
+    if (source_fp)
+    {
+        /* Write out any other commands that were in the file */
+        while(more)
+        {
+            more = (int)fgets(string, sizeof(string), source_fp);
+            if (more)
+            {
+                if (!ignore_string(string)) fputs(string, dest_fp);
+            }
+        }
+
+        fclose(source_fp);
+    }
+
+    fclose(dest_fp);
+
+    /* Set filetype of the new file */
+    error_trap(_swix(OS_File, _INR(0, 2), OSFile_SetType, ScrapFile, FileType_Obey), 0);
+
+    sprintf(string,"Copy %s %s A~CDF~L~N~P~Q~R~S~T~V", ScrapFile, ChoicesFile);
+    error_trap(_swix(OS_CLI, _IN(0), string), 0);
+    _swix(OS_File, _INR(0,1), OSFile_Delete, ScrapFile);
+
+    error_trap(_swix(OS_CLI, _IN(0), options_command), 0);
+    error_trap(_swix(OS_CLI, _IN(0), truncation_command), 0);
+    error_trap(_swix(OS_CLI, _IN(0), layout_command), 0);
+    error_trap(_swix(OS_CLI, _IN(0), dclickhold_command), 0);
+
+    return NULL;
+}
+@
+
+
+1.4
+log
+@Move solid file drags option into Filer Setup
+Part of simplification of the window setup plugin.
+To make space on what is otherwise an enormous configure window the 'Reverse sort' check box is now in the 'sort' menu, same as it is in the filer.
+
+Version 0.22. Tagged as 'FilrSetup-0_22'
+@
+text
+@d115 5
+a119 1
+    if (!dest_fp) return common_error(messages_lookup("ChoicesFileNotOpen"));
+@
+
+
+1.3
+log
+@Minor FilrSetup improvements
+* Makefile recreated from fragments
+* Window size is now compared with screensize on startup and the V scroll bar turned on/off as needed
+* Magic numbers changed for header defines
+* Read from Choices$Path and write through Choices$Write
+* Version number now inserted at build time rather than being out of date
+
+Version 0.20. Tagged as 'FilrSetup-0_20'
+@
+text
+@d128 1
+a128 1
+            more = (int)fgets(string, 256, source_fp);
+@
+
+
+1.2
+log
+@  Add option to set doubleclick-and-hold delay.
+Details:
+  The Filer has been updated such that the doubleclick-and-hold delay can now be
+  specified. This change extends the Filer configure plug-in so that it can be
+  used to set the default doubleclick-and-hold delay. Setting the delay to zero
+  turns doubleclick-and-hold off.
+Admin:
+  Tested on Iyonix RO5.14
+  Submitted by Fred Graute, mid-December 2009
+
+Version 0.14. Tagged as 'FilrSetup-0_14'
+@
+text
+@d29 2
+d113 1
+a113 1
+    source_fp = fopen(ChoicesFile, "r");
+d141 1
+a141 1
+    error_trap(_swix(OS_File, _INR(0, 2), 18, ScrapFile, 0xFEB), 0);
+d145 1
+a145 1
+    _swix(OS_File, _INR(0,1), 6, ScrapFile);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d20 1
+d50 5
+a54 3
+    _kernel_oserror *e=NULL;
+    int m_width, i_width, av_width, system_font_handle;
+    
+d56 2
+a57 3
+    
+    _swi(Wimp_ReadSysInfo, _IN(0)|_OUT(0), ReadFontHandle, &system_font_handle);
+    if (e) return 0;
+d60 2
+a61 4
+    _swi(Font_CharBBox, _INR(0,2)|_OUT(3), system_font_handle, 'M', 1<<4, &m_width);
+    if (e) return 0;
+    _swi(Font_CharBBox, _INR(0,2)|_OUT(3), system_font_handle, 'I', 1<<4, &i_width);
+    if (e) return 0;
+d64 3
+a66 2
+    
+    return 1+(os_units/av_width);
+d86 2
+a87 1
+    
+d95 2
+a96 2
+ * Given a *Filer_Options, *Filer_Truncation and *Filer_Layout command,      *
+ * ammend the choices file to have these commands.                           *
+d101 1
+d104 1
+a104 1
+_kernel_oserror* write_filer_choices(char* options_command, char* truncation_command, char* layout_command)
+d109 4
+a112 4
+    int   more=1;
+    
+    source_fp=fopen(ChoicesFile, "r");
+    dest_fp=fopen(ScrapFile, "w");
+d114 1
+a114 1
+        
+d119 1
+d126 1
+a126 1
+            more=(int)fgets(string, 256, source_fp);
+d137 1
+a137 1
+    
+d144 5
+a148 2
+    sprintf(string, "Filer_Run %s", ChoicesFile);
+    error_trap(_swix(OS_CLI, _IN(0), string), 0);
+@
+
+
+1.1.1.1
+log
+@Initial import of FilerSetup plugin for Configure.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Added a scroll bar version of the window for low res screen modes.
+Desktop redrawn when Set clicked on, to force update of truncation.
+@
+text
+@d140 2
+a141 6
+    //sprintf(string, "Filer_Run %s", ChoicesFile);
+    //error_trap(_swix(OS_CLI, _IN(0), string), 0);
+
+    error_trap(_swix(OS_CLI, _IN(0), options_command), 0);
+    error_trap(_swix(OS_CLI, _IN(0), truncation_command), 0);
+    error_trap(_swix(OS_CLI, _IN(0), layout_command), 0);
+@
+
+
+1.1.1.3
+log
+@Fixed bug with calculation of truncation approximate number of characters.
+@
+text
+@a19 1
+/*          22-Jul-98: RML: Fixed bug with how_many_characters calculation.  */
+d49 2
+a50 4
+    int m_width;
+    int i_width;
+    int av_width;
+    int system_font_handle;
+d54 2
+a55 1
+    if (_swix(Wimp_ReadSysInfo, _IN(0)|_OUT(0), ReadFontHandle, &system_font_handle)) return 0;
+d58 4
+a61 2
+    if (_swix(Font_CharBBox, _INR(0,2)|_OUT(3), system_font_handle, 'M', 1<<4, &m_width)) return 0;
+    if (_swix(Font_CharBBox, _INR(0,2)|_OUT(3), system_font_handle, 'I', 1<<4, &i_width)) return 0;
+a63 1
+    if (av_width==0) return 0;
+d65 1
+a65 1
+    return 1 + (os_units / av_width);
+d106 1
+a106 1
+    int   more = 1;
+d108 2
+a109 2
+    source_fp = fopen(ChoicesFile, "r");
+    dest_fp = fopen(ScrapFile, "w");
+d122 1
+a122 1
+            more = (int)fgets(string, 256, source_fp);
+d140 3
+a142 1
+    
+@

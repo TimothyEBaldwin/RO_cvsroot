@@ -1,0 +1,305 @@
+head	1.3;
+access;
+symbols
+	Configure-0_11:1.3
+	Configure-0_10:1.3
+	Configure-0_09:1.3
+	Configure-0_08:1.3
+	Configure-0_07:1.3
+	Configure-0_06:1.2
+	Configure-0_01:1.2
+	Ursula_merge:1.1.1.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.2
+	Ursula_RiscPC:1.1.1.2.0.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.2
+	UrsulaBuild_FinalSoftload:1.1.1.2
+	rthornb_UrsulaBuild-12Aug1998:1.1.1.2
+	aglover_UrsulaBuild-05Aug1998:1.1.1.2
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.2
+	bavison_ConfigureLib-0_05:1.1.1.2
+	bavison_ConfigureLib-0_04:1.1.1.2
+	rthornb_UrsulaBuild-17Jun1998:1.1.1.2
+	bavison_ConfigureLib-0_03:1.1.1.2
+	rthornb_UrsulaBuild-03Jun1998:1.1.1.1
+	rthornb_UrsulaBuild-27May1998:1.1.1.1
+	rthornb_UrsulaBuild-21May1998:1.1.1.1
+	rthornb_UrsulaBuild_01May1998:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2007.05.24.15.59.26;	author srevill;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2007.05.24.02.05.41;	author srevill;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.04.06.11.18.01;	author bavison;	state dead;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.04.06.11.40.48;	author bavison;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.06.09.10.25.18;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  Corrected license wording.
+Detail:
+  cvsmunge got confused by the fact that this component was only on the
+  Ursula branch and not on TRUNK. That meant we ended up with license
+  wording at the top _and_ bottom of the files.
+Admin:
+  As I only removed comments, there is no actual code change.
+
+Version 0.07. Tagged as 'Configure-0_07'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	error.h ***********************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Modular Configure
+Purpose:	Application error handling code, shared by multiple plug-ins
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+08/12/1997	BJGA	Renamed functions to error_foo convention
+			Added these headers
+
+\**************************************************************************/
+
+/*** For more info, see Error.h ***/
+
+
+
+/* Clib */
+#include <stdlib.h>
+#include <setjmp.h>
+#include <signal.h>
+#include "kernel.h"
+#include "swis.h"
+/* Toolbox */
+#include "wimplib.h"
+#include "toolbox.h"
+
+extern jmp_buf restart_buf;
+extern int init_state;
+extern MessagesFD messages;
+
+void error_sighandler (int sig)
+{
+  int b;
+  char Quit[32] = "Quit";
+  MessagesFD cb;
+  
+  BOOL no_messages = FALSE;
+  char taskname[32] = "Error", spritename[12] = "switcher";
+
+  if (_swix (MessageTrans_OpenFile, _INR(0,2), (int) &cb, (int) "WindowManager:Messages", 0) == NULL) {
+    _swix (MessageTrans_Lookup, _INR(0,7), (int) &cb, (int) "Quit", (int) Quit, sizeof (Quit), 0, 0, 0, 0);
+    _swix (MessageTrans_Lookup, _INR(0,7), (int) &cb, (int) "Error", (int) taskname, sizeof (taskname), 0, 0, 0, 0);
+  }
+  _swix (MessageTrans_CloseFile, _IN(0), (int) &cb);
+
+  if (_swix (MessageTrans_Lookup, _INR(0,7), (int) &messages, (int) "_TaskName", (int) taskname, sizeof (taskname), 0, 0, 0, 0) != NULL) no_messages = TRUE;
+  _swix (MessageTrans_Lookup, _INR(0,7), (int) &messages, (int) "_ConfigSprite", (int) spritename, sizeof (spritename), 0, 0, 0, 0);
+
+  b = wimp_report_error (_kernel_last_oserror(),
+    (init_state >= 1 ? Wimp_ReportError_OK : 0) | (no_messages ? Wimp_ReportError_NoAppName : 0) | 1u << 8 | 2u << 9,
+    taskname, spritename, (void *) 1, Quit);
+
+  if (b == 1 && init_state >= 1) { /* OK clicked */
+    signal(sig, error_sighandler);
+    longjmp(restart_buf, 1);
+  }
+  exit(1);
+}
+
+void error_initialise (void)
+{
+  int i, h, a, b;
+
+#define UNDEFINED_INSTRUCTION ((int) 0x1u)
+#define ADDRESS_EXCEPTION ((int) 0x4u)
+
+  for (i = UNDEFINED_INSTRUCTION; i <= ADDRESS_EXCEPTION; i++) {
+    if (_swix (OS_ReadDefaultHandler, _IN(0)|_OUTR(1,3), i, &h, &a, &b) == NULL)
+      _swix (OS_ChangeEnvironment, _INR(0,3), i, h, a, b);
+  }
+
+  signal(SIGFPE, error_sighandler);
+  signal(SIGILL, error_sighandler);
+  signal(SIGSEGV, error_sighandler);
+  signal(SIGSTAK, error_sighandler);
+  signal(SIGOSERROR, error_sighandler);
+}
+@
+
+
+1.2
+log
+@Merged to trunk.
+
+Version 0.01. Tagged as 'Configure-0_01'
+@
+text
+@@
+
+
+1.1
+log
+@file error was initially added on branch Ursula.
+@
+text
+@d1 93
+@
+
+
+1.1.1.1
+log
+@Initial checkin of ConfigureLib to CVS.
+@
+text
+@a0 93
+/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	error.h ***********************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Modular Configure
+Purpose:	Application error handling code, shared by multiple plug-ins
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+08/12/1997	BJGA	Renamed functions to error_foo convention
+			Added these headers
+
+\**************************************************************************/
+
+/*** For more info, see Error.h ***/
+
+
+
+/* Clib */
+#include <stdlib.h>
+#include <setjmp.h>
+#include <signal.h>
+#include "kernel.h"
+#include "swis.h"
+/* Toolbox */
+#include "wimplib.h"
+#include "toolbox.h"
+
+extern jmp_buf restart_buf;
+extern int init_state;
+extern MessagesFD messages;
+
+void error_sighandler (int sig)
+{
+  int b;
+  char Quit[32] = "Quit";
+  MessagesFD cb;
+  
+  BOOL no_messages = FALSE;
+  char taskname[32] = "Error", spritename[12] = "switcher";
+
+  if (_swix (MessageTrans_OpenFile, _INR(0,2), (int) &cb, (int) "WindowManager:Messages", 0) == NULL) {
+    _swix (MessageTrans_Lookup, _INR(0,7), (int) &cb, (int) "Quit", (int) Quit, sizeof (Quit), 0, 0, 0, 0);
+    _swix (MessageTrans_Lookup, _INR(0,7), (int) &cb, (int) "Error", (int) taskname, sizeof (taskname), 0, 0, 0, 0);
+  }
+  _swix (MessageTrans_CloseFile, _IN(0), (int) &cb);
+
+  if (_swix (MessageTrans_Lookup, _INR(0,7), (int) &messages, (int) "_TaskName", (int) taskname, sizeof (taskname), 0, 0, 0, 0) != NULL) no_messages = TRUE;
+  _swix (MessageTrans_Lookup, _INR(0,7), (int) &messages, (int) "_ConfigSprite", (int) spritename, sizeof (spritename), 0, 0, 0, 0);
+
+  b = wimp_report_error (_kernel_last_oserror(),
+    (init_state >= 1 ? Wimp_ReportError_OK : 0) | (no_messages ? Wimp_ReportError_NoAppName : 0) | 1u << 8 | 2u << 9,
+    taskname, spritename, (void *) 1, Quit);
+
+  if (b == 1) { /* OK clicked */
+    signal(sig, error_sighandler);
+    longjmp(restart_buf, 1);
+  }
+  exit(1);
+}
+
+void error_initialise (void)
+{
+  int i, h, a, b;
+
+#define UNDEFINED_INSTRUCTION ((int) 0x1u)
+#define ADDRESS_EXCEPTION ((int) 0x4u)
+
+  for (i = UNDEFINED_INSTRUCTION; i <= ADDRESS_EXCEPTION; i++) {
+    if (_swix (OS_ReadDefaultHandler, _IN(0)|_OUTR(1,3), i, &h, &a, &b) == NULL)
+      _swix (OS_ChangeEnvironment, _INR(0,3), i, h, a, b);
+  }
+
+  signal(SIGFPE, error_sighandler);
+  signal(SIGILL, error_sighandler);
+  signal(SIGSEGV, error_sighandler);
+  signal(SIGSTAK, error_sighandler);
+  signal(SIGOSERROR, error_sighandler);
+}
+@
+
+
+1.1.1.2
+log
+@Worked around Wimp error box bug.
+@
+text
+@d69 1
+a69 1
+  if (b == 1 && init_state >= 1) { /* OK clicked */
+@

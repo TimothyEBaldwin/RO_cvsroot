@@ -1,0 +1,610 @@
+head	1.7;
+access;
+symbols
+	PCI-0_15:1.7
+	PCI-0_14:1.7
+	PCI-0_13:1.7
+	PCI-0_12:1.6
+	PCI-0_11:1.5
+	PCI-0_10:1.5
+	PCI-0_09:1.4
+	PCI-0_08:1.4
+	PCI-0_07:1.3
+	RO_5_07:1.3
+	PCI-0_06:1.3
+	PCI-0_05:1.2
+	PCI-0_04:1.2
+	PCI-0_03:1.2
+	PCI-0_02:1.2
+	PCI-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2015.01.27.08.26.21;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	uYKL8ggdxmFwED7y;
+
+1.6
+date	2014.11.27.23.38.11;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	TEeRjLBhRjyVESZx;
+
+1.5
+date	2011.12.10.21.01.00;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	TMI5yVR1nEylBGKv;
+
+1.4
+date	2009.05.09.19.15.20;	author jlee;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2004.06.21.11.03.11;	author mhobbs;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2002.11.14.20.29.27;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2002.11.13.21.30.44;	author kbracey;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2002.11.13.21.30.44;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Make PCI_MemoryWrite more useful
+Previously the behaviour was thus
+
+MemoryRead
+  for (i = 0; i < wordcount; i++)
+    buffer[i] = *pcimem
+MemoryWrite
+  for (i = 0; i < wordcount; i++)
+    pcimem[i] = *buffer
+
+so in the write case the buffer was largely redundant and the SWI would data abort when copying > 1MB as it fell outside the temporary IO assignment from OS_Memory 14. Now it does
+
+MemoryWrite
+  for (i = 0; i < wordcount; i++)
+    *pcimem = buffer[i]
+
+the most common case where wordcount = 1 is unchanged, and MemoryRead is unchanged.
+Also
+ - sprinkle in some more comments
+ - make use of mem_to_phys_offset that the HAL is kind enough to have given us, even if it is 0
+ - update the capability id bits from PCI-SIG ECN from April 2010
+
+Tested with a parallel port PCI card, which reported it had vendor specific capabilities (InfCap09).
+
+Version 0.13. Tagged as 'PCI-0_13'
+@
+text
+@; Copyright 2002 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+        SUBT    Module header => PCI.s.Module
+
+        AREA    |!!!ModuleHeader|, CODE, READONLY, PIC
+
+MySWIChunkBase * Module_SWISystemBase + PCISWI * Module_SWIChunkSize
+        ASSERT  MySWIChunkBase = PCI_ReadID
+
+Origin
+        &       0
+        &       InitModule - Origin
+        &       KillModule - Origin
+        &       0
+        &       ModuleTitle - Origin
+        &       HelpString - Origin
+        &       CommandTable - Origin
+        &       MySWIChunkBase
+        &       SWIEntry - Origin
+        &       SWINameTable - Origin
+        &       0
+ [ International_Help <> 0
+        DCD     message_filename - Origin
+ |
+        DCD     0
+ ]
+        &       ModuleFlags - Origin
+
+HelpString
+        =       "PCI Manager", 9, "$Module_MajorVersion ($Module_Date)"
+        [       Module_MinorVersion <> ""
+        =       " $Module_MinorVersion"
+        ]
+        ALIGN
+
+ModuleFlags
+        &       ModuleFlag_32bit
+
+        ^       0,      wp                              ; Store
+        Word    message_file_block, 4                   ; File handle for MessageTrans
+        Word    message_file_open                       ; Opened message file flag
+        Word    ram_abort_handler, 11
+        Word    pci_handle_table
+        Word    pci_handle_table_size
+        Word    pci_handles
+
+        Word    pci_mem_to_phys_offset                  ; From HAL_PCIAddresses
+        Word    pci_mem_lowest
+        Word    pci_mem_highest
+        Word    pci_io_to_phys_offset
+        Word    pci_io_lowest
+        Word    pci_io_highest
+        Word    ram_to_pci_mem_offset
+
+        Word    mempool_da_number
+        Word    mempool_base_ppn                        ; this is a page block
+        Word    mempool_base_log
+        Word    mempool_base_phys
+        Word    mempool_base_pci
+        Word    mempool_free
+        Byte    osheap7_supported
+        Byte    pcibus_supported
+        AlignSpace
+        Byte    name_buffer, 128
+        Byte    vendor_buffer, 128
+
+HAL_RoutineList
+        MACRO
+        HALEntry $s
+        ASSERT  EntryNo_$s < 255
+        DCB     EntryNo_$s
+        Word    $s._routine, 2
+        MEND
+
+        HALEntry HAL_PCIReadConfigByte
+        HALEntry HAL_PCIReadConfigHalfword
+        HALEntry HAL_PCIReadConfigWord
+        HALEntry HAL_PCIWriteConfigByte
+        HALEntry HAL_PCIWriteConfigHalfword
+        HALEntry HAL_PCIWriteConfigWord
+        DCB     255
+
+        AlignSpace
+TotalRAMRequired *      :INDEX: @@
+
+        ALIGN
+
+        SUBT    Initialisation code
+        OPT     OptPage
+
+InitModule
+        Push    "lr"
+
+ [ standalone
+        ADRL    R0,resourcefsfiles
+        SWI     XResourceFS_RegisterFiles
+        BVS     %FT99                                   ; Give up and go home
+ ]
+
+        MOV     r0, #ModHandReason_Claim
+        LDR     r3, =TotalRAMRequired
+        SWI     XOS_Module
+        BVS     %FT99
+        STR     r2, [r12]
+        MOV     r12, r2
+
+        MOV     r0, #0
+10      SUBS    r3, r3, #4
+        STRPL   r0, [r12, r3]
+        BPL     %BT10
+
+        ; Check if OS_Heap 7 (get area aligned) is supported
+        ; We'll do a dummy call with a bad heap block and see what error we get
+        ; back (Assumes bad reason codes will always be checked first!)
+        MOV     r0, #HeapReason_GetAligned
+        MOV     r1, r12 ; Valid address but not a heap
+        SWI     XOS_Heap
+        LDRVS   r0, [r0]
+        TEQVS   r0, #ErrorNumber_HeapBadReason ; EQ if unsupported
+        TEQVC   r1, r1 ; EQ if no error returned (definitely a bad sign)
+        MOVNE   r0, #1
+        STRNEB  r0, osheap7_supported
+
+        BL      SetUpHAL
+        ; If we get an error back there is no PCI. But do not give up,
+        ; we can still provide memory management SWIs.
+        BVC     %FT20
+        CLRV
+        B       %FT99
+20
+        MOV     r0, #1
+        STRB    r0, pcibus_supported
+        BL      ScanPCI
+        BLVC    NoteSlots
+99
+        Pull    "pc"
+
+SetUpHAL        ROUT
+        Push    "r8,r9,lr"
+        ADR     r2, HAL_PCIReadConfigByte_routine
+        ADR     r3, HAL_RoutineList
+        MOV     r8, #OSHW_LookupRoutine
+        LDRB    r9, [r3], #1
+20      SWI     XOS_Hardware
+        BVS     %FT99
+        STR     r1, [r2], #4
+        STR     r0, [r2], #4
+        LDRB    r9, [r3], #1
+        TEQ     r9, #255
+        BNE     %BT20
+
+        ; Check with OS_ReadSysInfo to see if we have PCI
+        ; hardware (since a NullEntry for HAL_PCIAddresses won't
+        ; return with an error flag)
+        MOV     r0, #8
+        SWI     XOS_ReadSysInfo
+        BVS     %FT99
+        AND     r1, r1, r2
+        TST     r1, #2 ; PCI?
+        SETV    EQ
+        BVS     %FT99
+
+        ADR     a1, pci_mem_to_phys_offset
+        MOV     a2, #7*4
+        MOV     r8, #OSHW_CallHAL
+        MOV     r9, #EntryNo_HAL_PCIAddresses
+        SWI     XOS_Hardware
+99
+        Pull    "r8,r9,pc"
+
+KillModule
+        LDR     wp, [r12]
+        MOV     r6, lr
+
+        MOV     r3, #0
+        LDR     r4, pci_handle_table
+        LDR     r1, pci_handles
+        CMP     r1, #0
+        BEQ     %FT40
+30      LDR     r2, [r4, r3, LSL #2]
+        CMP     r2, #-1
+        MOVNE   r0, #ModHandReason_Free
+        SWINE   XOS_Module
+        ADD     r3, r3, #1
+        CMP     r3, r1
+        BLO     %BT30
+
+        BL      KillDA
+
+        MOV     r0, #ModHandReason_Free
+        MOV     r2, r4
+        SWI     XOS_Module
+40
+        BL      close_message_file
+
+ [ standalone
+        ADRL    R0,resourcefsfiles
+        SWI     XResourceFS_DeregisterFiles   ; ignore errors
+ ]
+
+        CLRV
+        MOV     pc, r6
+
+EasyLookup ROUT
+        ;       In:  R1 Pointer to token
+        ;       In:  R4 Single parameter to substitute
+        ;       Out: R2 Pointer to looked up message in an error buffer
+        ;       Out: R3 Length including terminator
+
+        Push    "r0, r1, r3, r5, r6, r7, lr"
+        BL      open_message_file
+  [  DebugModule
+        BVC     %71
+        ADD     r14, r0, #4
+        DSTRING r14, "Error from open_message_file: "
+71
+  ]
+        ADRVC   r0, message_file_block                  ; Message file handle
+        MOV     r2, #0                                  ; No buffer, expand in place
+        MOV     r3, #0
+        MOV     r5, #0                                  ; No %1
+        MOV     r6, #0                                  ; No %2
+        MOV     r7, #0                                  ; No %3
+  [ DebugModule :LOR:  DebugCommands
+        BVS     ExitEasyLookup
+        DREG    r0, "R0 = &", cc
+        Push    r14
+        LDR     r14, [ r0, #0 ]
+        DREG    r14, ", &", cc
+        LDR     r14, [ r0, #4 ]
+        DREG    r14, ", &", cc
+        LDR     r14, [ r0, #8 ]
+        DREG    r14, ", &", cc
+        LDR     r14, [ r0, #12 ]
+        DREG    r14, ", &"
+        Pull    r14
+        DREG    r1, "R1 = &", cc
+        DSTRING r1, " token is: "
+        DREG    r2, "R2 = &"
+        DREG    r3, "R3 = &"
+        DREG    r4, "R4 = &", cc
+        DSTRING r4, " %0 is: "
+        DREG    r5, "R5 = &", cc
+        DSTRING r5, " %1 is: "
+        DREG    r6, "R6 = &", cc
+        DSTRING r6, " %2 is: "
+        DREG    r7, "R7 = &", cc
+        DSTRING r7, " %3 is: "
+        DREG    r8, "R8 = &"
+        DREG    r9, "R9 = &"
+        DREG    r10, "R10 = &"
+        DREG    r11, "R11 = &"
+        DREG    r12, "R12 = &"
+        DREG    r13, "R13 = &"
+        DREG    r14, "R14 = &"
+        DREG    r15, "R15 = &"
+  ]
+        SWIVC   XMessageTrans_Lookup
+  [  DebugModule
+        BVC     %76
+        ADD     r14, r0, #4
+        DSTRING r14, "Error from XMessageTrans_Lookup: "
+76
+  ]
+        BVS     ExitEasyLookup
+        ADD     r3, r3, #1                              ; Allow for the terminator
+        STR     r3, [ sp, #8 ]                          ; Poke into the return frame
+        LDR     r0, [ sp, #4 ]                          ; Get the token pointer
+        DEC     r0, 4                                   ; Pretend it is an error pointer
+        ADR     r1, message_file_block                  ; Message file handle
+        MOV     r2, #0                                  ; No buffer, expand into a buffer
+        MOV     r3, #0
+  [ {FALSE} ; DebugModule
+        DREG    r0, "R0 = &"
+        DREG    r1, "R1 = &"
+        DREG    r2, "R2 = &"
+        DREG    r3, "R3 = &"
+        DREG    r4, "R4 = &"
+        DREG    r5, "R5 = &"
+        DREG    r6, "R6 = &"
+        DREG    r7, "R7 = &"
+        DREG    wp, "WP = &"
+        DREG    sp, "SP = &"
+  ]
+        SWI     XMessageTrans_ErrorLookup
+  [  DebugModule
+        ADD     r14, r0, #4
+        DSTRING r14, "Error from XMessageTrans_ErrorLookup: "
+  ]
+        CLRV
+        ADD     r2, r0, #4                              ; Skip over the error number
+ExitEasyLookup
+  [ DebugModule :LOR:  DebugCommands
+        Push    "r0, r1"
+        ADR     r0, message_file_block                  ; Message file handle
+        DREG    r0, "R0 = &", cc
+        LDR     r1, [ r0, #0 ]
+        DREG    r1, ", &", cc
+        LDR     r1, [ r0, #4 ]
+        DREG    r1, ", &", cc
+        LDR     r1, [ r0, #8 ]
+        DREG    r1, ", &", cc
+        LDR     r1, [ r0, #12 ]
+        DREG    r1, ", &"
+        Pull    "r0, r1"
+  ]
+        STRVS   r0, [ sp, #0 ]
+        Pull    "r0, r1, r3, r5, r6, r7, pc"
+
+        ROUT
+
+        LTORG
+
+        [ :LNOT: ReleaseVersion
+        InsertDebugRoutines
+        ]
+
+        [ standalone
+resourcefsfiles
+        ResourceFile    $MergedMsgs, Resources.PCI.Messages
+        DCD     0
+        ]
+
+        END
+@
+
+
+1.6
+log
+@Fix for nonsense error and implement a 'todo' action
+An (unlikely) error during ScanBus would end up with an error block pointing to &00000004 as although the V bit was carefully preserved, R0 wasn't.
+Add a RAM flag to remember if the module is operating in no-PCI-bus mode (for PCI_RAMAlloc and PCI_RAMFree) so that the bus access SWIs can return a meaningful error.
+
+Resources/UK/Messages, Errors.s:
+ New error message "NoPCIBus".
+GetAll.s:
+ Remove unnecessary header includes, and use {FALSE} and {TRUE}.
+Module.s:
+ Record result of OS_ReadSysInfo call to determine if there's a PCI bus or not.
+ Do fail to initialise in the RAM loading case if ResourceFS register fails.
+Scan.s:
+ Preserve R0 if ScanBus returns an error.
+ Add some comments.
+Interface.s:
+ Inspect flag and report error for those SWIs that are harmful when no bus exists, anything going via ValidateHandle doesn't need to since pci_handles will be 0 in that case.
+ Relocate FindFreeHandle to Scan.s.
+
+Tested briefly with and without the "got PCI" bit set, showing the appropriate error being returned.
+
+Version 0.12. Tagged as 'PCI-0_12'
+@
+text
+@d58 2
+a59 1
+        Word    pci_mem_to_phys_offset
+d66 1
+@
+
+
+1.5
+log
+@Use OS_Heap 7 for allocating IO memory
+Detail:
+  s/Commands, s/GetAll, s/Memory, s/Module - Now uses OS_Heap 7 for allocating aligned memory blocks instead of allocating overly large areas to perform manual alignment. Falls back to old method if OS_Heap 7 unavailable.
+  Makefile - Removed garbage from end of "dynamic dependencies" line.
+Admin:
+  Tested in OMAP3 ROM & Tungsten ROM softload
+  PCI shared memory DA now about 300k smaller on a typical Iyonix.
+
+
+Version 0.10. Tagged as 'PCI-0_10'
+@
+text
+@a45 1
+        !       0, "Assembling PCI Manager $Module_MajorVersion $Module_MinorVersion"
+d72 1
+d106 2
+a107 1
+        SWI     XResourceFS_RegisterFiles   ; ignore errors
+d113 1
+a113 1
+        BVS     ExitInitModule
+d139 7
+a145 6
+        B       ExitInitModule
+
+20      BL      ScanPCI
+        BL      NoteSlots
+
+ExitInitModule
+d152 1
+a152 1
+        MOV     r8, #1
+d162 3
+a164 1
+        ; Check with OS_ReadSysInfo to see if we have PCI hardware (since a NullEntry for HAL_PCIAddresses won't return with an error flag)
+d175 1
+a175 1
+        MOV     r8, #0
+d283 1
+a283 1
+  [ False ; DebugModule
+a328 9
+declareresourcefsfiles
+        Push    "R0,LR"
+
+        ADRL    R0,resourcefsfiles
+        SWI     XResourceFS_RegisterFiles   ; ignore errors
+
+        CLRV
+        Pull    "R0,PC"
+
+@
+
+
+1.4
+log
+@Fix PCI module to not crash on machines without a PCI bus
+Detail:
+  s/Interface - Avoid unpredictable behaviour if a handle of -1 is given to EnumerateFunctions, FindByClass, etc.
+  s/Module - During initialisation use OS_ReadSysInfo 8 to detect PCI bus, since a NullEntry for HAL_PCIAddresses won't return an error.
+Admin:
+  Tested on rev C2 beagleboard. Untested on Iyonix, but should be fine.
+
+
+Version 0.08. Tagged as 'PCI-0_08'
+@
+text
+@d72 2
+d121 12
+@
+
+
+1.3
+log
+@  Added support for new STB
+Detail:
+  Files modified: s.Memory, s.Module
+    Try to get 32MB contiguous memory or successively smaller chunks if not available
+Admin:
+  Updated from Kev's machine.
+
+Version 0.06. Tagged as 'PCI-0_06'
+@
+text
+@d146 9
+@
+
+
+1.2
+log
+@Removed unused HelpTokens
+Removed unused oInterface
+Implemented PCI_MemoryRead,PCI_MemoryWrite,PCI_EnumerateFunctions.
+Resync'd docs with implementation,tidied them up,and expanded some of
+the descriptions.
+Swapped a couple of BHS for BHI so that PCI_FindByXXX can find the last
+thing in the list now.
+Added new service calls to lookup name and vendor strings.
+Added vendor string reason to ReadInfo.
+Now *PCIDEVICES and *PCIINFO report the vendor string and description if
+available,else default to the class code.
+
+Version 0.02. Tagged as 'PCI-0_02'
+@
+text
+@d20 1
+a20 1
+;        ASSERT  MySWIChunkBase = Podule_ReadID
+d120 5
+a124 1
+        BVS     ExitInitModule
+d126 1
+a126 1
+        BL      ScanPCI
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d72 2
+a73 1
+        Byte    name_buffer, 256
+@
+
+
+1.1.1.1
+log
+@Initial import
+@
+text
+@@

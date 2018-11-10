@@ -1,0 +1,1244 @@
+head	1.6;
+access;
+symbols
+	Browse-2_16:1.6
+	Browse-2_15:1.6
+	Browse-2_14:1.6
+	Browse-2_13:1.6
+	Browse-2_12:1.6
+	Browse-2_11:1.5
+	Browse-2_10:1.5
+	Browse-2_09:1.5
+	ahodgkin_208_i4_2:1.4
+	ahodgkin_208_i4:1.3
+	ahodgkin_208_i3:1.3
+	ahodgkin_208_i2:1.3
+	ahodgkin_208_i1:1.3
+	ahodgkin_207release:1.3
+	ahodgkin_206release:1.2
+	ahodgkin_205release:1.2
+	ahodgkin_204release:1.2
+	ahodgkin_202release:1.2
+	ahodgkin_201release:1.2
+	ahodgkin_200release:1.2
+	ahodgkin_133beta:1.2
+	ahodgkin_132beta:1.2
+	ahodgkin_131beta:1.2
+	ahodgkin_130beta:1.2
+	ahodgkin_129:1.2
+	ahodgkin_128beta:1.2
+	ahodgkin_128alpha:1.2
+	ahodgkin_127beta2:1.1
+	ahodgkin_127beta:1.1
+	ahodgkin_126beta:1.1
+	ahodgkin_AW97patch:1.1
+	ahodgkin_AW97:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2006.03.13.22.06.20;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2005.04.26.09.42.35;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.05.31.15.58.51;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.09.07.11.47.05;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.11.28.15.35.52;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.09.18.12.37.23;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@  PDF export, some major redraw structural changes, updated resources,
+  new build system, extensive Makefile modifications, const/restrict
+  additions, various bug fixes.
+Detail:
+  PDF export facility. SEE Docs.User FOR DETAILS (important!). Includes
+  UI for headers/footers in Choices and option switch in Print dialogue
+  box. Minor bug fixes include printing bullet points and, at long last,
+  the "print dialogue box contents are not set up" problem. Redraw engine
+  now based entirely on function pointers. Draw export routine replaces
+  screen output functions with Draw output functions; PDF does similar.
+  Coordinate scaling system in Scale.c/h to help. Makefile changes: Now
+  supports a more consistent set of build variants and has minimal
+  duplication of object and library lists. New build system: !Mk...
+  script files removed, FrontEnd tool !MkBrowse replaces it. See !ReadMe
+  (replacing old ReadMe) in root for details. Requires FrontEnd 1.29,
+  HTMLLib 0.02 and ImageLib 0.04 (by CVS VersionNum). Updated resources:
+  Some attempt to bring all variants to a working level, but not much
+  testing. Only the Phoenix JavaScript capable builds (Unicode or normal)
+  are fully up to date, though, including PDF UI additions. Many other
+  minor tweaks, and extensive use of const and restrict qualifiers
+  propagated through source code in response to their use in the new
+  redraw system.
+Admin:
+  Draw and PDF export tested quite heavily. Appears to work well. Text
+  file 'Docs.User' describes limitations. Note required new module and
+  library versions listed above. Note that only JavaScript capable
+  Phoenix resources are updated and only Phoenix was heavily tested.
+
+Version 2.12. Tagged as 'Browse-2_12'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    Unifont.c                                         */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Routines to output ISO10646 characters using      */
+/*          UTF-8.                                            */
+/*                                                            */
+/* Author:  K.J.Bracey.                                       */
+/*                                                            */
+/* History: 20-Aug-1997 (KJB): Created.                       */
+/*          23-May-2000 (ADH): 64-wide comments adopted. Some */
+/*                             trivial format style changes.  */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+#include <math.h>
+
+#include <kernel.h>
+#include <swis.h>
+#include <Global/Services.h>
+
+#include <Unicode/iso10646.h>
+#include <Unicode/utf8.h>
+
+#include <tboxlibs/event.h>
+
+#include <tboxlibs/toolbox.h>
+
+#include "Global.h"
+#include "FromROSLib.h"
+#include "Utils.h"
+
+#include "Unifont.h"
+
+#ifdef UNIFONT
+
+  static UCS4 map       [0x40];
+  static char olddefs   [0x40][9];
+
+  static char   sprarea [300];
+  static char * sprptr;
+  static char * maskptr;
+  static char * bmpptr;
+  static int    factors [4];
+  static int    xoff;
+  static int    yoff;
+
+  /**************************************************************/
+  /* unifont_start_redraw()                                     */
+  /*                                                            */
+  /* Sets up the system font ISO10646 renderer at the start of  */
+  /* a redraw loop. Must be called before unifont_write0 is     */
+  /* called.                                                    */
+  /**************************************************************/
+
+  void unifont_start_redraw(void)
+  {
+    int i;
+
+    for (i = 0xC0; i < 0x100; i++)
+    {
+      map[i - 0xC0] = 0xFFFFFFFFu;
+    }
+
+    return;
+  }
+
+  /**************************************************************/
+  /* unifont_widechar_init()                                    */
+  /*                                                            */
+  /* Prepare all the necessary sprite gubbins for the bitmap    */
+  /* CJK renderer, and load in the font file.                   */
+  /*                                                            */
+  /* Assumes: Called once only before the first CJK character   */
+  /* is plotted.                                                */
+  /**************************************************************/
+
+  static _kernel_oserror * unifont_widechar_init(void)
+  {
+    /*
+     * Prepare a small sprite area in which we prepare the 16x16
+     * sprite mask to plot
+     */
+
+    ((int *) sprarea)[0] = 300;
+    ((int *) sprarea)[2] = 16;
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,1),
+
+                   256 + 9,
+                   sprarea));
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,6),
+
+                   256 + 15,
+                   sprarea,
+                   "sprite",
+                   0,
+                   16,
+                   16,
+                   18));
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,2),
+
+                   256 + 29,
+                   sprarea,
+                   "sprite"));
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,2) | _OUT(2),
+
+                   256 + 24,
+                   sprarea,
+                   "sprite",
+
+                   &sprptr));
+
+    maskptr = sprptr + ((int *) sprptr)[9];
+
+    /*
+     * Load the big bitmap file (yum).
+     */
+
+    bmpptr = malloc(1703996);
+    if (!bmpptr) return make_no_memory_error(12);
+
+    ((int *) bmpptr)[0] = 1703996;
+    ((int *) bmpptr)[2] = 16;
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,1),
+
+                   256 + 9,
+                   bmpptr));
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,2),
+
+                   256 + 10,
+                   bmpptr,
+                   Unifont_WideBitmapLocation));
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,2) | _OUT(2),
+
+                   256 + 24,
+                   bmpptr,
+                   Unifont_WideBitmapSpriteName,
+
+                   &bmpptr));
+
+    bmpptr = bmpptr + ((int *) bmpptr)[8];
+
+    return NULL;
+  }
+
+  /**************************************************************/
+  /* unifont_prepare_widechar()                                 */
+  /*                                                            */
+  /* Set up the transformation matrix etc before plotting the   */
+  /* first CJK character in each call to unifont_write0().      */
+  /*                                                            */
+  /* Parameters: Width of the system font in pixels, as set     */
+  /*             with VDU 23,17,7;                              */
+  /*                                                            */
+  /*             Height of the system font in pixels, as set    */
+  /*             with VDU 23,17,7.                              */
+  /**************************************************************/
+
+  static _kernel_oserror * unifont_prepare_widechar(int xs, int ys)
+  {
+    static int widechar_initted;
+
+    if (!widechar_initted)
+    {
+      RetError(unifont_widechar_init());
+      widechar_initted = 1;
+    }
+
+    factors[0] = xs;
+    factors[1] = ys;
+    factors[2] = 8;
+    factors[3] = 16;
+
+    xoff = xs * wimpt_dx() * 2;
+    yoff = (ys - 1) * wimpt_dy();
+
+    return NULL;
+  }
+
+  /**************************************************************/
+  /* unifont_plot_widechar()                                    */
+  /*                                                            */
+  /* Plot a CJK character.                                      */
+  /*                                                            */
+  /* Parameters: ISO10646 character code;                       */
+  /*                                                            */
+  /*             Pointer to current x-coordinate;               */
+  /*                                                            */
+  /*             Pointer to current y-coordinate.               */
+  /*                                                            */
+  /* Returns:    The coordinates are updated according to the   */
+  /*             size of the character.                         */
+  /*                                                            */
+  /* Assumes:    unifont_widechar(c) == 1.                      */
+  /**************************************************************/
+
+  static _kernel_oserror * unifont_plot_widechar(UCS4 c, int *xp, int *yp)
+  {
+    int    y;
+    char * p = bmpptr + (c & 255) * 2 + ((c - 0x3000) >> 8) * 2 * 256 * 16;
+    char * s = maskptr;
+
+    for (y = 0; y < 16; y++)
+    {
+      s[0] = p[0];
+      s[1] = p[1];
+      s += 4;
+      p += 0x200;
+    }
+
+    RetError(_swix(OS_SpriteOp,
+                   _INR(0,6),
+
+                   512 + 50,
+                   sprarea,
+                   sprptr,
+                   *xp,
+                   *yp - yoff,
+                   0,
+                   factors));
+
+    *xp += xoff;
+
+    return _swix(OS_Plot,
+                 _INR(0,2),
+
+                 0,
+                 xoff,
+                 0);
+  }
+
+  /**************************************************************/
+  /* unifont_write()                                            */
+  /*                                                            */
+  /* Print a UTF-8 string in the system font, using 16x16       */
+  /* bitmaps for CJK characters, and a new                      */
+  /* Service_International reason code to find funny            */
+  /* characters.                                                */
+  /*                                                            */
+  /* Parameters: Pointer to the 0-terminated string (UTF-8      */
+  /*             encoded);                                      */
+  /*                                                            */
+  /*             Number of characters to print, or 0 to go to   */
+  /*             character 0, 10 or 13 then end; output will    */
+  /*             always end at these characters so asking for   */
+  /*             more characters than string length is 'safe'   */
+  /*             provided there is a valid terminator in place; */
+  /*                                                            */
+  /*             x-coordinate to plot at;                       */
+  /*                                                            */
+  /*             y-coordinate to plot at;                       */
+  /*                                                            */
+  /*             Width of the system font in pixels, as set     */
+  /*             with VDU 23,17,7;                              */
+  /*                                                            */
+  /*             Height of the system font in pixels, as set    */
+  /*             with VDU 23,17,7.                              */
+  /*                                                            */
+  /* Assumes:    VDU 23,17,7 already called to set character    */
+  /*             size;                                          */
+  /*                                                            */
+  /*             Graphics background colour set to desired text */
+  /*             foreground colour(!)                           */
+  /*                                                            */
+  /*             The current alphabet has characters 0x20 to    */
+  /*             0x7E the same as ASCII/ISO10646;               */
+  /*                                                            */
+  /*             unifont_start_redraw called at start of this   */
+  /*             redraw.                                        */
+  /**************************************************************/
+
+  _kernel_oserror * unifont_write
+                    (
+                      const char * restrict s,
+                      size_t                numchars,
+                      int                   x,
+                      int                   y,
+                      int                   xs,
+                      int                   ys
+                    )
+  {
+    int    n;
+    UCS4   code;
+    char   c;
+    int    widecharready = 0;
+    int    xstep = xs * wimpt_dx();
+    size_t count = 0;
+
+    while (
+            *s != 0  &&
+            *s != 10 &&
+            *s != 13 &&
+            (
+              numchars == 0 || count < numchars
+            )
+          )
+    {
+      count++;
+
+      /* Get the next code from the UTF-8 string */
+      s += UTF8_to_UCS4(s, &code);
+
+      /* If it's ASCII, just print that code */
+      if (code < 0x7F && code >= 0x20)
+      {
+        RetError(_swix(OS_WriteI + code, 0));
+        x += xstep;
+        continue;
+      }
+
+      if (unifont_widechar(code))
+      {
+        if (!widecharready)
+        {
+          RetError(unifont_prepare_widechar(xs, ys));
+          widecharready = 1;
+        }
+
+        RetError(unifont_plot_widechar(code, &x, &y));
+        continue;
+      }
+
+      /* Let c = the character we will print. */
+      c = 0xC0 + (code & 0x3F);
+
+      /* Is that character already defined correctly? */
+      if (map[c - 0xC0] != code)
+      {
+        /* No, ask someone to redefine it. First note the previous
+         * definition if we haven't touched it yet
+         */
+        if (map[c - 0xC0] == 0xFFFFFFFFu)
+        {
+          olddefs[c - 0xC0][0] = c;
+
+          RetError(_swix(OS_Word,
+                         _INR(0,1),
+
+                         10,
+                         olddefs[c - 0xC0]));
+        }
+
+        /* Issue the service call asking someone to define the
+         * character.
+         */
+
+        RetError(_swix(OS_ServiceCall,
+                       _INR(1,4) | _OUT(1),
+
+                       Service_International,
+                       Service_International_DefineUCS,
+                       c,
+                       code,
+
+                       &n));
+
+        /* If no-one defined it, try to define the replacement
+         * character here instead.
+         */
+
+        if (n)
+        {
+          RetError(_swix(OS_ServiceCall,
+                         _INR(1,4) | _OUT(1),
+
+                         Service_International,
+                         Service_International_DefineUCS,
+                         c,
+                         0xFFFD,
+
+                         &n));
+
+          /* If we can't even get the replacement character, print
+           * ? instead. Else, mark this character as having been
+           * found (okay, so it actually failed, but it will speed
+           * up redraw of text containing a lot of instances of an
+           * unknown character.
+           */
+
+          if (n)
+          {
+            c = '?';
+          }
+          else
+          {
+            map[c - 0xC0] = code;
+          }
+        }
+        else
+        {
+          /* Note that we've defined this one for next time */
+          map[c - 0xC0] = code;
+        }
+      }
+
+      /* And print it! */
+
+      RetError(_swix(OS_WriteI + c, 0));
+
+      x += xstep;
+    }
+
+    return NULL;
+  }
+
+  /**************************************************************/
+  /* unifont_end_redraw()                                       */
+  /*                                                            */
+  /* Clear up at the end of a redraw, resetting the system font */
+  /* back to what it was.                                       */
+  /**************************************************************/
+
+  _kernel_oserror * unifont_end_redraw(void)
+  {
+    int i;
+
+    /* Put back all the character definitions we've screwed around with */
+
+    for (i = 0xC0; i < 0x100; i++)
+    {
+      if (map[i - 0xC0] != 0xFFFFFFFFu)
+      {
+        RetError(_swix(OS_WriteI + 23, 0));
+
+        RetError(_swix(OS_WriteN,
+                       _INR(0,1),
+
+                       olddefs[i - 0xC0],
+                       9));
+      }
+    }
+
+    return NULL;
+  }
+
+  /**************************************************************/
+  /* unifont_widechar()                                         */
+  /*                                                            */
+  /* Is a character a "wide" one - ie one plotted from a        */
+  /* special 16x16 bitmap rather than using the system font.    */
+  /*                                                            */
+  /* Parameters: The ISO 10646 character code.                  */
+  /*                                                            */
+  /* Returns:    1 if a wide character, 0 if not.               */
+  /**************************************************************/
+
+  int unifont_widechar(UCS4 c)
+  {
+    if (c < 0x3000) return 0;
+    if (c < 0xD800) return 1;  /* 3000-D7FF: CJK + Hangul */
+    if (c < 0xF900) return 0;
+    if (c < 0xFB00) return 1;  /* F900-FAFF: CJK Compat */
+    if (c < 0xFE30) return 0;
+    if (c < 0xFE70) return 1;  /* FE30-FE70: CJK Compat + Small form variants */
+    if (c < 0xFF00) return 0;
+    if (c < 0xFF60) return 1;  /* FF00-FF5F: Fullwidth ASCII */
+    if (c < 0xFFE0) return 0;
+    if (c < 0xFFE8) return 1;  /* FFE0-FFE7: Fullwidth others */
+    return 0;
+  }
+
+#endif
+@
+
+
+1.5
+log
+@  Huge pile of changes bringing relatively ancient sources up to date.
+Detail:
+  This check-in includes Phoenix version 2.11 (26-Apr-2005); only the
+  debug and JavaScript builds of Phoenix have been tested and resources
+  will definitely be out of date for other versions. The various "!..."
+  scripts have been updated to require a minimum of 2MB with no maximum
+  limit for building, as CC 5.60 is quite RAM hungry.
+Admin:
+  Phoenix 2.11 JS builds OK, works reasonably well. Many outstanding
+  issues of course, as this is a very outdated browser now.
+
+Version 2.09. Tagged as 'Browse-2_09'
+@
+text
+@d74 1
+a74 1
+  _kernel_oserror * unifont_start_redraw(void)
+d83 1
+a83 1
+    return NULL;
+d96 1
+a96 1
+  static _kernel_oserror *unifont_widechar_init(void)
+d265 1
+a265 1
+  /* unifont_write0()                                           */
+d275 6
+d304 9
+a312 1
+  _kernel_oserror * unifont_write0(const char * s, int x, int y, int xs, int ys)
+d314 17
+a330 5
+    int  n;
+    UCS4 code;
+    char c;
+    int  widecharready = 0;
+    int  xstep = xs * wimpt_dx();
+a331 2
+    while (*s != 0 && *s != 10 && *s != 13)
+    {
+d445 1
+a445 1
+  _kernel_oserror *unifont_end_redraw(void)
+@
+
+
+1.4
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@d74 1
+a74 1
+  _kernel_oserror * unifont_start_redraw()
+d96 1
+a96 1
+  static _kernel_oserror *unifont_widechar_init()
+d162 1
+a162 1
+                   Unicode_WideBitmapLocation));
+d169 1
+a169 1
+                   Unicode_WideBitmapSpriteName,
+d421 1
+a421 1
+  _kernel_oserror *unifont_end_redraw()
+@
+
+
+1.3
+log
+@Everyone else seems to be checking lots of stuff in lately, so I've
+decided to join in. This is an intermediate check-in and so not all
+resources etc. will be up to date. You should be able to make Phoenix
+and a debug build out of it. As a reminder, to make a JavaScript build:
+
+ * Build JSLib and NSPRLib. Recommend you leave -DUSEMEMLIB in there (as
+   used by default) so you can watch it leak into a dynamic area... :-)
+   If you do this, you'll need to build MemLib too, of course. If you
+   do NOT use MemLib, *undefine JS_USING_MEMLIB in Main.c*!
+ * Run !MkClean. This now strips dynamic dependencies from the MakeFile
+   automatically, to save you having to do it yourself.
+ * Run one of the TaskObey files with the "J" suffix, e.g. !DeskBrwsJ -
+   this uses the same .o directory for object files and exports to the
+   same position in the Targets directory as the non-JavaScript build,
+   but it does produce a unique binary in 'abs' and symbols table in
+   'syms'.
+ * Sourcing an appropriate !Run (with increased WimpSlot value), !Boot
+   and About resource is done automatically.
+ * Some, but not all of the !xxxD (debug) TaskObey files will make
+   JavaScript versions in passing - check the JSUFFIX value on the Make
+   command line parameters in the file.
+
+This'll only work on RISC OS 3.1 due to the use of MemLib.
+
+Here's the change list:
+
+Included MNG icons in sprites files; added Sprites23 for some builds.
+Added in ANT URL file icon (b28) derived from URI file icon, because
+the Save dialogue can need it.
+
+No, you do *not* need to define the same keyboard shortcuts in each
+frame since the ancestor keeps the input focus and we've basically
+dropped non-nested Wimp support. Maintaining no less than 4 lists of
+identical shortcuts was a pain. Some Res files now only have the
+lists in the main browser window and button bar objects (these two
+are both required still).
+
+Ursula build Markers button arrangement changed from 1x3 horizontal to
+2x2 tilted, as in Phoenix, by popular demand.
+
+Couple of hotlist bugs fixed; dragging an item and deleteing it with
+Ctrl+X didn't terminate the drag, and deleteting an item underneath a
+menu opened for it didn't close the menu.
+
+'SendReferer' option added to all Choices files, all set to 'always'.
+Put just beneath 'Clone' as it refers to header items, though really,
+both Clone and SendReferer should probably be in the "Fetch controls"
+section rather than "Multiuser environments and proxying"! Front-end
+control of this is available.
+
+In image_export_original, save_save_source, save_transfer_source and
+save_save_object, flex_set_budge(0) was called to lock the heap but the
+return value wasn't stored. flex_set_budge(1) was then used to unlock
+the heap. All calls now remember and restore the old value, which is
+both safer in case one calls another and allows the flex_set_budge
+call in Main.c to have an application-wide meaning, as intended.
+
+Some restructuring to the data load and RAM transfer sections of
+Protocols.c; remote hotlist builds wouldn't allow files to be loaded
+to browser windows before, and can now drop URL, URI or text files to
+the Open URL dialogue.
+
+New option "MinimumFontSize", lets the 'size' attribute of the 'font'
+element be overridden. Default value is 1, to allow the full range of
+values for the attribute. Setting to 7, for example, would give font
+size 7 text at all times. Another new option, "ToggleOnXOnly", to
+make Toggle Size only extend the window vertically (with Ctrl then
+being used to toggle to genuine full size, rather than vice versa).
+All Choices files updated to hold both of these options; only the
+first has front-end control available (see debug build Res file).
+
+JavaScript Document object exists; frames array etc. working. Can now
+just about use "http://www.acorn.com/~ahodgkin/jschain/" but it does
+abort after a bit - problems with frames again, I suspect. Is is pretty
+slow, too. Can now press Escape to terminate a script.
+
+Main.c erroneously referred to Controls file entry "StopWebServe" as
+"StopWebProxy". Fixed.
+
+Keyboard shortcuts to raise SaveFile are now possible in a general sense;
+the code before was in the ToBeShown handler and just checked for a parent
+component of -1. It then assumed "save frame HTML source". Now there's the
+savefile_raise_from_shortcut function, which together with the seven new
+event codes in SaveFile.h allows saving of HTML source and frame location,
+export of links, images, backgrounds and the page as text or draw, to all
+be invoked by keyboard shortcuts. Some Res files have some of these defined.
+
+In reformat_check_height, the first check to see if setpara should be set
+references a field in tpLast without checking if it is NULL. Whilst the
+'line > 0' check should mean that tpLast wasn't NULL anyway, a direct
+call to the function from outside of the reformatter might have tripped
+up on this - the check for tpLast != NULL is now made.
+
+Adjust-click on close icon in window showing file: URL attempts to open
+the parent Filer window.
+
+Reformatter used to try and find a selectable token if keyboard control
+was enabled in a really stupid place - could make reformatting become
+very slow if no selectables were present, especially if the page had a
+few tables on it. Preprocessor now does this (since it goes through all
+of the tokens anyway), the reformatter just doing a last check to ensure
+no frames have obscured the selectable and if so, it tries to move it.
+Done in the reformatter as generating a line array implies the data really
+is visible.
+
+Ctrl+Tab URL completion now builds a full list of matches from the hotlist
+and history and can cycle through them (Ctrl+Shift+Tab stepping backwards).
+
+Will give a real error rather than just "Data Abort" if it goes wrong
+now. Someone somewhere is setting bit 30 of the error which confused
+the replacement signal handler. Flag bits are now masked off (as they
+should've been to start with).
+@
+text
+@d15 14
+a28 10
+/***************************************************/
+/* File   : Unifont.c                              */
+/*                                                 */
+/* Purpose: Routines to output ISO10646 characters */
+/*          using UTF-8.                           */
+/*                                                 */
+/* Author : K.J.Bracey                             */
+/*                                                 */
+/* History: 20-Aug-97: Created.                    */
+/***************************************************/
+d36 3
+a38 1
+#include "swis.h"
+d40 2
+a41 2
+#include "Unicode/iso10646.h"
+#include "Unicode/utf8.h"
+d43 1
+a43 1
+#include "event.h"
+d45 1
+a45 1
+#include "toolbox.h"
+a48 1
+
+d53 1
+a53 2
+#define Service_International 0x43
+#define Service_International_DefineUCS 7
+d55 2
+a56 1
+#ifdef UNIFONT
+d58 15
+a72 2
+static UCS4 map[0x40];
+static char olddefs[0x40][9];
+d74 3
+a76 18
+static char sprarea[300];
+static char *sprptr;
+static char *maskptr;
+static char *bmpptr;
+static int factors[4];
+static int xoff, yoff;
+
+/*************************************************/
+/* unifont_start_redraw()                        */
+/*                                               */
+/* Sets up the system font ISO10646 renderer at  */
+/* the start of a redraw loop. Must be called    */
+/* before unifont_write0 is called.              */
+/*************************************************/
+
+_kernel_oserror *unifont_start_redraw()
+{
+  int i;
+d78 2
+a79 1
+  for (i = 0xC0; i < 0x100; i++)
+d81 1
+d83 2
+a84 2
+  return NULL;
+}
+d86 9
+a94 76
+/*************************************************/
+/* unifont_widechar_init()                       */
+/*                                               */
+/* Prepare all the necessary sprite gubbins for  */
+/* the bitmap CJK renderer, and load in the      */
+/* font file.                                    */
+/*                                               */
+/* Assumes: Called once only before the first    */
+/*          CJK character is plotted.            */
+/*************************************************/
+
+static _kernel_oserror *unifont_widechar_init()
+{
+  _kernel_oserror *e;
+
+  /*
+   * Prepare a small sprite area in which we prepare the 16x16
+   * sprite mask to plot
+   */
+  ((int *)sprarea)[0] = 300;
+  ((int *)sprarea)[2] = 16;
+  e = _swix(OS_SpriteOp, _INR(0,1), 256+9, sprarea);
+  if (e) return e;
+
+  e = _swix(OS_SpriteOp, _INR(0,6), 256+15, sprarea, "sprite",
+                                    0, 16, 16, 18);
+  if (e) return e;
+
+  e = _swix(OS_SpriteOp, _INR(0,2), 256+29, sprarea, "sprite");
+  if (e) return e;
+
+  e = _swix(OS_SpriteOp, _INR(0,2)|_OUT(2), 256+24, sprarea, "sprite", &sprptr);
+  if (e) return e;
+
+  maskptr = sprptr + ((int *)sprptr)[9];
+
+  /*
+   * Load the big bitmap file (yum).
+   */
+  bmpptr = malloc(1703996);
+  if (!bmpptr) return make_no_memory_error(12);
+
+  ((int *)bmpptr)[0] = 1703996;
+  ((int *)bmpptr)[2] = 16;
+  e = _swix(OS_SpriteOp, _INR(0,1), 256+9, bmpptr);
+  if (e) return e;
+
+  e = _swix(OS_SpriteOp, _INR(0,2), 256+10, bmpptr, "Unicode:Widefont");
+  if (e) return e;
+
+  e = _swix(OS_SpriteOp, _INR(0,2)|_OUT(2), 256+24, bmpptr, "bmp", &bmpptr);
+  if (e) return e;
+
+  bmpptr = bmpptr + ((int *)bmpptr)[8];
+
+  return NULL;
+}
+
+/*************************************************/
+/* unifont_prepare_widechar()                    */
+/*                                               */
+/* Set up the transformation matrix etc before   */
+/* plotting the first CJK character in each call */
+/* to unifont_write0().                          */
+/*                                               */
+/* Parameters: Width of the system font in       */
+/*             pixels, as set with VDU 23,17,7;  */
+/*                                               */
+/*             Height of the system font in      */
+/*             pixels, as set with VDU 23,17,7.  */
+/*************************************************/
+
+static _kernel_oserror *unifont_prepare_widechar(int xs, int ys)
+{
+  static int widechar_initted;
+  _kernel_oserror *e;
+d96 1
+a96 1
+  if (!widechar_initted)
+d98 78
+a175 3
+      e = unifont_widechar_init();
+      if (e) return e;
+      widechar_initted = 1;
+d178 12
+a189 35
+  factors[0] = xs;
+  factors[1] = ys;
+  factors[2] = 8;
+  factors[3] = 16;
+
+  xoff = xs * wimpt_dx() * 2;
+  yoff = (ys - 1) * wimpt_dy();
+
+  return NULL;
+}
+
+/*************************************************/
+/* unifont_plot_widechar()                       */
+/*                                               */
+/* Plot a CJK character.                         */
+/*                                               */
+/* Parameters: ISO10646 character code;          */
+/*                                               */
+/*             Pointer to current x-coordinate;  */
+/*                                               */
+/*             Pointer to current y-coordinate.  */
+/*                                               */
+/* Returns:    The coordinates are updated       */
+/*             according to the size of the      */
+/*             character.                        */
+/*                                               */
+/* Assumes:    unifont_widechar(c) == 1.         */
+/*************************************************/
+
+static _kernel_oserror *unifont_plot_widechar(UCS4 c, int *xp, int *yp)
+{
+  _kernel_oserror *e;
+  int y;
+  char *p = bmpptr + (c & 255) * 2 + ((c - 0x3000) >> 8) * 2 * 256 * 16;
+  char *s = maskptr;
+d191 1
+a191 1
+  for (y = 0; y < 16; y++)
+d193 17
+a209 4
+    s[0] = p[0];
+    s[1] = p[1];
+    s += 4;
+    p += 0x200;
+d212 16
+a227 52
+  e = _swix(OS_SpriteOp, _INR(0,6), 512+50, sprarea, sprptr,
+                  *xp, *yp - yoff, 0, factors);
+  if (e) return e;
+
+  *xp += xoff;
+
+  return _swix(OS_Plot, _INR(0,2), 0, xoff, 0);
+}
+
+/*************************************************/
+/* unifont_write0()                              */
+/*                                               */
+/* Print a UTF-8 string in the system font,      */
+/* using 16x16 bitmaps for CJK characters, and   */
+/* a new Service_International reason code to    */
+/* find funny characters.                        */
+/*                                               */
+/* Parameters: Pointer to the 0-terminated       */
+/*             string (UTF-8 encoded);           */
+/*                                               */
+/*             x-coordinate to plot at;          */
+/*                                               */
+/*             y-coordinate to plot at;          */
+/*                                               */
+/*             Width of the system font in       */
+/*             pixels, as set with VDU 23,17,7;  */
+/*                                               */
+/*             Height of the system font in      */
+/*             pixels, as set with VDU 23,17,7.  */
+/*                                               */
+/* Assumes:    VDU 23,17,7 already called to set */
+/*             character size;                   */
+/*                                               */
+/*             Graphics background colour set to */
+/*             desired text foreground colour(!) */
+/*                                               */
+/*             The current alphabet has          */
+/*             characters 0x20 to 0x7E the same  */
+/*             as ASCII/ISO10646;                */
+/*                                               */
+/*             unifont_start_redraw called at    */
+/*             start of this redraw.             */
+/*************************************************/
+
+_kernel_oserror *unifont_write0(const char *s, int x, int y, int xs, int ys)
+{
+  _kernel_oserror *e;
+  int n;
+  UCS4 code;
+  char c;
+  int widecharready = 0;
+  int xstep = xs * wimpt_dx();
+d229 1
+a229 1
+  while (*s != 0 && *s != 10 && *s != 13)
+d231 3
+a233 2
+    /* Get the next code from the UTF-8 string */
+    s += UTF8_to_UCS4(s, &code);
+d235 1
+a235 2
+    /* If it's ASCII, just print that code */
+    if (code < 0x7F && code >= 0x20)
+d237 4
+a240 4
+      e = _swix(OS_WriteI + code, 0);
+      if (e) return e;
+      x += xstep;
+      continue;
+d243 64
+a306 1
+    if (unifont_widechar(code))
+d308 13
+d323 2
+a324 3
+            e = unifont_prepare_widechar(xs, ys);
+            if (e) return e;
+            widecharready = 1;
+d327 1
+a327 2
+        e = unifont_plot_widechar(code, &x, &y);
+        if (e) return e;
+d329 1
+a329 1
+    }
+d331 2
+a332 2
+    /* Let c = the character we will print. */
+    c = 0xC0 + (code & 0x3F);
+d334 2
+a335 7
+    /* Is that character already defined correctly? */
+    if (map[c - 0xC0] != code)
+    {
+      /* No, ask someone to redefine it. First note the previous
+       * definition if we haven't touched it yet
+       */
+      if (map[c - 0xC0] == 0xFFFFFFFFu)
+d337 27
+a363 4
+        olddefs[c - 0xC0][0] = c;
+        e = _swix(OS_Word, _INR(0,1), 10, olddefs[c - 0xC0]);
+        if (e) return e;
+      }
+d365 2
+a366 29
+      /* Issue the service call asking someone to define the
+       * character.
+       */
+      e = _swix(OS_ServiceCall, _INR(1,4)|_OUT(1),
+                                Service_International,
+                                Service_International_DefineUCS,
+                                c,
+                                code,
+                                &n);
+      if (e) return e;
+
+      /* If no-one defined it, try to define the replacement
+       * character here instead.
+       */
+      if (n)
+      {
+        e = _swix(OS_ServiceCall, _INR(1,4)|_OUT(1),
+                                  Service_International,
+                                  Service_International_DefineUCS,
+                                  c,
+                                  0xFFFD,
+                                  &n);
+        if (e) return e;
+
+        /* If we can't even get the replacement character, print
+         * ? instead. Else, mark this character as having been
+         * found (okay, so it actually failed, but it will speed
+         * up redraw of text containing a lot of instances of an
+         * unknown character.
+d368 1
+d370 27
+a396 1
+          c = '?';
+d398 2
+d401 1
+d403 6
+a408 3
+      else
+        /* Note that we've defined this one for next time */
+        map[c - 0xC0] = code;
+d411 1
+a411 4
+    /* And print it! */
+    e = _swix(OS_WriteI + c, 0);
+    if (e) return e;
+    x += xstep;
+d414 10
+a423 2
+  return NULL;
+}
+d425 3
+a427 15
+/*************************************************/
+/* unifont_end_redraw()                          */
+/*                                               */
+/* Clear up at the end of a redraw, resetting    */
+/* the system font back to what it was.          */
+/*************************************************/
+
+_kernel_oserror *unifont_end_redraw()
+{
+  int i;
+  _kernel_oserror *e;
+
+  /* Put back all the character definitions we've screwed around with */
+  for (i = 0xC0; i < 0x100; i++)
+    if (map[i - 0xC0] != 0xFFFFFFFFu)
+d429 3
+a431 2
+      e = _swix(OS_WriteI + 23, 0);
+      if (e) return e;
+d433 6
+a438 2
+      e = _swix(OS_WriteN, _INR(0,1), olddefs[i - 0xC0], 9);
+      if (e) return e;
+d441 2
+a442 2
+  return NULL;
+}
+d444 10
+a453 11
+/*************************************************/
+/* unifont_widechar()                            */
+/*                                               */
+/* Is a character a "wide" one - ie one plotted  */
+/* from a special 16x16 bitmap rather than using */
+/* the system font.                              */
+/*                                               */
+/* Parameters: The ISO 10646 character code.     */
+/*                                               */
+/* Returns:    1 if a wide character, 0 if not.  */
+/*************************************************/
+d455 2
+a456 2
+int unifont_widechar(UCS4 c)
+{
+d468 1
+a468 1
+}
+@
+
+
+1.2
+log
+@Modified to use external Unicode resource directory and UnicodeLib.
+@
+text
+@d128 1
+a128 1
+  e = _swix(OS_SpriteOp, _INR(0,2), 256+10, bmpptr, "Browse:Widefont");
+@
+
+
+1.1
+log
+@Encoding support added: if UNIFONT is defined then the browser will
+attempt to use the system font to render Unicode characters (new
+International module required). If not defined, the browser will just
+handle Acorn Latin-1 characters, but HTMLLib will convert other encodings
+into Latin-1. Must keep the UNIFONT define in sync with HTMLLib (if
+defined HTMLLib outputs UTF-8, otherwise Acorn Latin-1).
+
+Still needed:
+
+Reverse encoding (converting form input etc back into the server's
+character set).
+Reparse when encoding changes.
+Setting of charset from an attribute on the <A> tag.
+@
+text
+@d34 2
+a35 2
+#include "iso10646.h"
+#include "utf8.h"
+d170 1
+a170 1
+  xoff = xs * wimpt_dx() * 17 / 8;
+@

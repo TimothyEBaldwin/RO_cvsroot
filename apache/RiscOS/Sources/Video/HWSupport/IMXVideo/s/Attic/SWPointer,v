@@ -1,0 +1,295 @@
+head	1.2;
+access;
+symbols
+	IMXVideo-0_18:1.1.1.1
+	IMXVideo-0_17:1.1.1.1
+	IMXVideo-0_16:1.1.1.1
+	IMXVideo-0_15:1.1.1.1
+	IMXVideo-0_13:1.1.1.1
+	IMXVideo-0_12:1.1.1.1
+	IMXVideo-0_03:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2018.02.03.22.37.23;	author jlee;	state dead;
+branches;
+next	1.1;
+commitid	tbeTbSdV58jlUspA;
+
+1.1
+date	2017.01.20.23.07.41;	author jballance;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	h7Ww9g2WBNf0gLCz;
+
+1.1.1.1
+date	2017.01.20.23.07.41;	author jballance;	state Exp;
+branches;
+next	;
+commitid	h7Ww9g2WBNf0gLCz;
+
+
+desc
+@@
+
+
+1.2
+log
+@Add gamma correction support for true-colour modes
+Detail:
+  s/Video, hdr/StaticWS - Implement gamma correction support for true-colour modes, via the usual GraphicsV interface
+  s/SWPointer - Delete unused file
+Admin:
+  Tested on wandboard
+  N.B. unlike most other hardware, the IMX6 uses the same gamma curve for all three colour channels, and it's expressed as a polynomial rather than a lookup table. For the default linear curve this seems to work OK, but more extreme curves are likely to run into problems (especially if you want separate R, G & B curves)
+
+
+Version 0.19. Tagged as 'IMXVideo-0_19'
+@
+text
+@; Copyright 2017 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+SWP_Update  ROUT
+        Push    "r0"
+        ; bail if pointer updates blocked
+        LDR     r0, SWPAddr
+        CMP     r0, #1
+        BEQ     %FT99
+        ; remove cursor from previous position, if any
+        BLHI    SWP_remove
+        ; Plot in new position, if any
+        LDR     r0, [sp]
+        TST     r0, #1
+        BLNE    SWP_plot
+99
+        Pull    "r0,pc"
+
+SWP_remove      ROUT
+        ; Remove cursor from addr r0
+        Entry   "r0-r5"
+        LDR     r1, SWPHeight
+        CMP     r1, #0
+        BEQ     SWP_remove_exit
+        ADR     r2, SWPUnder
+        LDR     r3, mbpitch
+        LDR     r4, mbbpp
+        CMP     r4, #16
+        SUB     r3, r3, r4, LSL #2
+        MOV     r4, #0
+        STR     r4, SWPAddr
+        BLT     SWP_remove_8bpp
+        BEQ     SWP_remove_16bpp
+        ; 32bpp
+        Push    "r6-r11"
+10
+        LDMIA   r2!, {r4-r11} ; 8 pixels
+        STMIA   r0!, {r4-r11}
+        LDMIA   r2!, {r4-r11} ; 16 pixels
+        STMIA   r0!, {r4-r11}
+        LDMIA   r2!, {r4-r11} ; 24 pixels
+        STMIA   r0!, {r4-r11}
+        LDMIA   r2!, {r4-r11} ; 32 pixels
+        STMIA   r0!, {r4-r11}
+        SUBS    r1, r1, #1
+        ADD     r0, r0, r3
+        BNE     %BT10
+        Pull    "r6-r11"
+SWP_remove_exit
+        STR     r1, SWPAddr
+        EXIT
+
+SWP_remove_8bpp ROUT
+10
+        MOV     r4, #32
+20
+        LDRB    r5, [r2], #1
+        SUBS    r4, r4, #1
+        STRB    r5, [r0], #1
+        BNE     %BT20
+        SUBS    r1, r1, #1
+        ADD     r0, r0, r3
+        BNE     %BT10
+        B       SWP_remove_exit
+
+SWP_remove_16bpp ROUT
+10
+        MOV     r4, #32
+20
+        LDRH    r5, [r2], #2
+        SUBS    r4, r4, #1
+        STRH    r5, [r0], #2
+        BNE     %BT20
+        SUBS    r1, r1, #1
+        ADD     r0, r0, r3
+        BNE     %BT10
+        B       SWP_remove_exit
+
+SWP_plot ROUT
+        ; Plot cursor shape R3 at R1,R2
+        ; Assume 32 pixel width
+        Entry   "r0-r9"
+        MOV     r0, #0
+        STR     r0, SWPAddr
+        ; Work out log addr of screen
+        LDR     r0, mbbase
+        LDR     r4, VC_Base
+        SUB     r0, r0, r4
+        LDR     r4, VC_Log
+        ADD     r0, r0, r4
+        LDRB    r6, [r3, #1] ; Get height
+        CMP     r6, #0
+        BEQ     SWP_plot_exit ; Nothing to plot!
+        CMP     r6, #32
+        MOVGT   r6, #32 ; paranoia
+        STR     r6, SWPHeight
+        LDR     r8, mbxvres
+        LDR     r9, mbyvres
+        CMP     r1, r8
+        CMPLT   r2, r9
+        BGE     SWP_plot_exit ; off bottom/right
+        ; we don't do any clipping, so clamp position to lie on screen
+        SUB     r8, r8, #32
+        SUB     r9, r9, r6
+        CMP     r1, r8
+        MOVGT   r1, r8
+        CMP     r2, r9
+        MOVGT   r2, r9
+        ADDS    r8, r1, #32
+        ADDGES  r9, r2, r6
+        BLE     SWP_plot_exit ; off top/left
+        MOV     r5, #1 ; Block updates just in case we abort
+        STR     r5, SWPAddr
+        CMP     r1, #0
+        MOVLT   r1, #0
+        CMP     r2, #0
+        MOVLT   r2, #0
+        LDR     r5, mbbpp
+        LDR     r4, mbpitch
+        MLA     r0, r2, r4, r0
+        CMP     r5, #16
+        ADR     r7, CurPalette
+        ADR     r8, SWPUnder
+        LDR     r3, [r3, #4]
+        SUB     r4, r4, r5, LSL #2
+        BLT     SWP_plot_8bpp
+        BEQ     SWP_plot_16bpp
+        ; 32bpp
+        ADD     r0, r0, r1, LSL #2
+        Push    "r0"
+        ; r0 = screen address
+        ; r3 = shape
+        ; r4 = screen pitch, minus 32 pixels
+        ; r6 = cursor height
+        ; r7 = cursor palette
+        ; r8 = SWPUnder
+10
+        LDR     r1, =&88888888        
+        LDRB    r2, [r3], #1
+20
+        LDR     r5, [r0], #4
+        STR     r5, [r8], #4
+        ANDS    r9, r2, #3
+        LDRNE   r9, [r7, r9, LSL #2]
+        MOVNE   r9, r9, LSR #8
+        STRNE   r9, [r0, #-4]
+        MOV     r2, r2, LSR #2
+        MOVS    r1, r1, LSR #1
+        LDRHIB  r2, [r3], #1
+        BNE     %BT20
+        ADD     r0, r0, r4
+        SUBS    r6, r6, #1
+        BNE     %BT10
+        Pull    "r0"
+        STR     r0, SWPAddr
+SWP_plot_exit
+        EXIT
+
+SWP_plot_8bpp   ROUT
+        ADD     r0, r0, r1
+        Push    "r0"
+10
+        LDR     r1, =&88888888
+        LDRB    r2, [r3], #1
+20
+        LDRB    r5, [r0], #1
+        STRB    r5, [r8], #1
+        ANDS    r9, r2, #3
+        EORNE   r5, r5, #255 ; TODO - Something better!
+        STRNEB  r5, [r0, #-1]
+        MOV     r2, r2, LSR #2
+        MOVS    r1, r1, LSR #1
+        LDRHIB  r2, [r3], #1
+        BNE     %BT20
+        ADD     r0, r0, r4
+        SUBS    r6, r6, #1
+        BNE     %BT10
+        Pull    "r0"
+        STR     r0, SWPAddr
+        EXIT        
+
+SWP_plot_16bpp  ROUT
+        ADD     r0, r0, r1, LSL #1
+        Push    "r0"
+10
+        LDR     r1, =&88888888        
+        LDRB    r2, [r3], #1
+20
+        LDRH    r5, [r0], #2
+        STRH    r5, [r8], #2
+        ANDS    r9, r2, #3
+        BEQ     %FT30
+        LDR     r9, [r7, r9, LSL #2]
+        AND     r5, r9, #&f8000000
+        AND     lr, r9, #&00f80000
+        AND     r9, r9, #&0000f800
+        ORR     r5, r5, lr, LSL #3
+        ORR     r5, r5, r9, LSL #8+3-5
+        MOV     r5, r5, LSR #17
+        STRH    r5, [r0, #-2]
+30
+        MOV     r2, r2, LSR #2
+        MOVS    r1, r1, LSR #1
+        LDRHIB  r2, [r3], #1
+        BNE     %BT20
+        ADD     r0, r0, r4
+        SUBS    r6, r6, #1
+        BNE     %BT10
+        Pull    "r0"
+        STR     r0, SWPAddr
+        EXIT
+
+        END
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@@
+
+
+1.1.1.1
+log
+@nitial import
+@
+text
+@@

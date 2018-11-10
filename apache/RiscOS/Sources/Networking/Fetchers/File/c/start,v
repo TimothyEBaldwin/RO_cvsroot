@@ -1,0 +1,486 @@
+head	1.6;
+access;
+symbols
+	File-0_49:1.6
+	File-0_48:1.6
+	File-0_47:1.5
+	File-0_46:1.5
+	File-0_45:1.5
+	File-0_44:1.5
+	File-0_43:1.5
+	File-0_42:1.4
+	File-0_41:1.4
+	File-0_40:1.3
+	File-0_39:1.2
+	sbrodie_Expresso_final_190298:1.2
+	sbrodie_File_0_37:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2013.05.26.16.32.32;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	4eCp56xpOXK1Z9Rw;
+
+1.5
+date	2005.07.04.10.25.26;	author jballance;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2005.06.14.23.10.17;	author jballance;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.07.06.10.11.15;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.02.05.12.22.52;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.01.29.18.32.17;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.01.29.18.32.17;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Remove excess inclusion of <errno.h> or sys/errno.h
+Weren't actually being used, therefore no net code change.
+Built, but not tested.
+
+Version 0.48. Tagged as 'File-0_48'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Example of a fetcher module for use with Acorn URL system
+ *
+ * © Acorn Computers Ltd. 1995-1998
+ *
+ */
+
+/*
+ * Handle a request to start getting data!
+ */
+#include "stdio.h"	/* file handling */
+#include "stdlib.h"	/* for malloc/calloc */
+#include "kernel.h"	/* registers */
+#include "swis.h"	/* swis */
+#include "string.h"	/* string handling */
+#include "module.h"	/* Module name etc */
+#include "utils.h"
+
+static char *file_get_filename (char *url);
+static char *file_unix_to_adfs(char *filename);
+
+/*************************************************************/
+/* _kernel_oserror file_start(_kernel_swi_regs *r)           */
+/*************************************************************/
+/* The call to start getting data from a site. The values in */
+/* ther registers are:	     	       	       	   	     */
+/* 		       r0 = Flags word			     */
+/*		       r1 = pollword of client		     */
+/*		       r2 = method to use		     */
+/* 		       r3 = url to get			     */
+/*		       r4 = additional data for put etc	     */
+/*		       r5 = data wanted back	    	     */
+/*************************************************************/
+_kernel_oserror *file_start(_kernel_swi_regs *r)
+{
+  int *pollword =(int *) r->r[1];
+  char *url	=(char *)r->r[3];
+  Session *ses;
+  int type;
+  int data_wanted;
+
+  /* Check to see if this session already exists before doing anything */
+  if (find_session((unsigned int)pollword) != NULL)
+    return NULL;
+
+  /*
+   * Create a session control block extracting the filename that
+   * we are looking for
+   */
+  ses = new_session();
+  if (ses == NULL)
+    return NULL;
+  ses->id        = (unsigned int)pollword;
+  ses->filename  = file_get_filename(url);
+  ses->buffer    = 0;
+  ses->filetype  = -1;
+  ses->size      = 0;
+  ses->loadaddr  = 0;
+  ses->execaddr  = 0;
+  ses->sent      = 0;
+  ses->retries   = 0;
+  ses->done      = 0;
+  ses->headerlen = 0;		/* Note that this is stored in a single byte */
+  ses->next      = NULL;
+  /*
+   * Because the file module invents the headers this is the wrong way
+   * around, logically.
+   */
+
+  if (r->r[0] & 2) {
+    /* method in R2:8-15 */
+    data_wanted = ((r->r[2] >> 8) & 0xFF);
+  }
+  else {
+    data_wanted = r->r[5];
+  }
+
+  ses->headers = data_wanted == 0;
+
+  /* If we didnt get a file name - abort */
+  if (ses->filename == NULL)
+  {
+    kill_session(ses);
+    r->r[0]   = 64;
+    *pollword = 64;
+    return NULL;
+  }
+
+  /* Get the size etc of the file */
+  _swix(OS_File, _INR(0,1)|_OUT(0)|_OUTR(2,4)|_OUT(6), 23, ses->filename, &type, &ses->loadaddr,&ses->execaddr,&ses->size,&ses->filetype);
+  	if (type==0) {
+        	/* Try it without any extension */
+		/* Version 0.35 forces a redirect if the requested name was wrong */
+        	char *last_dir = strrchr(ses->filename, '.');
+        	if (last_dir == NULL) last_dir = strrchr(ses->filename, ':');
+        	if (last_dir == NULL) last_dir = ses->filename;
+
+
+        	last_dir = strrchr(last_dir, '/');
+        	if (last_dir != NULL) {
+                        *last_dir = '\0';
+			_swix(OS_File, _INR(0,1)|_OUT(0)|_OUTR(2,4)|_OUT(6), 23, ses->filename,
+				&type, &ses->loadaddr,&ses->execaddr,&ses->size,&ses->filetype);
+			if (type==0) {
+			        *last_dir = '/';
+			}
+			else if (ses->headers == 0 && (type == 1 || type == 3)) {
+				/* 0.35: Need to issue a redirection here */
+                                size_t extn_len = strlen(last_dir + 1) + 1 + 1;
+			        size_t len = strlen(url) + 1;
+			  	free(ses->filename);
+			        *last_dir = '/';
+				ses->filename = malloc(len);
+				if (ses->filename == NULL) {
+				  	ses->size = 0;
+				  	r->r[0] = 64;
+					*pollword = 64;
+					return NULL;
+				}
+				memcpy(ses->filename, url, len);
+				len -= extn_len;
+				ses->filename[len] = '\0';
+				ses->filetype = -2; /* special code */
+			}
+		        if (strchr(url, '\0')[-1] == '/') {
+		          /* We must have tried index.html and failed to find it */
+		          /* check if the directory itself really exista */
+			  char *lastdot = strrchr(ses->filename, '.');
+		          if (lastdot != NULL) {
+		            *lastdot = '\0';
+	                    _swix(OS_File,_INR(0,1)|_OUT(0)|_OUTR(2,4)|_OUT(6), 23,
+					ses->filename,&type, &ses->loadaddr,
+					&ses->execaddr,&ses->size,&ses->filetype);
+	                    if(type!=2){
+			      free(ses->filename);
+			      ses->filename=NULL;
+			      type=0;
+	                    }
+		          }
+		        }
+        	}
+                else
+                {
+		   free(ses->filename);
+		   ses->filename=NULL;
+                }
+  	}
+  if (type == 2) {
+	/* New in 0.36 */
+    #ifdef OPEN_FILER
+    	r->r[0] = 96;
+	*pollword = 96;
+    {
+      char command[256];
+      (void) sprintf(command, "filer_opendir %s", ses->filename);
+      (void) _swix(OS_CLI, _IN(0), command);
+    }
+        kill_session(ses);
+	return NULL;
+    #else
+        size_t len = strlen(url);
+        if (*url && url[len-1] != '/') {
+          free(ses->filename);
+          ses->filename = malloc(len + 2);
+          if (ses->filename == NULL) {
+            ses->size = 0;
+            r->r[0] = 64;
+            *pollword = 64;
+            return NULL;
+          }
+          memcpy(ses->filename, url, len);
+          strcpy(ses->filename + len, "/");
+          ses->filetype = -2; /* special code */
+          return NULL;
+        }
+        ses->buffer = file_gen_dir_listing(ses, ses->filename, url);
+        if (ses->buffer != NULL) {
+          type = 1;
+        }
+        else
+        {
+          free(ses->filename);
+          ses->filename=NULL;
+        }
+    #endif
+  }
+
+  if (type==0 || type==2)
+  {
+    ses->size = 0; /* Just to be lucky :) */
+    r->r[0]   = 64;
+    *pollword = 64;
+    return make_error(FILE_NOT_FOUND, 0);
+  }
+
+  if (ses->size == 0) {
+    r->r[0] = 64;
+    *pollword = 64;
+    return make_error(FILE_ZERO_LEN, 0);
+  }
+
+/* return cleanly */
+  *pollword = 31;
+  r->r[0]   = 31;
+
+  return NULL;
+}
+
+/*************************************************************/
+/* static char *file_get_filename (char *url)                */
+/*************************************************************/
+/* Given a URL extract the ADFS filename from it. This needs */
+/* To try and work out whether the URL is in ADFS or UNIX    */
+/* style format.       	       	       	     	     	     */
+/*************************************************************/
+static char *file_get_filename (char *url)
+{
+  char *filename;
+  char *buffer;
+  int endsinslash=0;
+
+  /* Check for NULL/zero length pointers and the uri part of the url */
+  if (!url || !*url)
+    return NULL;
+
+  filename = strstr(url,"file:");
+  if (!filename)
+    return NULL;
+
+  filename += strlen("file:");
+
+  while (*filename == '/')  /* Skip over a // */
+    filename++;
+
+  if (!*filename)
+    return NULL;
+
+  if (filename[strlen(filename)-1]=='/')
+    endsinslash=1;
+
+  /* Get a copy of the filename back into the filename variable */
+  buffer = malloc(strlen(filename)+1+(endsinslash?(sizeof"index.html"-1):0));
+  if (!buffer)
+    return NULL;
+  strcpy(buffer,filename);
+  if (endsinslash)
+    strcat(buffer,"index.html");
+  filename = buffer;
+
+  (void)file_unix_to_adfs(filename);
+
+  /* All done. Return the filename */
+  return filename;
+}
+
+/*************************************************************/
+/* static char *file_unix_to_adfs(char *filename)            */
+/*************************************************************/
+/* Given a UNIX style filename convert it to its ADFS style  */
+/* one. Basically replace all "."'s with "/"'s and all "/"'s */
+/* with "."'s.	  	      	    	       	       	     */
+/*************************************************************/
+static char *file_unix_to_adfs(char *filename)
+{
+  if (!filename || !*filename)
+    return NULL;
+
+  while (*filename)
+  {
+    if (*filename=='/')
+      *filename='.';
+    else if (*filename=='.')
+      *filename='/';
+    filename++;
+  }
+  return filename;
+}
+
+@
+
+
+1.5
+log
+@	Updates to ensure that requesting a non existant directory
+	returns a not found error rather than an incomplete page.
+Detail:
+Admin:  jb tested .. will be tested further before any public release
+	castle added IP
+
+
+Version 0.43. Tagged as 'File-0_43'
+@
+text
+@a29 1
+#include "errno.h"	/* Include errno variable */
+@
+
+
+1.4
+log
+@	Added 'Last-Modified' header field to File fetcher.
+Detail:
+	Added Last-Modified header field to returned data for
+	files that have a date stamp.Field not added for files
+	with real load/exec addresses.
+Admin:  Castle added IP. Tested at Castle.. does as expected in
+	simple test.
+
+
+Version 0.41. Tagged as 'File-0_41'
+@
+text
+@a105 1
+
+d140 16
+d157 5
+a161 9
+
+	        if (strchr(url, '\0')[-1] == '/') {
+	          /* We must have tried index.html and failed to find it */
+		  char *lastdot = strrchr(ses->filename, '.');
+	          if (lastdot != NULL) {
+	            *lastdot = '\0';
+	            type = 2;
+	          }
+	        }
+a162 1
+
+d195 5
+@
+
+
+1.3
+log
+@  File module can now generate directory listings.
+Detail:
+  A long forgotten wishlist item that finally got implemented last night.
+Admin:
+  Tested briefly by browsing around a hard disc or two.
+
+Version 0.40. Tagged as 'File-0_40'
+@
+text
+@d73 2
+d105 1
+a105 1
+  _swix(OS_File, _INR(0,1)|_OUT(0)|_OUT(4)|_OUT(6), 23, ses->filename, &type, &ses->size,&ses->filetype);
+d118 2
+a119 2
+			_swix(OS_File, _INR(0,1)|_OUT(0)|_OUT(4)|_OUT(6), 23, ses->filename,
+				&type, &ses->size,&ses->filetype);
+@
+
+
+1.2
+log
+@File 0.37.  Issues "301" relocations instead of "303".
+Build for Expresso final beta release 5th Feburary 1998
+@
+text
+@a36 2
+static char *file_gen_dir_listing (Session *s);
+
+d164 16
+a179 1
+        ses->buffer = file_gen_dir_listing(ses);
+d181 1
+a181 1
+	  type = 1;
+a276 5
+static char *file_gen_dir_listing (Session *s)
+{
+	(void) s;
+  	return NULL;
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d114 1
+d125 2
+a126 1
+			  	size_t len = strlen(url) + 1;
+d137 1
+a137 1
+				len -= (strlen(last_dir) + 1);
+@
+
+
+1.1.1.1
+log
+@Import from SrcFiler of Browser fetchers
+@
+text
+@@

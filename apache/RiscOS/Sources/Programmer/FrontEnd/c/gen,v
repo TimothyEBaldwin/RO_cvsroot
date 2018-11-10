@@ -1,0 +1,1716 @@
+head	1.4;
+access;
+symbols
+	FrontEnd-1_34:1.4
+	FrontEnd-1_33:1.4
+	FrontEnd-1_32:1.4
+	FrontEnd-1_31:1.4
+	FrontEnd-1_30-2:1.4
+	FrontEnd-1_30:1.4
+	FrontEnd-1_29:1.4
+	FrontEnd-1_28:1.4
+	FrontEnd-1_27:1.4
+	FrontEnd-1_26:1.3
+	FrontEnd-1_25:1.3
+	FrontEnd-1_24:1.3
+	FrontEnd-1_23:1.3
+	FrontEnd-1_22:1.2
+	FrontEnd-1_21:1.1.1.1
+	FrontEnd-1_20:1.1.1.1
+	FrontEnd-1_19:1.1.1.1
+	FrontEnd-1_18:1.1.1.1
+	FrontEnd-1_17:1.1.1.1
+	FrontEnd-1_16:1.1.1.1
+	FrontEnd-Aquarius-1_16:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2001.06.15.17.25.00;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.05.22.13.58.40;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.05.11.15.37.34;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.18.10.30.26;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.03.18.10.30.26;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Finally got the rules stuff sorted. Hurrah.
+Detail:
+  A few tricks to this; maintain a usage count for greying/ungreying where
+  the initial state for an icon is zero, meaning 'unknown', and going to
+  either < or > 0 thereafter once the state is determined. That's done
+  at load-time from the Defaults and Choices settings. In addition, the
+  module has to know when an icon is part of a selection group - normally
+  this means a radio button - and detects that when this is happening, the
+  'off' rules for items deselected by the selection of another should *not*
+  be run. This makes a great deal of difference to behaviour, which is now
+  a lot more straightforward and a lot clearer in the code itself.
+
+  The caveat of this is that exclude on = include off / exclude off =
+  include on, which never worked before, now should; you can infact totally
+  remove inclusion support internally beyond leaving it as syntactic sugar
+  for the Desc file by undefining INCLUDES_AS_INCLUDES when building. By
+  default, this isn't done, as there's an omission in this work. Since any
+  item judged to be in a selection group will not have its Off rules run
+  (or On rules unwound IYSWIM) then *any* off item for a radio won't be
+  run. What FrontEnd *should* do is compare the list of icons altered by
+  the selecting item's selection rules and only run rules for the
+  deselecting items that are not part of the other list. It doesn't do
+  this, which creates a slight lack of orthogonality overall. It's minor.
+Admin:
+  Tested it as heavily as I easily can in UpgCreate. Ensured that Link
+  still works. Had a quick look at menu behaviour (sane); brought Docs up
+  to date.
+
+Version 1.27. Tagged as 'FrontEnd-1_27'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* Title:    gen.c
+ * Purpose:  To generate a data structure describing an application
+ * Author:   IDJ
+ * History:  9-Apr-90: IDJ: Created
+ *           21-May-90: IDJ: added IF_ARROWUP/DOWN flags
+ *           19-Mar-91: IDJ: added "prefix_by" to icons and menu entries
+ *           11-May-01: ADH: added support for quoted_string, ctrl_chars and tab_width
+ *
+ */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <limits.h>
+
+#include "swis.h"
+
+#include "global.h"
+#include "types.h"
+#include "FrontEnd.h"
+#include "slist.h"
+#include "lexer.h"
+#include "FEmem.h"
+#include "utils.h"
+#include "FEinterr.h"
+
+#include "gen.h"
+
+
+/* --- current states of application data structure --- */
+static Frontend_icon       *gen__current_icon = 0;
+static Frontend_follow     *gen__follow_icon = 0;
+static Frontend_icon       *gen__dsei_icon = 0;
+static Frontend_menuentry  *gen__current_menuentry = 0;
+static Frontend_menuentry  *gen__dsei_menuentry = 0;
+static Frontend_dragto     *gen__current_drag = 0;
+static int entry_num = 2;   /* == 2 because Command line comes first, and
+                               RISC_OSlib numbers menu entries from one
+                             */
+
+#define gen__syserror_prefix "FrontEnd internal error (gen): "
+
+static void gen__syserror(char *s)
+{
+   char *p = malloc(sizeof(gen__syserror_prefix) + strlen(s));
+
+   if (p != NULL)
+   {
+      _kernel_oserror e;
+
+      /* Try to report the error with a Wimp error box. If that fails,
+       * try to print it with OS_PrettyPrint to get word wrapping when
+       * inside narrow displays / command windows. If that fails, free
+       * p and clear the pointer, thus dropping through to the printf
+       * last resort case.
+       */
+
+      strcpy(p, gen__syserror_prefix);
+      strcat(p, s);
+
+      e.errnum = 0;
+      strncpy(e.errmess, p, sizeof(e.errmess) - 1);
+      e.errmess[sizeof(e.errmess) - 1] = '\0';
+
+      /* (Could use werr() but that doesn't give us the right kind of
+       * error box setup)
+       */
+
+      if (
+            _swix(Wimp_ReportError,
+                  _INR(0,5),
+
+                  &e,
+                  (1u<<8) | (3u<<9),
+                  application.name != NULL && *application.name != '\0' ? application.name : 0,
+                  0,
+                  0,
+                  "Quit")
+
+            != NULL
+         )
+      {
+         if (_swix(OS_PrettyPrint, _INR(0,2), p, 0, NULL) != NULL)
+            free(p), p = NULL;
+         else
+            printf("\n");
+      }
+   }
+
+   /* If we couldn't allocate 'p' or dropped through from above,
+    * just use printf for output.
+    */
+
+   if (p == NULL)
+      printf(gen__syserror_prefix "%s\n", s);
+   else
+      free(p);
+
+   exit(EXIT_FAILURE);
+}
+
+
+extern void gen_appname(lexer_token *token)
+{
+   if (token->number != s_string_value) gen__syserror("Application name is not a string.");
+   application.name = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.name, token->lexeme);
+}
+
+extern void gen_appcommand(lexer_token *token)
+{
+   if (token->number != s_string_value) gen__syserror("Command name is not a string.");
+   application.command = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.command, token->lexeme);
+}
+
+extern void gen_version(lexer_token *token)
+{
+   if (token->number != s_string_value) gen__syserror("Version is not a string.");
+   application.version = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.version, token->lexeme);
+}
+
+extern void gen_filetype(lexer_token *token)
+{
+   application.filetype = token->value.integer;
+}
+
+extern void gen_wimpslot(lexer_token *token)
+{
+   application.wimpslot = token->value.integer;
+}
+
+extern void gen_extended_cmdline(void)
+{
+   application.flags |= AF_EXTENDED_CMDLINE;
+}
+
+extern void gen_autorun(void)
+{
+   application.flags |= AF_HAS_AUTORUN;
+}
+
+extern void gen_setautorun(lexer_token *token)
+{
+   if (token->number == s_on)
+      application.flags |= AF_AUTORUN;
+   else
+      application.flags &= ~AF_AUTORUN;
+}
+
+extern void gen_autosave(void)
+{
+   application.flags |= AF_HAS_AUTOSAVE;
+}
+
+extern void gen_setautosave(lexer_token *token)
+{
+   if (token->number == s_on)
+      application.flags |= AF_AUTOSAVE;
+   else
+      application.flags &= ~AF_AUTOSAVE;
+}
+
+extern void gen_leafname(void)
+{
+   application.flags |= AF_LEAFNAME;
+}
+
+extern void gen_numhats(int n)
+{
+   application.setup->num_hats = n;
+}
+
+extern void gen_saveprefix(lexer_token *token)
+{
+   if (token->number != s_string_value) gen__syserror("Save prefix is not a string.");
+   application.setup->save_prefix = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.setup->save_prefix, token->lexeme);
+}
+
+extern void gen_savesuffix(lexer_token *token)
+{
+   if (token->number != s_string_value) gen__syserror("Save suffix is not a string.");
+   application.setup->save_suffix = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.setup->save_suffix, token->lexeme);
+}
+
+extern void gen_savefrom(lexer_token *token)
+{
+   application.setup->save_from = token->value.integer;
+}
+
+extern void gen_outname(lexer_token *token)
+{
+   if (token->number != s_string_value) gen__syserror("Output name is not a string.");
+   application.dft_output_name = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.dft_output_name, token->lexeme);
+}
+
+extern void gen_produces_output_dft(lexer_token *token)
+{
+   if (token->number == s_produces_output)
+       application.flags |= AF_DFT_PRODUCES_OUTPUT;
+   else if (token->number == s_produces_no_output)
+       application.flags &= ~AF_DFT_PRODUCES_OUTPUT;
+}
+
+extern void gen_outputwindow(void)
+{
+   application.flags |= AF_HAS_OUTPUT_WINDOW;
+}
+
+extern void gen_summarywindow(void)
+{
+   application.flags |= AF_HAS_SUMMARY_WINDOW;
+}
+
+extern void gen_displaydft(lexer_token *token)
+{
+   if (token->number == s_summary)
+       application.flags |= AF_DFT_SUMMARY;
+}
+
+extern void gen_ctrlchars(lexer_token *token)
+{
+   if (token->number == s_escape)
+       application.flags |= AF_ESCAPE_CTRL_CHARS;
+   else if (token->number == s_hide)
+       application.flags |= AF_HIDE_CTRL_CHARS;
+}
+
+extern void gen_tabwidth(lexer_token *token)
+{
+   application.tab_width = token->value.integer;
+   if (application.tab_width < 0) application.tab_width = 0;
+   else if (application.tab_width > 32) application.tab_width = 32;
+}
+
+extern void gen_dbox(void)
+{
+   application.setup = FEmem_alloc(sizeof(Frontend_dbox));
+   memset(application.setup, 0, sizeof(Frontend_dbox));
+   application.setup->extends = -1;
+   application.setup->save_from = -1;
+}
+
+extern void gen_outputoption(lexer_token *token)
+{
+   if (token->number != s_string_value) gen__syserror("Output option is not a string.");
+   application.setup->output_option = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.setup->output_option, token->lexeme);
+}
+
+extern void gen_icon(lexer_token *token)
+{
+   Frontend_icon *i = application.setup->icons;
+
+   /* --- does the icon already exist? --- */
+   while (i != NULL)
+   {
+      if (i->number == token->value.integer)
+      {
+         gen__current_icon = i;
+         return;
+      }
+      i = i->next;
+   }
+
+   /* --- create a new icon --- */
+   i = FEmem_alloc(sizeof(Frontend_icon));
+   gen__current_icon = i;
+   memset(i, 0, sizeof(Frontend_icon));
+   i->number = token->value.integer;
+   i->by = 1;
+   i->max_val = INT_MAX;
+   i->separator = '\0';
+   application.setup->icons = slist_addend(application.setup->icons, (void *)i);
+}
+
+extern void gen_mapstring(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->maps_to = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_icon->maps_to, token->lexeme);
+}
+
+extern void gen_mapstring_off(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->maps_to_off = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_icon->maps_to_off, token->lexeme);
+}
+
+extern void gen_conversion(lexer_token *token)
+{
+   int flags = gen__current_icon->flags;
+
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+
+   if      (token->number == s_string)        gen__current_icon->flags |= IF_STRING;
+   else if (token->number == s_quoted_string) gen__current_icon->flags |= (IF_STRING | IF_QUOTED_STRING);
+   else                                      gen__current_icon->flags |= IF_NUMBER;
+
+   if ((flags & (IF_STRING|IF_NUMBER|IF_QUOTED_STRING)) != 0 && flags != gen__current_icon->flags)
+      gen__syserror("Cannot change the output type of a previously defined icon.");
+}
+
+extern void gen_minval(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->min_val = token->value.integer;
+}
+
+extern void gen_maxval(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->max_val = token->value.integer;
+}
+
+extern void gen_followiconspaces(void)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->flags |= IF_FOLLOWSPACES;
+}
+
+extern void gen_followiconspaces_off(void)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->flags |= IF_FOLLOWSPACES_OFF;
+}
+
+extern void gen_followicon(lexer_token *token, BOOL off)
+{
+   Frontend_follow *f;
+
+   f = FEmem_alloc(sizeof(Frontend_follow));
+   f->flags = 0;
+   if (token->number == s_string_value)
+   {
+      f->flags |= IF_STRING;
+      f->string = FEmem_alloc(strlen(token->lexeme)+1);
+      strcpy(f->string, token->lexeme);
+   }
+   else
+   {
+      f->flags |= IF_NUMBER;
+      f->follow = token->value.integer;
+   }
+   gen__follow_icon = f;
+   if (off) gen__current_icon->followed_by_off = slist_addend(gen__current_icon->followed_by_off, (void *)f);
+   else gen__current_icon->followed_by = slist_addend(gen__current_icon->followed_by, (void *)f);
+}
+
+extern void gen_separator(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->separator = token->lexeme[0];
+}
+
+extern void gen_separator_off(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->separator_off = token->lexeme[0];
+}
+
+extern void gen_icon_prefix(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->prefix_by = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_icon->prefix_by,token->lexeme);
+}
+
+extern void gen_iconproducesnooutput(void)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->flags |= IF_PRODUCES_NO_OUTPUT;
+}
+
+extern void gen_iconproducesoutput(void)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->flags |= IF_PRODUCES_OUTPUT;
+}
+
+extern void gen_iconnotsaved(void)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->flags |= IF_NOT_SAVED;
+}
+
+extern void gen_changesicon(lexer_token *token, int updown)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->incdec = token->value.integer;
+   gen__current_icon->flags |= updown;
+}
+
+extern void gen_extends(int icon)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   application.setup->extends = icon;
+   gen__current_icon->flags |= IF_EXTENDS;
+}
+
+extern void gen_extendsfrom(lexer_token *token)
+{
+   application.setup->extends_from = token->value.integer;
+}
+
+extern void gen_extendsto(lexer_token *token)
+{
+   application.setup->extends_to = token->value.integer;
+}
+
+extern void gen_by(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->by = token->value.integer;
+}
+
+extern void gen_insertliteral(lexer_token *token)
+{
+   if (gen__current_icon == 0) gen__syserror("No current icon definition.");
+   gen__current_icon->insert = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_icon->insert,token->lexeme);
+}
+
+extern void gen_icondefaults(lexer_token *token, int icn)
+{
+   Frontend_icon *icon = find_icon(icn);
+
+   if (icon != 0)
+   {
+       icon->flags |= IF_DEFAULT_GIVEN;
+
+       switch(token->number)
+       {
+          case s_on:
+             icon->dft_value.integer = icon->make_dft_value.integer = 1;
+             break;
+
+          case s_off:
+             icon->dft_value.integer = icon->make_dft_value.integer = 0;
+             break;
+
+          case s_string_value:
+             icon->dft_value.string = icon->make_dft_value.string = FEmem_alloc(strlen(token->lexeme)+1);
+             strcpy(icon->dft_value.string, token->lexeme);
+             break;
+
+          case s_number_value:
+             icon->dft_value.integer = icon->make_dft_value.integer = token->value.integer;
+             break;
+
+          default:
+             icon->flags &= ~IF_DEFAULT_GIVEN;
+             break;
+       }
+   }
+}
+
+extern void gen_make_icondefaults(lexer_token *token, int icn)
+{
+   Frontend_icon *icon = find_icon(icn);
+
+   if (icon != 0)
+   {
+       switch(token->number)
+       {
+          case s_on:
+             icon->make_dft_value.integer = 1;
+             break;
+
+          case s_off:
+             icon->make_dft_value.integer = 0;
+             break;
+
+          case s_string_value:
+             icon->make_dft_value.string = FEmem_alloc(strlen(token->lexeme)+1);
+             strcpy(icon->make_dft_value.string, token->lexeme);
+             break;
+
+          case s_number_value:
+             icon->make_dft_value.integer = token->value.integer;
+             break;
+
+          default:
+             break;
+       }
+   }
+}
+
+
+extern void gen_icon_setdsei(int value)
+{
+   gen__dsei_icon = find_icon(value);
+   if (gen__dsei_icon == NULL) gen__syserror("A selection, deselection, exclusion or inclusion entry references an icon not declared in the dbox section.");
+}
+
+
+extern void gen_icon_deselects(int value, int menu_or_icon)
+{
+   Frontend_deselection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_deselection));
+   d->menu_or_icon = menu_or_icon;
+   d->deselect = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current deselection.");
+   gen__dsei_icon->deselections = slist_addend(gen__dsei_icon->deselections, (void *)d);
+}
+
+extern void gen_icon_deselects_off(int value, int menu_or_icon)
+{
+   Frontend_deselection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_deselection));
+   d->menu_or_icon = menu_or_icon;
+   d->deselect = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current deselection.");
+   gen__dsei_icon->deselections_off = slist_addend(gen__dsei_icon->deselections_off, (void *)d);
+}
+
+extern void gen_icon_selects(int value, int menu_or_icon)
+{
+   Frontend_selection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_selection));
+   d->menu_or_icon = menu_or_icon;
+   d->select = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current selection.");
+   gen__dsei_icon->selections = slist_addend(gen__dsei_icon->selections, (void *)d);
+}
+
+extern void gen_icon_selects_off(int value, int menu_or_icon)
+{
+   Frontend_selection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_selection));
+   d->menu_or_icon = menu_or_icon;
+   d->select = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current selection.");
+   gen__dsei_icon->selections_off = slist_addend(gen__dsei_icon->selections_off, (void *)d);
+}
+
+extern void gen_icon_excludes(int value, int menu_or_icon)
+{
+   Frontend_exclusion *e;
+   e = FEmem_alloc(sizeof(Frontend_exclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->exclude = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current exclusion.");
+   gen__dsei_icon->exclusions = slist_addend(gen__dsei_icon->exclusions, (void *)e);
+}
+
+extern void gen_icon_excludes_off(int value, int menu_or_icon)
+{
+   Frontend_exclusion *e;
+
+   e = FEmem_alloc(sizeof(Frontend_exclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->exclude = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current exclusion.");
+   gen__dsei_icon->exclusions_off = slist_addend(gen__dsei_icon->exclusions_off, (void *)e);
+}
+
+#ifdef INCLUDES_AS_INCLUDES
+
+   extern void gen_icon_includes(int value, int menu_or_icon)
+   {
+      Frontend_inclusion *e;
+
+      e = FEmem_alloc(sizeof(Frontend_inclusion));
+      e->menu_or_icon = menu_or_icon;
+      e->include = value;
+      if (gen__dsei_icon == 0) gen__syserror("No current inclusion.");
+      gen__dsei_icon->inclusions = slist_addend(gen__dsei_icon->inclusions, (void *)e);
+   }
+
+   extern void gen_icon_includes_off(int value, int menu_or_icon)
+   {
+      Frontend_inclusion *e;
+
+      e = FEmem_alloc(sizeof(Frontend_inclusion));
+      e->menu_or_icon = menu_or_icon;
+      e->include = value;
+      if (gen__dsei_icon == 0) gen__syserror("No current inclusion.");
+      gen__dsei_icon->inclusions_off = slist_addend(gen__dsei_icon->inclusions_off, (void *)e);
+   }
+
+#endif
+
+
+extern void gen_menu_setdsei(int value)
+{
+   gen__dsei_menuentry = find_menuentry(value+1);
+   if (gen__dsei_menuentry == NULL) gen__syserror("a selection, deselection, exclusion or inclusion entry references a menu entry not declared in the menu section");
+}
+
+
+extern void gen_menu_deselects(int value, int menu_or_icon)
+{
+   Frontend_deselection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_deselection));
+   d->menu_or_icon = menu_or_icon;
+   d->deselect = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current deselection.");
+   gen__dsei_menuentry->deselections = slist_addend(gen__dsei_menuentry->deselections, (void *)d);
+}
+
+extern void gen_menu_deselects_off(int value, int menu_or_icon)
+{
+   Frontend_deselection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_deselection));
+   d->menu_or_icon = menu_or_icon;
+   d->deselect = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current deselection.");
+   gen__dsei_menuentry->deselections_off = slist_addend(gen__dsei_menuentry->deselections_off, (void *)d);
+}
+
+extern void gen_menu_selects(int value, int menu_or_icon)
+{
+   Frontend_selection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_selection));
+   d->menu_or_icon = menu_or_icon;
+   d->select = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current selection.");
+   gen__dsei_menuentry->selections = slist_addend(gen__dsei_menuentry->selections, (void *)d);
+}
+
+extern void gen_menu_selects_off(int value, int menu_or_icon)
+{
+   Frontend_selection *d;
+
+   d = FEmem_alloc(sizeof(Frontend_selection));
+   d->menu_or_icon = menu_or_icon;
+   d->select = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current selection.");
+   gen__dsei_menuentry->selections_off = slist_addend(gen__dsei_menuentry->selections_off, (void *)d);
+}
+
+extern void gen_menu_excludes(int value, int menu_or_icon)
+{
+   Frontend_exclusion *e;
+
+   e = FEmem_alloc(sizeof(Frontend_exclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->exclude = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current exclusion.");
+   gen__dsei_menuentry->exclusions = slist_addend(gen__dsei_menuentry->exclusions, (void *)e);
+}
+
+extern void gen_menu_excludes_off(int value, int menu_or_icon)
+{
+   Frontend_exclusion *e;
+
+   e = FEmem_alloc(sizeof(Frontend_exclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->exclude = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current exclusion.");
+   gen__dsei_menuentry->exclusions_off = slist_addend(gen__dsei_menuentry->exclusions_off, (void *)e);
+}
+
+#ifdef INCLUDES_AS_INCLUDES
+
+   extern void gen_menu_includes(int value, int menu_or_icon)
+   {
+      Frontend_inclusion *e;
+
+      e = FEmem_alloc(sizeof(Frontend_inclusion));
+      e->menu_or_icon = menu_or_icon;
+      e->include = value;
+      if (gen__dsei_menuentry == 0) gen__syserror("No current inclusion.");
+      gen__dsei_menuentry->inclusions = slist_addend(gen__dsei_menuentry->inclusions, (void *)e);
+   }
+
+   extern void gen_menu_includes_off(int value, int menu_or_icon)
+   {
+      Frontend_inclusion *e;
+
+      e = FEmem_alloc(sizeof(Frontend_inclusion));
+      e->menu_or_icon = menu_or_icon;
+      e->include = value;
+      if (gen__dsei_menuentry == 0) gen__syserror("No current inclusion.");
+      gen__dsei_menuentry->inclusions_off = slist_addend(gen__dsei_menuentry->inclusions_off, (void *)e);
+   }
+
+#endif
+
+extern void gen_make_excludes(lexer_token *token, int menu_or_icon)
+{
+   Frontend_icon *i;
+   Frontend_menuentry *m;
+
+   if (menu_or_icon == IS_ICON)
+   {
+      i = find_icon(token->value.integer);
+      i->flags |= IF_MAKE_EXCLUDES;
+   }
+   else
+   {
+      m = find_menuentry(token->value.integer+1);
+      m->flags |= IF_MAKE_EXCLUDES;
+   }
+}
+
+
+extern void gen_wildcard(lexer_token *token)
+{
+   application.setup->wild_card = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(application.setup->wild_card, token->lexeme);
+}
+
+extern void gen_dragto(lexer_token *token)
+{
+   Frontend_dragto *d;
+
+   d = FEmem_alloc(sizeof(Frontend_dragto));
+   gen__current_drag = d;
+   d->inserts = 0;
+   d->separator = '\0';
+   d->drag = (token->number == s_any)?ANY_ICON:
+             (token->number == s_iconbar)?ICONBAR_ICON:token->value.integer;
+   application.setup->drags = slist_addend(application.setup->drags, (void *)d);
+}
+
+extern void gen_insert(lexer_token *token)
+{
+   Frontend_insert *i;
+
+   i = FEmem_alloc(sizeof(Frontend_insert));
+   i->insert = token->value.integer;
+   if (gen__current_drag == 0) gen__syserror("No current drag.");
+   gen__current_drag->inserts = slist_addend(gen__current_drag->inserts, (void *)i);
+}
+
+extern void gen_dragseparator(lexer_token *token)
+{
+   if (gen__current_drag == 0) gen__syserror("No current drag.");
+   gen__current_drag->separator = token->lexeme[0];
+}
+
+extern void gen_menuentry(void)
+{
+   Frontend_menuentry *e;
+
+   e = FEmem_alloc(sizeof(Frontend_menuentry));
+   gen__current_menuentry = e;
+   memset(e, 0, sizeof(Frontend_menuentry));
+   e->number = entry_num++;
+   application.setup->menu.entries = slist_addend(application.setup->menu.entries, (void *)e);
+}
+
+extern void gen_addmenutext(lexer_token *token)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->text = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_menuentry->text, token->lexeme);
+}
+
+extern void gen_menumapsto(lexer_token *token)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->maps_to = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_menuentry->maps_to, token->lexeme);
+}
+
+extern void gen_menumapsto_off(lexer_token *token)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->maps_to_off = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_menuentry->maps_to_off, token->lexeme);
+}
+
+extern void gen_subtext(lexer_token *token)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->subtext = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_menuentry->subtext, token->lexeme);
+}
+
+extern void gen_menubufsize(lexer_token *token)
+{
+   int i;
+
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->bufsize = token->value.integer;
+   gen__current_menuentry->buffer = FEmem_alloc(gen__current_menuentry->bufsize);
+   gen__current_menuentry->save_buffer = FEmem_alloc(gen__current_menuentry->bufsize);
+   for (i=0; i<gen__current_menuentry->bufsize; i++)
+   {
+      gen__current_menuentry->buffer[i] = 0;
+      gen__current_menuentry->save_buffer[i] = 0;
+   }
+}
+
+extern void gen_menu_prefix(lexer_token *token)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->prefix_by = FEmem_alloc(strlen(token->lexeme)+1);
+   strcpy(gen__current_menuentry->prefix_by, token->lexeme);
+}
+
+extern void gen_menuproducesnooutput(void)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->flags |= IF_PRODUCES_NO_OUTPUT;
+}
+
+extern void gen_menuproducesoutput(void)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->flags |= IF_PRODUCES_OUTPUT;
+}
+
+
+extern void gen_menunotsaved(void)
+{
+   if (gen__current_menuentry == 0) gen__syserror("No current menu.");
+   gen__current_menuentry->flags |= IF_NOT_SAVED;
+}
+
+extern void gen_menudefaults(lexer_token *token, int m)
+{
+   Frontend_menuentry *menu = find_menuentry(m+1);
+
+   if (menu != 0)
+   {
+       switch(token->number)
+       {
+          case s_on:
+             menu->make_dft_value = 1;
+             menu->flags |= IF_SELECTED;
+             break;
+
+          case s_off:
+             menu->make_dft_value = 0;
+             menu->flags &= ~IF_SELECTED;
+             break;
+
+          default:
+             break;
+       }
+   }
+}
+
+extern void gen_make_menudefaults(lexer_token *token, int m)
+{
+   Frontend_menuentry *menu = find_menuentry(m+1);
+
+   if (menu != 0)
+   {
+       switch(token->number)
+       {
+          case s_on:
+             menu->make_dft_value = 1;
+             break;
+
+          case s_off:
+             menu->make_dft_value = 0;
+             break;
+
+          default:
+             break;
+       }
+   }
+}
+
+extern void gen_sub_menudefaults(lexer_token *token, int m)
+{
+   Frontend_menuentry *menu = find_menuentry(m+1);
+
+   if (menu != 0)
+   {
+       strcpy(menu->buffer, token->lexeme);
+   }
+}
+
+extern void gen_make_sub_menudefaults(lexer_token *token, int m)
+{
+   Frontend_menuentry *menu = find_menuentry(m+1);
+
+   if (menu != 0)
+   {
+       menu->make_dft_buffer = FEmem_alloc(strlen(token->lexeme)+1);
+       strcpy(menu->make_dft_buffer, token->lexeme);
+   }
+}
+
+extern void gen_orderis(lexer_token *token, int menu_or_icn, BOOL make_order)
+{
+   Frontend_orderentry *p;
+   p = FEmem_alloc(sizeof(Frontend_orderentry));
+   if (menu_or_icn == IS_ICON || menu_or_icn == IS_MENU)
+      p->data.number = token->value.integer;
+   else if (menu_or_icn == IS_STRING)
+   {
+      p->data.string = FEmem_alloc(strlen(token->lexeme)+1);
+      strcpy(p->data.string, token->lexeme);
+   }
+   p->type = menu_or_icn;
+   if (make_order)
+      application.make_ordering = slist_addend(application.make_ordering, (void *)p);
+   else
+      application.ordering = slist_addend(application.ordering, (void *)p);
+}
+
+
+
+@
+
+
+1.3
+log
+@  Great many changes and a few fixes.
+Detail:
+  See 'ReadMe' in the Docs directory. Summary - new includes and selections
+  rules, rules_start/rules_end section, lists before rules keywords, actions
+  can take place when icons go off as well as on, and more.
+Admin:
+  Tested new features a reasonable amount by playing around with the UpgFetch
+  front-end. Link still behaves as it should, and all the other Desktop tools
+  run without any parser errors or obvious faults in behaviour.
+
+
+Version 1.23. Tagged as 'FrontEnd-1_23'
+@
+text
+@d581 1
+a581 10
+extern void gen_icon_includes(int value, int menu_or_icon)
+{
+   Frontend_inclusion *e;
+
+   e = FEmem_alloc(sizeof(Frontend_inclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->include = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current inclusion.");
+   gen__dsei_icon->inclusions = slist_addend(gen__dsei_icon->inclusions, (void *)e);
+}
+d583 21
+a603 3
+extern void gen_icon_includes_off(int value, int menu_or_icon)
+{
+   Frontend_inclusion *e;
+d605 1
+a605 6
+   e = FEmem_alloc(sizeof(Frontend_inclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->include = value;
+   if (gen__dsei_icon == 0) gen__syserror("No current inclusion.");
+   gen__dsei_icon->inclusions_off = slist_addend(gen__dsei_icon->inclusions_off, (void *)e);
+}
+d681 1
+a681 3
+extern void gen_menu_includes(int value, int menu_or_icon)
+{
+   Frontend_inclusion *e;
+d683 21
+a703 17
+   e = FEmem_alloc(sizeof(Frontend_inclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->include = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current inclusion.");
+   gen__dsei_menuentry->inclusions = slist_addend(gen__dsei_menuentry->inclusions, (void *)e);
+}
+
+extern void gen_menu_includes_off(int value, int menu_or_icon)
+{
+   Frontend_inclusion *e;
+
+   e = FEmem_alloc(sizeof(Frontend_inclusion));
+   e->menu_or_icon = menu_or_icon;
+   e->include = value;
+   if (gen__dsei_menuentry == 0) gen__syserror("No current inclusion.");
+   gen__dsei_menuentry->inclusions_off = slist_addend(gen__dsei_menuentry->inclusions_off, (void *)e);
+}
+d705 1
+@
+
+
+1.2
+log
+@  Improved redraw strategy; added 'quoted_string' option for icons, plus
+  'ctrl_chars' and 'tab_width' for metaoptions.
+Detail:
+  Previously the redraw engine stayed one line behind current output as it
+  did not know where to terminate redraw of the current line. At task exit
+  it forced \n\r into the output to flush the last line. Now, the incoming
+  data buffer is oversized by 1 byte and a \0 written in to give the redraw
+  engine something to stop at. This allows it to redraw the current line,
+  meaning e.g. "....[...]" progress indicators and so-on will work. It also
+  means the \r\n hack isn't needed so saved output doesn't have a spurious
+  blank line.
+
+  For 'icn <n> maps_to ...' you can now say 'quoted_string' where you used
+  to say 'string'. This encloses the relevant writable field's text in
+  double quotes, escaping any double quotes from the writable with '\'. If
+  you use 'prefix_by', all of the prefixes and strings are within the
+  double quotes (rather than e.g. enclosing each item individually).
+
+  Previously, control characters were output more or less directly. This
+  could cause a crash for some nasty ones (e.g. send output to printer)
+  or just cause redraw corruptions and the bell to ring. Now, any control
+  characters are replaced with "?" by default, including &7F, except for
+  tab (&09), which is replaced with a single space. Behaviour is chosen by
+  the "ctrl_chars" metaoption, which takes parameters "text" for the usual
+  behaviour as described, "escape" for !Edit-style "[aa]" escaping, or
+  "hide" to not draw anything at all (so e.g. put "ctrl_chars escape" in
+  your metaoptions section of the Desc file). Another new option is
+  "tab_width"; tabs are now understood for all three output types. To
+  avoid unduly changing existing output the default tab width is 1, but it
+  can be 0 to hide tabs, or up to 32. The limit is arbitrary and only in
+  place to stop the redraw engine trying to do silly things if given a
+  very large value.
+
+  Finally, lexer.c's list of text items was mirrored in lexer.h by a list
+  of numbered items - all done by #define, so you had to manually renumber
+  them all! This has been changed to an enum, with compiled output checked
+  against the previous version - identical as expected.
+Admin:
+  Remember, you MUST NOT soft load this if you have any FrontEnd apps
+  running already! Either quit them all (check there are no instantiations
+  with *Modules) and then run it, or put it in !System and reboot. The new
+  features have been tested with a work-in-progress !UpgCreate utility,
+  and the usual set of DDE apps run to ensure they don't give any syntax
+  errors. GNUDiff and Find tested fairly heavily. Builds ROM and RAM
+  variants from clean.
+
+
+Version 1.22. Tagged as 'FrontEnd-1_22'
+@
+text
+@d30 2
+d47 1
+a47 1
+static Frontend_icon       *gen__deselexcl_icon = 0;
+d49 1
+a49 1
+static Frontend_menuentry  *gen__deselexcl_menuentry = 0;
+d55 1
+d59 54
+a112 1
+   printf("FrontEnd internal error (gen): %s\n", s);
+d117 1
+a117 1
+extern void gen_appname(lexer_token token)
+d119 3
+a121 3
+   if (token.number != s_string_value) gen__syserror("app name is not a string");
+   application.name = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.name, token.lexeme);
+d124 1
+a124 1
+extern void gen_appcommand(lexer_token token)
+d126 3
+a128 3
+   if (token.number != s_string_value) gen__syserror("command name is not a string");
+   application.command = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.command, token.lexeme);
+d131 1
+a131 1
+extern void gen_version(lexer_token token)
+d133 3
+a135 3
+   if (token.number != s_string_value) gen__syserror("version is not a string");
+   application.version = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.version, token.lexeme);
+d138 1
+a138 1
+extern void gen_filetype(lexer_token token)
+d140 1
+a140 1
+   application.filetype = token.value.integer;
+d143 1
+a143 1
+extern void gen_wimpslot(lexer_token token)
+d145 1
+a145 1
+   application.wimpslot = token.value.integer;
+d158 1
+a158 1
+extern void gen_setautorun(lexer_token token)
+d160 1
+a160 1
+   if (token.number == s_on)
+d171 1
+a171 1
+extern void gen_setautosave(lexer_token token)
+d173 1
+a173 1
+   if (token.number == s_on)
+d189 1
+a189 1
+extern void gen_saveprefix(lexer_token token)
+d191 3
+a193 3
+   if (token.number != s_string_value) gen__syserror("save prefix is not a string");
+   application.setup->save_prefix = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.setup->save_prefix, token.lexeme);
+d196 1
+a196 1
+extern void gen_savesuffix(lexer_token token)
+d198 3
+a200 3
+   if (token.number != s_string_value) gen__syserror("save suffix is not a string");
+   application.setup->save_suffix = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.setup->save_suffix, token.lexeme);
+d203 1
+a203 1
+extern void gen_savefrom(lexer_token token)
+d205 1
+a205 1
+   application.setup->save_from = token.value.integer;
+d208 1
+a208 1
+extern void gen_outname(lexer_token token)
+d210 3
+a212 3
+   if (token.number != s_string_value) gen__syserror("output name is not a string");
+   application.dft_output_name = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.dft_output_name, token.lexeme);
+d215 1
+a215 1
+extern void gen_produces_output_dft(lexer_token token)
+d217 1
+a217 1
+   if (token.number == s_produces_output)
+d219 1
+a219 1
+   else if (token.number == s_produces_no_output)
+d233 1
+a233 1
+extern void gen_displaydft(lexer_token token)
+d235 1
+a235 1
+   if (token.number == s_summary)
+d239 1
+a239 1
+extern void gen_ctrlchars(lexer_token token)
+d241 1
+a241 1
+   if (token.number == s_escape)
+d243 1
+a243 1
+   else if (token.number == s_hide)
+d247 1
+a247 1
+extern void gen_tabwidth(lexer_token token)
+d249 1
+a249 1
+   application.tab_width = token.value.integer;
+d257 1
+a257 2
+   application.setup->d = 0;
+   application.setup->output_option = 0;
+a258 1
+   application.setup->num_hats = 0;
+a259 6
+   application.setup->save_prefix = 0;
+   application.setup->save_suffix = 0;
+   application.setup->wild_card = 0;
+   application.setup->icons = 0;
+   application.setup->drags = 0;
+   application.setup->menu.entries = 0;
+d262 1
+a262 1
+extern void gen_outputoption(lexer_token token)
+d264 3
+a266 3
+   if (token.number != s_string_value) gen__syserror("output option is not a string");
+   application.setup->output_option = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.setup->output_option, token.lexeme);
+d269 1
+a269 1
+extern void gen_icon(lexer_token token)
+d271 12
+a282 1
+   Frontend_icon *i;
+d284 1
+d287 2
+a288 2
+   i->number = token.value.integer;
+   i->flags = 0;
+a289 1
+   i->min_val = 0;
+a290 6
+   i->maps_to = 0;
+   i->dft_value.string = 0;
+   i->dft_value.integer = 0;
+   i->make_dft_value.string = 0;
+   i->make_dft_value.integer = 0;
+   i->save_buffer = 0;
+a291 5
+   i->prefix_by = 0;
+   i->followed_by = 0;
+   i->exclusions = 0;
+   i->deselections = 0;
+   i->insert = 0;        /* Aquarius bug-fix */
+d295 1
+a295 1
+extern void gen_mapstring(lexer_token token)
+d297 3
+a299 3
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->maps_to = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(gen__current_icon->maps_to, token.lexeme);
+d302 1
+a302 1
+extern void gen_conversion(lexer_token token)
+d304 10
+a313 1
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+d315 2
+a316 2
+   if      (token.number == s_string)        gen__current_icon->flags |= IF_STRING;
+   else if (token.number == s_quoted_string) gen__current_icon->flags |= (IF_STRING | IF_QUOTED_STRING);
+d318 3
+d323 1
+a323 1
+extern void gen_minval(lexer_token token)
+d325 2
+a326 2
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->min_val = token.value.integer;
+d329 1
+a329 1
+extern void gen_maxval(lexer_token token)
+d331 2
+a332 2
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->max_val = token.value.integer;
+d337 1
+a337 1
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+d341 7
+a347 1
+extern void gen_followicon(lexer_token token)
+d353 1
+a353 1
+   if (token.number == s_string_value)
+d356 2
+a357 2
+      f->string = FEmem_alloc(strlen(token.lexeme)+1);
+      strcpy(f->string, token.lexeme);
+d362 1
+a362 1
+      f->follow = token.value.integer;
+d365 8
+a372 1
+   gen__current_icon->followed_by = slist_addend(gen__current_icon->followed_by, (void *)f);
+d375 1
+a375 1
+extern void gen_separator(lexer_token token)
+d377 2
+a378 2
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->separator = token.lexeme[0];
+d381 1
+a381 1
+extern void gen_icon_prefix(lexer_token token)
+d383 3
+a385 3
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->prefix_by = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(gen__current_icon->prefix_by,token.lexeme);
+d390 1
+a390 1
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+d396 1
+a396 1
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+d402 1
+a402 1
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+d406 1
+a406 1
+extern void gen_changesicon(lexer_token token, int updown)
+d408 2
+a409 2
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->incdec = token.value.integer;
+d415 1
+a415 1
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+d420 1
+a420 1
+extern void gen_extendsfrom(lexer_token token)
+d422 1
+a422 1
+   application.setup->extends_from = token.value.integer;
+d425 1
+a425 1
+extern void gen_extendsto(lexer_token token)
+d427 1
+a427 1
+   application.setup->extends_to = token.value.integer;
+d430 1
+a430 1
+extern void gen_by(lexer_token token)
+d432 2
+a433 2
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->by = token.value.integer;
+d436 1
+a436 1
+extern void gen_insertliteral(lexer_token token)
+d438 3
+a440 3
+   if (gen__current_icon == 0) gen__syserror("no current icondef");
+   gen__current_icon->insert = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(gen__current_icon->insert,token.lexeme);
+d443 1
+a443 1
+extern void gen_icondefaults(lexer_token token, int icn)
+d449 3
+a451 1
+       switch(token.number)
+d462 2
+a463 2
+             icon->dft_value.string = icon->make_dft_value.string = FEmem_alloc(strlen(token.lexeme)+1);
+             strcpy(icon->dft_value.string, token.lexeme);
+d467 1
+a467 1
+             icon->dft_value.integer = icon->make_dft_value.integer = token.value.integer;
+d471 1
+d477 1
+a477 1
+extern void gen_make_icondefaults(lexer_token token, int icn)
+d483 1
+a483 1
+       switch(token.number)
+d494 2
+a495 2
+             icon->make_dft_value.string = FEmem_alloc(strlen(token.lexeme)+1);
+             strcpy(icon->make_dft_value.string, token.lexeme);
+d499 1
+a499 1
+             icon->make_dft_value.integer = token.value.integer;
+d508 2
+a509 1
+extern void gen_icon_setdeselects(lexer_token token)
+d511 2
+a512 1
+   gen__deselexcl_icon = find_icon(token.value.integer);
+d515 2
+a516 1
+extern void gen_icon_deselects(lexer_token token, int menu_or_icon)
+d522 3
+a524 3
+   d->deselect = token.value.integer;
+   if (gen__deselexcl_icon == 0) gen__syserror("no current deselection");
+   gen__deselexcl_icon->deselections = slist_addend(gen__deselexcl_icon->deselections, (void *)d);
+d527 1
+a527 1
+extern void gen_icon_setexcludes(lexer_token token)
+d529 7
+a535 1
+   gen__deselexcl_icon = find_icon(token.value.integer);
+d538 33
+a570 1
+extern void gen_icon_excludes(lexer_token token, int menu_or_icon)
+d576 14
+a589 3
+   e->exclude = token.value.integer;
+   if (gen__deselexcl_icon == 0) gen__syserror("no current exclusion");
+   gen__deselexcl_icon->exclusions = slist_addend(gen__deselexcl_icon->exclusions, (void *)e);
+d592 1
+a592 1
+extern void gen_make_excludes(lexer_token token, int menu_or_icon)
+d594 9
+a602 2
+   Frontend_icon *i;
+   Frontend_menuentry *m;
+d604 4
+a607 10
+   if (menu_or_icon == IS_ICON)
+   {
+      i = find_icon(token.value.integer);
+      i->flags |= IF_MAKE_EXCLUDES;
+   }
+   else
+   {
+      m = find_menuentry(token.value.integer+1);
+      m->flags |= IF_MAKE_EXCLUDES;
+   }
+d610 2
+a611 1
+extern void gen_menu_setdeselects(lexer_token token)
+d613 7
+a619 1
+   gen__deselexcl_menuentry = find_menuentry(token.value.integer+1);
+d622 1
+a622 1
+extern void gen_menu_deselects(lexer_token token, int menu_or_icon)
+d628 3
+a630 3
+   d->deselect = token.value.integer;
+   if (gen__deselexcl_menuentry == 0) gen__syserror("no current deselection");
+   gen__deselexcl_menuentry->deselections = slist_addend(gen__deselexcl_menuentry->deselections, (void *)d);
+d633 1
+a633 1
+extern void gen_menu_setexcludes(lexer_token token)
+d635 7
+a641 1
+   gen__deselexcl_menuentry = find_menuentry(token.value.integer+1);
+d644 23
+a666 1
+extern void gen_menu_excludes(lexer_token token, int menu_or_icon)
+d672 3
+a674 3
+   e->exclude = token.value.integer;
+   if (gen__deselexcl_menuentry == 0) gen__syserror("no current exclusion");
+   gen__deselexcl_menuentry->exclusions = slist_addend(gen__deselexcl_menuentry->exclusions, (void *)e);
+d677 1
+a677 1
+extern void gen_wildcard(lexer_token token)
+d679 7
+a685 2
+   application.setup->wild_card = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(application.setup->wild_card, token.lexeme);
+d688 37
+a724 1
+extern void gen_dragto(lexer_token token)
+d732 2
+a733 2
+   d->drag = (token.number == s_any)?ANY_ICON:
+             (token.number == s_iconbar)?ICONBAR_ICON:token.value.integer;
+d737 1
+a737 1
+extern void gen_insert(lexer_token token)
+d742 2
+a743 2
+   i->insert = token.value.integer;
+   if (gen__current_drag == 0) gen__syserror("no current drag");
+d747 1
+a747 1
+extern void gen_dragseparator(lexer_token token)
+d749 2
+a750 2
+   if (gen__current_drag == 0) gen__syserror("no current drag");
+   gen__current_drag->separator = token.lexeme[0];
+d759 1
+a760 10
+   e->flags = 0;
+   e->text = 0;
+   e->subtext = 0;
+   e->maps_to = 0;
+   e->make_dft_buffer = 0;
+   e->buffer = 0;
+   e->prefix_by = 0;
+   e->bufsize = 0;
+   e->exclusions = 0;
+   e->deselections = 0;
+d764 1
+a764 1
+extern void gen_addmenutext(lexer_token token)
+d766 3
+a768 3
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+   gen__current_menuentry->text = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(gen__current_menuentry->text, token.lexeme);
+d771 1
+a771 1
+extern void gen_menumapsto(lexer_token token)
+d773 3
+a775 3
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+   gen__current_menuentry->maps_to = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(gen__current_menuentry->maps_to, token.lexeme);
+d778 1
+a778 1
+extern void gen_subtext(lexer_token token)
+d780 3
+a782 3
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+   gen__current_menuentry->subtext = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(gen__current_menuentry->subtext, token.lexeme);
+d785 8
+a792 1
+extern void gen_menubufsize(lexer_token token)
+d796 2
+a797 2
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+   gen__current_menuentry->bufsize = token.value.integer;
+d807 1
+a807 1
+extern void gen_menu_prefix(lexer_token token)
+d809 3
+a811 4
+
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+   gen__current_menuentry->prefix_by = FEmem_alloc(strlen(token.lexeme)+1);
+   strcpy(gen__current_menuentry->prefix_by, token.lexeme);
+d816 1
+a816 1
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+d822 1
+a822 1
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+d829 1
+a829 1
+   if (gen__current_menuentry == 0) gen__syserror("no current menu");
+d833 1
+a833 1
+extern void gen_menudefaults(lexer_token token, int m)
+d839 1
+a839 1
+       switch(token.number)
+d857 1
+a857 1
+extern void gen_make_menudefaults(lexer_token token, int m)
+d863 1
+a863 1
+       switch(token.number)
+d879 1
+a879 1
+extern void gen_sub_menudefaults(lexer_token token, int m)
+d885 1
+a885 1
+       strcpy(menu->buffer, token.lexeme);
+d889 1
+a889 1
+extern void gen_make_sub_menudefaults(lexer_token token, int m)
+d895 2
+a896 2
+       menu->make_dft_buffer = FEmem_alloc(strlen(token.lexeme)+1);
+       strcpy(menu->make_dft_buffer, token.lexeme);
+d900 1
+a900 1
+extern void gen_orderis(lexer_token token, int menu_or_icn, BOOL make_order)
+d905 1
+a905 1
+      p->data.number = token.value.integer;
+d908 2
+a909 2
+      p->data.string = FEmem_alloc(strlen(token.lexeme)+1);
+      strcpy(p->data.string, token.lexeme);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d21 1
+d183 15
+d218 1
+a218 1
+   strcpy(application.setup->output_option, token.lexeme);  
+d257 4
+a260 1
+   gen__current_icon->flags |= (token.number == s_string)?IF_STRING:IF_NUMBER;
+d298 1
+a298 1
+   gen__follow_icon = f;  
+d304 1
+a304 1
+   if (gen__current_icon == 0) gen__syserror("no current icondef");  
+d445 1
+a445 1
+   gen__deselexcl_icon->deselections = slist_addend(gen__deselexcl_icon->deselections, (void *)d); 
+d461 1
+a461 1
+   gen__deselexcl_icon->exclusions = slist_addend(gen__deselexcl_icon->exclusions, (void *)e); 
+d494 1
+a494 1
+   gen__deselexcl_menuentry->deselections = slist_addend(gen__deselexcl_menuentry->deselections, (void *)d); 
+d510 1
+a510 1
+   gen__deselexcl_menuentry->exclusions = slist_addend(gen__deselexcl_menuentry->exclusions, (void *)e); 
+d565 1
+a565 1
+   application.setup->menu.entries = slist_addend(application.setup->menu.entries, (void *)e);   
+d601 1
+a601 1
+   }  
+d696 2
+a697 2
+} 
+          
+d713 1
+a713 1
+      application.ordering = slist_addend(application.ordering, (void *)p); 
+@
+
+
+1.1.1.1
+log
+@  Initial import of FrontEnd module to CVS from Aquarius.
+Detail:
+  Code claims to build FrontEnd 1.16 (11 Jan 1995), but will not
+    build in current build environment.
+Admin:
+  Does not compile - checked in for reference purposes only.
+  Tagged appropriately.  Use tag FrontEnd-1_16 to extract version
+    which builds in the current build environment.
+
+Tagged as FrontEnd-Aquarius-1_16
+
+
+@
+text
+@@

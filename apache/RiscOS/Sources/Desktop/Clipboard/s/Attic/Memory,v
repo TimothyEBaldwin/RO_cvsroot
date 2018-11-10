@@ -1,0 +1,350 @@
+head	1.5;
+access;
+symbols
+	Clipboard-0_04:1.4
+	Clipboard-0_03:1.3
+	Clipboard-0_02:1.2
+	Clipboard-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	99.02.22.11.57.59;	author bavison;	state dead;
+branches;
+next	1.4;
+
+1.4
+date	99.02.19.11.22.05;	author bavison;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.02.12.20.01.54;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.11.10.18.02.04;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.11.10.17.28.24;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.11.10.17.28.24;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@* Task-related initialisation moved from module init to Start routine
+* State handler added, called from SWI, UserMessage, UserMessageAck handlers
+* Implemented NewAction, DeleteAction, DeleteActions, FreeClipboard and
+  FreeMsgQueue
+* DA memory allocation adapted so as not to use max-size "-1" DAs
+* RMA memory allocation functions completed to match DA functions - will now
+  assemble with DA support option turned off!
+
+Version 0.05. Tagged as 'Clipboard-0_05'
+@
+text
+@; Copyright 1998 Acorn Computers Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; Main workspace layout
+
+UserStackSize   *       1024
+
+                ^       0, R12
+MessagesBlock   #       16              ; Module's message file descriptor
+mystack         #       4               ; Pointer to task's stack (in RMA)
+mytaskhandle    #       4               ; Our task handle (0 if not active, -1 if starting)
+OldUpcallHandler #      12              ; Handler workspace
+OldExitHandler  #       12
+OldErrorHandler #       12
+MsgQueue        #       4               ; Linked list of Wimp messages waiting to be delivered (also our pollword)
+
+ClipboardTask   #       4               ; Task handle of our client, or 0 if clipboard owner isn't a client of ours
+ClipboardFlags  #       4               ; Flags as passed to Clipboard_Put
+ClipboardAddr   #       4               ; Address of the clipboard
+ClipboardLen    #       4               ;  ... and its length
+ClipboardType   #       4               ;  ... and its data type, or address of data type list
+ClipboardName   #       4               ;  ... and a pointer to its proposed leafname
+
+ [ DragNDrop
+DragTask        #       4               ; Task handle of StartDrag task, or 0 if none
+DragFlags       #       4               ; As passed to Clipboard_StartDrag
+DragSpriteArea  #       4               ; Sprite area (if DragASprite) or renderer (if DragAnObject)
+DragSprite      #       4               ; Sprite name (if DragASprite) or parameter block (if DragAnObject)
+DragWindow      #       4               ; Source window handle (for determining move/copy status)
+DragPtrBBox     #       16              ; Bounding box of pointer (screen-relative OS units)
+DragOutlineBBox #       16              ; Initial bounding box of dragbox outline (screen-relative OS units)
+DragRealBBox    #       16              ; Data's "real" bounding box (pointer-relative millipoints)
+DragLen         #       4               ; Estimated size of data (for use in Message_DataSave)
+DragType        #       4               ; Pointer to data types list
+DragName        #       4               ; Pointer to proposed leafname
+ ]
+
+Actions         #       4               ; Head of singly-linked list of action structures
+
+PollBlock       #       256             ; Poll block
+
+WorkspaceSize   *       :INDEX: @@
+
+
+; Action block layout
+;
+; These contain all pertinent information about each ongoing data transfer operation being performed by the Clipboard,
+; allowing operations to span calls to Wimp_Poll, while allowing multiple transactions to be performed at the same time - for
+; example, when a Message_ClaimEntity 4 is broadcast, more than one task might request the clipboard data type concurrently;
+; or when a drop transaction is being performed, we may be acting on behalf of both sender and receiver at the same time.
+;
+; One of these should be present for each clipboard or data type send or fetch and each drop send or fetch.
+;
+; Any one action can comprise a data load stage, a data save stage, or both; either stage may use either the new protocol
+; (Clipboard_Get / Message_PutRequest / Clipboard_Put / Message_Paste protocol), or the old protocol (Message_DataRequest /
+; Message_DataSave / Message_RAMFetch / Message_RAMTransmit / Message_DataSaveAck / Message_DataLoad / Message_DataLoadAck)
+
+                ^       0
+Act_Next        #       4               ; Link
+Act_State       #       4               ; State word (see below)
+Act_MyRef       #       4               ; my_ref field of last message sent
+Act_Task        #       4               ; Task handle that data is being sent to
+Act_Flags       #       4               ; As passed to Clipboard_Get, Clipboard_GetDataType or Clipboard_CatchDrop, else 0
+Act_Window      #       4               ; Destination window handle
+Act_Icon        #       4               ;  ... and icon handle
+Act_X           #       4               ;  ... and x co-ordinate
+Act_Y           #       4               ;  ... and y co-ordinate
+Act_BufAddr     #       4               ; Address of temporary buffer
+Act_BufLen      #       4               ;  ... and its length
+Act_Type        #       4               ; Pointer to destination task's data type preferences
+Act_Name        #       4               ; Pointer to proposed leafname
+Act_TransCount  #       4               ; Index into buffer to start from for next RAMTransmit
+Act_DataRequestRef #    4               ; my_ref field of last DataRequest broadcast received (only used in State_PutRequest1)
+Act_IntFlags    #       4               ; Internal flags:
+                                        ;     Bit 0 set => don't free "temporary" buffer, since it's actually the clipboard!
+Act_Size        *       :INDEX: @@
+
+
+; Action states
+; These refer to the message most recently sent on behalf of this action.
+; See also Doc.StateDiag
+
+                        ^       0
+State_None              #       1
+State_DataLoad          #       1
+State_DataRequest1      #       1
+State_DataRequest2      #       1
+State_DataSave          #       1
+State_DataSaveAck       #       1
+State_Paste             #       1
+State_PutRequest1       #       1
+State_PutRequest2       #       1
+State_PutRequest3       #       1
+State_RAMFetch1         #       1
+State_RAMFetch2         #       1
+State_RAMTransmit       #       1
+
+
+; Message queue block layout
+
+                ^       0
+MsgQ_Next       #       4
+MsgQ_EventCode  #       4
+MsgQ_Handle     #       4
+MsgQ_Icon       #       4
+MsgQ_MyRefPtr   #       4
+MsgQ_Data       #       0
+MsgQ_Size       *       :INDEX: @@
+
+                END
+@
+
+
+1.4
+log
+@* Updated API to match that from the spec 1309,419/FS
+* Added symbols for all flag bits in SWIs and messages
+* Major reorganisation of workspace layout, primarily to facilitate multiple
+  concurrent data transfer transactions - because of this, most of the
+  useful functionality is currently commented out, pending updating to use
+  the new structures
+* Replaced "event" queue with a simple queue of ready-to-send Wimp message
+  blocks - this way, event handling can be handled in the same place in the
+  code, irrespective of whether we're in the foreground or background
+* Reorganised finalisation code so that task and module operations are
+  performed in separate routines and (mostly) in strictly the reverse order
+  to at initialisation. This allows code sharing between module finalisation,
+  the exit handler, the UpCall_NewApplication handler, and the task quit
+  code, as well as eradicating several memory leaks in the process
+
+Version 0.04. Tagged as 'Clipboard-0_04'
+@
+text
+@@
+
+
+1.3
+log
+@* Makefile altered to build separate targets for RAM and ROM builds
+* Makefile supports LocalRes$Path
+* General tidying up of source
+* Drag-and-Drop features optioned out (implementation unlikely in first release)
+* R0 passed to Wimp_Initialise now a recognised value
+* Ursula fast service call table added
+* Now launches task when module is RMRun
+* Error handler modified to have a Quit button instead of Cancel
+* Debug builds append error PC to error message in error handler error box
+
+Version 0.03. Tagged as 'Clipboard-0_03'
+@
+text
+@d15 4
+d20 2
+d23 1
+a23 14
+mystack         #       4               ; Pointer to task's stack (in RMA)
+ClipboardAddr   #       4               ; Address of the clipboard (0 if we don't own it)
+ClipboardLen    #       4               ;  ... and its length
+ClipboardType   #       4               ;  ... and its type
+EventQueue      #       4               ; Linked list of background->foreground events
+                                        ; (our pollword)
+MsgState        #       4
+TransferCount   #       4
+TransferBufLen  #       4
+GetData         #       12
+GetBufferAddr   #       4
+GetBufferLen    #       4
+GetBufferType   #       4
+OldUpcallHandler #      12
+d26 27
+a52 2
+MessagesBlock   #       16
+PollBlock       #       256
+d55 13
+a67 1
+UserStackSize   *       1024
+d70 23
+a92 4
+EventNext       #       4
+EventType       #       4
+EventData       #       0
+EventSize       *       :INDEX: @@
+d95 16
+a110 4
+Event_ClaimClipboard    #       1       ; Send Message_ClaimEntity
+Event_FetchClipboard    #       1       ; Send Message_DataRequest
+Event_SendClipboard     #       1       ; Send Message_ClipboardFetched (or whatever)
+Event_FirstUnused       *       :INDEX: @@
+d112 8
+a119 6
+                        ^       0
+MsgState_None           #       1       ; These are a simple indicator of our
+MsgState_DataRequest    #       1       ; state in a message transaction. The
+MsgState_DataSave       #       1       ; name signifies what we've just sent.
+MsgState_RAMTransmit    #       1
+MsgState_RAMFetch       #       1
+@
+
+
+1.2
+log
+@Expanded tabs.
+
+Version 0.01. Not tagged
+@
+text
+@d15 1
+a15 1
+                ^       0,R12
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d15 21
+a35 21
+		^	0,R12
+mytaskhandle	# 	4		; Our task handle (0 if not active, -1 if starting)
+mystack		#	4		; Pointer to task's stack (in RMA)
+ClipboardAddr	#	4		; Address of the clipboard (0 if we don't own it)
+ClipboardLen	#	4		;  ... and its length
+ClipboardType	#	4		;  ... and its type
+EventQueue	#	4		; Linked list of background->foreground events
+					; (our pollword)
+MsgState	#	4
+TransferCount	#	4
+TransferBufLen	#	4
+GetData		#	12
+GetBufferAddr	#	4
+GetBufferLen	#	4
+GetBufferType	#	4
+OldUpcallHandler #	12
+OldExitHandler	#	12
+OldErrorHandler	#	12
+MessagesBlock	#	16
+PollBlock	#	256
+WorkspaceSize	*	:INDEX: @@
+d37 1
+a37 1
+UserStackSize	*	1024
+d39 5
+a43 5
+		^	0
+EventNext	#	4
+EventType	#	4
+EventData	#	0
+EventSize	*	:INDEX: @@
+d45 5
+a49 5
+			^	0
+Event_ClaimClipboard	#	1	; Send Message_ClaimEntity
+Event_FetchClipboard	#	1	; Send Message_DataRequest
+Event_SendClipboard	#	1	; Send Message_ClipboardFetched (or whatever)
+Event_FirstUnused	*	:INDEX: @@
+d51 6
+a56 6
+			^	0
+MsgState_None		#	1	; These are a simple indicator of our
+MsgState_DataRequest	#	1	; state in a message transaction. The
+MsgState_DataSave	#	1	; name signifies what we've just sent.
+MsgState_RAMTransmit	#	1
+MsgState_RAMFetch	#	1
+d58 1
+a58 1
+		END
+@
+
+
+1.1.1.1
+log
+@Initial import: Kevin's original version.
+@
+text
+@@

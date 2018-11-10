@@ -1,0 +1,843 @@
+head	1.12;
+access;
+symbols
+	ImageLib-0_09:1.12
+	ImageLib-0_08:1.12
+	ImageLib-0_07:1.12
+	ImageLib-0_06:1.12
+	ImageLib-0_05:1.12
+	ImageLib-0_04:1.12
+	ImageLib-0_03:1.12
+	ImageLib-0_02:1.12
+	ImageLib-0_01:1.12
+	dcotton_autobuild_BaseSW:1.12
+	ahodgkin_207release:1.11
+	ahodgkin_206release:1.11
+	ahodgkin_205release:1.11
+	ahodgkin_133beta:1.11
+	kbracey_126beta:1.6
+	kbracey_AW97patch:1.5
+	ahodgkin_AW97:1.5;
+locks; strict;
+comment	@# @;
+
+
+1.12
+date	99.03.09.14.20.56;	author kbracey;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	98.01.30.16.24.16;	author kbracey;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	98.01.29.17.51.55;	author kbracey;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	97.11.07.18.06.44;	author kbracey;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	97.11.06.18.00.54;	author kbracey;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	97.11.04.15.27.51;	author kbracey;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	97.10.27.18.14.39;	author kbracey;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	97.10.14.13.46.00;	author kbracey;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	97.09.12.14.07.55;	author rleggett;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.09.05.15.19.10;	author rleggett;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.09.05.13.17.36;	author rleggett;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.07.21.12.24.44;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.12
+log
+@Fixed _swix calls
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*-------------------------------------------------------------------------------------------*/
+/* File:    c.sprite                                                                         */
+/* Purpose: Sprite plotting component of the image library.                                  */
+/* Author:  Kevin Bracey                                                                     */
+/* History: 06-May-97: RML: Modified Render routine to take an x and y size to scale to,     */
+/*                          instead of a percentage.                                         */
+/*          12-Sep-97: RML: Added a DumpSprite routine.                                      */
+/*-------------------------------------------------------------------------------------------*/
+
+/*
+ * Copyright (c) 1996 Acorn RISC Technologies. All rights reserved.
+ */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "swis.h"
+#include "flex.h"
+
+#include "imagetrans.h"
+#include "internal.h"
+#include "sprite.h"
+#include "defines.h"
+#include "datastruct.h"
+#include "gif.h"
+
+#define PutSprite 34
+#define PutSpriteScaled 52
+#define PutSpriteScaled_UseMask 0x08
+#define PutSpriteScaled_UsePalette 0x10
+#define PutSpriteScaled_WideTable 0x20
+#define PutSpriteScaled_Dithered 0x40
+#define GenerateTable_WideTable 0x10
+
+static int log2bpp;
+
+_kernel_oserror *LoadSprite(Image *this, const char *data, int len, BBox *changed);
+_kernel_oserror *EndLoadSprite(Image *this, BBox *changed);
+_kernel_oserror *StartExportSprite(Image *this, int *size);
+_kernel_oserror *RenderSprite(Image *this, int x, int y, int scale, int x_size, int y_size);
+_kernel_oserror *ModeChangeSprite(Image *this);
+_kernel_oserror *DeleteSprite(Image *this);
+_kernel_oserror *LoadFromCacheSprite(Image *this, const char *filename);
+_kernel_oserror *DumpToCacheSprite(Image *this, const char *filename, int *justuseorig);
+
+#define spriteError imgtrnsError
+
+int NewSprite(Image *im)
+{
+    Spriteloaddata *load;
+
+    load=(Spriteloaddata *)(im->private_data=malloc(sizeof(Spriteloaddata)));
+
+    if (!load)
+        return -1;
+
+    im->Load=LoadSprite;
+    im->DumpSprite=SpriteDumpSprite;
+    im->EndLoad=EndLoadSprite;
+    im->Delete=DeleteSprite;
+    im->Render=RenderSprite;
+    /*im->ModeChange=ModeChangeSprite;*/
+    im->LoadFromCache=LoadFromCacheSprite;
+    im->DumpToCache=DumpToCacheSprite;
+    im->StartExport=StartExportSprite;
+    im->Export=Export;
+    im->EndExport=EndExport;
+    im->BGCol=BGColSimple;
+    im->NeedRedraw=0;
+    im->RegisterFiller=0;
+
+    im->width=im->height=im->width_os=im->height_os=-1;
+    im->animated=0;
+
+    im->table=NULL;
+
+    memset(load, 0, sizeof *load);
+
+    if (flex_alloc((flex_ptr) &im->private_data2, 2048) == 0)
+        return -1;
+
+    memset(im->factors, 0, sizeof *im->factors);
+
+    load->memory=2048;
+
+    return 0;
+}
+
+/*****************************/
+_kernel_oserror *LoadSprite(Image *this, const char *data, int len, BBox *changed)
+{
+    Spriteloaddata *load=(Spriteloaddata *) this->private_data;
+
+    if (len==0)
+        return NULL;
+
+    if (load->bytesloaded+len > load->memory)
+    {
+        if (flex_extend((flex_ptr) &this->private_data2, load->bytesloaded+len+2048)==0)
+            return spriteError("Out of memory");
+        load->memory=load->bytesloaded+len+2048;
+    }
+
+    memcpy((char *)this->private_data2+load->bytesloaded+4, data, len);
+
+    load->bytesloaded+=len;
+
+    if (changed)
+        memset(changed, 0, sizeof(BBox));
+
+    return NULL;
+}
+
+/*******************************************/
+_kernel_oserror *EndLoadSprite(Image *this, BBox *changed)
+{
+    int    w, h;
+    int *pal;
+    Spriteloaddata *load=(Spriteloaddata *) this->private_data;
+    int mask, mode;
+    _kernel_oserror *e;
+
+    memset(changed, 0, sizeof(BBox));
+
+    this->private_data2[0]=load->bytesloaded+4;
+
+    /* Get name of first sprite */
+    e=_swix(OS_SpriteOp, _INR(0,4), 256+13, this->private_data2, load->name,
+                                            sizeof load->name, 1);
+    if (e) return e;
+
+    /* Read sprite information */
+    e=_swix(OS_SpriteOp, _INR(0,2)|_OUTR(3,6), 256+40, this->private_data2, load->name,
+                                               &w, &h, &mask, &mode);
+    if (e) return e;
+
+    /* Check whether we have a palette */
+    e=_swix(OS_SpriteOp, _INR(0,3)|_OUTR(3,4), 256+37, this->private_data2, load->name, -1,
+                                                       &load->palsize, &pal);
+    if (e) return e;
+
+    load->paloffset = pal - this->private_data2;
+
+    this->width=w;
+    this->height=h;
+
+    e=_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), mode, 4, &load->xeig);
+    if (e) return e;
+    e=_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), mode, 5, &load->yeig);
+    if (e) return e;
+    e=_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), mode, 9, &load->bpp);
+    if (e) return e;
+
+    /* We can't utilise non-256 entry 8bpp palettes */
+    if (load->bpp==3 && load->palsize != 256)
+        load->paloffset=0;
+
+    if (this->width_os==-1)
+        this->width_os=w<<load->xeig;
+
+    if (this->height_os==-1)
+        this->height_os=h<<load->yeig;
+
+    this->transparent=mask;
+
+
+  return 0;
+}
+
+_kernel_oserror *ModeChangeSprite(Image *this)
+{
+    Spriteloaddata *load=(Spriteloaddata *) this->private_data;
+    _kernel_oserror *e=0;
+    int bufsize, xeig, yeig;
+    int printing = 0;
+
+    _swix(PDriver_CurrentJob, _OUT(0), &printing);
+
+    e=_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 9, &log2bpp);
+
+    if (!e)
+    e = _swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 4, &xeig);
+    if (!e)
+    e = _swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 5, &yeig);
+
+    if (!e)
+    {
+        this->factors[0]=this->width_os<<xeig;
+        this->factors[1]=this->height_os<<yeig;
+        this->factors[2]=this->width<<2;
+        this->factors[3]=this->height<<2;
+    }
+
+    /* don't need a table if going into 16 or 32bpp, and we have a palette */
+    if (load->paloffset && load->bpp >= 4 && !printing)
+        return e;
+
+    /* Check for matching palettes */
+    if (!e && log2bpp == load->bpp && log2bpp <= 3 && load->paloffset && !printing)
+    {
+        unsigned int palette[256];
+        e = _swix(ColourTrans_ReadPalette, _INR(0,4), -1, -1, palette, sizeof palette, 0);
+        if (!e)
+        {
+            int end, i, same = 1, *pal;
+            end = 1 << (1 << log2bpp);
+            pal = this->private_data2 + load->paloffset;
+
+            for (i = 0; i < end; i++)
+            {
+                if ((pal[i * 2] & 0xFFFFFF00) != (palette[i] & 0xFFFFFF00))
+                {
+                    same = 0;
+                    break;
+                }
+            }
+
+            if (same)
+            {
+                if (this->table)
+                {
+                    free(this->table);
+                    this->table = NULL;
+                }
+                return NULL;
+            }
+        }
+    }
+
+    if (!e)
+    e=_swix(ColourTrans_GenerateTable, _INR(0,5)|_OUT(4), this->private_data2,
+                                                          this->private_data2+4,
+                                                          -1, -1, 0, 1,
+                                                          &bufsize);
+
+    if (!e)
+    {
+        this->table=realloc(this->table, bufsize);
+
+        if (bufsize == 0)
+            return NULL;
+
+        if (!this->table)
+            e=spriteError("Insufficient memory");
+    }
+
+    if (!e)
+    e=_swix(ColourTrans_GenerateTable, _INR(0,5), this->private_data2,
+                                                  this->private_data2+4, -1, -1,
+                                                  this->table, 1);
+
+    return e;
+}
+
+_kernel_oserror *RenderSprite(Image *this, int x, int y, int scale, int x_size, int y_size)
+{
+    Spriteloaddata *load=(Spriteloaddata *) this->private_data;
+    _kernel_oserror *e=NULL;
+    int fac[4];
+    static int osver;
+    int printing = 0;
+
+    if (osver==0)
+        _swix(OS_Byte, _INR(0,2)|_OUT(1), 129, 0, 255, &osver);
+
+    if (this->width <= 0)
+    {
+        e=_swix(ColourTrans_SetGCOL, _IN(0)|_INR(3,4), 0, 0, 0);
+        if (!e)
+            e=_swix(OS_Plot, _INR(0,2), 4, x, y);
+        if (!e)
+            e=_swix(OS_Plot, _INR(0,2), 0x60 | 1, this->width_os*scale/100-1,
+                                                  this->height_os*scale/100-1);
+        return e;
+    }
+
+    _swix(PDriver_CurrentJob, _OUT(0), &printing);
+
+    if (this->modechanged || !this->factors[0] || printing)
+    {
+        e=ModeChangeSprite(this);
+        if (e) return e;
+        this->modechanged = 0;
+    }
+
+    memcpy(fac, this->factors, sizeof fac);
+
+    if ((x_size>0) && (y_size>0))
+    {
+      int xos, yos;
+
+      xos = 1 << _swi(OS_ReadModeVariable,_INR(0,1)|_RETURN(2),-1,4);
+      yos = 1 << _swi(OS_ReadModeVariable,_INR(0,1)|_RETURN(2),-1,5);
+
+      fac[0]=x_size;
+      fac[1]=y_size;
+      fac[2]=this->width*xos;
+      fac[3]=this->height*yos;
+    }
+    else if (scale!=100)
+    {
+        fac[0]*=scale;
+        fac[1]*=scale;
+        fac[2]*=100;
+        fac[3]*=100;
+    }
+
+    if (e) return e;
+
+    if (load->bpp == log2bpp && this->table == NULL && fac[0] == fac[2] && fac[1] == fac[3]
+         && !printing)
+        e=_swix(OS_SpriteOp, _INR(0,5), 512+PutSprite,
+                                        this->private_data2,
+                                        this->private_data2+4,
+                                        x, y,
+                                        this->transparent ? PutSpriteScaled_UseMask : 0);
+    else
+        e=_swix(OS_SpriteOp, _INR(0,7), 512+PutSpriteScaled,
+                                        this->private_data2,
+                                        this->private_data2+4,
+                                        x, y,
+                                        osver >= 0xa5 ? PutSpriteScaled_UsePalette |
+                                                        PutSpriteScaled_UseMask
+                                                      : PutSpriteScaled_UseMask,
+                                        fac,
+                                        (printing || log2bpp <=3 || !load->paloffset) ? this->table : 0);
+
+    return e;
+}
+
+_kernel_oserror *StartExportSprite(Image *this, int *size)
+{
+    *size=this->private_data2[0]-4;
+
+    return StartExport((flex_ptr) &this->private_data2, this->private_data2[0]-4, 4);
+}
+
+_kernel_oserror *DeleteSprite(Image *this)
+{
+    free(this->private_data);
+    free(this->table);
+
+    if (this->private_data2)
+        flex_free((flex_ptr) &this->private_data2);
+
+    free(this);
+
+    return NULL;
+}
+
+_kernel_oserror *DumpToCacheSprite(Image *this, const char *filename, int *justuseorig)
+{
+    *justuseorig=0;
+    return SaveSpriteGIF(this, filename, -1);
+}
+
+_kernel_oserror *LoadFromCacheSprite(Image *this, const char *filename)
+{
+    _kernel_oserror *e;
+    int length, transparent;
+
+    e=_swix(OS_File, _INR(0,1)|_OUT(4), 20, filename, &length);
+
+    if (!e)
+    {
+        if (!flex_alloc((flex_ptr)&this->private_data2, length+4))
+            return spriteError("Insufficient memory");
+    }
+
+    if (!e)
+    {
+        this->private_data2[0]=length+4;
+        this->private_data2[2]=16;
+        e=_swix(OS_SpriteOp, _INR(0,1), 256+9, this->private_data2);
+    }
+
+    if (!e)
+        e=_swix(OS_SpriteOp, _INR(0,2), 256+10, this->private_data2, filename);
+
+    transparent = this->transparent;
+    if (!e)
+        e=_swix(OS_SpriteOp, _INR(0,2)|_OUTR(3,5), 256+40, this->private_data2, filename,
+                                                   &this->width, &this->height,
+                                                   &transparent);
+    this->transparent = transparent;
+
+    if (!e)
+    {
+        this->mutable_mask=0;
+        if (this->width_os==-1)
+            this->width_os=2*this->width;
+        if (this->height_os==-1)
+            this->height_os=2*this->height;
+    }
+
+    return e;
+}
+
+_kernel_oserror *SpriteDumpSprite(Image *this, const char *filename, int maxbpp)
+{
+    return _swix(OS_SpriteOp, _INR(0,2), 256+12, this->private_data2, filename);
+}
+@
+
+
+1.11
+log
+@Printing fixed a bit more
+@
+text
+@d284 1
+a284 1
+            e=_swix(OS_Plot, 4, x, y);
+d286 2
+a287 2
+            e=_swix(OS_Plot, 0x60 | 1, this->width_os*scale/100-1,
+                                       this->height_os*scale/100-1);
+@
+
+
+1.10
+log
+@Lots of printing problems fixed
+@
+text
+@a189 1
+    void *sptr;
+d204 2
+a205 2
+        this->factors[2]=this->width<<(2);
+        this->factors[3]=this->height<<(2);
+a244 3
+    e = _swix(OS_SpriteOp, _INR(0,2)|_OUT(2), 256+SprSelect, this->private_data2, load->name, &sptr);
+
+    if (!e)
+d246 1
+a246 1
+                                                          sptr,
+a261 3
+    e = _swix(OS_SpriteOp, _INR(0,2)|_OUT(2), 256+SprSelect, this->private_data2, load->name, &sptr);
+
+    if (!e)
+d263 1
+a263 1
+                                                  sptr, -1, -1,
+d293 1
+a293 1
+    if (this->modechanged || !this->factors[0])
+d306 2
+a307 2
+      xos = 1 << _swi(OS_ReadModeVariable,_IN(0)|_IN(1)|_RETURN(2),-1,4);
+      yos = 1 << _swi(OS_ReadModeVariable,_IN(0)|_IN(1)|_RETURN(2),-1,5);
+d326 1
+a326 1
+        e=_swix(OS_SpriteOp, _INR(0,5), 256+PutSprite,
+d328 1
+a328 1
+                                        load->name,
+d332 1
+a332 1
+        e=_swix(OS_SpriteOp, _INR(0,7), 256+PutSpriteScaled,
+d334 1
+a334 1
+                                        load->name,
+@
+
+
+1.9
+log
+@Backgrounds sometimes failed in 16 and 32bpp modes.
+@
+text
+@d189 4
+d210 1
+a210 1
+    if (load->paloffset && load->bpp >= 4)
+d214 1
+a214 1
+    if (!e && log2bpp == load->bpp && log2bpp <= 3 && load->paloffset)
+d246 3
+d250 2
+a251 2
+                                                          load->name,
+                                                          -1, -1, 0, 2,
+d266 3
+d270 2
+a271 2
+                                                  load->name, -1, -1,
+                                                  this->table, 2);
+d282 1
+d298 2
+d331 2
+a332 1
+    if (load->bpp == log2bpp && this->table == NULL && fac[0] == fac[2] && fac[1] == fac[3])
+d347 1
+a347 1
+                                        (log2bpp <=3 || !load->paloffset) ? this->table : 0);
+@
+
+
+1.8
+log
+@More optimisations - in particular background GIFs are now converted into
+the current mode and palette.
+Sprite plotter (used for backgrounds) sped up.
+Background chunk now read correctly and gamma corrected in PNGs (for
+sprite output and use as page backgrounds).
+Support for PNG pHYS chunk added.
+<8bpp greyscale PNGs where no gamma correction was done didn't work.
+@
+text
+@d250 4
+@
+
+
+1.7
+log
+@Removed lots of compilation warnings in PNG stuff.
+Added some "fast plot without translation" optimisations.
+Convert RGB PNGs with <=5 significant bits on every channel into 16bpp sprites.
+Fixed a few RGB/greyscale tRNS anomalies.
+Made sure no gamma correction occurs if no gAMA chunk in PNG.
+Ensured that values 0 and 255 in alpha blending gamma tables are correct.
+Made < 8bpp paletted PNGs with complex transparency work.
+Made n bpp paletted PNGs with <n^(1/2) palette entries work. (eg 8bpp images
+with 8 palette entries (yuck)).
+Ensured spare palette entries in PNGs cleared.
+Added support for saving paletted transparent PNGs as sprites composited onto the PNG
+background colour.
+Added support for alpha blending in < 8bpp modes.
+@
+text
+@d132 1
+d152 2
+a153 2
+    e=_swix(OS_SpriteOp, _INR(0,3)|_OUT(3), 256+37, this->private_data2, load->name, -1,
+                                                    &load->pal);
+d156 2
+d169 2
+a170 2
+    if (load->bpp==3 && load->pal != 256)
+        load->pal=0;
+d192 13
+d206 2
+d209 2
+a210 1
+    if (!(load->pal && load->bpp >= 4))
+d212 2
+a213 6
+        if (!e)
+        e=_swix(ColourTrans_GenerateTable, _INR(0,5)|_OUT(4), this->private_data2,
+                                                              load->name,
+                                                              -1, -1, 0, 2,
+                                                              &bufsize);
+
+d216 3
+a218 5
+            free(this->table);
+            this->table=malloc(bufsize);
+            if (!this->table)
+                e=spriteError("Insufficient memory");
+        }
+d220 8
+a227 5
+        if (!e)
+        e=_swix(ColourTrans_GenerateTable, _INR(0,5), this->private_data2,
+                                                      load->name, -1, -1,
+                                                      this->table, 2);
+    }
+d229 1
+a229 7
+    if (!e && this->table && log2bpp <= 3 && log2bpp == load->bpp)
+    {
+        int i, islinear = 1;
+        char *table = (char *) this->table;
+
+        for (i=0; i<bufsize; i++)
+            if (table[i] != i)
+d231 6
+a236 2
+                islinear = 0;
+                break;
+a237 4
+        if (islinear)
+        {
+            free(this->table);
+            this->table=NULL;
+d242 4
+a245 3
+    e = _swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 4, &xeig);
+    if (!e)
+    e = _swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 5, &yeig);
+d249 3
+a251 4
+        this->factors[0]=this->width_os<<xeig;
+        this->factors[1]=this->height_os<<yeig;
+        this->factors[2]=this->width<<(2);
+        this->factors[3]=this->height<<(2);
+d253 6
+d314 1
+a314 2
+    if (log2bpp <= 3 && load->bpp == log2bpp && this->table == NULL &&
+        fac[0] == fac[2] && fac[1] == fac[3])
+d329 1
+a329 1
+                                        (log2bpp <=3 || !load->pal) ? this->table : 0);
+@
+
+
+1.6
+log
+@Rendering in filler functions in non-EX1 EY1 modes should now work.
+PNG background images with alpha now handled properly.
+@
+text
+@d41 1
+d213 18
+d296 19
+a314 10
+    if (!e)
+    e=_swix(OS_SpriteOp, _INR(0,7), 256+PutSpriteScaled,
+                                    this->private_data2,
+                                    load->name,
+                                    x, y,
+                                    osver >= 0xa5 ? PutSpriteScaled_UsePalette |
+                                                    PutSpriteScaled_UseMask
+                                                  : PutSpriteScaled_UseMask,
+                                    fac,
+                                    (log2bpp <=3 || !load->pal) ? this->table : 0);
+@
+
+
+1.5
+log
+@Made RGB PNGs work on RISC OS 3.1 (but slowly!)
+Added dithering to PNGs with alpha.
+Made ModeChange delay action until image is next rendered.
+@
+text
+@a47 1
+static int osver;
+a49 14
+/*
+ * File Format:
+ *   (format identifier:  "#define" as first couple chars in file)
+ *
+ * looks for first line beginning with '#define'
+ *   reads "#define identifier width"  (identifier is ignored)
+ * looks for next line beginning with '#define'
+ *   reads "#define identifier height" (identifier is ignored)
+ * looks for next occurence of characters '0x'
+ *   read next two chars as two hex digits
+ *   move forward to next occurence of '0x'
+ *   repeat
+ */
+
+a64 3
+    if (osver==0)
+        _swix(OS_Byte, _INR(0,2)|_OUT(1), 129, 0, 255, &osver);
+
+d184 1
+a184 1
+    int bufsize;
+d190 1
+a190 1
+    if (!(load->pal && log2bpp >= 4))
+d213 3
+a215 2
+    e=_swix(Wimp_ReadPixTrans, _INR(0,2)|_INR(6,7), 256, this->private_data2, load->name,
+                                                    this->factors, 0);
+d219 4
+a222 4
+        this->factors[0]*=this->width_os;
+        this->factors[1]*=this->height_os;
+        this->factors[2]*=this->width<<load->xeig;
+        this->factors[3]*=this->height<<load->yeig;
+d232 4
+@
+
+
+1.4
+log
+@Problems with DumpSprite for IMAGE_FAST images corrected.
+@
+text
+@d93 1
+a93 1
+    im->ModeChange=ModeChangeSprite;
+d261 2
+a262 1
+    if (!this->factors[0])
+d264 3
+d273 1
+a273 1
+      
+@
+
+
+1.3
+log
+@Fixed problem with BBox returned by EndLoad for non GIF and JPEG images
+@
+text
+@d21 1
+d89 1
+a89 1
+    im->DumpSprite=SaveSpriteGIF;
+d366 5
+@
+
+
+1.2
+log
+@EndLoad now returns a BBox; Corrected flex problems on 3.1 machines; Corrected 16 colour mode bug.
+@
+text
+@d152 1
+a152 1
+    changed=NULL;
+@
+
+
+1.1
+log
+@First commit to CVS
+@
+text
+@d65 1
+a65 1
+_kernel_oserror *EndLoadSprite(Image *);
+d145 1
+a145 1
+_kernel_oserror *EndLoadSprite(Image *this)
+d151 2
+@

@@ -1,0 +1,954 @@
+head	4.8;
+access;
+symbols
+	CDFS-2_63:4.8
+	CDFS-2_62:4.8
+	CDFS-2_61:4.8
+	CDFS-2_60:4.7
+	CDFS-2_59:4.6
+	CDFS-2_58:4.6
+	CDFS-2_57:4.6
+	CDFS-2_56:4.6
+	CDFS-2_55:4.6
+	CDFS-2_54:4.6
+	CDFS-2_53:4.5
+	CDFS-2_52:4.4
+	CDFS-2_51:4.4
+	CDFS-2_50:4.4
+	CDFS-2_49:4.4
+	CDFS-2_48:4.4
+	RO_5_07:4.4
+	CDFS-2_47:4.4
+	CDFS-2_46:4.4
+	CDFS-2_45:4.4
+	CDFS-2_44:4.3
+	CDFS-2_43:4.3
+	CDFS-2_42:4.3
+	CDFS-2_41:4.3
+	CDFS-2_40:4.2
+	CDFS-2_39:4.1
+	CDFS-2_38:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.8
+date	2013.08.15.14.24.58;	author rsprowson;	state Exp;
+branches;
+next	4.7;
+commitid	5ab0m7C1cVfMFy1x;
+
+4.7
+date	2013.08.15.14.13.02;	author rsprowson;	state Exp;
+branches;
+next	4.6;
+commitid	6zDw3cu1Q3LIBy1x;
+
+4.6
+date	2012.04.22.11.08.58;	author rsprowson;	state Exp;
+branches;
+next	4.5;
+commitid	MNiwWuPGZIIb1R1w;
+
+4.5
+date	2012.04.21.21.56.34;	author rsprowson;	state Exp;
+branches;
+next	4.4;
+commitid	LsBEkd8YV89lDM1w;
+
+4.4
+date	2002.11.26.17.24.29;	author bavison;	state Exp;
+branches;
+next	4.3;
+
+4.3
+date	2002.11.22.15.05.39;	author bavison;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	2002.11.08.19.48.57;	author bavison;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2002.11.04.21.21.41;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.8
+log
+@Add support for Joliet format CD-ROMs
+hdr/Hashes
+s/Directory
+s/EntryFile
+s/FileMan
+s/Filer
+s/Free
+ - mass search and replace of lots of poorly named definitions, removing unused ones, creating implicit ones
+hdr/MyMacros
+ - shuffle some registers in ConvertToArchyDate to save one temporary so it can be used for something else
+ - moved ReplaceBadCharacters here
+hdr/Options
+ - extra debug option
+s/DiscOp
+ - add Joliet, rename buffer indicies per hdr/Hashes
+ - the fallback filetype assignment (when neither the ARCHIMEDES system extension nor MimeMap can help) can now be overridden by setting CDFS$DefaultType (which defaults to &FFD)
+s/SWI
+ - remove DAT<->MPEG mapping from the internal mapping table
+s/Variables
+ - trim out unused SWI_buffer reservation
+
+Tested with valid ISO/Joliet/RockRidge supported combinations, documented in Docs/Combos, and accompanying test ISO images now stored there.
+Tested with CD-I format disc 'Jigsaw' from Britannica.
+Tested with High Sierra format disc 'Kings Quest V'.
+Tested with photo CD sampler from Kodak.
+
+Version 2.61. Tagged as 'CDFS-2_61'
+@
+text
+@; Copyright 2002 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; -> hdr.MyMacros
+
+
+; =============================================
+; Macros should be kept in ALPHABETICAL order !
+; =============================================
+
+;*************************************************
+; MOVES REGISTER TO NEXT ALIGNMENT OR STAYS WHERE IT IS
+; Flags and $temp corrupted
+;*************************************************
+        MACRO
+$label  ALIGNREG $reg
+$label  TST   $reg, #3
+        ADDNE $reg, $reg, #4
+        BICNE $reg, $reg, #3
+        MEND
+
+; ************************************
+; ***  Call the byte copy routine  ***
+; ************************************
+
+; Note: This is purely for ease rather than elegance, sorry (JRF)
+        MACRO
+$var    CD_ByteCopy  $cond
+ [ UseSWICDByteCopy
+        SWI$cond     XCD_ByteCopy
+ |
+        BL$cond      MyCD_ByteCopy
+ ]
+        MEND
+
+;********************************************************
+;********************************************************
+
+; This converts an ISO or HISIERRA date to an ARCHY centi-second date
+
+;********************************************************
+;********************************************************
+; $from -> 6 byte block, $to -> put 5 byte Archy block
+
+        MACRO
+$label  ConvertToArchyDate $from, $to, $temp1, $templo, $temp3, $temp4, $temphi
+$label  LDRB    $temp1, [ $from, #0 ]              ; R1 = year ( from 1900 )
+                
+        LDR     $temp3, =365                       ; ( year * 365 ) + ( year DIV 4 )
+        MOV     $temp4, $temp1, ASR #2             ;
+        MLA     $temp3, $temp1, $temp3, $temp4     ;
+                
+        LDR     $temp1, =6 * 15 * 25 * 15          ; result * numberofcentisecondsaday / 256
+        MUL     $temp3, $temp1, $temp3             ;
+                
+        MOV     $temphi, $temp3, ASR #24           ; h/b of result ( ignore bits 8 to 31 )
+        MOV     $templo, $temp3, ASL #8            ; l/bs of result
+                
+        LDRB    $temp3, [ $from, #1 ]              ; month ( 1 to 12 )
+        ADRL    $temp4, DaysInMonth - 4            ; R3 = cumulative total of days up to that month
+        LDR     $temp3, [ $temp4, $temp3, ASL #2 ] ;
+
+        LDRB    $temp4, [ $from, #2 ]              ; day of month
+        ADD     $temp3, $temp3, $temp4             ;
+        MUL     $temp4, $temp3, $temp1             ; R4 = days * 6 * 15 * 15 * 25
+                
+        ADD     $templo, $templo, $temp4, ASL #8   ; l/bs of result
+        MOV     $temp3, $temp4, ROR #24            ; h/b of result
+        AND     $temp3, $temp3, #&FF               ;
+        ADD     $temphi, $temphi, $temp3           ;
+                
+        LDRB    $temp3, [ $from, #3 ]              ; l/bs hourcentiseconds
+        LDR     $temp1, =60*60*100                 ;
+        MLA     $templo, $temp1, $temp3, $templo   ;
+                
+        LDR     $temp1, =60*100                    ; l/bs minutecentiseconds
+        LDRB    $temp3, [ $from, #4 ]              ;
+        MLA     $templo, $temp1, $temp3, $templo   ;
+                
+        LDRB    $temp1, [ $from, #5 ]              ; l/bs of secondcentiseconds
+        MOV     $temp3, #100                       ;
+        MLA     $templo, $temp1, $temp3, $templo   ;
+                
+        STR     $templo, [ $to ]
+        STRB    $temphi, [ $to, #4 ]
+        MEND
+
+; **********************************************************
+; ***                  Unsigned divide by 10             ***
+; on entry:
+;          $number = value to divide by 10
+; on exit:
+;          $number=$number / 10
+;          $temp1 =$number MOD 10
+; **********************************************************
+        MACRO
+$label  DivideBy10 $number, $temp1, $temp3
+$label  MOV     $temp1,$number
+        MOV     $number,$number,LSR #1
+        ADD     $number,$number,$number,LSR #1
+        ADD     $number,$number,$number,LSR #4
+        ADD     $number,$number,$number,LSR #8
+        ADD     $number,$number,$number,LSR #16
+        MOV     $number,$number,LSR #3
+        ADD     $temp3,$number,$number,LSL #2
+        SUB     $temp1,$temp1,$temp3,LSL #1
+        CMP     $temp1,#10
+        ADDGE   $number,$number,#1
+        SUBGE   $temp1,$temp1,#10
+        MEND
+
+;***************************************************************************
+; Exchange reserved characters for non reserved ones
+;***************************************************************************
+        MACRO
+$label  ReplaceBadCharacters  $reg
+$label  TEQ     $reg,#SPACE
+        MOVEQ   $reg,#REPLACEMENTFORSPACE
+        TEQ     $reg,#DOT
+        MOVEQ   $reg,#REPLACEMENTFORDOT
+        TEQ     $reg,#WILDCHAR
+        TEQNE   $reg,#WILDANY
+        MOVEQ   $reg,#REPLACEMENTFORWILD
+        TEQ     $reg,#SYSTEMQUOTE
+        TEQNE   $reg,#SYSTEMROOT
+        TEQNE   $reg,#SYSTEMLIB
+        TEQNE   $reg,#SYSTEMURD
+        TEQNE   $reg,#SYSTEMCSD
+        TEQNE   $reg,#SYSTEMCOLON
+        TEQNE   $reg,#SYSTEMLT
+        TEQNE   $reg,#SYSTEMGT
+        TEQNE   $reg,#SYSTEMDEL
+        MOVEQ   $reg,#REPLACEMENTFORSYSTEM
+        MEND
+
+;***********************************************************************
+; This pulls from a full-descending stack ( -> R13 )
+;***********************************************************************
+
+        MACRO
+$label  PushAllWithReturnFrame $cond
+$label  Push     "R0-R11,R14", $cond
+        STR$cond sp, stackreturn        ; Return frame, no reentrancy!
+        MEND
+
+        MACRO
+$label  PullAllFromFrame $cond
+$label  LDR$cond sp, stackreturn
+        Pull     "R0-R11,R14", $cond
+        MEND
+
+        MACRO
+$label  PullAllFromFrameAndExit $cond, $keep
+$label  LDR$cond sp, stackreturn
+      [ "$keep"=""
+        Pull     "R0-R11,PC", $cond
+      |
+        ; Keep the first $keep registers
+        ADD$cond sp, sp, #4 * $keep
+        DCI      (Cond_$cond :OR: &08BD8FFF) :AND: :NOT: ((1:SHL:$keep) - 1)
+      ]
+        MEND
+
+; ******************************************************
+; ***  Macro Find length of null terminated string   ***
+; ******************************************************
+        MACRO
+$label  LengthOfString $name, $length, $temp
+        MOV     $length, #0
+01              
+$label  LDRB    $temp, [ $name, $length ]
+        ADD     $length, $length, #1
+        CMP     $temp, #0
+        BNE     %BT01
+        MEND
+
+; ******************************************************
+; ***  This is for cdfs to keep a log of calls made  ***
+; ******************************************************
+        MACRO
+$label log_on
+$label
+      [ log
+        Push    "R14"
+        LDR     R14, log_pointer
+        STR     PC, [ R14 ], #4
+        STR     R14, log_pointer
+        Pull    "R14"
+      ]
+      MEND
+
+; ************************************************************************************
+; ***  This macro is specialised for XA and is used in 'FileMan' and 'EntryFile'   ***
+; *** on entry:                                                                    ***
+; ***          $return  =  UNUSED                                                  ***
+; ***          $pointer -> object information                                      ***
+; ***          $temp1   =  UNUSED                                                  ***
+; ***          $temp2   =  UNUSED                                                  ***
+; *** on exit:                                                                     ***
+; ***          $return  =  1, 2 or 3                                               ***
+; ***          $pointer -> preserved                                               ***
+; ***          $temp1   =  preserved                                               ***
+; ***          $temp2   =  preserved                                               ***
+; ************************************************************************************
+
+        MACRO
+$label  MACRO__XA_WHAT_DATA_MODE $return, $pointer, $temp1, $temp2
+$label  Push    "$temp1, $temp2"
+        MOV     $return, # 1
+        LDRB    $temp1, [ $pointer, # OBJECT__XA_ATTRIBUTES_LO ]
+        LDRB    $temp2, [ $pointer, # OBJECT__XA_ATTRIBUTES_HI ]
+        ORR     $temp1, $temp1, $temp2, LSL # 8
+        TEQ     $temp1, # 0             ; [ no XA information ]
+        BEQ     %FT01
+        ; Mode 2 form 2 ?
+        TST     $temp1, # ATTRIBUTES__XA_MODE_2_FORM_2
+        MOVNE   $return, # 2
+        MOVEQ   $return, # 3
+01
+        Pull    "$temp1, $temp2"
+        MEND
+
+        END
+@
+
+
+4.7
+log
+@Various CDFS enhancements
+* Increase BGET/BPUT buffer declared to FileSwitch to 2k to match the natural sector size (FileSwitch has been able to support this since version 2.28)
+* Remove local debug macros, use those from NDRDebug instead
+* Change to use SETV/CLRV macros now the ones in HdrSrc are 26/32 neutral
+* Clarify those situations where LBA mode is being selected by using symbol 'LBAFormat'
+* Extend *WHICHDISC to allow an optional drive number to be provided (the code has existed for years, but the GSTrans flags and help denied its use)
+
+Version 2.60. Tagged as 'CDFS-2_60'
+@
+text
+@d57 1
+a57 1
+$label  ConvertToArchyDate $from, $to, $temp1, $temp2, $temp3, $temp4, $temp5, $temp6
+d60 1
+a60 1
+        LDR     $temp2, =365                       ; ( year * 365 ) + ( year DIV 4 )
+d62 1
+a62 1
+        MLA     $temp3, $temp2, $temp1, $temp4     ;
+d64 2
+a65 2
+        LDR     $temp2, =6 * 15 * 25 * 15          ; result * numberofcentisecondsayear / 256
+        MUL     $temp3, $temp2, $temp3             ;
+d67 2
+a68 5
+        MOV     $temp6, $temp3, ASR #24            ; h/b of result ( ignore bits 8 to 31 )
+                
+        MOV     $temp5, $temp3, ASL #8             ; l/bs of result
+                
+        LDRB    $temp1, [ $from, #1 ]              ; month ( 1 to 12 )
+d70 1
+d72 3
+a74 2
+        LDR     $temp3, [ $temp4, $temp1, ASL #2 ] ;
+        LDRB    $temp4, [ R0, #2 ]                 ; day
+d76 1
+a76 1
+        MUL     $temp4, $temp3, $temp2             ; R4 = R3 * 6 * 15 * 15 * 25
+d78 1
+a78 2
+                
+        ADD     $temp5, $temp5, $temp4, ASL #8     ; l/bs of result
+d81 1
+a81 1
+        ADD     $temp6, $temp6, $temp3             ;
+d83 1
+a83 1
+        LDRB    $temp2, [ $from, #3 ]              ; l/bs hourcentiseconds
+d85 1
+a85 1
+        MLA     $temp5, $temp1, $temp2, $temp5     ;
+d88 2
+a89 2
+        LDRB    $temp2, [ $from, #4 ]              ;
+        MLA     $temp5, $temp1, $temp2, $temp5     ;
+d92 2
+a93 2
+        MOV     $temp2, #100                       ;
+        MLA     $temp5, $temp1, $temp2, $temp5     ;
+d95 2
+a96 2
+        STR     $temp5, [ $to ]
+        STRB    $temp6, [ $to, #4 ]
+d123 24
+@
+
+
+4.6
+log
+@Exchange local definitions for central ones.
+Hdr:HighFSI LowFSI Services CDROM CMOS UpCall and CDFS now used in preference to local definitions.
+Macro 'Command' used to build the keyword table.
+Some asserts added for safety.
+
+
+Version 2.54. Tagged as 'CDFS-2_54'
+@
+text
+@a101 81
+; This will print an inline message if 'debug' = ON.
+; **********************************************************
+        MACRO
+$label  DebugInline $string,$nl
+;$label  [ debug=ON
+;        Push "R14"
+;         [ hostvdu
+;        SWI XHostFS_HostVdu
+;         ]
+;        SWI XOS_WriteS
+;        = "$string"
+;         [ "$nl"="NL"
+;        = 13,10
+;         ]
+;        = 0
+;        ALIGN
+;         [ hostvdu
+;        SWI XHostFS_TubeVdu
+;         ]
+;        Pull "R14"
+;        ]
+        MEND
+
+; **********************************************************
+; This will print a new line if 'debug' = ON.
+; **********************************************************
+        MACRO
+$label  DebugNewLine
+;$label  [ debug
+;        Push "R14"
+;         [ hostvdu
+;        SWI XHostFS_HostVdu
+;         ]
+;        SWI XOS_NewLine
+;         [ hostvdu
+;        SWI XHostFS_TubeVdu
+;         ]
+;        Pull "R14"
+;        ]
+        MEND
+
+; **********************************************************
+; This will perform a XOS_Write0 if 'debug' = ON.
+; **********************************************************
+        MACRO
+$label  Debug0 $string,$nl
+;$label  [ debug
+;        Push "R14"
+;         [ hostvdu
+;        SWI XHostFS_HostVdu
+;         ]
+;        SWI XOS_Write0
+;         [ "$nl"="NL"
+;        SWI XOS_NewLine
+;         ]
+;         [ hostvdu
+;        SWI XHostFS_TubeVdu
+;         ]
+;        Pull "R14"
+;        ]
+        MEND
+
+; **********************************************************
+; This will perform a Display if 'debug' = ON.
+; **********************************************************
+        MACRO
+$label  DebugDisplay $string,$nl
+;$label  [ debug
+;        Push "R14"
+;         [ hostvdu
+;        SWI XHostFS_HostVdu
+;         ]
+;        Display $string,$nl
+;         [ hostvdu
+;        SWI XHostFS_TubeVdu
+;         ]
+;        Pull "R14"
+;        ]
+        MEND
+
+; **********************************************************
+a211 19
+
+; ******************************************************
+; ***  Simple SETV and CLRV which are26/32 neutral   ***
+; ******************************************************
+
+        MACRO
+$label  VCLEAR $cond
+$label  CMP$cond R0, #0
+        MEND
+
+        MACRO
+$label  VSET $cond
+      [ "$cond"<>"AL" :LAND: "$cond"<>""
+        DCI     &1A000001 :EOR: Cond_$cond ; brach over on opposite condition
+      ]
+$label  CMP     R0, #&80000000
+        CMNVC   R0, #&80000000
+        MEND
+
+@
+
+
+4.5
+log
+@Resolve the 32 assembler warnings
+Mostly by swapping STASH/GRAB for Push/Pull macros.
+Inlined the module header rather than defining it in a header file.
+Renamed "Debug" macro to "DebugInline" to avoid clash with similarly named macro.
+
+Version 2.53. Tagged as 'CDFS-2_53'
+@
+text
+@d15 1
+a15 1
+; -> MyMacros
+d43 1
+a43 1
+        BL$cond      CD_ByteCopy
+d108 1
+a108 1
+;         [ hostvdu=ON
+d118 1
+a118 1
+;         [ hostvdu=ON
+d130 1
+a130 1
+;$label  [ debug=ON
+d132 1
+a132 1
+;         [ hostvdu=ON
+d136 1
+a136 1
+;         [ hostvdu=ON
+d148 1
+a148 1
+;$label  [ debug=ON
+d150 1
+a150 1
+;         [ hostvdu=ON
+d157 1
+a157 1
+;         [ hostvdu=ON
+d169 1
+a169 1
+;$label  [ debug=ON
+d171 1
+a171 1
+;         [ hostvdu=ON
+d175 1
+a175 1
+;         [ hostvdu=ON
+d253 1
+a253 1
+      [ log=ON
+d294 3
+a296 1
+
+@
+
+
+4.4
+log
+@  Nice new features.
+Detail:
+  * Reenabled BootFromCD option, and finished it off (so FSFunc_ReadBoot
+    returns 2 (Run) to match the enforced action on booting); booting
+    command line changed to "Run $.!BOOT"
+  * Added 32-bit and 64-bit ReadFreeSpace FSFunc entries
+  * Added support for interfacing with the Free module (so *ShowFree -FS CDFS
+    now works)
+  * Added missing * in syntax messags for *Lock and *Unlock
+Admin:
+  Tested on Tungsten.
+
+Version 2.45. Tagged as 'CDFS-2_45'
+@
+text
+@d15 1
+a15 1
+; -> macros
+a17 2
+OUTPUT_TO_SCREEN * FALSE
+
+d28 1
+a28 1
+$label  TST $reg, #3
+d58 42
+a99 43
+$label  LDRB $temp1, [ $from, #0 ] ; R1 = year ( from 1900 )
+
+ LDR $temp2, =365           ; ( year * 365 ) + ( year DIV 4 )
+ MOV $temp4, $temp1, ASR #2 ;
+ MLA $temp3, $temp2, $temp1, $temp4         ;
+
+ LDR $temp2, =6 * 15 * 25 * 15  ; result * numberofcentisecondsayear / 256
+ MUL $temp3, $temp2, $temp3     ;
+
+ MOV $temp6, $temp3, ASR #24        ; h/b of result ( ignore bits 8 to 31 )
+
+ MOV $temp5, $temp3, ASL #8         ; l/bs of result
+
+ LDRB $temp1, [ $from, #1 ]        ; month ( 1 to 12 )
+
+ ADRL $temp4, DaysInMonth - 4   ; R3 = cumulative total of days up to that month
+ LDR $temp3, [ $temp4, $temp1, ASL #2 ] ;
+ LDRB $temp4, [ R0, #2 ]        ; day
+ ADD $temp3, $temp3, $temp4             ;
+ MUL $temp4, $temp3, $temp2             ; R4 = R3 * 6 * 15 * 15 * 25
+
+
+ ADD $temp5, $temp5, $temp4, ASL #8     ; l/bs of result
+ MOV $temp3, $temp4, ROR #24        ; h/b of result
+ AND $temp3, $temp3, #&FF           ;
+ ADD $temp6, $temp6, $temp3             ;
+
+ LDRB $temp2, [ $from, #3 ]        ; l/bs hourcentiseconds
+ LDR $temp1, =60*60*100         ;
+ MLA $temp5, $temp1, $temp2, $temp5         ;
+
+ LDR $temp1, =60*100            ; l/bs minutecentiseconds
+ LDRB $temp2, [ $from, #4 ]        ;
+ MLA $temp5, $temp1, $temp2, $temp5         ;
+
+ LDRB $temp1, [ $from, #5 ]        ; l/bs of secondcentiseconds
+ MOV $temp2, #100               ;
+ MLA $temp5, $temp1, $temp2, $temp5         ;
+
+ STR $temp5, [ $to ]
+ STRB $temp6, [ $to, #4 ]
+
+       MEND
+d102 1
+a102 1
+; This will print a message if 'debug' = ON.
+d104 2
+a105 2
+;        MACRO
+;$label  Debug $string,$nl
+d107 1
+a107 1
+;        STASH R14
+d121 1
+a121 1
+;        GRAB R14
+d123 1
+a123 1
+;        MEND
+d131 1
+a131 1
+;        STASH R14
+d139 1
+a139 1
+;        GRAB R14
+d149 1
+a149 1
+;        STASH R14
+d160 1
+a160 1
+;        GRAB R14
+d170 1
+a170 1
+;        STASH R14
+d178 1
+a178 1
+;        GRAB R14
+d190 15
+a204 15
+  MACRO
+$label DivideBy10 $number, $temp1, $temp3
+$label MOV     $temp1,$number
+       MOV     $number,$number,LSR #1
+       ADD     $number,$number,$number,LSR #1
+       ADD     $number,$number,$number,LSR #4
+       ADD     $number,$number,$number,LSR #8
+       ADD     $number,$number,$number,LSR #16
+       MOV     $number,$number,LSR #3
+       ADD     $temp3,$number,$number,LSL #2
+       SUB     $temp1,$temp1,$temp3,LSL #1
+       CMP     $temp1,#10
+       ADDGE   $number,$number,#1
+       SUBGE   $temp1,$temp1,#10
+  MEND
+d211 3
+a213 3
+$label  GRABALL $cond
+$label  LDR$cond R13, stackreturn
+        GRAB "R0 - R11, R14", $cond
+d217 3
+a219 10
+$label  GRABALLANDRETURN $cond
+$label  LDR$cond R13, stackreturn
+        GRAB "R0 - R11, PC", $cond
+        MEND
+
+        MACRO ; leaves a number of registers alone (from R0 upwards)
+$label  GRABALLANDRETURNRESULTS $regs, $cond
+$label  LDR$cond R13, stackreturn
+        ADD$cond R13, R13, #4 * $regs
+        DCI (Cond_$cond :OR: &08BD8FFF) :AND: :NOT: ((1:SHL:$regs) - 1)
+d223 9
+a231 5
+$label  GRABALLANDRETURNERROR
+$label  LDR R13, stackreturn
+        ADD R13, R13, #4
+        VSET
+        GRAB "R1 - R11, PC"
+a233 1
+
+d239 6
+a244 6
+        MOV $length, #0
+01
+$label  LDRB $temp, [ $name, $length ]
+        ADD $length, $length, #1
+        CMP $temp, #0
+        BNE %BT01
+d247 4
+a250 3
+;--- This is for cdfs to keep a log of calls made
+
+ MACRO
+d253 8
+a260 8
+ [ log=ON
+ STASH R14
+ LDR R14, log_pointer
+ STR PC, [ R14 ], #4
+ STR R14, log_pointer
+ GRAB R14
+ ]
+ MEND
+d278 11
+a288 11
+$label  STASH     "$temp1, $temp2"
+        MOV       $return, # 1
+        LDRB      $temp1, [ $pointer, # OBJECT__XA_ATTRIBUTES_LO ]
+        LDRB      $temp2, [ $pointer, # OBJECT__XA_ATTRIBUTES_HI ]
+        ORR       $temp1, $temp1, $temp2, LSL # 8
+        TEQ       $temp1, # 0                           ; [ no XA information ]
+        BEQ       %FT01
+       ; Mode 2 form 2 ?
+        TST       $temp1, # ATTRIBUTES__XA_MODE_2_FORM_2
+        MOVNE     $return, # 2
+        MOVEQ     $return, # 3
+d290 1
+a290 12
+
+;        STASH r4
+;        STRIM " Data mode = "
+;        MOV  r4, $return
+;        Display r4
+;        STRIM " Flags = "
+;        MOV  r4, $temp1
+;        Display r4
+;        SWI XOS_NewLine
+;        GRAB  r4
+
+        GRAB      "$temp1, $temp2"
+a292 30
+;************************************************************
+; This is used by CDFS in 'Test' to set up module entry points
+;************************************************************
+       MACRO
+$label ModuleDescriptionHeader
+$label
+ DCD 0
+ DCD initialisingcode - startofheader
+ DCD finalisingcode - startofheader
+ DCD servicecode - startofheader
+ DCD title - startofheader
+ DCD help - startofheader
+ DCD KeywordTable - startofheader
+ DCD CDFSSWIBaseNumber
+ DCD CDFSSWIentry - startofheader
+ DCD CDFStableofswinames - startofheader
+ DCD 0                                   ; decoding code
+ [ LazyIntHelp
+ DCD message_filename - startofheader
+ |
+ DCD 0                                   ; international help
+ ]
+ DCD ModuleFlags - startofheader
+
+; DCD 0                                   ; code for command
+; DCD 1                                   ; information word
+; DCD 0                                   ; syntax message
+; DCD 0                                   ; help text
+       MEND
+
+a293 5
+        MACRO
+$label  STASHALL $cond
+$label  STASH "R0 - R11, R14", $cond
+        STR$cond R13, stackreturn
+        MEND
+@
+
+
+4.3
+log
+@  A few fixes.
+Detail:
+  * Fixed a couple of top-bit-set pointer problems
+  * Fixed a couple of places where it was assumed that SWIs preserved flags
+  * Uses kernel internationalisation for command help, so full tokenisation
+    now works properly
+  * Added NdrDebug support
+Admin:
+  Tested on Tungsten.
+
+Version 2.41. Tagged as 'CDFS-2_41'
+@
+text
+@d225 7
+@
+
+
+4.2
+log
+@Fixed error returns - the old code in s.Error poked the error pointer into
+the stack without taking account of the fact that the GRABALL macro flattens
+the stack before pulling the return environment. This typically led to
+"Invalid error block" errors.
+
+Version 2.40. Tagged as 'CDFS-2_40'
+@
+text
+@d107 20
+a126 20
+        MACRO
+$label  Debug $string,$nl
+$label  [ debug=ON
+        STASH R14
+         [ hostvdu=ON
+        SWI XHostFS_HostVdu
+         ]
+        SWI XOS_WriteS
+        = "$string"
+         [ "$nl"="NL"
+        = 13,10
+         ]
+        = 0
+        ALIGN
+         [ hostvdu=ON
+        SWI XHostFS_TubeVdu
+         ]
+        GRAB R14
+        ]
+        MEND
+d133 11
+a143 11
+$label  [ debug=ON
+        STASH R14
+         [ hostvdu=ON
+        SWI XHostFS_HostVdu
+         ]
+        SWI XOS_NewLine
+         [ hostvdu=ON
+        SWI XHostFS_TubeVdu
+         ]
+        GRAB R14
+        ]
+d151 14
+a164 14
+$label  [ debug=ON
+        STASH R14
+         [ hostvdu=ON
+        SWI XHostFS_HostVdu
+         ]
+        SWI XOS_Write0
+         [ "$nl"="NL"
+        SWI XOS_NewLine
+         ]
+         [ hostvdu=ON
+        SWI XHostFS_TubeVdu
+         ]
+        GRAB R14
+        ]
+d172 11
+a182 11
+$label  [ debug=ON
+        STASH R14
+         [ hostvdu=ON
+        SWI XHostFS_HostVdu
+         ]
+        Display $string,$nl
+         [ hostvdu=ON
+        SWI XHostFS_TubeVdu
+         ]
+        GRAB R14
+        ]
+d320 3
+d324 1
+@
+
+
+4.1
+log
+@  Lots of changes for RISC OS 5.
+Detail:
+  * Updated to use objasm, shared makefiles and global headers
+  * Ripped out lots of RISC OS 2 support code so we can see the wood for the
+    trees now
+  * 32-bit compatible (a bit of a slog)
+  * Now has its own resources phase, replacing the use of the CDFSResources
+    module. Also means that messages can now be tokenised properly. For
+    good measure, split out CmdHelp tokens into separate file
+  * Hopefully fixed more bugs along the way than I introduced. I've seen
+    lots of nasty stack imbalances in error cases, but not fixed all of
+    them, I'm afraid
+Admin:
+  Tested briefly on a Risc PC; not enough support modules to run on Tungsten
+  yet.
+
+Version 2.38. Tagged as 'CDFS-2_38'
+@
+text
+@d225 8
+@
+

@@ -1,0 +1,1174 @@
+head	1.9;
+access;
+symbols
+	Browse-2_16:1.9
+	Browse-2_15:1.9
+	Browse-2_14:1.9
+	Browse-2_13:1.9
+	Browse-2_12:1.9
+	Browse-2_11:1.9
+	Browse-2_10:1.9
+	Browse-2_09:1.9
+	ahodgkin_208_i4_2:1.9
+	ahodgkin_208_i4:1.7
+	ahodgkin_208_i3:1.7
+	ahodgkin_208_i2:1.7
+	ahodgkin_208_i1:1.7
+	ahodgkin_207release:1.6
+	ahodgkin_206release:1.6
+	ahodgkin_205release:1.6
+	ahodgkin_204release:1.6
+	ahodgkin_202release:1.5
+	ahodgkin_201release:1.5
+	ahodgkin_200release:1.5
+	ahodgkin_133beta:1.5
+	ahodgkin_132beta:1.5
+	ahodgkin_131beta:1.5
+	ahodgkin_130beta:1.5
+	ahodgkin_129:1.5
+	ahodgkin_128beta:1.5
+	ahodgkin_128alpha:1.5
+	ahodgkin_127beta2:1.5
+	ahodgkin_127beta:1.5
+	ahodgkin_126beta:1.5
+	ahodgkin_AW97patch:1.5
+	ahodgkin_AW97:1.5;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2000.11.14.08.45.05;	author ahodgkin;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	2000.05.31.15.58.29;	author ahodgkin;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	99.09.02.13.10.14;	author ahodgkin;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.04.16.08.14.07;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	97.09.09.14.13.09;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	97.08.18.09.23.50;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.08.08.16.38.46;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.07.31.14.50.10;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.07.30.12.38.58;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    Cookies.c                                         */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Client-side HTTP cookie support.                  */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 20-Jul-1996 (ADH): Created.                       */
+/*          02-Apr-1998 (ADH): Working code implemented.      */
+/*          25-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "Browser.h"
+#include "ChoiceDefs.h"
+#include "List.h"
+#include "MiscDefs.h"
+#include "URLutils.h"
+
+#include "Cookies.h"
+
+/* Local statics */
+
+static ObjectId     cookie_dbox   = NULL_ObjectId;
+static int          dont_prompt   = 0;
+
+static unsigned int cookie_handle = 0;
+
+/* Static function prototypes */
+
+static _kernel_oserror * cookies_open_dialogue    (browser_data * b, unsigned int handle, const char * domain, const char * name, const char * value, const char * path);
+
+static _kernel_oserror * cookies_accept           (unsigned int handle);
+static _kernel_oserror * cookies_reject           (unsigned int handle);
+
+static int               cookies_accept_cookie    (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               cookies_reject_cookie    (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+static _kernel_oserror * cookies_destroy_dialogue (void);
+
+/**************************************************************/
+/* cookies_pending()                                          */
+/*                                                            */
+/* See if there are any cookies waiting to be dealt with...   */
+/*                                                            */
+/* Returns:    1 if there are pending cookies, else 0.        */
+/**************************************************************/
+
+int cookies_pending(void)
+{
+  int handle = 0;
+
+  if (
+       _swix(HTTP_EnumerateCookies,
+             _INR(0,1) | _OUT(1),
+
+             0,
+             handle,
+
+             &handle)
+     )
+     return 0;
+
+  else return (handle != 0);
+}
+
+/**************************************************************/
+/* cookies_dialogue_open()                                    */
+/*                                                            */
+/* Is the Cookie Query dialogue box open?                     */
+/*                                                            */
+/* Returns:    browser_data pointer for which the dialogue    */
+/*             was opened, or NULL if closed.                 */
+/**************************************************************/
+
+browser_data * cookies_dialogue_open(void)
+{
+  browser_data * b;
+
+  if (cookie_dbox == NULL_ObjectId) return NULL;
+
+  if (toolbox_get_client_handle(0, cookie_dbox, (void *) &b)) return NULL;
+
+  return b;
+}
+
+/**************************************************************/
+/* cookies_process_cookie()                                   */
+/*                                                            */
+/* If a call to URL_ReadData flags (through bit 16 of the     */
+/* returned status word being set) that a cookie / some       */
+/* cookies have arrived, this function deals with sending     */
+/* that cookie on or getting rid of it. This may or may not   */
+/* involve user level interaction.                            */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the fetch.                                     */
+/**************************************************************/
+
+_kernel_oserror * cookies_process_cookie(browser_data * b)
+{
+  /* Only get a cookie if the dialogue isn't already open */
+
+  if (cookie_dbox == NULL_ObjectId)
+  {
+    _kernel_oserror * e;
+    int               handle = 0;
+    int               unread = 1;
+    int               action = choices.cookies;
+    int               flags;
+    int               ncookies;
+    char            * domain;
+    char            * name;
+    char            * value;
+    char            * path;
+    const char      * current;
+
+    /* Exclusions - should we accept or reject any cookies regardless */
+    /* of Choices settings?                                           */
+
+    current = browser_fetch_url(b);
+    if (!current) current = browser_current_url(b);
+
+    if (current)
+    {
+      int               accept = 0;
+      int               reject = 0;
+      char            * list;
+      url_description * d      = urlutils_return_description(current);
+
+      if (d)
+      {
+        list = list_get_malloc_list_string("LOCookieAccept");
+        if (list) accept = urlutils_matches_special(d, list);
+        free(list);
+
+        list = list_get_malloc_list_string("LOCookieReject");
+        if (list) reject = urlutils_matches_special(d, list);
+        free(list);
+
+        urlutils_free_description(d);
+
+        if      (accept && !reject) action = Choices_Cookies_Accept;
+        else if (!accept && reject) action = Choices_Cookies_Reject;
+      }
+    }
+
+    /* Right, go through any pending cookies */
+
+    while (unread)
+    {
+      e = _swix(HTTP_EnumerateCookies,
+                _INR(0,1) | _OUTR(0,7),
+
+                0,
+                handle,
+
+                &flags,
+                &handle,
+                &ncookies,
+                &unread,
+                &domain,
+                &name,
+                &value,
+                &path);
+
+      /* Exit conditions */
+
+      if (e) return e;
+      if (!handle) break;
+
+      /* We must either accept, reject or prompt for this cookie */
+
+      switch (action)
+      {
+        default:
+        case Choices_Cookies_Prompt:
+        {
+          /* Once someone ticks the 'don't ask again' flag, that's it */
+          /* until the browser is restarted.                          */
+
+          if (dont_prompt)
+          {
+            RetError(cookies_accept(handle));
+          }
+          else
+          {
+            /* Open the Cookie Query dialogue box for this cookie */
+
+            RetError(cookies_open_dialogue(b,
+                                           handle,
+                                           domain,
+                                           name,
+                                           value,
+                                           path));
+          }
+        }
+        break;
+
+        case Choices_Cookies_Accept:
+        {
+          RetError(cookies_accept(handle));
+        }
+        break;
+
+        case Choices_Cookies_Reject:
+        {
+          RetError(cookies_reject(handle));
+        }
+        break;
+      }
+    }
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* cookies_accept_current()                                   */
+/*                                                            */
+/* If the Cookie Query dialogue box is open, accept the       */
+/* cookie that it's open for.                                 */
+/**************************************************************/
+
+_kernel_oserror * cookies_accept_current(void)
+{
+  _kernel_oserror * e1;
+  _kernel_oserror * e2;
+
+  if (cookie_dbox == NULL_ObjectId) return NULL;
+
+  /* Accept the cookie */
+
+  e1 = cookies_accept(cookie_handle);
+
+  /* Get rid of the dialogue box */
+
+  e2 = cookies_destroy_dialogue();
+
+  /* Return the cookies_accept error over the dialogue */
+  /* box error. This was more or less an arbitrary     */
+  /* decision.                                         */
+
+  if (e1) return e1;
+
+  return e2;
+}
+
+/**************************************************************/
+/* cookies_accept_all()                                       */
+/*                                                            */
+/* Accept all pending cookies.                                */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the fetch.                                     */
+/**************************************************************/
+
+_kernel_oserror * cookies_accept_all(void)
+{
+  _kernel_oserror * e;
+  int               handle = 0;
+  int               unread = 1;
+  int               flags;
+  int               ncookies;
+
+  while (unread)
+  {
+    e = _swix(HTTP_EnumerateCookies,
+              _INR(0,1) | _OUTR(0,3),
+
+              0,
+              handle,
+
+              &flags,
+              &handle,
+              &ncookies,
+              &unread);
+
+    /* Exit conditions */
+
+    if (e) return e;
+    if (!handle) break;
+
+    RetError(cookies_accept(handle));
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* cookies_open_dialogue()                                    */
+/*                                                            */
+/* Open the Cookie Query dialogue box for a particular        */
+/* cookie.                                                    */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the cookie (or NULL if none is applicable);    */
+/*                                                            */
+/*             Unique cookie handle as returned from the HTTP */
+/*             module SWI HTTP_EnumerateCookies;              */
+/*                                                            */
+/*             Pointer to a string containing the cookie      */
+/*             domain;                                        */
+/*                                                            */
+/*             Pointer to a string containing the cookie      */
+/*             name;                                          */
+/*                                                            */
+/*             Pointer to a string containing the cookie      */
+/*             value;                                         */
+/*                                                            */
+/*             Pointer to a string containing the cookie      */
+/*             path.                                          */
+/**************************************************************/
+
+static _kernel_oserror * cookies_open_dialogue(browser_data * b, unsigned int handle, const char * domain,
+                                               const char * name, const char * value, const char * path)
+{
+  /* If there's already apparently a dialogue box created, */
+  /* delete it first.                                      */
+
+  if (cookie_dbox != NULL_ObjectId)
+  {
+    _kernel_oserror * e = toolbox_delete_object(0, cookie_dbox);
+
+    cookie_dbox = NULL_ObjectId;
+
+    if (e) return e;
+  }
+
+  /* Create the dialogue */
+
+  RetError(toolbox_create_object(0,
+                                 "CookieQuery",
+                                 &cookie_dbox));
+
+  /* Fill in the various fields. First, the main prompt field. */
+
+  button_set_value(0,
+                   cookie_dbox,
+                   CookiePrompt,
+                   lookup_token("Cookie:A server sent you a cookie. Do you want to accept or reject it?",
+                                0,
+                                0));
+
+  /* Cookie's name, domain and path. */
+
+  displayfield_set_value(0,
+                         cookie_dbox,
+                         CookieNameDisplay,
+                         name ? (char *) name : lookup_token("selNONE:<None>",0,0));
+
+  displayfield_set_value(0,
+                         cookie_dbox,
+                         CookieDomainDisplay,
+                         domain ? (char *) domain : lookup_token("selNONE:<None>",0,0));
+
+  displayfield_set_value(0,
+                         cookie_dbox,
+                         CookiePathDisplay,
+                         path ? (char *) path : lookup_token("selNONE:<None>",0,0));
+
+  /* Cookie's value */
+
+  button_set_value(0,
+                   cookie_dbox,
+                   CookieValue,
+                   value ? (char *) value : lookup_token("selNONE:<None>",0,0));
+
+  /* Store the browser_data pointer in the object's client handle */
+
+  RetError(toolbox_set_client_handle(0,
+                                     cookie_dbox,
+                                     (void *) b));
+
+  /* Install relevant event handlers */
+
+  RetError(event_register_toolbox_handler(cookie_dbox,
+                                          ECookieAccept,
+                                          cookies_accept_cookie,
+                                          NULL));
+
+  RetError(event_register_toolbox_handler(cookie_dbox,
+                                          ECookieReject,
+                                          cookies_reject_cookie,
+                                          NULL));
+
+  /* Remember the cookie handle that the dialogue is open for.   */
+  /* We don't do this through event handler handles as functions */
+  /* like cookies_accept_current need to know the cookie handle  */
+  /* without being called through an event handler.              */
+
+  cookie_handle = handle;
+
+  /* Show the dialogue box */
+
+  return toolbox_show_object(0,
+                             cookie_dbox,
+                             Toolbox_ShowObject_Centre,
+                             NULL,
+                             NULL_ObjectId,
+                             NULL_ComponentId);
+}
+
+/**************************************************************/
+/* cookies_accept()                                           */
+/*                                                            */
+/* Tell the HTTP module to accept a cookie.                   */
+/*                                                            */
+/* Parameters: Unique cookie handle as returned from the HTTP */
+/*             module SWI HTTP_EnumerateCookies.              */
+/**************************************************************/
+
+static _kernel_oserror * cookies_accept(unsigned int handle)
+{
+  return _swix(HTTP_ConsumeCookie,
+               _INR(0,2),
+
+               1, /* Flags - bit 0 set for Accept, clear for Reject */
+               0,
+               handle);
+}
+
+/**************************************************************/
+/* cookies_reject()                                           */
+/*                                                            */
+/* Tell the HTTP module to reject a cookie.                   */
+/*                                                            */
+/* Parameters: Unique cookie handle as returned from the HTTP */
+/*             module SWI HTTP_EnumerateCookies.              */
+/**************************************************************/
+
+static _kernel_oserror * cookies_reject(unsigned int handle)
+{
+  return _swix(HTTP_ConsumeCookie,
+               _INR(0,2),
+
+               0, /* Flags - bit 0 set for Accept, clear for Reject */
+               0,
+               handle);
+}
+
+/**************************************************************/
+/* cookies_accept_cookie()                                    */
+/*                                                            */
+/* Accept a cookie and see if there are any others queued in  */
+/* the HTTP module; if so, prompt for those (depending on the */
+/* state of the 'don't ask again' flag - if this is set,      */
+/* accept all subsequent cookies).                            */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int cookies_accept_cookie(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  browser_data * b;
+
+  ChkError(toolbox_get_client_handle(0, cookie_dbox, (void *) &b));
+
+  /* Read the 'don't ask again' option */
+
+  if (
+       optionbutton_get_state(0,
+                              cookie_dbox,
+                              CookieDontAskAgain,
+                              &dont_prompt)
+     )
+     dont_prompt = 0;
+
+  /* Accept the cookie */
+
+  ChkError(cookies_accept(cookie_handle));
+
+  /* Get rid of the dialogue box */
+
+  ChkError(cookies_destroy_dialogue());
+
+  /* Go round again */
+
+  ChkError(cookies_process_cookie(b));
+
+  return 1;
+}
+
+/**************************************************************/
+/* cookies_reject_cookie()                                    */
+/*                                                            */
+/* Reject a cookie and see if there are any others queued in  */
+/* the HTTP module; if so, prompt for those (depending on the */
+/* state of the 'don't ask again' flag - if this is set,      */
+/* *accept* all subsequent cookies).                          */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int cookies_reject_cookie(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  browser_data * b;
+
+  ChkError(toolbox_get_client_handle(0, cookie_dbox, (void *) &b));
+
+  /* Read the 'don't ask again' option */
+
+  if (
+       optionbutton_get_state(0,
+                              cookie_dbox,
+                              CookieDontAskAgain,
+                              &dont_prompt)
+     )
+     dont_prompt = 0;
+
+  /* Reject the cookie */
+
+  ChkError(cookies_reject(cookie_handle));
+
+  /* Get rid of the dialogue box */
+
+  ChkError(cookies_destroy_dialogue());
+
+  /* Go round again */
+
+  ChkError(cookies_process_cookie(b));
+
+  return 1;
+}
+
+/**************************************************************/
+/* cookies_destroy_dialogue()                                 */
+/*                                                            */
+/* Close and delete the Cookie Query dialogue box.            */
+/**************************************************************/
+
+static _kernel_oserror * cookies_destroy_dialogue(void)
+{
+  _kernel_oserror * e;
+
+  if (cookie_dbox == NULL_ObjectId) return NULL;
+
+  event_deregister_toolbox_handlers_for_object(cookie_dbox);
+
+  e = toolbox_delete_object(0,
+                            cookie_dbox);
+
+  cookie_dbox   = NULL_ObjectId;
+  cookie_handle = 0;
+
+  return e;
+}
+@
+
+
+1.8
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a39 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.7
+log
+@Long overdue check-in of intermediate browser build, from continued "out
+of hours" work. Forgot to add a few files last time too.
+
+List dialogue box handler complete, and exclusion lists implemented
+within the main browser code. Full documentation in Choices file.
+Save routine knows all about it but is now getting very slow - must
+come up with a better scheme; for now, it puts the hourglass on...
+
+StripExtensions option controls auto stripping of filename extensions.
+
+More sensible ancestor / frame selection for keyboard shortcut items
+and the save dialogues - having selected a frame won't lock you into
+it for F3 and related shortcuts now (input focus in URL writable ->
+get ancestor details, input focus in frame -> get frame details). F4
+works in frames. F5 now generally present for 'view source' with a
+corresponding menu entry in the File menu.
+
+Odd thing in later Res files; there's no action set for Adjust clicks
+on the main ToolAction items in the button bar. Very odd. Nothing
+appears to be set in v2.07 either, yet adjust-click works. Even
+stranger. Anyway, added in the relevant event details (same as for
+Select click in all cases) and this fixes the problem.
+
+Background colours in the TABLE tag ignored the "don't print any
+backgrounds" Print Style setting. Fixed. Meanwhile, the "black
+text with no backgrounds" option wasn't getting this right either;
+fixed this also.
+
+Event logging implemented; HTTP errors and script output via.
+window.print extension. No internal error output yet.
+
+Faith:Never behaviour extended. If ever a server sends something with
+no content type or an unhandleable type, the browser will try and get a
+filetype from the URL. If it gets text or HTML, it'll render the file.
+Else it'll save it. Hacks around IIS 4's lack of a content type field
+in the Marketeye login stuff, and similar other slightly broken sites.
+@
+text
+@d15 13
+a27 10
+/***************************************************/
+/* File   : Cookies.c                              */
+/*                                                 */
+/* Purpose: Browser-end HTTP Cookie support.       */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 28-Jul-96: Created.                    */
+/*          02-Apr-98: Working code implemented.   */
+/***************************************************/
+d33 2
+a34 1
+#include "swis.h"
+d36 8
+a43 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a44 1
+#include "svcprint.h"
+d75 7
+a81 9
+/*************************************************/
+/* cookies_pending()                             */
+/*                                               */
+/* See if there are any cookies waiting to be    */
+/* dealt with...                                 */
+/*                                               */
+/* Returns:    1 if there are pending cookies,   */
+/*             else 0.                           */
+/*************************************************/
+d101 8
+a108 9
+/*************************************************/
+/* cookies_dialogue_open()                       */
+/*                                               */
+/* Is the Cookie Query dialogue box open?        */
+/*                                               */
+/* Returns:    browser_data pointer for which    */
+/*             the dialogue was opened, or NULL  */
+/*             if closed.                        */
+/*************************************************/
+d121 12
+a132 13
+/*************************************************/
+/* cookies_process_cookie()                      */
+/*                                               */
+/* If a call to URL_ReadData flags (through bit  */
+/* 16 of the returned status word being set)     */
+/* that a cookie / some cookies have arrived,    */
+/* this function deals with sending that cookie  */
+/* on or getting rid of it. This may or may not  */
+/* involve user level interaction.               */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the fetch.            */
+/*************************************************/
+d252 6
+a257 6
+/*************************************************/
+/* cookies_accept_current()                      */
+/*                                               */
+/* If the Cookie Query dialogue box is open,     */
+/* accept the cookie that it's open for.         */
+/*************************************************/
+d283 8
+a290 8
+/*************************************************/
+/* cookies_accept_all()                          */
+/*                                               */
+/* Accept all pending cookies.                   */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the fetch.            */
+/*************************************************/
+d324 24
+a347 26
+/*************************************************/
+/* cookies_open_dialogue()                       */
+/*                                               */
+/* Open the Cookie Query dialogue box for a      */
+/* particular cookie.                            */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the cookie (or NULL   */
+/*             if none is applicable);           */
+/*                                               */
+/*             Unique cookie handle as returned  */
+/*             from the HTTP module SWI          */
+/*             HTTP_EnumerateCookies;            */
+/*                                               */
+/*             Pointer to a string containing    */
+/*             the cookie domain;                */
+/*                                               */
+/*             Pointer to a string containing    */
+/*             the cookie name;                  */
+/*                                               */
+/*             Pointer to a string containing    */
+/*             the cookie value;                 */
+/*                                               */
+/*             Pointer to a string containing    */
+/*             the cookie path.                  */
+/*************************************************/
+d438 8
+a445 9
+/*************************************************/
+/* cookies_accept()                              */
+/*                                               */
+/* Tell the HTTP module to accept a cookie.      */
+/*                                               */
+/* Parameters: Unique cookie handle as returned  */
+/*             from the HTTP module SWI          */
+/*             HTTP_EnumerateCookies.            */
+/*************************************************/
+d457 8
+a464 9
+/*************************************************/
+/* cookies_reject()                              */
+/*                                               */
+/* Tell the HTTP module to reject a cookie.      */
+/*                                               */
+/* Parameters: Unique cookie handle as returned  */
+/*             from the HTTP module SWI          */
+/*             HTTP_EnumerateCookies.            */
+/*************************************************/
+d476 10
+a485 12
+/*************************************************/
+/* cookies_accept_cookie()                       */
+/*                                               */
+/* Accept a cookie and see if there are any      */
+/* others queued in the HTTP module; if so,      */
+/* prompt for those (depending on the state of   */
+/* the 'don't ask again' flag - if this is set,  */
+/* accept all subsequent cookies).               */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d518 10
+a527 12
+/*************************************************/
+/* cookies_reject_cookie()                       */
+/*                                               */
+/* Reject a cookie and see if there are any      */
+/* others queued in the HTTP module; if so,      */
+/* prompt for those (depending on the state of   */
+/* the 'don't ask again' flag - if this is set,  */
+/* *accept* all subsequent cookies).             */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d560 5
+a564 6
+/*************************************************/
+/* cookies_destroy_dialogue()                    */
+/*                                               */
+/* Close and delete the Cookie Query dialogue    */
+/* box.                                          */
+/*************************************************/
+@
+
+
+1.6
+log
+@All !Run[D], Choices, Messages, Controls and Res files are up to date.
+
+RefoKeep and RefoHold options added to, respectively, try and maintain
+the line at the top of the visible area when reformatting, and not shrink
+the vertical extent at the start of a reformat to try and avoid flicker
+to the top of the page and back down again when RefoKeep is on. Choices
+front-end implemented, which also allows RefoWait and RefoTime to be set.
+Unfortunately for various reasons this doesn't help the page jumping when
+unsized images come in (but RefoHold can improve matters...) - roll on
+the image history.
+
+DragToScroll and NoScrollBars options added for frames; included new
+pointer type, Mouse_Shape_DTS, so relevant Controls file entries done
+and Sprites[22] files updated as required. Noticed some builds have
+a low-res ptr_link with a mask - mask removed.
+
+Named anchor following fixed up somewhat - anchors near the bottom of
+the page shouldn't be displayed, and then pulled down when the fetcher
+releases null polls and ensures the y extent is correct (this through
+implementing the min_height field in the browser_data structure).
+
+RefoHang was never implemented and there seems little point to it now,
+so the entry for it has been removed from the global choices structure
+and all Choices files.
+
+Markers menus should work properly now (in last check-in they would not
+update correctly if Adjust was used on the entries).
+
+URI handler usage now a lot more sensible, with configuration of how the
+browser uses the module from both a Utils menu submenu (sic) and the
+Choices dialogue.
+
+Slightly dodgy 'hang around waiting for user input' stuff for the Cookies
+dialogue box: All fetches are suspended; the fetcher remembers some info
+about its state at the time the cookie came in, and restores it later; it
+will only do this for one fetch at a time. It's necessary to single-thread
+the fetcher at this point anyway, since other fetches may have a
+dependency on the cookie that is hanging in mid-air at that point. As part
+of this, some of the fetcher code has been split out into separate
+functions (to try and 'black box' the code a bit). Anyway, Cookie Query
+dialogue box now implemented with appropriate Choices file entry and
+UI work in the Choices dialogue box.
+
+Phoenix build Choices rearranged. Can now choose when the image history
+is saved from the front end. Added also MSIE 4-style table option menu
+for JPEG support (OS only, OS if it can handle it, internal only).
+
+Should be a bit faster at loading the history - though 95% of the time
+is spent in SWI URL_ParseURL. URL descriptions are stored more
+efficiently as part of this - one malloc block instead of several
+small blocks. The minimum block size for malloc blocks typically leads
+to a significantly smaller startup wimpslot depending on the visit
+history size.
+
+Nasty bug in image system fixed. If an image size came in and a reformat
+was to take place, the line the image lies in is found and the reformat
+progresses from there. Unforunately, this didn't check to see if the
+token can't be found in the line list, so it'd reformat from the top
+of the page...! This would happen if, for example, an image halfway down
+the page came in whilst a reformat for an image higher up had just begun.
+
+In Choices.c, made choices_set_timetype_field, choices_set_uri_field,
+choices_set_plugin_field, choices_set_cookie_field, and
+choices_set_jpeg_field static (so they're not declared in Choices.h now).
+
+Two memory leaks plugged in URL comparison routines in URLutils.c
+(calling free() url_description instead of urlutils_free_descripton()).
+
+Client pull reload handler was setting the reload flag if reloading
+the same page, but forgetting to turn on reload_lock so
+fetchpage_postprocessed was clearing the reload state... Similarly,
+Ctrl+Shift+SELECT-Click on a link when the Controls file 'UseSmall'
+entry is 'no' would not have reloaded as it should. Both fixed.
+
+Frames shouldn't be so keen on acquiring horizontal scroll bars and never
+letting them go when their width is decreased now. Frames set up for
+'scrolling="yes"' will not start with no scroll bars and then gain them
+shortly afterwards, causing flicker and two reformats - they'll start
+with, and continue to hold, both scroll bars.
+
+Pointer shouldn't flicker when over a frame border whilst other fetches
+are progressing now.
+@
+text
+@d40 1
+d42 1
+d44 1
+a131 10
+  _kernel_oserror * e;
+  int               handle = 0;
+  int               unread = 1;
+  int               flags;
+  int               ncookies;
+  char            * domain;
+  char            * name;
+  char            * value;
+  char            * path;
+
+d136 44
+d204 1
+a204 1
+      switch (choices.cookies)
+@
+
+
+1.5
+log
+@First a minor warning - the various Res files are out of sync in this build.
+Only the Browse resources are currently valid.
+
+Added Utils.Icons - has a few archives inside containing the resources
+(well, some of them) used to build various UI sprites for various builds.
+Archived because these are unlikely to change much, and putting them on
+CVS was a move to, well, archive the stuff...
+
+SaveDBox objects vanquished and requirements in !Run[D] files removed. The
+data save code fits much more neatly in amongst the data load protocol
+stuff now (with the slight exception of having to split the SaveObject
+source into SaveObject and SaveFile - the former handles multiple persistent
+dialogues for Shift+Click on links and the like, the latter handles 'one at
+a time' transient dialogues for save source and similar). Export Link is now
+supported, too, and writes a 'proper' version URI file. You'll find that
+double-clicking on old URI files will work as the URI handler picks them up,
+whilst new version ones don't; however, dragging onto the browser will only
+work with new version files. Note that support for saving and loading URL
+files (ANT suite stuff) is present too, so old URI files can be typed as URL
+files if you want to keep them working without modification - the URI
+handler itself will hopefully support the defined URI file format soon;
+double-clicking on old URI files will stop working at that point. Note
+there are *lots* of changes in every Res file to support all this. This may
+all seem a bit pointless to some, but the changes do in fact make it very
+easy to add new save dialogues all over the place. Certainly much easier
+than with the previous system, anyway. In fact, post script, image
+'save as sprite' took about half an hour, which I hope proves the worth
+of the new system.
+
+Merged in newer hotlist code with support for drag cancelling with Escape
+(all relevant Res files appropriately updated) and cancelling scrolling
+when you've reached the window scroll limit. Had to move some of the
+Wimp message handling stuff to the central Protocols source, as clashes
+were occuring, and also the hotlist routines were using independent saving
+code - a lot of duplicated effort. This was fair enough as at the time the
+Hotlist code was written, the Save code couldn't be used in the way it is
+now.
+
+New Save Source and Print buttons on the toolbar of some builds.
+
+Phoenix Sprites file made more efficient - the Acorn base section has been
+split from the animated upper region. Browse build has a new grey fade
+sprite at the back, which is less grainy than the previous one and only
+uses 16 colours (with a 16 greyscale palette).
+
+Not really a bug, bug the routine to start an image fetch for INPUT
+TYPE=IMAGE forms items only did so if the src field (or equivalent, for
+this tag type) was non-NULL. In fact, you should always call image_new_image
+and let that handle the rest, otherwise other sections of the code will fail
+as they try to obtain an image number for a given HStream and get -1 back.
+This problem only generally manifested itself when loading an HTML file to
+the browser straight from an application, as many src fields become NULL
+when the relativisation routines find nothing to relativise to...
+
+Authentication got broken somewhere along the line - this has been fixed
+(in HTMLLib and the browser).
+
+Ctrl+Click on a cross referenced image updates *all* copies, not just the
+one with the image data attached.
+
+Next big step: Rip up TBEvents.h and rebuild that whole approach somewhat.
+To all those working on the code, my apologies but this means all Res files
+will receive a very large number of alterations and there will be extensive
+code changes too (mostly naming convention stuff), in more or less all
+source files. I am endeavouring to ensure that the new numberspace
+convention does not clash with the work being done by Kevin on
+internationalisation.
+@
+text
+@d23 1
+d40 1
+d45 68
+d139 120
+d262 1
+a262 1
+              _INR(0,1) | _OUTR(0,7),
+d270 1
+a270 5
+              &unread,
+              &domain,
+              &name,
+              &value,
+              &path);
+d276 2
+d281 268
+@
+
+
+1.4
+log
+@Updated Makefile to work better in folding text editors. More or less rewrote
+Limits.h, and ensured consistent comment styling throughout all sources.
+Fetch.c/h split to Fetch, FetchHTML and URLveneer. URLstat.c/h produced to
+cope with this. OpenURL and Find sources created from bits in the Windows
+source file that shouldn't have been there... These will get filled out
+shortly. Note that a few functions in Fetch are due to be renamed and moved;
+probably to Tokenutils.
+@
+text
+@d61 1
+a63 1
+  int               unread = 1;
+@
+
+
+1.3
+log
+@Checking in mostly because its Friday... Quite a few little bug fixes
+(adding up to a greater whole), which include removal of the dastardly
+'invalid image number' errors that trace builds would raise from time to
+time. Frame highlights are now better controlled (releaseably so).
+Generally, this build represents the first genuinely promising version
+of the browser for quite some time, despite the known library problems
+with comment handling etc.
+@
+text
+@d15 9
+a23 6
+/*************************************************/
+/* File   : Cookies.c                            */
+/* Purpose: Browser-end HTTP Cookie support.     */
+/* Author : A.D.Hodgkinson                       */
+/* History: 28-Jul-96: Created                   */
+/*************************************************/
+@
+
+
+1.2
+log
+@Customer work complete, and this version just shipped. Had to comment out
+the code in Main.c that sets the user agent string to fake Netscape, as the
+persistent problems with forms in tables showed up much more on a modem
+link - net result was that the customer's log in page didn't work. Not
+faking Netscape gives an authorisation dialogue instead, allowing access
+to the site even if not by the most elegant of methods.
+@
+text
+@a27 2
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+
+@
+
+
+1.1
+log
+@In the middle of customer support work.
+@
+text
+@a88 2
+
+    Printf("cookie name: '%s'\n",name);
+@

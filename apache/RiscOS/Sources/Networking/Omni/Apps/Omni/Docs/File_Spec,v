@@ -1,0 +1,220 @@
+head	1.1;
+access;
+symbols
+	Omni-2_30:1.1
+	Omni-2_29:1.1
+	Omni-2_28:1.1
+	Omni-2_27:1.1
+	Omni-2_26:1.1
+	Omni-2_25:1.1
+	Omni-2_24:1.1
+	Omni-2_23:1.1
+	Omni-2_22:1.1
+	Omni-2_21:1.1
+	Omni-2_20:1.1
+	Omni-2_19:1.1
+	Omni-2_18:1.1
+	Omni-2_17:1.1
+	Omni-2_16:1.1
+	Omni-2_15:1.1
+	Omni-2_14:1.1
+	Omni-2_13:1.1
+	Omni-2_12:1.1
+	Omni-2_11:1.1
+	Omni-2_10:1.1
+	Omni-2_09:1.1
+	Omni-2_08:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.1
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@OmniClient filename translation specs		Revision 0.410, Nick, 18/11/94
+======================================		COMPANY CONFIDENTIAL
+
+Changes
+-------
+
+18-11-94:0.401 - 0.410:
+   22:  Mention of case sensitivity-on flag
+   87:  Details of case sensitive 'c' flag
+16-11-94:0.400 - 0.401:
+   19:	Mention that extension matches are case-insensitive
+03-11-94:draft#3 - 0.400:
+  all:  Large number of changes since syntax of file format has changed
+
+Terminology
+-----------
+
+client-name	Name of OmniClient module (filing system name in fact)
+extension	Alien filing system extension string. This DOES NOT
+		include the separator string (eg, '/' or '.') and may be
+		wildcarded, with '?' for a single character and '*' for
+		multiple characters. Matches are case-insensitive, unless
+		set to case sensitive by use of an optional flag.
+filetype	RISC OS numeric filetype, given as hex (0x000-0xFFF)
+                a special filetype of 0x9999 is taken to be the default
+                to allow all other RISCOS filetypes to be mapped to a
+                given extension string. &NNN is accepted as well as 0xNNN
+flags		Optional flags for this mapping (see below)
+
+
+File format
+-----------
+
+The file consists of sequence of blocks of mappings for a given client/
+protocol module. For simplicity, the punctuation is kept to a minimum.
+eg, no requirements for semi-colons, quotes, tagged fields, etc.
+
+There is always a block with a client-name of 'default'. This provides
+default mappings that a Client module can override by having a mapping
+entry in its own block.
+
+The mapping strings are prioritised using the order in which they appear
+in the file. ie, the higher up in the file they appear, the higher the
+priority. Hence a '*' wildcard will match everything if it appears first
+in the file (which is not what you want!)
+
+Comments can appear anywhere in the file (started by a '#' character),
+and last to the end of the line. A new block of mappings for a different
+client module is marked by a valid client name with no extra punctuation
+(so that it cannot be confused with a file extension string).
+
+If the client name is not registered at the time the file is parsed,
+mappings following are skipped. This has the result that if the filetype
+mappings file is parsed before client modules are loaded, then no mappings
+can take place. The solution to this problem that OmniClient uses is that
+every time a client module registers, the filetypes mapping file is 
+reparsed. However, this only occurs once during startup - it is only if
+client modules register at some later time that the file is reparsed.
+
+  # comment line
+  client-name
+  
+  extension,filetype,flags
+  extension,filetype,flags
+  ...
+  filetype,extension,flags
+  filetype,extension,flags
+  ...
+  
+
+Flags
+-----
+
+The flags string is optional for every mapping. It consists of a 
+sequence of single characters, with no separators, that each relate to
+a specific feature to turn on. The currently defined flags are;
+
+  Flag char	Meaning
+  ---------------------------------------------------------------------
+  k		Keep file extension when Alien->RISC OS mapping. ie,
+  		"READ.ME" can become "READ/ME" (type 0xFFF). The 
+  		default action is to remove these extensions.
+  s		Create a subdirectory when Alien->RISC OS mapping. ie,
+  		"PROG.C" can become "C.PROG" (type 0xFFF). Note that
+  		support for this flag is optional, and Client writers
+  		may choose not to implement it.
+  c		Extension matches are case sensitive (default is case-
+  	 	insensitive). This would allow '.z' (gzip) and '.Z'
+  	 	(compress) file extensions to be distinguished, for
+  	 	example.
+
+nas@@ant.co.uk
+---
+Document ends
+@

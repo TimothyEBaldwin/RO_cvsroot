@@ -1,0 +1,271 @@
+head	1.4;
+access;
+symbols
+	OMAPVideo-0_41:1.4
+	OMAPVideo-0_40:1.3
+	OMAPVideo-0_39:1.3
+	OMAPVideo-0_38:1.3
+	OMAPVideo-0_37:1.3
+	OMAPVideo-0_36:1.3
+	OMAPVideo-0_35:1.2
+	OMAPVideo-0_34:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2018.05.31.21.49.08;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	qHkabDo5zjgySuEA;
+
+1.3
+date	2015.05.31.18.21.38;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	G8GT764JNtMBXCny;
+
+1.2
+date	2015.05.31.17.43.43;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	vMWraheejEtCKCny;
+
+1.1
+date	2015.05.17.17.50.23;	author jlee;	state Exp;
+branches;
+next	;
+commitid	J3i0xRSaySaJePly;
+
+
+desc
+@@
+
+
+1.4
+log
+@Big refactor, introduce GraphicsV overlay API support
+Detail:
+  This change introduces initial support for the GraphicsV overlay API.
+  RGB & YUV overlays are supported, along with rotation and scaling.
+  Vertical flipping isn't supported yet, and there are still a number of bugs to track down, along with some potential improvements.
+  The code has also been refactored significantly, in an attempt to protect all critical state with spinlocks/mutexes (as appropriate), and to reduce the number of globals so that it's easier to see what's touching what. Previously very little locking was performed, which could lead to issues if VSyncs or synclost interrupts occurred during certain operations. Now, the data should be structured in such a way that this shouldn't cause problems.
+  Notable things:
+  * State which needs to be writable from interrupt handlers is protected by spinlocks
+  * State which needs to be readable from interrupt handlers is protected by reader-writer spinlocks
+  * State which doesn't need to be accessed from interrupt handlers is unprotected (mutexes can be introduced in the future to make the code SMP-safe)
+  * Using non-alpha screen modes for the desktop will currently result in only "basic" overlays being supported (i.e. overlays which appear ontop of the desktop). In some cases this could be improved by falling back to a software pointer, but for now the only way to get Z-Order overlays is to use a screen mode with an alpha channel.
+  * Memory allocation for overlays is abstracted via the buffer interface (h/buffer). This has three implementations: basic buffers for untransformed overlays, VRFB-transformed buffers for OMAP3, and TILER-transformed buffers for OMAP4.
+  * Ultimately all overlay memory is allocated as physically contiguous pages within a PMP - although since TILER contains its own MMU this isn't strictly necessary on OMAP4
+  * Overlay memory is mapped as write-through cacheable for CPU access; experimentation with different cache policies has yet to be performed. However a potential future optimisation would be to perform lazy unmapping of overlay buffers, reducing the map/unmap overhead in well-behaved code which only maps buffers when they're needed
+Admin:
+  Tested on BB-xM, Pandaboard
+
+
+Version 0.41. Tagged as 'OMAPVideo-0_41'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include "dsi.h"
+#include "dss.h"
+#include "regs.h"
+
+#include "DebugLib/DebugLib.h"
+
+uint32_t dsi_pll_current_pixel_rate=0;
+
+#ifdef DEBUGLIB
+static const char *cmds[4] = {"OFF","DSI_PLL_ON_HSDIVIDER_OFF","BOTH_ON","BOTH_ON_DSI_COMPLEXIO_OFF"};
+#endif
+
+static void dsi_pll_command(uint32_t cmd)
+{
+	/* DSI_CLK_CTRL can only be written if DSI_CTRL.IF_EN == 0 */
+	dsi->ctrl &= ~DSI_CTRL_IF_EN;
+
+	dsi->clk_ctrl = (dsi->clk_ctrl & ~DSI_CLK_CTRL_PLL_PWR_CMD_MASK) | (cmd<<DSI_CLK_CTRL_PLL_PWR_CMD_SHIFT);
+	int timeout=1000000;
+	while(((dsi->clk_ctrl & DSI_CLK_CTRL_PLL_PWR_STATUS_MASK)>>DSI_CLK_CTRL_PLL_PWR_STATUS_SHIFT != cmd) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","dsi_pll_command: Timeout waiting for cmd %s; current state %s\n",cmds[cmd],cmds[(dsi->clk_ctrl & DSI_CLK_CTRL_PLL_PWR_STATUS_MASK)>>DSI_CLK_CTRL_PLL_PWR_STATUS_SHIFT]));
+	}
+}
+
+void dsi_pll_program_for_dispc(uint32_t pixel_rate)
+{
+	/* Program the DSI PLL for use by DISPC */
+	if(pixel_rate == dsi_pll_current_pixel_rate)
+		return;
+
+	clock_divider_t div = calculate_dss_clock_divider(pixel_rate);
+
+	dprintf(("","dsi_pll_program_for_dispc: Changing pixel rate from %d to %d\n",dsi_pll_current_pixel_rate,pixel_rate));
+
+	dprintf(("","REGM=%d REGN=%d REGM4=%d pcd=%d\n",div.regm,div.regn,div.regm4,div.pcd));
+	/* base init of PLL - do it only once (after complete DSS reset) */
+	if (0 == dsi_pll_current_pixel_rate)
+	{
+		/* check that DSI module is enabled */
+		if (0 == (dsi->ctrl & DSI_CTRL_IF_EN))
+		{
+			/* enable module for getting write access */
+			dsi->ctrl |= DSI_CTRL_IF_EN;
+			/* wait until bit is set */
+			while (0 == (dsi->ctrl & DSI_CTRL_IF_EN))
+			{
+				;
+			}
+		}
+
+		/* SCPClk is required for PLL registers on OMAP4 */
+		dsi->clk_ctrl |= DSI_CLK_CTRL_CIO_CLK_ICG;
+
+		while (!(dsi_pll->status & DSI_PLL_STATUS_DSI_PLLCTRL_RESET_DONE))
+			;
+
+		/* Turn on PLL & HSDIVIDER */
+		dsi_pll_command(DSI_PLL_PWR_CMD_BOTH_ON);
+	}
+
+	/* set manual mode */
+	dsi_pll->control = 0;
+	/* program configuration registers */
+	dsi_pll->configuration1 = (div.regn << DSI_PLL_CONFIGURATION1_DSI_PLL_REGN_SHIFT)
+							| (div.regm << DSI_PLL_CONFIGURATION1_DSI_PLL_REGM_SHIFT)
+							| (div.regm4 << DSI_PLL_CONFIGURATION1_M4_CLOCK_DIV_SHIFT)
+							| DSI_PLL_CONFIGURATION1_DSI_PLL_STOPMODE;
+
+	uint32_t config2 = dsi_pll->configuration2;
+	config2 &= ~(DSI_PLL_CONFIGURATION2_PHY_CLKINEN | DSI_PLL_CONFIGURATION2_M4_CLOCK_EN);
+	config2 |= DSI_PLL_CONFIGURATION2_PLL_REFEN | DSI_PLL_CONFIGURATION2_HSDIVBYPASS;
+	dsi_pll->configuration2 = config2;
+
+	/* 10. Lock */
+	dsi_pll->go = DSI_PLL_GO_DSI_PLL_GO;
+
+	/* 11. Wait for GO bit to clear */
+	int timeout=1000000;
+	while((dsi_pll->go & DSI_PLL_GO_DSI_PLL_GO) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","dsi_pll_program_for_dispc: Timeout waiting for DSI_PLL_GO\n"));
+	}
+
+	/* 12. Wait for PLL to lock */
+	timeout=1000000;
+	while(!(dsi_pll->status & DSI_PLL_STATUS_DSI_PLL_LOCK) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","dsi_pll_program_for_dispc: Timeout waiting for DSI_PLL_LOCK\n"));
+	}
+
+	/* reenable DISPC clock */
+	config2 = dsi_pll->configuration2;
+	config2 &= ~DSI_PLL_CONFIGURATION2_HSDIVBYPASS;
+	config2 |= DSI_PLL_CONFIGURATION2_PHY_CLKINEN | DSI_PLL_CONFIGURATION2_M4_CLOCK_EN;
+	dsi_pll->configuration2 = config2;
+
+	/* set PCD value */
+	dispc->divisor2 = (1 << DISPC_DIVISOR_LCD_SHIFT) | (div.pcd << DISPC_DIVISOR_PCD_SHIFT);
+
+	/* Done! */
+	dsi_pll_current_pixel_rate = pixel_rate;
+
+	dprintf(("","dsi_pll_program_for_dispc: Done\n"));
+}
+@
+
+
+1.3
+log
+@Add chip-specific functions for *VideoRegs and *TVRegs. Change some OMAP3 register names.
+Detail:
+  c/cmodule, h/globals, omap3/c/omap, omap4/c/omap - Get rid of all the ugly #if's in *VideoRegs handling by moving video & TV register dump logic into chip-specific functions (omap_dump_videoregs, omap_dump_tvregs).
+  h/regs3, omap3/c/dispc_plat, omap3/c/dss, omap3/c/omap, omap3/c/venc - Remove '1' from DISPC control & config register names, was only present for OMAP4 compatibility.
+  omap4/c/dsi - Fix debug compile error due to DSI PLL regmf removal
+Admin:
+  OMAP3/OMAP4 debug/ROM versions all build correctly
+  Untested at runtime
+
+
+Version 0.36. Tagged as 'OMAPVideo-0_36'
+@
+text
+@a29 1
+#include "globals.h"
+d34 2
+@
+
+
+1.2
+log
+@OMAP4 tweaks and fixes
+Detail:
+  c/cmodule - Debug code updated to use new register names
+  h/dss - Remove regmf field from clock_divider_t
+  h/regs3 - Correct typo in OVERLAY_ATTRIBUTES register field
+  h/regs4 - Rename many registers to match the name used in the OMAP4 TRM (previously used OMAP3 naming due to shared code being used for both chips). Fix the occasional mistake. Also removed configuration4 register from DSI PLL (not mentioned in recent TRMs)
+  omap4/c/dispc_plat - Updated for new register names
+  omap4/c/dsi - Remove setting of DSI PLL configuration4 register
+  omap4/c/dss - Update for new register names. Removal of regm4 from clock_divider_t. Update FIFO configuration so that the larger WB FIFO is used instead of the GFX one.
+  omap4/c/omap - Update for new register names and FIFO setup. Fix omap4_vetmode_ldc2() returning true for invalid widths instead of false.
+Admin:
+  Changes supplied by Willi Theiss
+  Tested on Pandaboard
+
+
+Version 0.35. Tagged as 'OMAPVideo-0_35'
+@
+text
+@d63 1
+a63 1
+	dprintf(("","REGM=%d REGN=%d REGM4=%d pcd=%d REGMF=%d\n",div.regm,div.regn,div.regm4,div.pcd,div.regmf));
+@
+
+
+1.1
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@a100 2
+	dsi_pll->configuration4 = (div.regmf & DSI_PLL_CONFIGURATION4_PLL_REGM_F_MASK)
+							| (1 << 18);
+@
+

@@ -1,0 +1,307 @@
+head	4.4;
+access;
+symbols
+	NetTime-0_38:4.3
+	NetTime-0_37:4.3
+	NetTime-0_36:4.2
+	NetTime-0_35:4.2
+	NetTime-0_34:4.2
+	NetTime-0_33:4.2
+	NetTime-0_32:4.2
+	NetTime-0_31:4.2
+	NetTime-0_30:4.1
+	NetTime-0_29:4.1
+	dellis_autobuild_BaseSW:4.1
+	NetTime-0_28:4.1
+	NetTime-0_26:4.1
+	dcotton_autobuild_BaseSW:4.1
+	NetTime-0_25:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.4
+date	2012.02.25.08.18.15;	author rsprowson;	state dead;
+branches;
+next	4.3;
+commitid	7cQZQe1cYi4cUvUv;
+
+4.3
+date	2012.02.04.22.08.39;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	W0erdTttgEwVaTRv;
+
+4.2
+date	2002.07.23.12.39.02;	author srevill;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2000.08.01.10.27.43;	author jfletche;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.4
+log
+@Remove DST CMOS fiddling code.
+Shortly to be handled by TerritoryManager, but the DST fiddling in this module was already broken. Aside from only knowing about Europe and Australia, the Australia rules were wrong too (since they've been changed again).
+dhcp.c: use names for timezone CMOS rather than magic numbers.
+Rework read_os_var() to remove the 'read length when buff = NULL' which is never used, but also wouldn't have worked because the read length call to OS_ReadVarVal returns an error which is caught by the _swix() hence you always got -1.
+Put resolver variable name into a define in the header file.
+
+Version 0.39. Tagged as 'NetTime-0_39'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*  Copyright (c) Pace Micro Technology plc, 2000
+ *
+ *  adst.c - Australia Daylight Savings Time
+ *
+ *  Routines to determine whether a date is during Daylight Savings Time in
+ *  Australia in accordance with the Standard Time Act 1987 No 149, amended
+ *  by Standard Time Amendment Act 1999 No 13
+ *
+ *  This directive states that DST starts at 01:00 GMT on the last Sunday in
+ *  October, and ends at 01:00 GMT on the last Sunday in March. The
+ *  amendment states that for the year 2000, DST starts two months earlier,
+ *  on the last Sunday in August.
+ *
+ *  History:
+ *
+ *  27 Jul 2000 jrf - Created from edst
+ *                    This is 'nearly' the opposite of edst, with a special
+ *                    case for the Olympics.
+ */
+
+#include <sys/types.h>
+
+#include "nettime.h"
+#include "adst.h"
+
+#ifndef TRUE
+#define TRUE 1
+#endif
+
+#ifndef FALSE
+#define FALSE 0
+#endif
+
+
+
+typedef struct utc_ordinals
+{
+    int	    csecs;	/* centiseconds past second (0-99) */
+    int	    secs;	/* seconds past minute (0-59) */
+    int	    mins;	/* minutes past hour (0-59) */
+    int	    hour;	/* hours past midnight (0-23) */
+    int	    mday;	/* day in month (1-31) */
+    int	    month;	/* month in year (1-12) */
+    int	    year;	/* year */
+    int	    wday;	/* day of week (1-7, 1=Sunday) */
+    int	    yday;	/* day of year (1-366) */
+} UTCOrdinals;
+
+static int clock2utc (const struct riscos_time *clock, UTCOrdinals *utc);
+
+
+/*  Check whether Daylight Savings is in force in Australia at the time
+ *  represented by the RISCOS 5 byte UTC Time 'clock' (PRM 1-401).
+ *
+ */
+int adst_isdst (const struct riscos_time *clock)
+{
+    int isdst;
+    UTCOrdinals utc;
+
+    if (! clock2utc(clock, &utc))
+        return FALSE;
+
+    if (utc.year == 2000)
+    {
+      /* Let's split the case for 2000 and the rest of time into two parts
+         because they're just awkward */
+      switch (utc.month)
+      {
+          case 9: case 10: case 11: case 12: case 1: case 2:
+              /* DST is in force for all of September through February */
+              isdst = TRUE;
+              break;
+
+          case 4: case 5: case 6: case 7:
+	    /* DST is NOT in force for all of April through July */
+              isdst = FALSE;
+	    break;
+
+	  case 3:
+	      /* In March, DST is NOT in force on and after 02:00 on the last Sunday */
+	      if (utc.mday + (7 - utc.wday) >= 31)
+	          isdst = ((utc.wday == 1) && (utc.hour < 2)) ? TRUE : FALSE;
+	      else
+	          isdst = TRUE;
+	      break;
+
+          case 8:
+	      /* In August, DST is NOT in force before 02:00 on the last Sunday */
+	      if (utc.mday + (7 - utc.wday) >= 31)
+	          isdst = ((utc.wday == 1) && (utc.hour < 2)) ? FALSE : TRUE;
+	      else
+	          isdst = FALSE;
+	      break;
+
+          default:
+	      dprintf(("", "Bad month %d\n", utc.month));
+              isdst = FALSE;
+	      break;
+      }
+
+    }
+    else
+    {
+      switch (utc.month)
+      {
+          case 11: case 12: case 1: case 2:
+             /* DST is in force for all of November through February */
+              isdst = TRUE;
+              break;
+
+          case 4: case 5: case 6: case 7: case 8: case 9:
+	      /* DST is NOT in force for all of April through September */
+                isdst = FALSE;
+	      break;
+
+	  case 3:
+	      /* In March, DST is NOT in force on and after 02:00 on the last Sunday */
+	      if (utc.mday + (7 - utc.wday) >= 31)
+	          isdst = ((utc.wday == 1) && (utc.hour < 2)) ? TRUE : FALSE;
+	      else
+	          isdst = TRUE;
+	      break;
+
+          case 10:
+	      /* In October, DST is NOT in force before 02:00 on the last Sunday */
+	      if (utc.mday + (7 - utc.wday) >= 31)
+	          isdst = ((utc.wday == 1) && (utc.hour < 2)) ? FALSE : TRUE;
+	      else
+	          isdst = FALSE;
+	      break;
+
+          default:
+	      dprintf(("", "Bad month %d\n", utc.month));
+              isdst = FALSE;
+	      break;
+      }
+    }
+
+    dprintf(("", "isdst -> %d\n", isdst));
+
+    return isdst;
+}
+
+static int clock2utc (const struct riscos_time *clock, UTCOrdinals *utc)
+{
+    _kernel_swi_regs r;
+
+    r.r[1] = (int) clock;
+    r.r[2] = (int) utc;
+
+    if (_kernel_swi(Territory_ConvertTimeToUTCOrdinals, &r, &r) != NULL)
+    {
+        dprintf(("", "Territory_ConvertTimeToUTCOrdinals failed\n"));
+        return FALSE;
+    }
+
+    dprintf(("", "clock2utc -> %1dday, %02d/%02d/%04d %02d:%02d:%02d.%02d\n",
+    	utc->wday,
+        utc->mday, utc->month, utc->year,
+        utc->hour, utc->mins, utc->secs, utc->csecs));
+
+    return TRUE;
+}
+
+@
+
+
+4.3
+log
+@Add SWI NetTime_States.
+Makefile changed to use "CModule" fragment.
+Soak up some compiler warnings.
+Extralong functions removed.
+Use central header files in preference to local defines.
+A failure to register resources no longer leaves EventV and WordV claimed.
+
+Version 0.37. Tagged as 'NetTime-0_37'
+@
+text
+@@
+
+
+4.2
+log
+@  Fixed to build with the latest cc (5.54) compiler.
+Detail:
+  This version now builds with cc-5_45. Note: it has not been verified as
+  actually functioning correctly.
+Admin:
+  Tested in DSL Baseline build.
+
+Version 0.31. Tagged as 'NetTime-0_31'
+@
+text
+@d38 1
+a38 1
+#include "edst.h"
+@
+
+
+4.1
+log
+@  Added Australian Rules DST.
+Detail:
+  * If NetTime$DST is set to Australian, instead of European, the
+    Australian rules for daylight saving time are applied.
+Admin:
+  * Tested, and appears to work as expected.
+  * Included documentation from Australian legislature detailing the
+    changes for DST, and the special case for 2000. Not really required
+    for projects at present, but useful to be correct nonetheless.
+
+Version 0.25. Tagged as 'NetTime-0_25'
+@
+text
+@d88 1
+a88 1
+  
+d95 1
+a95 1
+	      /* In March, DST is NOT in force on and after 02:00 on the last Sunday */    
+d115 1
+a115 1
+      
+d125 1
+a125 1
+  
+d132 1
+a132 1
+	      /* In March, DST is NOT in force on and after 02:00 on the last Sunday */    
+@
+

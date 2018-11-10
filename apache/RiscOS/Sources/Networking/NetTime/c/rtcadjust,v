@@ -1,0 +1,1150 @@
+head	4.11;
+access;
+symbols
+	NetTime-0_43:4.11
+	NetTime-0_42:4.10
+	NetTime-0_41:4.9
+	NetTime-0_40:4.8
+	NetTime-0_39:4.8
+	NetTime-0_38:4.8
+	NetTime-0_37:4.8
+	NetTime-0_36:4.7
+	NetTime-0_35:4.7
+	NetTime-0_34:4.7
+	NetTime-0_33:4.7
+	NetTime-0_32:4.7
+	NetTime-0_31:4.6
+	NetTime-0_30:4.5
+	NetTime-0_29:4.4
+	dellis_autobuild_BaseSW:4.4
+	NetTime-0_28:4.4
+	NetTime-0_26:4.4
+	NetTime-0_25:4.4
+	NetTime-0_24:4.4
+	NetTime-0_23:4.4
+	sbrodie_sedwards_16Mar2000:4.2
+	NetTime-0_22:4.3
+	NetTime-0_21:4.2
+	dcotton_autobuild_BaseSW:4.4
+	NetTime-0_20:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.11
+date	2013.11.28.21.44.22;	author rsprowson;	state Exp;
+branches;
+next	4.10;
+commitid	rSY16SsDgYrjJ5fx;
+
+4.10
+date	2013.11.24.12.17.17;	author rsprowson;	state Exp;
+branches;
+next	4.9;
+commitid	kdgSEA52DRKJIwex;
+
+4.9
+date	2013.11.17.11.19.32;	author rsprowson;	state Exp;
+branches;
+next	4.8;
+commitid	NvSppOvMaHeSCCdx;
+
+4.8
+date	2012.02.04.22.08.39;	author rsprowson;	state Exp;
+branches;
+next	4.7;
+commitid	W0erdTttgEwVaTRv;
+
+4.7
+date	2004.05.19.18.21.24;	author kbracey;	state Exp;
+branches;
+next	4.6;
+
+4.6
+date	2002.07.23.12.39.02;	author srevill;	state Exp;
+branches;
+next	4.5;
+
+4.5
+date	2002.04.25.15.20.53;	author srevill;	state Exp;
+branches;
+next	4.4;
+
+4.4
+date	2000.03.20.16.05.27;	author kbracey;	state Exp;
+branches;
+next	4.3;
+
+4.3
+date	2000.03.16.16.50.17;	author kbracey;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	2000.03.15.15.38.01;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2000.03.07.10.44.51;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.11
+log
+@Fix failure to make large time jumps when delagating
+NetTime intercepts OS_Word 15, but when calling RTC_Adjust was not disabling that interception, so the time got set twice, ending up back at a copy of the (incorrect) soft clock.
+
+Version 0.43. Tagged as 'NetTime-0_43'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <stdio.h>
+
+#include <swis.h>
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+#include <Global/HALEntries.h>
+#include <Global/IO/GenericIO.h>
+#include <Global/ModHand.h>
+#include <Interface/RTC.h>
+
+#include "nettime.h"
+#include "ntp.h"
+#include "rtcadjust.h"
+#include "nt_nvram.h"
+
+
+/* Maximum 1% (10000ppm) slew */
+static int DefaultLatchValue;
+static int MinimumLatchValue;
+static int MaximumLatchValue;
+
+static uint32_t LastMonoTime;
+static int64_t  LastDelta;
+static uint32_t LastLatchValue;
+
+static bool hal, delagate, running;
+
+#define T0LO (*(volatile unsigned char *)(IOC + Timer0CL))
+#define T0HI (*(volatile unsigned char *)(IOC + Timer0CH))
+
+unsigned int rtcadjust_latch(void)
+{
+    if (delagate)
+    {
+        /* Delagation implies HAL, so ask it for the period */
+        _swix(OS_Hardware, _IN(0)|_INR(8,9)|_OUT(0),
+                           0, OSHW_CallHAL, EntryNo_HAL_TimerPeriod,
+                           &LastLatchValue);
+    }
+    return LastLatchValue;
+}
+
+static void ProgramLatch(int n)
+{
+    LastLatchValue = n;
+    if (hal)
+    {
+        _swix(OS_Hardware, _INR(0,1)|_INR(8,9),
+                           0, n,
+                           OSHW_CallHAL, EntryNo_HAL_TimerSetPeriod);
+    }
+    else
+    {
+        n -= 1;
+        T0LO = n;
+        T0HI = n >> 8;
+    }
+}
+
+void rtcadjust_init(void)
+{
+    unsigned int rate, max;
+
+    if (_swix(OS_Hardware, _IN(0)|_INR(8,9)|_OUT(0),
+                           0, OSHW_CallHAL, EntryNo_HAL_TimerGranularity,
+                           &rate) != NULL)
+    {
+        /* No HAL apparently, assume IOMD then */
+        rate = 2000000;
+        max = 65536;
+        hal = false;
+    }
+    else
+    {
+        max = UINT_MAX;
+        hal = true;
+        _swix(OS_Hardware, _IN(0)|_INR(8,9)|_OUT(0),
+                           0, OSHW_CallHAL, EntryNo_HAL_TimerMaxPeriod,
+                           &max);
+    }
+    LastLatchValue = DefaultLatchValue = (rate+50) / 100;
+    MinimumLatchValue = DefaultLatchValue - DefaultLatchValue/100;
+    if (MinimumLatchValue < 1) MinimumLatchValue = 1;
+    MaximumLatchValue = DefaultLatchValue + DefaultLatchValue/100;
+    if (MaximumLatchValue > max) MaximumLatchValue = max;
+
+    /* Check if we can delagate adjustments to the RTC module */
+    delagate = _swix(RTC_Features, 0) == NULL;
+}
+
+static void rtcadjust_start(void)
+{
+    if (!running)
+    {
+        /* Kill the RTCAdjust module, if it's active */
+        _swix(OS_Module, _INR(0,1), ModHandReason_Delete, "RTCAdjust");
+
+        rtcadjust_initvars();
+        LastLatchValue = DefaultLatchValue;
+        running = true;
+    }
+}
+
+void rtcadjust_suspend(void)
+{
+    rtcadjust_final(1);
+}
+
+void rtcadjust_final(int fixup)
+{
+    if (running)
+    {
+        if (fixup) rtcadjust_fixup_hardware_rtc();
+        if (!delagate)
+        {
+            /* Restart RTCAdjust, if in ROM */
+            ProgramLatch(DefaultLatchValue);
+            _swix(OS_Module, _INR(0,1), ModHandReason_ReInit, "RTCAdjust");
+        }
+        running = false;
+    }
+}
+
+void rtcadjust_initvars(void)
+{
+    LastDelta = 0;
+    _swix(OS_ReadMonotonicTime, _OUT(0), &LastMonoTime);
+}
+
+static int64_t fixedpoint_multiply(int64_t a, int64_t b)
+{
+    uint64_t l, h;
+    uint32_t al, ah, bl, bh;
+    int64_t r;
+
+    al = (uint32_t) a; ah = (uint32_t) (a >> 32);
+    bl = (uint32_t) b; bh = (uint32_t) (b >> 32);
+
+    l = (uint64_t) al * bl;
+    h = (uint64_t) al * bh;
+    r = h + (l >> 32);
+
+    l = (uint64_t) ah * bl;
+    h = (uint64_t) ah * bh;
+    r += (h << 32) + l;
+
+    dprintf(("rtcadjust_7", "%08"PRIX32".%08"PRIX32" x "
+                            "%08"PRIX32".%08"PRIX32" = "
+                            "%08"PRIX32".%08"PRIX32"\n",
+                            ah, al, bh, bl,
+                            (uint32_t) (r >>32), (uint32_t) r));
+
+    return r;
+}
+
+/*                          (P+C)       P'
+ * new latch := old latch * ------ * --------
+ *                            P      (P'-C+W)
+ *
+ *                                             C-W
+ *            = old latch * (1 + C/P) * (1 + -------- )
+ *                                           P'-(C-W)
+ *
+ * where P = Period, the requested number of cs ticks between calls
+ *
+ *       P' = the actual number of cs ticks since last called (different from
+ *            P because of the time taken to grant the callback)
+ *
+ *       C  = the number of cs we are ahead of the RTC this call
+ *
+ *       W  = the number of cs we were ahead of the RTC last call
+ */
+
+int rtcadjust_adjtime(int64_t offset, int P)
+{
+    uint32_t OldMonoTime;
+    int P2;
+    bool was_running = running;
+    int64_t temp2;
+    int64_t C, C_W, W;
+    int64_t latch64;
+    int32_t latch32;
+
+    dprintf(("rtcadjust_2", "offset = %010"PRIX64".%06"PRIX64"cs\n",
+                            offset >> 24, offset & 0xFFFFFF));
+
+    if (delagate)
+    {
+        /* Submit the offset to the central adjustments bureau */
+        LastDelta = offset;
+        running = true;
+        we_are_setting = 1;
+        offset = offset >> 24;
+        _swix(RTC_Adjust, _INR(0,3),
+                          (uint32_t)offset, (uint32_t)(offset >> 32),
+                          P, RTCPriority_NetTime);
+        _swix(OS_ReadMonotonicTime, _OUT(0), &LastMonoTime);
+        we_are_setting = 0;
+                
+        return -1;
+    }
+
+    rtcadjust_start();
+
+    /* If P is too small, we go all wobbly. Clamp it (effect is to
+     * smooth adjustments over at least a few minutes when using small
+     * poll intervals.) */
+    if (P < 180 * 100)
+        P = 180 * 100;
+
+    /* To aid the arithmetic, we require offset.high to be a sign
+     * extension of offset.low - ie maximum error is 1.28 seconds.
+     */
+    if (offset < INT32_MIN || offset >= INT32_MAX)
+    {
+        /* Immediate set - not synchronised, or miles out of range */
+        struct riscos_time cur, t;
+        dprintf(("rtcadjust_2", "Setting time immediately\n"));
+        C = offset >> 24;
+        cur = current_time();
+        *(int64_t *) &t = *(int64_t *) &cur - C;
+        LastDelta = 0;
+        module_set_time(&t);
+        ProgramLatch(DefaultLatchValue);
+        rtcadjust_initvars();
+        return -1;
+    }
+
+    /* Express C and W as a 32.32 fixed point number of centiseconds */
+    C = offset << 8;
+    W = LastDelta << 8;
+
+    OldMonoTime = LastMonoTime;
+    if (_swix(OS_ReadMonotonicTime, _OUT(0), &LastMonoTime))
+        return 0;
+
+    P2 = LastMonoTime - OldMonoTime;
+
+    dprintf(("rtcadjust_2", "C=%"PRId64".%08"PRIX64", "
+                            "W=%"PRId64".%08"PRIX64", "
+                            "P=%d, P'=%d, L=%d\n",
+                            C >> 32, C & 0xFFFFFFFF,
+                            W >> 32, W & 0xFFFFFFFF,
+                            P, P2, LastLatchValue));
+
+    if (P)
+    {
+        temp2 = C / P;
+        dprintf(("rtcadjust_4", "C/P=%08"PRIX32".%08"PRIX32"\n",
+                                (uint32_t)(temp2 >> 32), (uint32_t)temp2));
+        temp2 += 0x100000000;
+        dprintf(("rtcadjust_4", "1+C/P=%08"PRIX32".%08"PRIX32"\n",
+                                (uint32_t)(temp2 >> 32), (uint32_t)temp2));
+        latch64 = LastLatchValue * temp2;
+        dprintf(("rtcadjust_4", "latch64(1)=%08"PRIX32".%08"PRIX32"\n",
+                                (uint32_t)(latch64 >> 32), (uint32_t)latch64));
+    }
+    else
+        latch64 = (int64_t) LastLatchValue << 32;
+
+    if (was_running) /* Otherwise, P' = infinity: P' term eliminated */
+    {
+        C_W = C - W;
+        dprintf(("rtcadjust_4", "C-W=%08"PRIX32".%08"PRIX32"\n",
+                                (uint32_t)(C_W >> 32), (uint32_t)C_W));
+        temp2 = ((int64_t) P2 << 32) - C_W;
+        dprintf(("rtcadjust_4", "P'-(C-W)=%08"PRIX32".%08"PRIX32"\n",
+                                (uint32_t)(temp2 >> 32), (uint32_t)temp2));
+        /* Now C_W and temp2 contain top and bottom of fraction, each as 32.32 fp.
+         * To achieve a 32.32 fp result, shift top left 23 bits, bottom right 9 bits
+         */
+        C_W <<= 23;
+        temp2 >>= 9;
+        temp2 = C_W / temp2;
+        dprintf(("rtcadjust_4", "(C-W)/[P'-(C-W)]=%08"PRIX32".%08"PRIX32"\n",
+                                (uint32_t)(temp2 >> 32), (uint32_t)temp2));
+        temp2 += 0x100000000;
+        latch64 = fixedpoint_multiply(latch64, temp2);
+        dprintf(("rtcadjust_4", "latch64(2)=%08"PRIX32".%08"PRIX32"\n",
+                                (uint32_t)(latch64 >> 32), (uint32_t)latch64));
+    }
+
+    if (latch64 & 0x80000000) /* Round up prior to shift */
+        latch64 += 0x100000000;
+
+    latch32 = (int32_t) (latch64 >> 32);
+
+    LastDelta = offset;
+
+    if (latch32 < MinimumLatchValue)
+        latch32 = MinimumLatchValue;
+    else if (latch32 > MaximumLatchValue)
+        latch32 = MaximumLatchValue;
+
+    ProgramLatch(latch32);
+
+    dprintf(("rtcadjust_2", "New latch value = %d\n", LastLatchValue));
+
+    return -1;
+}
+
+void rtcadjust_fixup_hardware_rtc(void)
+{
+    struct riscos_time cur;
+
+    /* Nasty little fudge - we're messing with the latch, which affects
+     * the software copy of the RTC, but if we have a hardware RTC it
+     * could be doing anything. This will resync the hardware RTC to
+     * the soft copy.
+     *
+     * We don't want to do this too often, as it's liable to muck up
+     * our carefully synced time. Especially on old Kernels where the
+     * centiseconds are brutally set to zero.
+     */
+    cur = current_time();
+    module_set_time(&cur);
+    nvram_settime(riscos_to_ntp(cur).secs);
+}
+
+static char *pretty_interval(unsigned int t)
+{
+    static char buffer[128];
+    int n = 0;
+    unsigned int days, hours, minutes, seconds;
+
+    seconds = t % 60; t /= 60;
+    minutes = t % 60; t /= 60;
+    hours   = t % 24; t /= 24;
+    days    = t;
+
+    if (days)
+        n += sprintf(buffer + n, "%d day%s ", days, days == 1 ? "" : "s");
+    if (hours)
+        n += sprintf(buffer + n, "%d hour%s ", hours, hours == 1 ? "" : "s");
+    if (minutes)
+        n += sprintf(buffer + n, "%d minute%s ", minutes, minutes == 1 ? "" : "s");
+    if (seconds || n == 0)
+        n += sprintf(buffer + n, "%d second%s ", seconds, seconds == 1 ? "" : "s");
+
+    buffer[n - 1] = '\0'; /* Remove trailing space */
+
+    return buffer;
+}
+
+void rtcadjust_print_status(void)
+{
+    if (running)
+    {
+        uint32_t time;
+        uint64_t tmp, error;
+
+        _swix(OS_ReadMonotonicTime, _OUT(0), &time);
+        time -= LastMonoTime;
+        error = llabs(LastDelta);
+        tmp = (uint32_t)(error << 8) * UINT64_C(10000);
+        printf("Last adjustment: %s ago\n", pretty_interval(time/100));
+        printf("Last delta:      %llu.%02u%04u seconds%s\n",
+                  (error >> 24) / 100, (uint32_t)((error >> 24) % 100),
+                  (uint32_t)(tmp >> 32),
+                  LastDelta < 0 ? " slow" : LastDelta > 0 ? " fast" : "");
+    }
+    if (last_server.s_addr != 0)
+    {
+        struct hostent *hp = gethostbyaddr((char *) &last_server, sizeof last_server, AF_INET);
+        printf("Last server:     %s\n", hp ? hp->h_name : inet_ntoa(last_server));
+        if (last_protocol)
+            printf("Last protocol:   %s\n", last_protocol == PORT_NTP ? "SNTP" : "Time/UDP");
+    }
+    if (poll_period)
+        printf("Poll interval:   %s\n", pretty_interval(poll_period / 100));
+    if (!delagate)
+    {
+        printf("Timer latch:     %d", LastLatchValue);
+        if (LastLatchValue != DefaultLatchValue)
+        {
+            /* Currently expressed as an adjustment to crystal time - this is not the same
+             * as our deviation from "real" time.
+             */
+            printf(" (%+lldppm)", (DefaultLatchValue - (long long)LastLatchValue) * 1000000LL / DefaultLatchValue);
+        }
+        putchar('\n');
+    }
+}
+@
+
+
+4.10
+log
+@Delagate RTC adjustments to RTC module when present
+When the RTC module is present don't try making the duplicate adjustments in this module, while largely harmless the status report would likely be out of sync as the two modules battle eachother for who can poke timer 0 more often.
+Changed files
+ machine.c: double quotes in debug text removed
+ ntp.c: use some named defines for OS_Hardware calls
+ Spec: typo correction
+ rtcadjust.c: when RTC module is active, delagate adjustments to RTC_Adjust SWI
+
+Tested on a Risc PC over 24 hours.
+
+Version 0.42. Tagged as 'NetTime-0_42'
+@
+text
+@d215 1
+d221 2
+a222 1
+        
+@
+
+
+4.9
+log
+@Reverse the sense of the NetTime offset
+Rather than requiring a unary minus in rtcadjust, simply work out the offset the other way round (+ve means the RISC OS soft clock is fast compared with real time).
+
+Version 0.41. Tagged as 'NetTime-0_41'
+@
+text
+@d31 2
+d45 3
+a47 3
+static unsigned int LastMonoTime;
+static int LastDelta;
+static unsigned int LastLatchValue;
+d49 1
+a49 2
+static bool hal;
+static int running;
+d56 7
+d73 1
+a73 1
+                           0, EntryNo_HAL_TimerSetPeriod);
+d85 2
+a86 2
+    unsigned int rate;
+    unsigned int max = UINT_MAX;
+d88 2
+a89 2
+                               0, 0, EntryNo_HAL_TimerGranularity,
+                               &rate))
+d91 1
+d98 2
+d101 1
+a101 1
+                           0, 0, EntryNo_HAL_TimerMaxPeriod,
+a102 1
+        hal = true;
+d109 3
+d119 1
+a119 1
+        _swix(OS_Module, _INR(0,1), 4, "RTCAdjust");
+d123 1
+a123 1
+        running = 1;
+d127 5
+d136 8
+a143 6
+        ProgramLatch(DefaultLatchValue);
+        if (fixup)
+            rtcadjust_fixup_hardware_rtc();
+        /* Restart RTCAdjust, if in ROM */
+        _swix(OS_Module, _INR(0,1), 3, "RTCAdjust");
+        running = 0;
+d199 1
+a199 1
+    unsigned int OldMonoTime;
+d201 1
+a201 1
+    int was_running = running;
+d210 14
+a234 1
+
+d250 1
+a250 1
+    /* express C and W as a 32.32 fixed point number of centiseconds */
+d252 1
+a252 1
+    W = (int64_t) LastDelta << 8;
+d291 2
+a292 1
+           To achieve a 32.32 fp result, shift top left 23 bits, bottom right 9 bits */
+d304 1
+a304 1
+    if (latch64 & 0x80000000)
+d309 1
+a309 1
+    LastDelta = (int) offset;
+d370 3
+a372 2
+        unsigned int time, error;
+        uint64_t tmp;
+d375 2
+a376 2
+        error = abs(LastDelta);
+        tmp = ((uint32_t) error << 8) * UINT64_C(10000);
+d378 3
+a380 2
+        printf("Last delta:      %d.%02d%04ld seconds%s\n", (error >> 24) / 100, (error >> 24) % 100,
+                                                            (long) (tmp >> 32),
+d392 1
+a392 2
+    printf(    "Timer latch:     %d", LastLatchValue);
+    if (LastLatchValue != DefaultLatchValue)
+d394 9
+a402 4
+        /* Currently expressed as an adjustment to crystal time - this is not the same
+         * as our deviation from "real" time.
+         */
+        printf(" (%+lldppm)\n", (DefaultLatchValue - (long long)LastLatchValue) * 1000000LL / DefaultLatchValue);
+a403 7
+    else
+        putchar('\n');
+}
+
+void rtcadjust_suspend(void)
+{
+    rtcadjust_final(1);
+@
+
+
+4.8
+log
+@Add SWI NetTime_States.
+Makefile changed to use "CModule" fragment.
+Soak up some compiler warnings.
+Extralong functions removed.
+Use central header files in preference to local defines.
+A failure to register resources no longer leaves EventV and WordV claimed.
+
+Version 0.37. Tagged as 'NetTime-0_37'
+@
+text
+@d209 1
+a209 1
+        *(int64_t *) &t = *(int64_t *) &cur + C;
+a216 2
+    offset = -offset;
+
+@
+
+
+4.7
+log
+@* Added support for non-IOMD, HAL-based platforms.
+* Improved *NetTime_PollInterval to make sure next poll happens at
+  the expected time.
+* On module init, no longer sets the time from the NVRAM if the current
+  time seems sensible (ie >= 2003ish).
+* Sets the time NVRAM on shutdown (was only on packet reception).
+
+Version 0.32. Tagged as 'NetTime-0_32'
+@
+text
+@d17 1
+d19 1
+d30 1
+d44 1
+a44 1
+static int LastError;
+d50 2
+a51 3
+#define IOC 0x03200000
+#define T0LOW  (*(volatile unsigned char *)(IOC + 0x40))
+#define T0HIGH (*(volatile unsigned char *)(IOC + 0x44))
+d70 2
+a71 2
+        T0LOW = n;
+        T0HIGH = n >> 8;
+d129 1
+a129 1
+    LastError = 0;
+d210 2
+a211 2
+        LastError = 0;
+        set_time(&t);
+d221 1
+a221 1
+    W = (int64_t) LastError << 8;
+d277 1
+a277 1
+    LastError = (int) offset;
+d305 1
+a305 1
+    set_time(&cur);
+d342 1
+a342 1
+        error = abs(LastError);
+d345 1
+a345 1
+        printf("Last error:      %d.%02d%04ld seconds%s\n", (error >> 24) / 100, (error >> 24) % 100,
+d347 1
+a347 1
+                  LastError < 0 ? " slow" : LastError > 0 ? " fast" : "");
+@
+
+
+4.6
+log
+@  Fixed to build with the latest cc (5.54) compiler.
+Detail:
+  This version now builds with cc-5_45. Note: it has not been verified as
+  actually functioning correctly.
+Admin:
+  Tested in DSL Baseline build.
+
+Version 0.31. Tagged as 'NetTime-0_31'
+@
+text
+@d16 2
+d27 2
+d32 2
+d36 3
+a38 3
+#define DefaultLatchValue 20000
+#define MinimumLatchValue 19800
+#define MaximumLatchValue 20200
+d42 1
+a42 1
+static unsigned int LastLatchValue = DefaultLatchValue;
+d44 1
+d59 12
+a70 3
+    n -= 1;
+    T0LOW = n;
+    T0HIGH = n >> 8;
+d75 26
+d188 1
+a188 1
+    rtcadjust_init();
+d304 1
+a358 3
+        #if DefaultLatchValue != 20000
+        #error Someone sort this maths out
+        #endif
+d362 1
+a362 1
+        printf(" (%+dppm)\n", (DefaultLatchValue - LastLatchValue) * 50);
+@
+
+
+4.5
+log
+@  * Fixed all of the !Mk... files.
+  * Now builds with the latest TCPIPLibs.
+Detail:
+  * All of the !Mk... files are required to pass TARGET into the makefile.
+  * The new TCPIPLibs use the standard types.h from RISC_OSLib if it is
+    available. This defines u_int32 types using int rather than long, which
+    TCPIPLibs uses. Thus, NetTime needed a little tweaking to adjust for
+    this change.
+Admin:
+  Builds.
+  Requires TCPIPLibs-5_42 or later.
+
+Version 0.30. Tagged as 'NetTime-0_30'
+@
+text
+@d15 2
+a27 1
+#include "extralong.h"
+d44 1
+a44 1
+unsigned int rtcadjust_latch()
+d57 1
+a57 1
+void rtcadjust_init()
+d83 1
+a83 11
+struct riscos_time riscostime_sub(struct riscos_time a, struct riscos_time b)
+{
+    struct riscos_time r;
+
+    r.l = a.l - b.l;
+    r.h = a.h - b.h - (a.l < b.l);
+
+    return r;
+}
+
+void rtcadjust_initvars()
+d91 2
+a92 1
+    u_int64_t l, h;
+d95 2
+a96 2
+    mul64((u_int32_t)a.low, (u_int32_t)b.low, &l);
+    mul64((u_int32_t)a.low, (u_int32_t)b.high, &h);
+d98 13
+a110 10
+    r.low = l.high + h.low;
+    r.high = h.high + (r.low < l.high);
+
+    mul64((u_int32_t)a.high, (u_int32_t)b.low, &l);
+    mul64((u_int32_t)a.high, (u_int32_t)b.high, &h);
+
+    r.low += l.low;
+    r.high += l.high + h.low + (r.low < l.low);
+
+    dprintf(("rtcadjust_7", "%08lX.%08lX x %08lX.%08lX = %08lX.%08lX\n", a.high, a.low, b.high, b.low, r.high, r.low));
+d138 1
+a138 1
+    int64_t temp64, temp2;
+d141 1
+d143 2
+a144 1
+    dprintf(("rtcadjust_2", "offset = %08lX.%08lX\n", offset.high, offset.low));
+d158 1
+a158 1
+    if (((int32_t)offset.low >> 31) != offset.high)
+d163 1
+a163 2
+        C.low = (offset.high << 8) | (offset.low >> 24);
+        C.high = offset.high >> 24;
+d165 1
+a165 1
+        *(int64_t *) &t = extralong_add(*(int64_t* )&cur, C);
+d173 1
+a173 1
+    offset = extralong_neg(offset);
+d176 2
+a177 4
+    C.low = offset.low << 8;
+    C.high = (int32_t) offset.low >> 24;
+    W.low = (int32_t) LastError << 8;
+    W.high = (int32_t) LastError >> 24;
+d185 6
+a190 4
+    dprintf(("rtcadjust_2", "C=%ld.%08lX, W=%ld.%08lX, P=%d, P'=%d, L=%d\n", C.high, C.low, W.high, W.low, P, P2, LastLatchValue));
+
+    latch64.high = LastLatchValue;
+    latch64.low = 0;
+d194 9
+a202 7
+        temp64.low = P;
+        temp64.high = 0;
+        temp2 = extralong_divide(C, temp64);
+        dprintf(("rtcadjust_4", "C/P=%08lX.%08lX\n", temp2.high, temp2.low));
+        temp2.high += 1;
+        latch64 = fixedpoint_multiply(latch64, temp2);
+        dprintf(("rtcadjust_4", "latch64(1)=%08lX.%08lX\n", latch64.high, latch64.low));
+d204 2
+d209 6
+a214 6
+        C_W = extralong_subtract(C, W);
+        dprintf(("rtcadjust_4", "C-W=%08lX.%08lX\n", C_W.high, C_W.low));
+        temp64.low = 0;
+        temp64.high = P2;
+        temp2 = extralong_subtract(temp64, C_W);
+        dprintf(("rtcadjust_4", "P'-(C-W)=%08lX.%08lX\n", temp2.high, temp2.low));
+d216 7
+a222 8
+           To acheive a 32.32 fp result, shift top left 23 bits, bottom right 9 bits */
+        C_W.high = (C_W.high << 23) | (C_W.low >> 9);
+        C_W.low = C_W.low << 23;
+        temp2.low = (temp2.high << 23) | (temp2.low >> 9);
+        temp2.high = temp2.high >> 9;
+        temp2 = extralong_divide(C_W, temp2);
+        dprintf(("rtcadjust_4", "(C-W)/[P'-(C-W)]=%08lX.%08lX\n", temp2.high, temp2.low));
+        temp2.high += 1;
+d224 2
+a225 1
+        dprintf(("rtcadjust_4", "latch64(2)=%08lX.%08lX\n", latch64.high, latch64.low));
+d228 4
+a231 2
+    if (latch64.low & 0x80000000)
+        latch64.high++;
+d233 1
+a233 1
+    LastError = (int) offset.low;
+d235 4
+a238 4
+    if (latch64.high < MinimumLatchValue)
+        latch64.high = MinimumLatchValue;
+    else if (latch64.high > MaximumLatchValue)
+        latch64.high = MaximumLatchValue;
+d240 1
+a240 1
+    ProgramLatch((unsigned int) latch64.high);
+d247 1
+a247 1
+void rtcadjust_fixup_hardware_rtc()
+d289 1
+a289 1
+void rtcadjust_print_status()
+d294 1
+a294 1
+        u_int64_t tmp;
+d298 1
+a298 1
+        mul64((int32_t) error << 8, 10000, &tmp);
+d301 1
+a301 1
+                                                            tmp.high,
+d322 1
+a322 2
+        printf(" (%c%dppm)\n", LastLatchValue > DefaultLatchValue ? '-' : '+',
+                               abs(DefaultLatchValue - LastLatchValue) * 50);
+d328 1
+a328 1
+void rtcadjust_suspend()
+@
+
+
+4.4
+log
+@A couple of warnings removed.
+Now uses "low delay" type of service for outgoing datagrams.
+
+Version 0.23. Tagged as 'NetTime-0_23'
+@
+text
+@d103 2
+a104 2
+    mul64(a.low, b.low, &l.low);
+    mul64(a.low, b.high, &h.low);
+d109 2
+a110 2
+    mul64(a.high, b.low, &l.low);
+    mul64(a.high, b.high, &h.low);
+d296 1
+a296 1
+        mul64((int32_t) error << 8, 10000, &tmp.low);
+@
+
+
+4.3
+log
+@Precision of internal arithmetic and clock reading improved. Now possible
+to maintain time to within a couple of milliseconds (given frequent enough
+polling).
+
+Version 0.22. Tagged as 'NetTime-0_22'
+@
+text
+@d151 5
+a155 3
+    /* If P is too small, we go all wobbly. Clamp it */
+    if (P < 60 * 100)
+        P = 60 * 100;
+@
+
+
+4.2
+log
+@Can now change the poll interval via a *Command.
+If the time server came from NetTime$Server or NCMA, both NTP and Time/UDP
+will be tried.
+Maximum adjustment rate limited to +/-1%, rather than 10%.
+
+Version 0.21. Tagged as 'NetTime-0_21'
+@
+text
+@d43 5
+d98 22
+d124 4
+d138 1
+a138 1
+int rtcadjust_settime(struct riscos_time *t, int P)
+a139 2
+    struct riscos_time cur = current_time();
+    struct riscos_time error;
+d141 1
+a141 1
+    int P2, C, temp;
+d143 5
+a147 2
+    int64_t N;
+    int64_t temp64;
+a150 4
+    if (cur.l == 0 && cur.h == 0) return 0;
+
+    error = riscostime_sub(cur, *t);
+
+d155 3
+a157 1
+    C = (int) error.l;
+d159 1
+a159 2
+    if ((signed char) error.h != C >> 31 ||
+        abs(C) > P / 100)
+d161 2
+a162 1
+      immediate:
+d164 4
+d169 1
+a169 2
+        /* Immediate set - not synchronised, or miles out of range */
+        set_time(t);
+d175 8
+a187 1
+    dprintf(("rtcadjust_2", "C=%d, W=%d, P=%d, P'=%d, L=%d\n", C, LastError, P, P2, LastLatchValue));
+d189 1
+a189 13
+    if (P)
+    {
+        /* N = L * (P+C) */
+        temp = P + C; if (temp < 0) temp = 0;
+        mul64(LastLatchValue, temp, (u_int32_t *) &N);
+        dprintf(("rtcadjust_5", "N=&%08X%08X\n", N.high, N.low));
+    }
+    else
+    {
+        /* P=0 means P=infinity: (P+C)/P term eliminated */
+        N.high = 0;
+        N.low = LastLatchValue;
+    }
+d191 2
+a192 8
+    temp64.high = 0;
+    if (was_running) /* Otherwise, P' = infinity: P'/(P'-C+W) term eliminated */
+    {
+        /* N = L * (P+C) * P' */
+        temp64.low = P2;
+        N = extralong_multiply(N, temp64);
+        dprintf(("rtcadjust_5", "N=&%08X%08X\n", N.high, N.low));
+    }
+a195 3
+        /* N = L * (P+C) * P' / P (rounding to nearest) */
+        N.low += (u_int32_t) P / 2;
+        if (N.low < (u_int32_t) P / 2) N.high++;
+d197 38
+a234 23
+        N = extralong_divide(N, temp64);
+        dprintf(("rtcadjust_5", "N=&%08X%08X\n", N.high, N.low));
+    }
+
+    if (was_running) /* Otherwise, P' = infinity */
+    {
+        /* N = L * (P+C) * P' / P / (P' - (C-W)) (rounding to nearest) */
+        temp64.low = P2 - ((int32_t) C - (int32_t) LastError);
+        if ((int32_t) temp64.low <= 1) temp64.low = 1;
+        N.low += temp64.low / 2;
+        if (N.low < temp64.low / 2) N.high++;
+        N = extralong_divide(N, temp64);
+        dprintf(("rtcadjust_5", "N=&%08X%08X\n", N.high, N.low));
+    }
+    LastError = C;
+
+    if (N.high != 0)
+        goto immediate;
+
+    if (N.low < MinimumLatchValue)
+        N.low = MinimumLatchValue;
+    else if (N.low > MaximumLatchValue)
+        N.low = MaximumLatchValue;
+d236 1
+a236 1
+    ProgramLatch((unsigned int) N.low);
+d290 1
+d294 1
+d296 2
+a297 1
+        printf("Last error:      %d.%02d seconds%s\n", error / 100, error % 100,
+@
+
+
+4.1
+log
+@  Added support for NTP, gradual time adjustment, configurable DST,
+  and DHCP timezone.
+
+Detail:
+  If Inet$NTPServer is set, NetTime will use NTP (unicast SNTP, as per RFC2030).
+  Otherwise it will use the UDP time protocol (it used to use TCP).
+
+  NetTime will use the RTCAdjust algorithms to adjust the centisecond clock
+  rate by +/-10% to get in step with the time server. By polling every 30
+  minutes on a LAN, time will not deviate by more than 0.1 seconds once
+  synchronised. It interoperates with RTCAdjust and the hardware RTC to ensure
+  correct operation on a machine with RTC.
+
+  NetTime has returned to polling every 30 minutes. This may defeat PPP
+  timeouts - a suggested fix is to change PPP to only have TCP traffic keep the
+  link up, or to have a separate user inactivity timeout (like Lazarus).
+
+  The system variable NetTime$DST controls DST behaviour. Set to "European"
+  (the default) to use European rules. Set it to something like
+  "03-May-2000.01:00:00; 14-Sep-2000.01:00:00" to specify this year's start
+  and end dates (in UTC). Set to "No" to make it leave DST alone.
+
+  If a DHCP reply arrives while NetTime is loaded, it will check for the time
+  offset option - if present, the timezone will be configured.
+
+  New command *NetTime_Status gives information about the clock adjustments.
+
+  NetTime attempts to start operation immediately on a non-dialup machine -
+  removes the need for a *NetTime_Kick after softloading. *NetTime_Kick will
+  still be required after, say, setting Inet$NTPServer manually.
+
+Admin:
+  Tested on desktop systems and STBs. NTP operation on an NC will require a
+  way of finding out an NTP server - possibly redefining TIME_SERVER smartcard
+  tag to be NTP? Anycast operation may also be worth adding.
+
+Version 0.20. Tagged as 'NetTime-0_20'
+@
+text
+@d18 4
+d28 1
+d30 2
+a31 2
+#define MinimumLatchValue 18000
+#define MaximumLatchValue 22000
+d45 1
+a68 1
+        LastLatchValue = DefaultLatchValue;
+d123 4
+d130 1
+a130 1
+        abs(C) > P / 10)
+d137 1
+d202 1
+a202 2
+    LastLatchValue = (unsigned int) N.low;
+    ProgramLatch(LastLatchValue);
+d226 25
+d259 1
+a259 1
+        printf("Last adjustment: %d second%s ago\n", time / 100, time / 100 == 1 ? "" : "s");
+d263 23
+a285 2
+    printf(    "Poll period:     %d seconds\n", LONG_TIMER / 100);
+    printf(    "Timer latch:     %d\n", LastLatchValue);
+@
+

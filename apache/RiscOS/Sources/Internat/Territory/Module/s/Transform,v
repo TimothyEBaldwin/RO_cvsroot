@@ -1,0 +1,520 @@
+head	1.6;
+access;
+symbols
+	Module-0_63:1.6
+	Module-0_62:1.6
+	Module-0_61:1.6
+	Module-0_60:1.6
+	Module-0_59:1.6
+	Module-0_58:1.6
+	Module-0_57:1.6
+	Module-0_56:1.6
+	Module-0_55:1.6
+	Module-0_54:1.6
+	Module-0_53:1.6
+	Module-0_52:1.6
+	RO_5_07:1.5
+	Module-0_51:1.5
+	Module-0_50:1.5
+	Module-0_49:1.5
+	Module-0_48:1.5
+	Module-0_47:1.5
+	Module-0_46:1.5
+	Module-0_45:1.5
+	Module-0_44:1.5
+	Module-0_43:1.5
+	Alpnet_approved:1.5
+	Module-0_42:1.5
+	dellis_autobuild_BaseSW:1.5
+	Module-0_41:1.5
+	Module-0_40:1.5
+	Module-0_39:1.5
+	Module-0_38:1.5
+	Module-0_37:1.5
+	Module-0_36:1.5
+	Module-0_35:1.4
+	sbrodie_sedwards_16Mar2000:1.3
+	dcotton_autobuild_BaseSW:1.5
+	Module-0_34:1.3
+	Module-0_33:1.2
+	Module-0_32:1.2
+	Module-0_31:1.2
+	Module-0_30:1.2
+	Module-0_29:1.2
+	Module-0_28:1.1
+	Module-0_27:1.1
+	Module-0_26:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2012.02.20.21.17.03;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	pifcrbq5LMUknWTv;
+
+1.5
+date	2000.06.08.11.05.07;	author kbracey;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.04.28.14.57.57;	author kbracey;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.04.19.12.30.09;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.09.21.09.59.45;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.09.14.11.21.04;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Fix Territory_ReadTimeZones to behave as documented.
+It was reading the current timezone CMOS and returning that in R2 then adding the difference between standard and summertime to get R3.
+This meant that when in one territory it was not possible to enumerate the other territories' offsets since they all returned the current CMOS value.
+Now, R2 and R3 are purely informational (looked up from the table in the module).
+
+All terrtories on CET now call summertime the preferred "CEST".
+
+Removed unnecessary clean rule from Makefile. Changed some one register push/pull to use macros. Changed filenames to be ".s" at the end.
+
+Added extra switches for the other regions of the world that are wide enough to span multiple timezones. Currently there is no API to read these, so they are defined to cause an assembly error (affects USA/Canada1/Australia). Fixing that is a subject of discussion, whether to support one territory having multiple timezones or just make some extra territories?
+
+Version 0.52. Tagged as 'Module-0_52'
+@
+text
+@; Copyright 1998 Acorn Computers Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+; Territory_TransformString SWI for an 8-bit or simplistic UTF-8 territory
+
+; Entry: R1 = destination string buffer
+;        R2 = source string
+;        R3 = length of destination string buffer
+;
+; Exit:  R0 = The length of the transformed string (not including the
+;             terminating null character). If the returned value is >= R3 on
+;             entry the contents of the buffer pointed to by R1 are
+;             indeterminate.
+;
+;        The Territory_TransformString SWI transforms the string pointed to
+;        by R2 and places the resulting string into the buffer pointed to by
+;        R1. The transformation is such that if a byte by byte comparison is
+;        applied to two transformed strings the strings will compare less
+;        than, equal to or greater than as though Territory_Collate had been
+;        appled to the original strings. No more than R3 bytes are placed in
+;        the buffer pointed to by R1 including a terminating null character.
+;        If R3 is 0 R1 may be a null pointer. If copying takes place between
+;        strings that overlap the behaviour is undefined.
+;
+; OSmith 30-Apr-92 Added two instructions to make code actually transform
+; the string rather than just copying it!
+;
+; KBracey 13-Sep-98 modified to do a better comparison, looking at first
+; the letters, then the accents, then the case (see Collate).
+;
+; The main complexity is different length strings. You can't just concatenate
+; the strings. For example if you just concatenated the transformations of
+; "c" and "cba" you might end up with "ccc" and "cbacbacba" => "c" > "cba" !
+; You need a separator token (say X), hence:  "cXcXcX" cbaXcbaXcbaX", but this
+; token must be lexicographically less than any other, but > 0. Solution is
+; to make the token &01, and write a real &01 as &02 01, and &02 as &02 &02.
+
+        ASSERT  :LNOT: (CollateAccentsBackwards :LAND: (CollateDanishAA :LOR: CollateThornAsTH))
+
+TransformString
+        Entry   "r1-r9"
+        SUB     r12, r2, #1
+        MOV     r14, #0
+01      LDRB    r0, [r12, #1]!
+        CMP     r0, #&02
+        ADDLS   r14, r14, #1      ; must escape &01,&02 -> assumption is SortTable[1,2]=1,2
+ [ CollateDanishAA
+        TEQ     r0, #'A'
+        TEQNE   r0, #'a'
+        BNE     %FT05
+        LDRB    r4, [r12, #1]
+        TEQ     r4, r0
+        SUBEQ   r14, r14, #1
+        BEQ     %FT05
+        TEQ     r0, #'A'
+        TEQEQ   r4, #'a'
+        SUBEQ   r14, r14, #1    ; join AA, Aa, aa
+05
+ ]
+ [ CollateLatin1Ligatures
+        TEQ     r0, #'ž'
+        TEQNE   r0, #'Ÿ'
+        ADDEQ   r14, r14, #1    ; separate ligatures...
+ ]
+ [ CollateOELigatures
+        TEQ     r0, #'š'
+        TEQNE   r0, #'›'
+        ADDEQ   r14, r14, #1    ; separate ligatures...
+ ]
+ [ CollateThornAsTH
+        TEQ     r0, #'Þ'
+        TEQNE   r0, #'þ'
+        ADDEQ   r14, r14, #1    ; split thorn into t,h...
+ ]
+ [ CollateGermanSharpS
+        TEQ     r0, #'ß'
+        ADDEQ   r14, r14, #1    ; split sharp s into s,ß
+ ]
+        CMP     r0, #0
+        BNE     %B01
+        SUB     r9, r12, r2     ; r9 = strlen(r2)
+        ADD     r0, r9, r14
+        ADD     r0, r0, r0, LSL #1 ; r0 = length of output
+
+        CMP     r0, r3          ; return immediately if not enough room
+        EXIT    HS
+
+        ADRL    r4, SortValueTable
+        ADRL    r5, ToLowerTable
+        ADRL    r6, ToPlainForCollateTable
+        MOV     r7, #+1
+        ADD     r8, r2, r9
+
+03      TEQ     r2, r8
+        BEQ     %FT22
+
+02      LDRB    r12, [r2], r7
+ [ CollateDanishAA
+        TEQ     r12, #'A'
+        TEQNE   r12, #'a'
+        BNE     %FT14
+        LDRB    r14, [r2]
+        TEQ     r14, r12
+        BEQ     %FT50
+        TEQ     r12, #'A'
+        TEQEQ   r14, #'a'
+        BNE     %FT14
+50      TEQ     r12, #'A'
+        MOVEQ   r12, #'Å'
+        MOVNE   r12, #'å'
+        ADD     r2, r2, r7
+14
+ ]
+        TEQ     r6, #0
+        LDRNEB  r12, [r6, r12]  ; strip the accent
+        TEQ     r5, #0
+        LDRNEB  r12, [r5, r12]  ; lower case
+ [ CollateLatin1Ligatures
+        TEQ     r12, #'ž'
+        TEQNE   r12, #'Ÿ'
+        BNE     %FT15
+
+        TEQ     r7, #+1
+        BNE     %FT25
+
+        MOV     r14, #'f'       ; going forwards -> output "f" and continue with "i" or "l"
+        LDRB    r14, [r4, r14]
+        STRB    r14, [r1],#1
+        TEQ     r12, #'ž'
+        MOVEQ   r12, #'i'
+        MOVNE   r12, #'l'
+        B       %FT15
+
+25      TEQ     r12, #'ž'       ; going backwards -> output "i" or "l" and continue with "f"
+        MOVEQ   r14, #'i'
+        MOVNE   r14, #'l'
+        LDRB    r14, [r4, r14]
+        STRB    r14, [r1],#1
+        MOV     r12, #'f'
+15
+ ]
+ [ CollateOELigatures
+        TEQ     r12, #'š'
+        TEQNE   r12, #'›'
+        BNE     %FT16
+
+        TEQ     r7, #+1
+        BNE     %FT26
+
+        TEQ     r12, #'š'       ; going forwards -> output "O" or "o" and continue with "E" or "e"
+        MOVEQ   r14, #'O'
+        MOVNE   r14, #'o'
+        LDRB    r14, [r4, r14]
+        STRB    r14, [r1],#1
+        TEQ     r12, #'š'
+        MOVEQ   r12, #'E'
+        MOVNE   r12, #'e'
+        B       %FT16
+
+26      TEQ     r12, #'š'       ; going backwards -> output "E" or "e" and continue with "O" or "o"
+        MOVEQ   r14, #'E'
+        MOVNE   r14, #'e'
+        LDRB    r14, [r4, r14]
+        STRB    r14, [r1],#1
+        TEQ     r12, #'š'
+        MOVEQ   r12, #'O'
+        MOVNE   r12, #'o'
+16
+ ]
+ [ CollateThornAsTH
+        TEQ     r12, #'Þ'
+        TEQNE   r12, #'þ'
+        BNE     %FT17
+        TEQ     r12, #'Þ'
+        MOVEQ   r14, #'T'
+        MOVNE   r14, #'t'
+        LDRB    r14, [r4, r14]
+        STRB    r14, [r1],#1
+        TEQ     r12, #'Þ'
+        MOVEQ   r12, #'H'
+        MOVNE   r12, #'h'
+17
+ ]
+ [ CollateGermanSharpS
+        TEQ     r12, #'ß'
+        BNE     %FT18
+
+        TEQ     r7, #+1
+
+        LDREQB  r14, [r4, #'s'] ; going forwards -> output "s" ond continue with "ß"
+        LDRNEB  r14, [r4, #'ß'] ; going backwards -> output "ß" and continue with "s"
+        MOVNE   r12, #'s'
+        STRB    r14, [r1], #1
+18
+ ]
+        LDRB    r12, [r4, r12]  ; OSS Read sort value table entry
+        CMP     r12, #2
+        MOVLS   r14, #2
+        STRLSB  r14, [r1], #1   ; escape &01, &02.
+        STRB    r12, [r1], #1
+
+        TEQ     r2, r8
+        BNE     %B02
+
+22      MOV     r14, #1
+        STRB    r14, [r1], #1   ; separator token
+
+        TEQ     r5, #0
+        TEQEQ   r6, #0
+        STREQB  r5, [r1]        ; terminating null
+        EXIT    EQ              ; finished. return r0
+
+ [ :LNOT:CollateAccentsBackwards
+        SUB     r2, r2, r9      ; restore source pointer
+ ]
+
+        TEQ     r6, #0
+        MOVNE   r6, #0
+ [ CollateAccentsBackwards
+        MOVNE   r7, #-1
+        SUBNE   r2, r2, #1
+        SUBNE   r8, r2, r9
+ ]
+        BNE     %B03            ; tack on accented version
+
+ [ CollateAccentsBackwards
+        MOV     r7, #+1
+        ADD     r2, r2, #1
+        ADD     r8, r2, r9
+ ]
+        MOV     r5, #0
+        B       %B03            ; tack on cased version
+
+        LNK     Tail.s
+@
+
+
+1.5
+log
+@Added Turkish, Italian and German territories. The Turkish and Italian are
+still unfinished, and probably totally wrong, but at least they're there and
+will build.
+
+Also, a minor collation fix for Thorn=TH, and currency of France changed to
+the Euro.
+
+Version 0.36. Tagged as 'Module-0_36'
+@
+text
+@d246 1
+a246 1
+        LNK     s.tail
+@
+
+
+1.4
+log
+@32-bit compatible.
+
+Version 0.35. Tagged as 'Module-0_35'
+@
+text
+@d87 4
+d172 1
+a172 1
+        TEQ     r12, #'š'       ; going backwards -> output "E" or "e" and continue with "O" or "o"
+d195 12
+@
+
+
+1.3
+log
+@Implemented option for reverse prioritisation of accents during second
+collation stage.
+Added French and French Canadian territories.
+Added option for standalone builds.
+
+Version 0.34. Tagged as 'Module-0_34'
+@
+text
+@d207 1
+a207 1
+        EXITS   EQ              ; finished. return r0
+@
+
+
+1.2
+log
+@Nearly complete Danish territory added.
+Dummy Swedish territory added.
+
+Version 0.29. Tagged as 'Module-0_29'
+@
+text
+@d50 2
+a51 1
+ [ newsortorder
+d53 1
+a53 1
+        Entry   "r1-r6"
+d89 2
+a90 2
+        SUB     r0, r12, r2     ; r0 = strlen(r2)
+        ADD     r0, r0, r14
+d92 4
+d99 7
+a105 3
+02      SUBS    r3, r3, #1      ; for (; r3!=0; r3--)
+        EXITS   CC
+        LDRB    r12, [r2], #1   ;     if ((*r1++ = *r2++) == 0) break;
+d114 1
+a114 1
+        TEQEQ   r12, #'a'
+d119 1
+a119 1
+        ADD     r2, r2, #1
+d130 5
+a134 1
+        MOV     r14, #'f'
+a136 2
+        SUBS    r3, r3, #1
+        EXITS   CC
+d140 8
+d154 5
+a158 1
+        TEQ     r12, #'š'
+a162 2
+        SUBS    r3, r3, #1
+        EXITS   CC
+d166 10
+a186 2
+        SUBS    r3, r3, #1
+        EXITS   CC
+d194 5
+a198 7
+        BHI     %FT20
+        SUBS    r3, r3, #1
+        EXITS   CC
+        MOV     r14, #2
+        STRB    r14, [r1], #1    ; escape &01, &02 (and &00).
+20      STRB    r12, [r1], #1
+        CMP     r12, #0
+d200 5
+a204 3
+        MOV     r14, #1
+        STRB    r14, [r1, #-2]   ; separator token
+03      TEQ     r5, #0
+d206 1
+d209 3
+a211 4
+        SUB     r1, r1, #1
+        ADD     r3, r3, #1
+
+        LDR     r2, [sp, #4]    ; restore source pointer
+d215 6
+a220 1
+        BNE     %B02            ; tack on accented version
+d222 5
+d228 2
+a229 19
+        B       %B02            ; tack on cased version
+ |
+TransformString
+        Entry   "r1-r4"
+        SUB     r12, r2, #1
+01      LDRB    r0, [r12, #1]!  ; r0 = strlen(r2)
+        CMP     r0, #0
+        BNE     %B01
+        SUB     r0, r12, r2
+        ADRL    r4, SortValueTable
+02      SUBS    r3, r3, #1      ; for (; r3!=0; r3--)
+        EXITS   CC
+        LDRB    r12, [r2], #1   ;     if ((*r1++ = *r2++) == 0) break;
+        LDRB    r12, [r4, r12]  ; OSS Read sort value table entry
+        STRB    r12, [r1], #1
+        CMP     r12, #0
+        BNE     %B02
+        EXITS                   ; return r0
+ ]
+@
+
+
+1.1
+log
+@Japanese, UK and USA territories merged into one source tree.
+Collation order fixed - three pass scheme, sorting first on letters, then on
+accents, then on case.
+Currency code GBL fixed to GBP [UK]
+fi and fl ligatures collated as equivalent to separate fi, fl [UK, USA]
+Territory_NameToNumber now handles non-contiguous names in Messages file.
+Euro symbol marked as punctuation [UK, USA]
+ToControlTable fixed [UK, USA]
+%ST string changed to "Day" ideograph [Japan]
+Territory name lists extended.
+
+Version 0.26. Tagged as 'Module-0_26'
+@
+text
+@d58 13
+d76 10
+d93 1
+a93 1
+        ADRL    r6, ToPlainTable
+d97 16
+d130 32
+@

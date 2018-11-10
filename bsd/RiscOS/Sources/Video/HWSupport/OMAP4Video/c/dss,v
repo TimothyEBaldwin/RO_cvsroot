@@ -1,0 +1,365 @@
+head	1.2;
+access;
+symbols
+	OMAP4Video-0_02:1.2
+	OMAP4Video-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2011.10.19.14.05.45;	author bavison;	state Exp;
+branches;
+next	1.1;
+commitid	lw6qkmKxvYOvYXDv;
+
+1.1
+date	2011.09.12.19.10.47;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	00CYv1XlrqXHQezv;
+
+1.1.1.1
+date	2011.09.12.19.10.47;	author bavison;	state Exp;
+branches;
+next	;
+commitid	00CYv1XlrqXHQezv;
+
+
+desc
+@@
+
+
+1.2
+log
+@  Changes for supporting higher display resolutions
+Admin:
+  Changes received from Willi Theiss
+
+Version 0.02. Tagged as 'OMAP4Video-0_02'
+@
+text
+@/*
+†*†Copyright†(c)†2010, RISC OS Open Ltd
+†*†All†rights†reserved.
+†*
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+†*/
+#include "dss.h"
+#include "regs.h"
+#include "globals.h"
+
+#include <stdlib.h>
+
+#include "DebugLib/DebugLib.h"
+
+_kernel_oserror *dss_reset(void)
+{
+	dprintf(("", "dss_reset\n"));
+	dss->ctrl = 0;
+	/* reset DSI2 module */
+	dsi->sysconfig = SYSCONFIG_SOFTRESET;
+	int timeout = 1000000;
+	while (!(dsi->sysstatus & SYSSTATUS_RESETDONE) && --timeout)
+	{
+		;
+	}
+	if (!timeout)
+	{
+		dprintf(("","dss_reset: Timeout waiting for SYSSTATUS_RESETDONE!\n"));
+	}
+
+	/* DSS reset also causes DSI PLL reset, so reset the cached state */
+	dsi_pll_current_pixel_rate = 0;
+	/* Clear ban flag */
+	clear_ban(BHUB_OFF);
+
+	/* use fixed divisor value for LCD1 */
+	dispc->divisor1 = (1 << DISPC_DIVISOR_LCD_SHIFT) | (1 << DISPC_DIVISOR_PCD_SHIFT);
+	/* disable OMAP35xx compatibility mode */
+	dispc->divisor  = (1 << DISPC_DIVISOR_LCD_SHIFT) | (1 << 0);
+
+	return (_kernel_oserror *)0;
+}
+
+/* for some unknown reason the fractional part of REGM does not work for DSIn PLL */
+#define USE_FRACTIONAL_REGM_F	0
+//#define USE_FRACTIONAL_REGM_F	1
+
+#define FREQ_PLL_MAX	186000000
+#define FREQ_PCLK_MAX	170100000
+#define FREQ_SYS		38400000
+
+#if (USE_FRACTIONAL_REGM_F == 1)
+#define FRACT_SHIFT		18		/* bits in fractional divider */
+#else
+#define MAX_DSI_PHY_CLK	1800000000
+#define FINT_MAX		2500000
+#define FINT_MIN		500000
+#define REGN_MIN		((FREQ_SYS / FINT_MAX) + 1)
+#define REGN_MAX		((FREQ_SYS / FINT_MIN) + 1)
+
+#define RESOLUTION		16384
+#endif /* USE_FRACTIONAL_REGM_F */
+
+
+clock_divider calculate_dss_clock_divider(uint32_t pixel_rate)
+{
+	/* Calculate DSI_PLL_REGM, DSI_PLL_REGN, DSI_PLL_REGM4 values
+	   required for the given pixel rate (in Hz)
+	   Output values aren't guaranteed to be within range
+
+	   The full clock flow is as follows:
+	     DSI PLL input = DSI_PLL_REFCLK (= DSS2_ALWON_FCLK = sys_clk)
+	     Data lane freq = DSIPHY = 2*pixel rate*DSI_BPP/DSI_LANES
+	     DSIPHY = 2*DSI_PLL_REGM/(DSI_PLL_REGN+1)*DSI_PLL_REFCLK
+	   Also, 0.5MHz <= Fint <= 2.5MHz where Fint = DSI_PLL_REFCLK/(DSI_PLL_REGN+1)
+	   DSIPHY is then used as the source for the HSDIVIDER, which does the following:
+	     DSIn_PCLK1 = DSIPHY/(REGM4+1)
+	     DSIn_PCLK2 = DSIPHY/(REGM5+1)
+	   Both must be <= 186MHz
+	   DSIn_PCLK2 can be used to drive the DSI module, except we don't care much for that
+	   DSIn_PCLK1 is what we use to drive the DISPC pixel clock:
+	     pixel rate = (DSIn_PCLK1/LCD)/PCD
+	     1 <= LCD <= 255
+	     1 <= PCD <= 255
+	   We aren't using the DSI output module, so we can ignore the data lane frequency
+	   This increases the number of DSI PLL register combinations available, so to keep this
+	   code simple we remove LCD and PCD from the equation by forcing them to their minimal
+	   values. This also helps power usage a bit since DISPC will be clocked with the lowest
+	   possible clock (for a given pixel rate).
+	*/
+
+#if (USE_FRACTIONAL_REGM_F == 1)
+	/* use fractional divider for REGM value: no iteration needed */
+	clock_divider best;
+	best.regm = 0;
+	best.regn = 20 - 1;		/* start with REGN = 20 ==> Fint = 1920000 */
+	best.regm4 = 2 - 1;		/* lowest value that allows usage of DSIn_PLCK1 */
+	best.pcd   = 2;
+	best.regmf = 0;
+
+	if (!pixel_rate)
+	{
+		return best;
+	}
+
+	/* check for max pixel_rate (for adjusting regm4 value) */
+	/* for using fractional divider: 20 <= regm <= 2045 */
+	if ((pixel_rate * 2) > FREQ_PLL_MAX)
+	{
+		best.pcd = 1;
+	}
+	else
+	{
+		pixel_rate *= 2;
+	}
+	/* scale with regm4 */
+	pixel_rate *= (best.regm4 + 1);
+
+	/* calculate PLL value as fixed point with resolution of fractional divider */
+	uint64_t pll_val = (((uint64_t)best.regn + 1ull) * (uint64_t)pixel_rate) << FRACT_SHIFT;
+	pll_val /= (uint64_t)(hwconfig->sys_clk);
+	pll_val >>= 1;
+	best.regm = (uint32_t)(pll_val >> FRACT_SHIFT);
+	best.regmf = (uint32_t)(pll_val % (1ull << FRACT_SHIFT));
+#else
+	clock_divider best;
+	uint32_t delta, bestdelta;
+	uint32_t i, m4;
+	uint64_t ratio, m, dm;
+
+	best.regm = 0;
+	best.regn = 1;
+	best.regm4 = 2 - 1;
+	best.pcd   = 2;
+	best.regmf = 0;
+
+	if (!pixel_rate)
+	{
+		return best;
+	}
+
+	/* check for max pixel_rate (for adjusting pcd value) */
+	if ((pixel_rate * 2) > FREQ_PLL_MAX)
+	{
+		best.pcd = 1;
+	}
+	else
+	{
+		pixel_rate *= 2;
+	}
+
+	/* search for value pair REGM,REGN with |2 * REGM * RESOLUTION / REGN - v| ==> 0 */
+	for (i = REGN_MIN, bestdelta = RESOLUTION; i <= REGN_MAX; ++i)
+	{
+		/* iterate over REGM4 */
+		for (m4 = 1; m4 < 32; ++m4)
+		{
+			/* find a pixel clock within 0.006 % of requested value (i.e. 1 / 16384) */
+			ratio = (uint64_t)pixel_rate * (uint64_t)m4 * RESOLUTION / FREQ_SYS;
+
+			/* add 0.5 for correct rounding */
+			m = ((uint64_t)i * ratio + RESOLUTION) / (2 * RESOLUTION);
+			/* check for allowed frequency range */
+			if ((2 * m * FREQ_SYS / (uint64_t)i) > MAX_DSI_PHY_CLK)
+				break;
+			dm = m * 2 * RESOLUTION / (uint64_t)i;
+			/* look at difference */
+			if (dm > ratio)
+			{
+				delta = (uint32_t)(dm - ratio);
+			}
+			else
+			{
+				delta = (uint32_t)(ratio - dm);
+			}
+
+			if (delta < bestdelta)
+			{
+				bestdelta = delta;
+				best.regm = (uint32_t)m;
+				best.regn = i - 1;
+				best.regm4 = m4 - 1;
+				if (delta < 1)
+				{
+					break;
+				}
+			}
+		}
+		if (bestdelta < 1)
+		{
+			break;
+		}
+	}
+#endif /* USE_FRACTIONAL_REGM_F */
+
+	return best;
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a37 3
+	/* Perform system reset as per spruf98d 15.5.1 */
+	/* Except we'll skip the LCD reset for now, since the method they describe could fail if
+	   we don't use a timeout (if FRAMEDONE goes to 1 before we get a chance to clear it) */
+d39 3
+a41 5
+	/* The clocks to the DSS are enabled, but for the reset to work we need to enable
+	   the VENC clocks (CAUTION in section 15.5.3.1.2.2) */
+	dss->ctrl |= DSS_CTRL_VENC_CLOCK_4X_ENABLE | DSS_CTRL_DAC_DEMEN | DSS_CTRL_DAC_POWERDN_BGZ;
+	/* Now we can safely perform the reset */
+	dss->sysconfig = SYSCONFIG_SOFTRESET;
+d43 1
+a43 1
+	while (!(dss->sysstatus & SYSSTATUS_RESETDONE) && --timeout)
+d51 1
+a51 2
+	/* Now disable VENC clocks again until we need them */
+	dss->ctrl = 0;
+d54 1
+a54 1
+	/* Clear ban flag? */
+d65 3
+d69 2
+a70 1
+#define FREQ_PLL_MAX	173000000
+d72 6
+a78 1
+#define FINT_MAX		2500000
+d82 2
+a83 1
+#define FRACT_SHIFT		18		/* bits in fractional divider */
+a84 1
+//#define USE_HIGHFREQ	1
+d88 1
+a88 1
+	/* Calculate DSI_PLL_REGM, DSI_PLL_REGN, DSI_PLL_REGM4 (aka DSS_CLOCK_DIV) values
+d95 1
+a95 2
+	     DSIPHY = 2*DSI_PLL_REGM/(DSI_PLL_REGN+1)*DSI_PLL_REFCLK/(HIGHFREQ+1)
+	     HIGHFREQ = (DSI_PLL_REFCLK>32MHz?1:0) (=0 for all current sys_clk values)
+d98 3
+a100 3
+	     DSIn_PCLK1 = DSIPHY/REGM4
+	     DSIn_PCLK2 = DSIPHY/REGM5
+	   Both must be <= 173MHz
+d111 1
+a111 9
+	   In the future we may need to change this (e.g. for video overlay downscaling, or for
+	   more accurate generation of clocks like 25.175MHz - where LCD*PCD=5 allows accurate
+	   generation of 25.175MHz)
+
+	   An algorithm that aims for 100% accurate clock rates was found to be incapable of
+	   calculating divider values for most RISC OS screen modes (in particular the 25.175MHz
+	   mode used at boot). Instead, an algorithm that aims to find the closest possible clock
+	   rate is used. Most clock rate errors appear to be tiny (within 1kHz of the desired
+	   pixel rate), so these errors shouldn't pose any problems. */
+d113 1
+a118 1
+#if 1
+a119 3
+#else
+	best.pcd   = 1;
+#endif
+d127 3
+a129 5
+#if 1
+	/* scale with pcd & regm4 */
+	pixel_rate *= (best.pcd * (best.regm4 + 1));
+	/* check for range of fPLL */
+	if (pixel_rate > FREQ_PLL_MAX)
+a130 1
+		pixel_rate /= 2;
+d133 4
+a136 1
+#else
+d138 1
+a138 2
+	pixel_rate *= 2;
+#endif
+a142 1
+#ifndef USE_HIGHFREQ
+a143 1
+#endif /* USE_HIGHFREQ */
+d146 70
+@
+
+
+1.1.1.1
+log
+@  Initial import of OMAP4 video driver
+Admin:
+  Submission from Willi Thei√ü
+@
+text
+@@

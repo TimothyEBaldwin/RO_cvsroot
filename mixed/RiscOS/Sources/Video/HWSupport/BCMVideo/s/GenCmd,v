@@ -1,0 +1,507 @@
+head	1.5;
+access;
+symbols
+	BCMVideo-0_53:1.5
+	BCMVideo-0_52:1.5
+	BCMVideo-0_51:1.5
+	BCMVideo-0_50-1_50_2_1:1.4
+	RPiFreeze:1.4.0.2
+	BCMVideo-0_50:1.4
+	BCMVideo-0_49:1.4
+	BCMVideo-0_48:1.4
+	BCMVideo-0_47:1.4
+	BCMVideo-0_46:1.4
+	BCMVideo-0_45:1.2
+	BCMVideo-0_44:1.1
+	BCMVideo-0_43:1.1
+	BCMVideo-0_42:1.1
+	BCMVideo-0_41:1.1
+	BCMVideo-0_40:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.07.01.12.32.40;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	SZDeyIEUJXdXNqIA;
+
+1.4
+date	2017.05.05.06.24.16;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	d8ComKiu5XyjkaQz;
+
+1.3
+date	2017.04.30.15.39.17;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	AQXY4ZBPc4TVyzPz;
+
+1.2
+date	2017.04.13.20.32.19;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	qbk5tk8H0BClJpNz;
+
+1.1
+date	2016.12.10.17.01.54;	author jlee;	state Exp;
+branches;
+next	;
+commitid	zybtuuARus1hysxz;
+
+
+desc
+@@
+
+
+1.5
+log
+@Add support for the GraphicsV overlay API and alpha-blended screen modes. Allow gamma table use to be disabled via adding 'disable_gamma' to cmdline.txt
+Detail:
+  s/BCMVideo - Update workspace for the new features. On startup, check to see if 'disable_gamma' is included in the firmware-managed kernel command line (i.e. from cmdline.txt in the bootloader partition), and if so disable all use of the hardware gamma tables. Update mode vet & set to allow alpha-blending in 32bpp modes.
+  s/Dispmanx, s/HWPointer - Move the dispmanx-related routines out of s/HWPointer and into their own file, for re-use by the GraphicsV overlay code
+  s/GPUMode - Move the command line scanning code into s/BCMVideo so it's still available if the GPUMode build switch is disabled
+  s/GenCmd - Tweak how GenCmd_GetConfigInt returns values so that zero-value variables can be distinguished from errors. Check the framebuffer_ignore_alpha variable to determine if the GPU will pay attention to the FBSetAlphaMode property tag.
+  s/GraphicsV - Hook up the GraphicsV overlay entries. Fix determination of whether hardware pointer is fully supported to also check the screen height.
+  s/GVOverlay - Initial support for the GraphicsV hardware overlay API. It's best used in 32bpp alpha-blended screen modes, so that the overlays can be placed behind the desktop. Rotated/flipped overlays aren't supported yet.
+Admin:
+  Tested on Raspberry Pi 1 & 3
+  Requires BCMSupport-0_08
+  disable_gamma should allow people who are frequently affected by https://www.riscosopen.org/forum/forums/11/topics/10346 to use their systems, pending a proper fix once the root cause has been determined.
+  Note that options in cmdline.txt should be space-separated, so to disable both GPU mode changes & gamma table use you'll want 'disable_gamma disable_mode_changes'.
+
+
+Version 0.51. Tagged as 'BCMVideo-0_51'
+@
+text
+@; Copyright 2016 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+GenCmd_Init    ROUT
+        Entry   "r0-r1,r7", VCHIQ_Service_Size
+        LDR     r0, GenCmdService
+        CMP     r0, #0
+        EXIT    NE
+        BL      VCHIQInit
+        FRAMSTR r0,VS
+        EXIT    VS
+        ; Create service
+        MOV     r0, #1
+        STR     r0, [sp, #VCHIQ_Service_Version]
+        STR     r0, [sp, #VCHIQ_Service_Version_Min]
+        LDR     r0, =&47434D44 ; 'GCMD'
+        STR     r0, [sp, #VCHIQ_Service_Id]
+        MOV     r0, #0
+        STR     r0, [sp, #VCHIQ_Service_Reserved]
+        STR     r0, [sp, #VCHIQ_Service_RxFifoSize]
+        STR     r0, [sp, #VCHIQ_Service_TxFifoSize]
+        ADR     r1, GenCmd_ClientCallback
+        STR     r1, [sp, #VCHIQ_Service_Callback]
+        STR     r0, [sp, #VCHIQ_Service_CallbackParam]
+        STR     r0, [sp, #VCHIQ_Service_WantUnalignedBulkRx]
+        STR     r0, [sp, #VCHIQ_Service_WantUnalignedBulkTx]
+        STR     r0, [sp, #VCHIQ_Service_WantCRC]
+        LDR     r0, VCHIQInstance
+        MOV     r1, sp
+        SWI     XVCHIQ_ServiceOpen
+        MOVVS   r7, r0
+        BVS     %FT89
+        STR     r0, GenCmdService
+        ; Release service (message functions will 'use' it again)
+        SWI     XVCHIQ_ServiceRelease
+        ; Query the GPU limits & display rotation
+        MOV     r0, #DisplayStatus_Changing
+        MOV     r1, #Service_DisplayStatus
+        LDRB    r2, GVinstance
+        CMP     r2, #255
+        SWINE   XOS_ServiceCall
+        ; For these, firwmare will return 0 if setting is absent from config.txt
+        ADR     r0, MaxFramebufferWidth
+        BL      GenCmd_GetConfigInt
+        STRNE   r0, MaxFBWidth
+        ADR     r0, MaxFramebufferHeight
+        BL      GenCmd_GetConfigInt
+        STRNE   r0, MaxFBHeight
+        ADR     r0, HDMIPixelFreqLimit
+        BL      GenCmd_GetConfigInt
+        STRNE   r0, MaxPixelClock
+        ADR     r0, HDMIPixelFreqLimitMin
+        BL      GenCmd_GetConfigInt
+        STRNE   r0, MinPixelClock
+        ADR     r0, DisplayRotateStr
+        BL      GenCmd_GetConfigInt
+        STRNE   r0, DisplayRotate
+        ; Firmware will return 1 by default, and we need to detect the 0 case
+        ADR     r0, FramebufferIgnoreAlphaStr
+        BL      GenCmd_GetConfigInt
+        STRVC   r0, FramebufferIgnoreAlpha
+      [ GPUMode
+        ADR     r0, HDMIGroup
+        BL      GenCmd_GetConfigInt
+        STRVC   r0, ConfigHDMIGroup
+      ]
+        CMP     r2, #255
+        MOV     r0, #DisplayStatus_Changed
+        SWINE   XOS_ServiceCall
+        CLRV
+        EXIT
+89
+        MOV     r0, #0
+        STR     r0, GenCmdService        
+        FRAMSTR r7,,r0
+        SETV
+        EXIT
+
+CmdTable
+        Command VCGenCmd, 255, 1, International_Help
+        =       0
+
+VCGenCmd_Help
+        =       "HGC", 0
+VCGenCmd_Syntax
+        =       "SGC", 0
+MaxFramebufferWidth
+        =       "max_framebuffer_width", 0
+MaxFramebufferHeight
+        =       "max_framebuffer_height", 0
+HDMIPixelFreqLimit
+        =       "hdmi_pixel_freq_limit", 0
+HDMIPixelFreqLimitMin
+        =       "hdmi_pixel_freq_limit_min", 0
+DisplayRotateStr
+        =       "display_rotate", 0
+FramebufferIgnoreAlphaStr
+        =       "framebuffer_ignore_alpha", 0
+ [ GPUMode
+HDMIGroup
+        =       "hdmi_group", 0
+ ]
+GetConfig
+        =       "get_config ", 0
+        ALIGN
+
+GenCmd_ClientCallback
+        ; Did we receive a message?
+        CMP     r1, #VCHI_CALLBACK_MSG_AVAILABLE
+        STREQ   r1, GenCmdResponded
+        MOV     pc, lr
+
+GenCmd_Finalise ROUT
+        Entry   "r0"
+        ; Release service
+        LDR     r0, GenCmdService
+        CMP     r0, #0
+        EXIT    EQ
+        SWI     XVCHIQ_ServiceUse
+        LDR     r0, GenCmdService
+        SWI     XVCHIQ_ServiceClose
+        MOV     r0, #0
+        STR     r0, GenCmdService
+        EXIT
+
+; in:
+; r0 -> command buffer
+; r1 = command length (incl. terminator)
+; r2 -> response buffer
+; r3 = response buffer length (incl. status word)
+; out:
+; r0 = response length (incl. status word)
+GenCmd_Send ROUT
+        Entry   "r4-r5"
+        LDR     r4, GenCmdService
+        ADR     r5, GenCmdResponded
+        BL      VCHIQSend
+        EXIT
+
+; in:
+; r0 -> config parameter name
+; out:
+; r0 = config value (iff V clear)
+; V set on error (r0 corrupt)
+; Z set if non-zero value returned
+; else Z clear (error returned or zero returned)
+; Note: The GPU *may* return 0 for config parameters that are known to the
+; firmware but have no value specified in the config (depends on item)
+GenCmd_GetConfigInt ROUT
+        Entry   "r0-r3", 64
+        MOV     r1, sp
+        ADR     r2, GetConfig
+10
+        LDRB    r3, [r2], #1
+        CMP     r3, #0
+        STRNEB  r3, [r1], #1
+        BNE     %BT10
+20
+        LDRB    r3, [r0], #1
+        CMP     r3, #0
+        STRB    r3, [r1], #1
+        BNE     %BT20
+        MOV     r0, sp
+        SUB     r1, r1, r0
+        MOV     r2, sp
+        MOV     r3, #64
+        BL      GenCmd_Send
+        BVS     %FT90
+        ; Check status
+        LDR     r0, [sp]
+        CMP     r0, #0
+        BNE     %FT90
+        ; Result should be of the form <name>=<number>
+        ; Number could be decimal or C-style hex
+        FRAMLDR r0
+        ADD     r1, sp, #4
+30
+        LDRB    r2, [r0], #1
+        LDRB    r3, [r1], #1
+        CMP     r2, #0
+        BEQ     %FT40
+        CMP     r2, r3
+        BEQ     %BT30
+        B       %FT90
+40
+        CMP     r3, #'='
+        BNE     %FT90
+        MOV     r0, #0
+        LDRB    r2, [r1]
+        LDRB    r3, [r1, #1]
+        CMP     r3, #'x'
+        CMPNE   r3, #'X'
+        CMPEQ   r2, #'0'
+        BEQ     %FT60
+        SUB     r2, r2, #'0'
+        CMP     r2, #9
+        BHI     %FT90
+        ; Decimal
+        MOV     r3, #10
+50
+        LDRB    r2, [r1], #1
+        CMP     r2, #0
+        BEQ     %FT99
+        SUB     r2, r2, #'0'
+        CMP     r2, #9
+        BHI     %FT90
+        MLA     r0, r3, r0, r2
+        B       %BT50
+60
+        ADD     r1, r1, #2
+        LDRB    r2, [r1]
+        SUB     r3, r2, #'0'
+        CMP     r3, #9
+        SUBHI   r3, r2, #'A'
+        CMPHI   r3, #5
+        SUBHI   r3, r2, #'a'
+        CMPHI   r3, #5
+        BLS     %FT70
+        ; Hex
+70
+        LDRB    r2, [r1], #1
+        CMP     r2, #0
+        BEQ     %FT99
+        SUB     r3, r2, #'0'
+        CMP     r3, #9
+        ADDLS   r0, r3, r0, LSL #4
+        BLS     %BT70
+        SUB     r3, r2, #'A'
+        CMP     r3, #5
+        SUBHI   r3, r2, #'a'
+        CMPHI   r3, #5
+        ADDLS   r0, r3, r0, LSL #4
+        ADDLS   r0, r0, #10
+        BLS     %BT70
+90
+        MSR     CPSR_f,#V_bit ; Z clear
+        EXIT
+99
+      [ Debug
+        BL      DebugHexTX4
+        FRAMLDR r1,,r0
+        BL      DebugTXS
+        BL      DebugTXStrInline
+        DCB     10,13,0
+        ALIGN        
+      ]
+        CMP     r0, #0 ; Z set/clear, V clear
+        FRAMSTR r0
+        EXIT
+
+
+VCGenCmd_BufLen * 1024
+
+; r0 -> command tail
+VCGenCmd_Code        
+        Entry   "r1-r3", VCGenCmd_BufLen
+        LDR     r12, [r12]
+        ; Try and init
+        LDR     r1, GenCmdService
+        CMP     r1, #0
+        BNE     %FT20
+        BL      GenCmd_Init
+        EXIT    VS
+20
+        ; Copy command to stack so we can ensure it's null terminated
+        ; Plus, calculate length
+        MOV     r1, #0
+30
+        LDRB    r2, [r0, r1]
+        CMP     r2, #32
+        RSBGES  lr, r1, #VCGenCmd_BufLen-4 ; Avoid buffer overflow
+        MOVLT   r2, #0
+        STRB    r2, [sp, r1]
+        ADD     r1, r1, #1
+        BGE     %BT30
+        MOV     r0, sp
+        MOV     r2, sp
+        MOV     r3, #VCGenCmd_BufLen
+        BL      GenCmd_Send
+        EXIT    VS
+        ADD     r2, r2, #4 ; Ignore status word
+        ; Response will be use LF for newline, we need LF-CR to match OS_NewLine
+40
+        LDRB    r0, [r2], #1
+        TEQ     r0, #0
+        BEQ     %FT50
+        SWI     XOS_WriteC
+        EXIT    VS
+        TEQ     r0, #10
+        SWIEQ   XOS_WriteI+13
+        B       %BT40
+50
+        ; Final newline also needed
+        SWI     XOS_NewLine
+        EXIT
+
+        END
+@
+
+
+1.4
+log
+@Build fix
+Case change to vcgencmd also requires labels changing.
+Retagged as BCMVideo-0_46.
+@
+text
+@d54 1
+d57 1
+a57 1
+        STRVC   r0, MaxFBWidth
+d60 1
+a60 1
+        STRVC   r0, MaxFBHeight
+d63 1
+a63 1
+        STRVC   r0, MaxPixelClock
+d66 1
+a66 1
+        STRVC   r0, MinPixelClock
+d69 5
+a73 1
+        STRVC   r0, DisplayRotate
+d109 2
+d156 5
+a160 1
+; else V set, r0 undefined
+d180 1
+a180 1
+        EXIT    VS
+d248 1
+a248 1
+        SETV
+a250 3
+        ; The GPU will return 0 for config parameters that are known to the firmware but have no value specified in the config
+        CMP     r0, #0
+        BEQ     %BT90 
+d259 1
+@
+
+
+1.3
+log
+@Capitalise the command table to match CmdHelp syntax
+Have *Help report VCGenCmd in its summary.
+
+Version 0.46. Tagged as 'BCMVideo-0_46'
+@
+text
+@d90 1
+a90 1
+vcgencmd_Help
+d92 1
+a92 1
+vcgencmd_Syntax
+d255 1
+a255 1
+vcgencmd_BufLen * 1024
+d258 2
+a259 2
+vcgencmd_Code        
+        Entry   "r1-r3", vcgencmd_BufLen
+d274 1
+a274 1
+        RSBGES  lr, r1, #vcgencmd_BufLen-4 ; Avoid buffer overflow
+d281 1
+a281 1
+        MOV     r3, #vcgencmd_BufLen
+@
+
+
+1.2
+log
+@Fix GPU mode changes with hdmi_group=1
+Detail:
+  s/GPUMode - If config.txt specifies hdmi_group=1, the custom mode created via hdmi_timings will be added as group 1 mode 65 instead of the usual group 2 mode 87. Make sure we use the appropriate settings when selecting the mode.
+  s/BCMVideo, s/GenCmd - Add hdmi_group to the list of settings to read during startup
+Admin:
+  Tested on Raspberry Pi 1
+  Fixes hang on boot when GPU mode changes are enabled and hdmi_group=1 is specified in config.txt
+
+
+Version 0.45. Tagged as 'BCMVideo-0_45'
+@
+text
+@d87 1
+a87 1
+        Command vcgencmd, 255, 1, International_Help
+@
+
+
+1.1
+log
+@Add support for GPU mode changes, vcgencmd implementation, and fix some issues with rotated displays
+Detail:
+  With recent firmware (~Aug 10th and newer) it's possible to issue a hdmi_timings command via vcgencmd to define custom mode timings on the fly. Make use of this feature (if available) to allow the OS to feed mode timings to the GPU instead of relying on the GPU to scale the framebuffer to the mode that was selected at boot.
+  As an off-shoot of this we also get a vcgencmd *-command that's roughly equivalent to the vcgencmd command that's available under Linux
+  File changes:
+  - Makefile, Resources/UK/CmdHelp - *vcgencmd help text
+  - s/BCMVideo - Add a few option switches to control the new behaviour. Add some generic code for interacting with VCHIQ services. Fix some issues with rotated displays (mainly 90 / 270 degree rotation)
+  - s/Debug - Fix debug routines corrupting some registers
+  - s/GraphicsV - Disable GraphicsV_StartupMode implementation if the builtin MDF is disabled (-> GPU mode changes are enabled)
+  - s/HWPointer - Update to use the generic VCHIQ service code from s/BCMVideo
+  - s/GenCmd - vcgencmd implementation. On initialisation, use it to read some of the GPU state & limits.
+  - s/TVService - basic TV service implementation; enough to read the GPU state and perform mode changes
+  - s/GPUMode - GPU mode change handling.
+Admin:
+  Tested on Raspberry Pi 1, 2, 3 with old & new firmware
+
+
+Version 0.40. Tagged as 'BCMVideo-0_40'
+@
+text
+@d69 5
+d104 4
+@
+

@@ -1,0 +1,253 @@
+head	4.3;
+access;
+symbols
+	Patch-0_08:4.3
+	Patch-0_07:4.2
+	Patch-0_06:4.1.3.1
+	Patch-0_05:4.1.3.1
+	Patch-0_04:4.1.3.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.1.3.1
+	Ursula_RiscPC:4.1.3.1.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.1.3.1
+	UrsulaBuild_FinalSoftload:4.1.3.1
+	rthornb_UrsulaBuild-12Aug1998:4.1.3.1
+	aglover_UrsulaBuild-05Aug1998:4.1.3.1
+	rthornb_UrsulaBuild-29Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-22Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-15Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-07Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-17Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-03Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-27May1998:4.1.3.1
+	rthornb_UrsulaBuild-21May1998:4.1.3.1
+	rthornb_UrsulaBuild_01May1998:4.1.3.1
+	Daytona:4.1.3.1.0.6
+	Daytona_bp:4.1.3.1
+	Ursula:4.1.3.1.0.4
+	Ursula_bp:4.1.3.1
+	RO_3_71:4.1.3.1
+	ART_bp:4.1.3.1
+	ART:4.1.3.1.0.2
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	StrongARM:4.1.3;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	2014.05.19.20.29.12;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	CFYV4nS29beJMbBx;
+
+4.2
+date	2012.09.01.13.59.27;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+commitid	wmVf3VFxGhRBIPiw;
+
+4.1
+date	96.11.06.03.59.42;	author nturton;	state Exp;
+branches
+	4.1.3.1;
+next	;
+
+4.1.3.1
+date	96.11.06.03.59.42;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@Remove ineffective check for bit 31 of AIF flags word
+Application note 295 boldly declared bit 31 of AIF as "application is StrongARM compatible", however the AIF docs nor the tools were ever updated to implement this.
+Hence, the quick exit when the flag is set never triggers, and 17 years on it might as well not bother.
+Also - added a syntax reminder in *PATCHSTATS rather than a blank line.
+Resolves ticket #310.
+
+Version 0.08. Tagged as 'Patch-0_08'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "kernel.h"
+#include "swis.h"
+#include "Global/Services.h"
+#include "Global/RISCOS.h"
+
+#include "sigfind.h"
+#include "patch.h"
+
+static int app_size(void)
+{
+  _kernel_swi_regs r;
+
+  _kernel_swi(OS_GetEnv,&r,&r);
+
+  return r.r[1];
+}
+
+_kernel_oserror *patch_init(const char *cmd_tail, int podule_base, void *pw)
+{
+  sigfind_init();
+
+  UNUSED(cmd_tail);
+  UNUSED(podule_base);
+  UNUSED(pw);
+
+  return NULL;
+}
+
+void patch_services(int service_number, _kernel_swi_regs *r, void *pw)
+{
+  int searchsize, AIFsize;
+
+  /* Need second pass (patch) of unknown compression */
+  if ((service_number != Service_UKCompression) || (r->r[0] != 1)) return;
+
+  searchsize = app_size() - AppSpaceStart;
+  if (((int *)r->r[2])[4] == 0xef000011) /* looks pretty much like an AIF header */
+  {
+    AIFsize = ((int *)r->r[2])[5] + ((int *)r->r[2])[6];
+    if (AIFsize < searchsize) searchsize = AIFsize;
+    if (sigfind_find((char *)r->r[5], (int *)r->r[2], searchsize))
+    {
+      sigfind_patch();
+      /* Don't claim it - another patcher may want a go :-( */
+    }
+  }
+
+  UNUSED(pw);
+}
+
+_kernel_oserror *patch_commands(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+  if (cmd_no == CMD_PatchStats) sigfind_stats();
+
+  UNUSED(pw);
+  UNUSED(argc);
+  UNUSED(cmd_no);
+  UNUSED(arg_string);
+  
+  return NULL;
+}
+@
+
+
+4.2
+log
+@Fix to not badly corrupt random bits of RMA
+The C compiler switches were missing the -zM switch, and C code was referencing data in far away areas (which don't get reduced to position independent ADRs).
+It's hard to see how this would have ever worked, but rather than worry too much about it, just change it so it does.
+* Makefile gains -zM switches and general tidying up
+* Generate CMHG header file so the C code matches the module header prototypes, and rename the CMHG file so as not to confuse the unix<->RISC OS filename translation
+* Be more strict and only match on subreason 1 of Service_UKCompression rather than any non zero subreason
+* If the pathname exceeds 255 characters, right justify it and add an elipsis rather than overruning the buffer
+* Remove some dubious casts
+* Add a bit of assembler to the 'GetSig' macro to do the position independent bit
+Tested on StrongARM RISC OS 4.02, with an application known to need patching. Patch count was 1, and machine didn't stiff.
+
+Version 0.07. Tagged as 'Patch-0_07'
+@
+text
+@a57 5
+    if (((int *)r->r[2])[12] & 0x80000000)
+    {
+      r->r[1] = 0;      /* claims to be StrongARM-ready - cease all patching */
+      return;
+    }
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d15 3
+a17 3
+#include "stdio.h"
+#include "stdlib.h"
+#include "sigfind.h"
+d20 2
+d23 2
+d26 1
+a26 2
+
+int app_size(void)
+d35 1
+a35 1
+int patch_init(void)
+d38 6
+a43 1
+  return 0;
+d46 1
+a46 1
+int patch_services(int service_number, int *r, void *pw)
+d50 2
+a51 1
+//  printf("Compress r0 = %d, r2 = %x, r3 = %x, r5 = %x == %s\n",r[0],r[2],r[3],r[5],r[5]);
+d53 2
+a54 4
+  if ((service_number != 0xb7) || (!r[0]) ) return 0;
+
+  searchsize = app_size()-32768;
+  if (((int *)r[2])[4] == 0xef000011) /* looks pretty much like an AIF header */
+d56 1
+a56 1
+    AIFsize = ((int *)r[2])[5] + ((int *)r[2])[6];
+d58 1
+a58 1
+    if (((int *)r[2])[12] & 0x80000000)
+d60 2
+a61 2
+        r[1] = 0;         /* claims to be StrongARM-ready - cease all patching */
+        return 0;
+d63 2
+a64 1
+    if (sigfind_find((char *) (r)[5], (int *) (r)[2], searchsize)) {
+a66 1
+      //r[1] = 0;
+d70 1
+a70 4
+//  sigfind_stats();
+
+
+  return 0;
+d73 3
+d77 6
+a82 4
+int patch_commands(void)
+{
+  sigfind_stats();
+  return 0;
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@@

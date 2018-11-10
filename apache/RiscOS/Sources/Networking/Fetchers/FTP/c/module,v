@@ -1,0 +1,760 @@
+head	1.8;
+access;
+symbols
+	FTP-0_43:1.8
+	FTP-0_42:1.8
+	FTP-0_41:1.8
+	FTP-0_40:1.8
+	dcotton_autobuild_BaseSW:1.8
+	FTP-0_39:1.8
+	FTP-0_38:1.8
+	FTP-0_37:1.8
+	FTP-0_36:1.7
+	FTP-0_35:1.7
+	FTP-0_34:1.7
+	FTP-0_33:1.7
+	FTP-0_32:1.6
+	FTP-0_31-1_4_2_1:1.5.2.1
+	FTP-0_31:1.5
+	FTP-0_30:1.4
+	FTP-0_29:1.4
+	sbrodie_FTP_0_28:1.4
+	sbrodie_Expresso_final_190298:1.4
+	sbrodie_FTP_0_26:1.3
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	99.07.30.12.18.37;	author sbrodie;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	98.10.07.09.29.53;	author sbrodie;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.10.06.12.35.59;	author sbrodie;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	98.09.16.09.48.21;	author sbrodie;	state Exp;
+branches
+	1.5.2.1;
+next	1.4;
+
+1.4
+date	98.02.18.10.32.39;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.02.11.19.36.28;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.02.11.12.02.37;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.01.29.18.32.11;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.5.2.1
+date	98.09.17.15.36.55;	author sbrodie;	state Exp;
+branches;
+next	;
+
+1.1.1.1
+date	98.01.29.18.32.11;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@  Performance improvement.
+Detail:
+  Module disables Internet events for data connection sockets.
+  Module sits on Event vector and processes sessions with data
+    waiting on the control socket by calling FTP_ReadData with
+    a zero length buffer so that any internal protocol handshaking
+    can be done without the caller's involvement - this speeds
+    up initial transaction stuff as the module no longer needs to
+    be polled for data connection establishment to take place.
+Admin:
+  Tested in Risc PC.
+
+Version 0.37. Tagged as 'FTP-0_37'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * FTP (c.module)
+ *
+ * © Acorn Computers Ltd. 1996-1997
+ *
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "kernel.h"
+#include "swis.h"
+#include "sys/errno.h"
+#include "module.h"
+#include "FTPhdr.h"
+#include "utils.h"
+#include "protocol.h"
+
+#ifdef MemCheck_MEMCHECK
+#include "MemCheck:MemCheck.h"
+#endif
+
+#if CMHG_VERSION < 516
+#define CMHG_CONST
+#else
+#define CMHG_CONST const
+#endif
+
+
+/* TinySupport SWIs.  This does not work if any library static data
+ * is used within the module.  This means errno (__errno) and __ctype
+ * (as used by any macro call to is.... functions)  If you re-enable
+ * this SWI call, this module will fail to work at all.
+ */
+#define NO_TINYSTUBS
+
+#ifdef ROM
+#ifndef NO_TINYSTUBS
+static _kernel_oserror *__ROM;
+#define TinySupport_Share	(0x82c43)
+#define TinySupport_Die		(0x82c41)
+#endif
+#endif
+
+#define NO_SUCH_SWI	(0x1E6)
+
+#define URL_PROTOCOL_REGISTER 0x83e20
+#define URL_PROTOCOL_DEREGISTER 0x83e21
+
+#ifndef ROM
+extern int messages_file(void);
+#endif
+
+#ifndef ROM
+#ifdef DEFINE_ERRNO
+int __errno;
+#endif
+#endif
+
+static int callback_pending_flag;
+
+
+/* Sets clibrary_realloc_routine_is_buggy to 1 if RISC OS 3.1 or earlier (ROM realloc is broken) */
+static int clibrary_realloc_routine_is_buggy;
+static void module_check_os_version(void)
+{
+        int os;
+        (void) _swix(OS_Byte, _INR(0,2)|_OUT(1), 129, 0, 255, &os);
+        clibrary_realloc_routine_is_buggy = (os <= 0xA4);
+}
+
+
+static int registered;
+
+static _kernel_oserror *try_to_register(void)
+{
+        _kernel_oserror *e;
+
+	if (registered) return NULL;
+	e = _swix(URL_PROTOCOL_REGISTER, _INR(0,4), 0, FTPFetcher_00, "ftp:",
+		Module_VersionNumber, Module_Help " © Acorn 1997-8 (Built: " Module_Date ")");
+	if (e == NULL) {
+	        registered = 1;
+	}
+        return e;
+}
+
+static _kernel_oserror *try_to_deregister(void)
+{
+        if (!registered) {
+                return NULL;
+        }
+        else {
+                registered = 0;
+		return _swix(URL_PROTOCOL_DEREGISTER, _INR(0,1), 0, FTPFetcher_00);
+        }
+}
+
+static _kernel_oserror *register_with_url(void)
+{
+        _kernel_oserror *e;
+
+	e = try_to_register();
+	if (e == NULL) return e;
+	if (e->errnum != NO_SUCH_SWI) return e;
+        #ifndef ROM
+	e = _swix(OS_Module, _INR(0,1), 1 /* Load */, "System:Modules.Network.URL.URL");
+	return try_to_register();
+	#else
+	return NULL;
+        #endif
+}
+
+#define EventV 0x10
+
+static void module_disable_internet_event(void)
+{
+	(void) _swix(OS_Byte, _INR(0,1), 13, 19); /* disable internet event */
+}
+
+static void module_enable_internet_event(void)
+{
+	(void) _swix(OS_Byte, _INR(0,1), 14, 19); /* enable internet event */
+}
+
+static _kernel_oserror *module_claim_event_vector(void *private_word)
+{
+	return _swix(OS_Claim, _INR(0,2), EventV, ftp_event, private_word);
+}
+
+static _kernel_oserror *module_release_event_vector(void *private_word)
+{
+	return _swix(OS_Release, _INR(0,2), EventV, ftp_event, private_word);
+}
+
+
+/*************************************************************/
+/* _kernel_oserror *module_init(char *cmd_fail, int podu...  */
+/*************************************************************/
+/* Start up and register ourselves with the URL module       */
+/*************************************************************/
+_kernel_oserror *module_init(CMHG_CONST char *cmd_tail, int podule_base, void *pw)
+{
+    	_kernel_oserror *e;
+
+    	(void) podule_base;
+    	(void) cmd_tail;
+
+      	#ifdef ROM
+      	#ifndef NO_TINYSTUBS
+    	__ROM = _swix(TinySupport_Share, _IN(0), pw);
+    	#endif
+	#endif
+
+	registered = 0;
+
+	module_check_os_version();
+	init_sessions();
+
+	#ifdef MemCheck_MEMCHECK
+  	MemCheck_InitNoDebug();
+        MemCheck_SetQuitting(0,0);
+  	MemCheck_RedirectToFilename("adfs::4.Trace.FTP_mem");
+  	MemCheck_InterceptSCLStringFunctions();
+  	MemCheck_RegisterMiscBlock((void *)0x01c0001c,8164);
+  	MemCheck_SetStoreMallocFunctions(1);
+  	MemCheck_SetReportFrees(1);
+  	MemCheck_SetChecking(0,0);
+  	#endif
+
+  	e = register_with_url();
+  	if (e) {
+                #ifndef ROM
+  	        if (e->errnum == NO_SUCH_SWI) {
+  	                _kernel_oserror *newe = find_error();
+  	                const size_t length = strlen(strcpy(newe->errmess, e->errmess));
+
+  	                newe->errnum = NO_SUCH_SWI;
+			strncat(newe->errmess, " (Load the URL module)", sizeof(newe->errmess) - length);
+			return newe;
+  	        }
+                #endif
+    		return e;
+    	}
+
+        #ifndef ROM
+  	e = _swix(ResourceFS_RegisterFiles, _IN(0), messages_file());
+  	if (e) {
+  	        (void) try_to_deregister();
+    		return e;
+        }
+        #endif
+
+        if (getenv(Module_Title "$Path")) {
+                e = messages_file_open(Module_Title ":Messages");
+        }
+        else {
+        	e = messages_file_open("Resources:$.Resources.URL." "FTP" ".Messages");
+        }
+
+        if (e) {
+                #ifndef ROM
+    		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+                #endif
+                (void) try_to_deregister();
+    		return e;
+    	}
+
+	e = module_claim_event_vector(pw);
+	if (e) {
+    		messages_file_close();
+                #ifndef ROM
+    		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+                #endif
+                (void) try_to_deregister();
+    		return e;
+	}
+
+	module_enable_internet_event();
+
+  	callback_pending_flag = 0;
+  	e = _swix(OS_CallEvery, _INR(0,2), 15*100-1, callevery_entry, pw);
+  	if (e) {
+                module_disable_internet_event();
+                module_release_event_vector(pw);
+    		messages_file_close();
+                #ifndef ROM
+    		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+                #endif
+                (void) try_to_deregister();
+    		return e;
+        }
+
+  	return NULL;
+}
+
+
+void service_handler(int service_number, _kernel_swi_regs *r, void *pw)
+{
+        #ifdef TRACE
+        protocol_debug("Service &%X: R0 = %d for URL version  %03d\n", service_number, r->r[0], r->r[2]);
+        #endif
+        (void) pw;
+        (void) service_number;
+
+	switch (r->r[0]) {
+	        case 0:
+	        	(void) try_to_register();
+	        	break;
+	        case 1:
+	        	(void) try_to_deregister();
+	        	break;
+	        default:
+	        	break;
+	}
+}
+
+
+static void *current_pw;
+
+_kernel_oserror *module_call_after(void)
+{
+        if (callback_pending_flag == 0) {
+	        (void) _swix(OS_CallAfter, _INR(0,2), 100-1, callevery_entry, current_pw);
+	}
+	return NULL;
+}
+
+_kernel_oserror *module_kill(int fatal, int podule, void *pw)
+{
+    	(void) fatal;
+    	(void) podule;
+
+	/* Do I need to do this twice?  I have a ticker event AND a possible callback
+	 * in the pending list, so for safety, I'm going to do it twice
+	 */
+	(void) _swix(OS_RemoveTickerEvent, _INR(0,1), callevery_entry, pw);
+	(void) _swix(OS_RemoveTickerEvent, _INR(0,1), callevery_entry, pw);
+    	if (callback_pending_flag) {
+      		(void) _swix(OS_RemoveCallBack, _INR(0,1), callback_entry, pw);
+    	}
+
+    	module_disable_internet_event();
+    	module_release_event_vector(pw);
+    	messages_file_close();
+        #ifndef ROM
+    	(void) _swix(ResourceFS_DeregisterFiles, _IN(0), messages_file());
+        #endif
+
+        ses_kill_all();
+	conn_kill_all();
+
+       (void) try_to_deregister();
+
+        #ifdef ROM
+        #ifndef NO_TINYSTUBS
+    	if(!__ROM) _swix(TinySupport_Die, 0);
+    	#endif
+	#endif
+
+    	return NULL;
+}
+
+
+_kernel_oserror *swi_handler(int swi_offset, _kernel_swi_regs *r, void *pw)
+{
+	current_pw = pw;
+
+  	switch (swi_offset) {
+     		case FTPFetcher_GetData - FTPFetcher_00:
+       			return(ftp_start(r));
+
+     		case FTPFetcher_Status - FTPFetcher_00:
+       			return(ftp_status(r));
+
+     		case FTPFetcher_ReadData - FTPFetcher_00:
+       			return(ftp_readdata(r));
+
+     		case FTPFetcher_Stop - FTPFetcher_00:
+		       return (ftp_stop(r));
+
+     		default:
+       			return(error_BAD_SWI);
+        }
+}
+
+#define SOCKET_ASYNC_EVENT  1
+int ftp_event_handler(_kernel_swi_regs *r, void *pw)
+{
+        Session *s;
+        int sid;
+
+	if (r->r[1] == SOCKET_ASYNC_EVENT) for (sid = r->r[2], s = find_first_session(); s;) {
+		if (sid == s->data_sd) {
+			return 0; /* Intercept */
+	        }
+	        if (sid == s->control_sd) {
+	                if (!s->aborting && !s->threaded) {
+	                        _kernel_swi_regs r;
+			        int dataxfer = s->state >= FTP_READ_DATA && s->state <= FTP_WRITE_DATA;
+        			if (!dataxfer && s->state < FTP_STATUS_ENDED) {
+                                        char buffer[4];
+                		        r.r[0] = 0;
+	                	        r.r[1] = s->id;
+        	                	r.r[2] = (int) buffer;
+	                	        r.r[3] = 0;
+		                	swi_handler(FTPFetcher_ReadData - FTPFetcher_00, &r, pw);
+		                }
+	                }
+			return 0; /* Intercept */
+	        }
+	        s = s->next;
+	}
+
+	return 1; /* Pass it on */
+}
+
+int callback_handler(_kernel_swi_regs *r, void *pw)
+{
+    	int time;
+    	Connection *c;
+    	Session *s;
+
+    	(void) pw;
+    	(void) r;
+
+    	if (!callback_pending_flag) {
+      		return 1;
+      	}
+
+    	(void) _swix(OS_ReadMonotonicTime, _OUT(0), &time);
+
+    	for (c = find_first_connection(); c;) {
+        	if ((time - c->last_use) > CONNECTION_TIMEOUT) {
+            		Connection *temp = c->next;
+        	        #ifdef TRACE
+        	        protocol_debug("Closing cached connection\n");
+        	        #endif
+            		kill_connection(c);
+            		c = temp;
+            		continue;
+                }
+        	c = c->next;
+        }
+
+	/* Continue processing aborting sessions */
+	for (s = find_first_session(); s;) {
+	        if (s->aborting) {
+	                _kernel_swi_regs r;
+	                char buffer[16];
+
+	                #ifdef TRACE
+	                protocol_debug("Processing abandonned session %p to completion ...\n", s);
+	                #endif
+	                r.r[0] = 0;
+	                r.r[1] = s->id;
+	                r.r[2] = (int) buffer;
+	                r.r[3] = sizeof(buffer);
+	                if (swi_handler(FTPFetcher_ReadData - FTPFetcher_00, &r, pw) || !s->aborting) {
+	                        Session *next = s->next;
+				free((void *)s->id);
+	                        kill_session(s);
+	                        s = next;
+	                        continue;
+	                }
+	        }
+                s = s->next;
+	}
+
+    	callback_pending_flag = 0;
+	return 1;
+}
+
+int callevery_handler(_kernel_swi_regs *r, void *pw)
+{
+        (void) r;
+  	if (callback_pending_flag) {
+   		return 1;
+   	}
+  	callback_pending_flag = 1;
+  	(void) _swix(OS_AddCallBack, _INR(0,1), callback_entry, pw);
+  	return 1;
+}
+
+
+
+/* RISC OS 3.1 SVC mode realloc is broken, so we must provide our own */
+char *module_realloc(void *ptr, size_t size)
+{
+        #ifdef TRACE
+        protocol_debug("module_realloc(%p, %d)\n", ptr, size);
+        #endif
+	if (!clibrary_realloc_routine_is_buggy) return realloc(ptr, size);
+
+        if (ptr == NULL) {
+                return malloc(size);
+        }
+        if (size == 0) {
+                free(ptr);
+		return NULL;
+        }
+	else {
+	        const int *rma_block = ptr;
+	        const size_t newsize = size - (rma_block[-1] - 4);
+	        char *newptr;
+
+		if (_swix(OS_Module, _IN(0)|_INR(2,3)|_OUT(2), 0xD, ptr, newsize, &newptr) != NULL) {
+		        return NULL;
+		}
+
+		return newptr;
+	}
+}
+@
+
+
+1.7
+log
+@Corrected MemCheck exclusion macro to the one MemCheck sets itself
+@
+text
+@d128 23
+d223 12
+d238 2
+d296 3
+d341 30
+@
+
+
+1.6
+log
+@  MemCheck exclusion merged in from branch.
+  Updated to use LocalRes.
+Detail:
+  MemCheck header inclusion and usage protected by HAVE_MEMCHECK macro
+  to avoid problems for build masters who do not have MemCheck.
+Admin:
+  Built from clean; verified resources still built correctly.
+
+Version 0.32. Tagged as 'FTP-0_32'
+@
+text
+@d33 1
+a33 1
+#ifdef HAVE_MEMCHECK
+d151 1
+a151 1
+	#ifdef HAVE_MEMCHECK
+@
+
+
+1.5
+log
+@  ROM builds no longer use TinyStubs
+Detail:
+  c.module: doesn't call the TinySupport_Share/Die SWI calls any more.
+  This is necessary because the module uses __ctype and __errno and its
+  base addresses for these are wrong if that data is moved.
+Admin:
+  Built from clean.
+
+
+Version 0.31. Tagged as 'FTP-0_31'
+@
+text
+@d33 1
+d35 1
+d151 1
+d160 1
+@
+
+
+1.5.2.1
+log
+@Removed MemCheck from FTP build for current project until build
+environment can be fixed.
+
+Version 0.31, 1.4.2.1. Tagged as 'FTP-0_31-1_4_2_1'
+@
+text
+@d33 1
+a33 1
+/*#include "MemCheck:MemCheck.h"*/
+a148 1
+#if 0
+a156 1
+#endif
+@
+
+
+1.4
+log
+@Version number increase for all modules for final Expresso release.
+@
+text
+@d41 8
+d50 1
+d52 3
+d139 3
+a141 1
+    	__ROM = _swix(0xa2c43, _IN(0), pw);
+d265 4
+a268 2
+       #ifdef ROM
+    	if(!__ROM) _swix(0xa2c41, 0);
+@
+
+
+1.3
+log
+@Const-ness of veneers modified on the basis of the CMHG version number to
+avoid build problems.
+@
+text
+@d55 1
+d57 1
+@
+
+
+1.2
+log
+@Build process improvements :
+* Standardised make process in common with other protocol modules.
+* Resources put into standard structure for internationalisation
+* Standard !MkClean, !MkRom, !MkRam to build different versions
+@
+text
+@d35 6
+d117 1
+a117 1
+_kernel_oserror *module_init(const char *cmd_tail, int podule_base, void *pw)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d21 1
+a21 1
+ 
+d35 4
+d44 8
+a52 1
+extern int resources_area(void);
+d70 1
+a70 1
+        
+d73 1
+a73 1
+		Module_VersionNumber, Module_Help " © Acorn 1997 (Built: " Module_Date ")");
+d94 2
+a95 2
+        
+	e = try_to_register(); 
+d98 1
+d101 3
+d114 1
+a114 1
+    
+d118 4
+d138 1
+d147 1
+d151 2
+a152 1
+  	e = _swix(ResourceFS_RegisterFiles, _IN(0), resources_area());
+d157 14
+a170 5
+  
+  	e = messages_file_open("Resources:$.Resources.FTPFetcher.Messages");
+  	if (e) {
+    		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), resources_area());
+  	        (void) try_to_deregister();
+d178 4
+a181 2
+    		(void) _swix(ResourceFS_DeregisterFiles, _IN(0), resources_area());
+  	        (void) try_to_deregister();
+d234 3
+a236 1
+    	(void) _swix(ResourceFS_DeregisterFiles, _IN(0), resources_area());
+d238 1
+a238 1
+	ses_kill_all();
+d243 4
+d307 1
+a307 1
+	                
+d350 1
+a350 1
+	        
+d366 1
+a366 1
+		
+@
+
+
+1.1.1.1
+log
+@Import from SrcFiler of Browser fetchers
+@
+text
+@@

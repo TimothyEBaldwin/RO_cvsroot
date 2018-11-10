@@ -1,0 +1,320 @@
+head	1.4;
+access;
+symbols
+	VCHIQ-0_10:1.4
+	VCHIQ-0_09:1.4
+	VCHIQ-0_08:1.2
+	VCHIQ-0_07:1.1
+	VCHIQ-0_06:1.1
+	VCHIQ-0_05:1.1
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2016.08.08.19.13.54;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	Wf9g3iLRz0aIgxhz;
+
+1.3
+date	2016.07.17.16.48.08;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	v4bsc1BvDdhwaHez;
+
+1.2
+date	2015.08.08.08.30.57;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	WYS8YntY7Gpvtrwy;
+
+1.1
+date	2012.08.19.23.33.04;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.4
+log
+@Fix compile error
+Detail:
+  c/swis - For vchi_bulk_queue_receive, the destination should be non-const
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.09. Retagged as 'VCHIQ-0_09'
+@
+text
+@/*
+ * Copyright (c) 2012, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <stdlib.h>
+#include <stdbool.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "DebugLib/DebugLib.h"
+#include "AsmUtils/irqs.h"
+#include "Interface/RTSupport.h"
+
+#include "globals.h"
+#include "VCHIQHdr.h"
+#include "errors.h"
+
+#include "vc04_services/interface/vchi/vchi.h"
+#include "vc04_services/interface/vchiq_arm/vchiq_if.h"
+
+static _kernel_oserror *VCHI_TO_ERROR(int32_t status)
+{
+	dprintf(("","SWI returning status %d\n",status));
+	switch(status)
+	{
+	case VCHIQ_SUCCESS:
+		return NULL;
+	case VCHIQ_RETRY:
+		return geterror(Error_Retry);
+	case VCHIQ_ERROR:
+	default:
+		return geterror(Error_Error);
+	}
+}
+
+_kernel_oserror *module_swis(int swi_offset, _kernel_swi_regs *r, void *pw)
+{
+	(void) pw;
+	int32_t status;
+	/* The SWI interface is just a wrapper around the userspace API
+	   presented in vc04_services/interface/vchiq_arm/vchiq_shim.c
+	   The only RISC OS specific changes are the addition of the client
+	   modules private word pointer to vchi_initialise(), and returning
+	   values in registers instead of pointers.
+	*/
+	dprintf(("","SWI %d %08x %08x %08x %08x %08x\n",swi_offset,r->r[0],r->r[1],r->r[2],r->r[3],r->r[4]));
+	switch(swi_offset)
+	{
+	case VCHIQ_Initialise-VCHIQ_00:
+		status = vchi_initialise(
+				(VCHI_INSTANCE_T *) &r->r[0], /* return instance */
+				(void *) r->r[0] /* private_word */
+			);
+		break;
+
+	case VCHIQ_Connect-VCHIQ_00:
+		status = vchi_connect(
+				(VCHI_CONNECTION_T **) r->r[0], /* connections */
+				r->r[1], /* num_connections */
+				(VCHI_INSTANCE_T) r->r[2] /* instance_handle */
+			);
+		break;
+
+	case VCHIQ_Disconnect-VCHIQ_00:
+		status = vchi_disconnect(
+				(VCHI_INSTANCE_T) r->r[0] /* instance_handle */
+			);
+		break;
+
+	case VCHIQ_BulkQueueTransmit-VCHIQ_00:
+		status = vchi_bulk_queue_transmit(
+				(VCHI_SERVICE_HANDLE_T) r->r[0], /* handle */
+				(const void *) r->r[1], /* data_src */
+				r->r[2], /* data_size */
+				(VCHI_FLAGS_T) r->r[3], /* flags */
+				(void *) r->r[4] /* bulk_handle */
+			);
+		break;
+
+	case VCHIQ_MsgDequeue-VCHIQ_00:
+		status = vchi_msg_dequeue(
+				(VCHI_SERVICE_HANDLE_T) r->r[0], /* handle */
+				(void *) r->r[1], /* data */
+				r->r[2], /* max_data_size_to_read */
+				(uint32_t *) &r->r[2], /* return actual_msg_size */
+				(VCHI_FLAGS_T) r->r[3] /* flags */
+			);
+		break;
+
+	case VCHIQ_MsgQueue-VCHIQ_00:
+		status = vchi_msg_queue(
+				(VCHI_SERVICE_HANDLE_T) r->r[0], /* handle */
+				(void *) r->r[1], /* data */
+				r->r[2], /* data_size */
+				(VCHI_FLAGS_T) r->r[3], /* flags */
+				(void *) r->r[4] /* msg_handle */
+			);
+		break;
+
+	case VCHIQ_MsgQueueV-VCHIQ_00:
+		status = vchi_msg_queuev(
+				(VCHI_SERVICE_HANDLE_T) r->r[0], /* handle */
+				(VCHI_MSG_VECTOR_T *) r->r[1], /* vector */
+				r->r[2], /* count */
+				(VCHI_FLAGS_T) r->r[3], /* flags */
+				(void *) r->r[4] /* msg_handle */
+			);
+		break;
+
+	case VCHIQ_MsgPeek-VCHIQ_00:
+		status = vchi_msg_peek(
+				(VCHI_SERVICE_HANDLE_T) r->r[0], /* handle */
+				(void **) &r->r[0], /* return data */
+				(uint32_t *) &r->r[1], /* return msg_size */
+				(VCHI_FLAGS_T) r->r[1] /* flags */
+			);
+		break;
+
+	case VCHIQ_MsgRemove-VCHIQ_00:
+		status = vchi_msg_remove(
+				(VCHI_SERVICE_HANDLE_T) r->r[0] /* handle */
+			);
+		break;
+
+	case VCHIQ_ServiceClose-VCHIQ_00:
+		status = vchi_service_close(
+				(VCHI_SERVICE_HANDLE_T) r->r[0] /* handle */
+			);
+		break;
+
+	case VCHIQ_ServiceOpen-VCHIQ_00:
+		status = vchi_service_open(
+				(VCHI_INSTANCE_T) r->r[0], /* instance */
+				(SERVICE_CREATION_T *) r->r[1], /* setup */
+				(VCHI_SERVICE_HANDLE_T *) &r->r[0] /* return handle */
+			);
+		break;
+
+	case VCHIQ_ServiceCreate-VCHIQ_00:
+		status = vchi_service_create(
+				(VCHI_INSTANCE_T) r->r[0], /* instance_handle */
+				(SERVICE_CREATION_T *) r->r[1], /* setup */
+				(VCHI_SERVICE_HANDLE_T *) &r->r[0] /* return handle */
+			);
+		break;
+
+	case VCHIQ_ServiceDestroy-VCHIQ_00:
+		status = vchi_service_destroy(
+				(VCHI_SERVICE_HANDLE_T) r->r[0] /* handle */
+			);
+		break;
+
+	case VCHIQ_ServiceUse-VCHIQ_00:
+		status = vchi_service_use(
+				(VCHI_SERVICE_HANDLE_T) r->r[0] /* handle */
+			);
+		break;
+
+	case VCHIQ_ServiceRelease-VCHIQ_00:
+		status = vchi_service_release(
+				(VCHI_SERVICE_HANDLE_T) r->r[0] /* handle */
+			);
+		break;
+
+	case VCHIQ_BulkQueueReceive-VCHIQ_00:
+		status = vchi_bulk_queue_receive(
+				(VCHI_SERVICE_HANDLE_T) r->r[0], /* handle */
+				(void *) r->r[1], /* data_dst */
+				r->r[2], /* data_size */
+				(VCHI_FLAGS_T) r->r[3], /* flags */
+				(void *) r->r[4] /* bulk_handle */
+			);
+		break;
+
+	default:
+		return error_BAD_SWI;
+	}
+
+	return VCHI_TO_ERROR(status);
+}
+@
+
+
+1.3
+log
+@Add SWI for vchi_bulk_queue_receive
+Detail:
+  c/swis, cmhg/VCHIQHdr, hdr/VCHIQ - Add SWI VCHIQ_BulkQueueReceive, to complement VCHIQ_BulkQueueTransmit
+  h/VCHIQWrap - Add wrapper for the new SWI
+Admin:
+  Builds, untested
+  Based on code supplied by Lee Noar
+
+
+Version 0.09. Tagged as 'VCHIQ-0_09'
+@
+text
+@d192 1
+a192 1
+				(const void *) r->r[1], /* data_dst */
+@
+
+
+1.2
+log
+@Build fix
+Default RESFSDIR, RES_PATH, CMHGFILE.
+Fixes problem with RAM build resources being in the wrong directory, but ROM build ones being OK.
+Resources/standalone manually run, but no runtime testing.
+
+Version 0.08. Tagged as 'VCHIQ-0_08'
+@
+text
+@d189 10
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@d39 1
+a39 1
+#include "modhead.h"
+@
+

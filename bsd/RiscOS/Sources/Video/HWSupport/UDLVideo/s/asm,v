@@ -1,0 +1,174 @@
+head	1.1;
+access;
+symbols
+	UDLVideo-0_05:1.1
+	UDLVideo-0_04:1.1
+	UDLVideo-0_03:1.1
+	UDLVideo-0_02:1.1
+	UDLVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2014.06.16.22.14.23;	author jlee;	state Exp;
+branches;
+next	;
+commitid	32RVqXEWbjRXsNEx;
+
+
+desc
+@@
+
+
+1.1
+log
+@Add first rough version of UDLVideo, a video driver for DisplayLink USB products
+Detail:
+  Based in part around both the OpenBSD 'udl' and the NetBSD 'udl' DisplayLink driver sources, this is a fully functional GraphicsV driver which should be compatible with almost all DL1xx series devices.
+  However the current code does have several deficiencies which makes it unsuitable for real-world use:
+  * Video memory allocation is a hack; PCI_RAMAlloc is used to claim and map in memory which will then be redundently mapped in again by the OS using OS_Memory 13.
+  * The driver relies on manually scanning screen memory to look for any changes which need transmitting to the device. Consequently screen refresh rate is low, especially for high resolutions on older machines.
+  * The driver only supports 16bpp and 32bpp colour depths. Palettised modes are not supported by the hardware, and so some kind of software emulation will be required in order to avoid bad things happening when an attempt is made to use a numbered screen mode.
+  * Screen update functions aren't fully optimised. A cursory glance at the generated assembler suggests that at least some of them are spilling variables onto the stack, which will likely have a significant affect on performance.
+  * Huffman compression needs reworking in order to fix issues seen on DL1x0 hardware (assuming it's worth it, from a performance point of view)
+  * Error handling could do with some improvements
+  Notable files:
+  * c/udl, h/udl - The remaining bits of the OpenBSD driver. Only the basic initialisation code and command generation code remains.
+  * c/netbsd, h/netbsd - The remaining bits of the NetBSD driver; only the LFSR function has been kept
+  * c/screen, h/screen - New screen update functions to replace the BSD ones, tailor-made to match the requirements of the RISC OS driver
+  * c/buildhuff - Utility to generate the encoded 16 bit huffman table
+  * Resources/huff16 - Squashed version of the encoded huffman table. zlib compression works considerably better, so is worth considering in the future.
+Admin:
+  Tested on Iyonix, BB-xM with a DL120 & DL165 device
+
+
+Version 0.01. Tagged as 'UDLVideo-0_01'
+@
+text
+@; 
+; Copyright (c) 2014, RISC OS Open Ltd
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+; 
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:Buffer
+        GET     Hdr:Proc
+
+        AREA    |Asm$$Code|, CODE, READONLY, PIC
+
+        EXPORT  buffer_insert
+        EXPORT  memcmp_len
+
+; size_t buffer_insert(buffer_internal *buffer,const void *data,size_t size)
+buffer_insert
+        Entry
+        MOV     r3, r2
+        MOV     ip, r0
+        MOV     r2, r1
+        MOV     r0, #BufferReason_InsertBlock
+        MOV     lr, pc
+        LDMIA   ip, {r1,r12,pc}
+        MOV     r0, r3
+        EXIT
+
+; int memcmp_len(const void *a,const void *b,int offset,int len)
+memcmp_len ROUT
+        Entry   "v1-v6"
+        ADD     a1, a1, a3
+        ADD     a2, a2, a3
+        MOV     a3, a4
+        ; Deal with halfword aligned start
+        TST     a1, #2
+        BEQ     %FT10
+05
+        LDRH    v1, [a1], #2
+        LDRH    v2, [a2], #2
+        CMP     v1, v2
+        BNE     %FT99
+        SUBS    a3, a3, #2
+        BEQ     %FT99
+10
+        ; Get things quadword aligned to try and make best use of burst reads
+        TST     a1, #&f
+        BEQ     %FT20
+        CMP     a3, #4
+        BLT     %FT50
+        LDR     v1, [a1], #4
+        LDR     v2, [a2], #4
+        CMP     v1, v2
+        BNE     %FT99
+        SUBS    a3, a3, #4
+        BEQ     %FT99
+        B       %BT10
+20
+        ; Process quadwords
+        CMP     a3, #16
+        BLT     %FT40
+30
+        LDMIA   a1!,{v1-v4}
+        LDMIA   a2!,{v5-v6,ip,lr}
+        CMP     v1, v5
+        CMPEQ   v2, v6
+        CMPEQ   v3, ip
+        CMPEQ   v4, lr
+        BNE     %FT70
+        SUB     a3, a3, #16
+        CMP     a3, #16
+        BGE     %BT30
+        ; Process end words
+40
+        CMP     a3, #4
+        BLT     %FT50
+        LDR     v1, [a1], #4
+        LDR     v2, [a2], #4
+        CMP     v1, v2
+        BNE     %FT99
+        SUBS    a3, a3, #4
+        BEQ     %FT99
+        B       %BT40
+50
+        ; Process end halfword
+        CMP     a3, #2
+        BEQ     %BT05
+99
+        SUB     a1, a4, a3
+        EXIT
+
+70
+        ; We've hit a mismatch in a quadword, work out the word offset
+        CMP     v1, v5
+        SUBEQ   a3, a3, #4
+        CMPEQ   v2, v6
+        SUBEQ   a3, a3, #4
+        CMPEQ   v3, ip
+        SUBEQ   a3, a3, #4
+        SUB     a1, a4, a3
+        EXIT
+
+        END
+@

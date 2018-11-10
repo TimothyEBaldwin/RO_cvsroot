@@ -1,0 +1,305 @@
+head	1.6;
+access;
+symbols
+	MUSBDriver-0_31:1.5
+	MUSBDriver-0_30:1.5
+	MUSBDriver-0_29:1.5
+	MUSBDriver-0_28:1.4
+	MUSBDriver-0_27:1.3
+	MUSBDriver-0_26:1.3
+	MUSBDriver-0_25:1.3
+	MUSBDriver-0_24:1.3
+	MUSBDriver-0_23:1.3
+	MUSBDriver-0_22:1.3
+	MUSBDriver-0_21:1.2
+	MUSBDriver-0_20:1.2
+	MUSBDriver-0_19:1.2
+	MUSBDriver-0_18:1.2
+	MUSBDriver-0_17:1.2
+	MUSBDriver-0_16:1.1
+	MUSBDriver-0_15:1.1
+	MUSBDriver-0_14:1.1
+	MUSBDriver-0_13:1.1
+	MUSBDriver-0_12:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2017.09.23.09.01.54;	author rool;	state dead;
+branches;
+next	1.5;
+commitid	6rXidvVzktBEFi8A;
+
+1.5
+date	2016.12.18.11.50.07;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	MtZLizvfdCwozsyz;
+
+1.4
+date	2016.12.17.10.40.24;	author rool;	state Exp;
+branches;
+next	1.3;
+commitid	RYu6RVCw6APddkyz;
+
+1.3
+date	2014.06.01.13.58.16;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	8OjtcW0RnvIJcPCx;
+
+1.2
+date	2012.06.06.23.53.33;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	CFvOhB5lkQSNNH7w;
+
+1.1
+date	2011.05.22.20.32.28;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ojDCXEOv6C57WIkv;
+
+
+desc
+@@
+
+
+1.6
+log
+@Remove HAL library variant
+Detail:
+  Simplify the makefile by not building a HAL variant.
+  cmodule.c: 2 fewer warnings
+  musb.c/musb_debug.c/musb_peri.c/musb_root.c/musb_util.c/tps.c: remove usbhal.h include
+  cmodule.h/musb_usb.c: USBHAL is no longer defined
+  CMHG file changed to make Makefile
+Admin:
+  Submission for USB bounty.
+
+Version 0.32. Tagged as 'MUSBDriver-0_32'
+@
+text
+@/* Copyright 2011 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* HAL version of cmodule.c */
+#include <dev/usb/usbhal.h>
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdlib.h>
+#include <limits.h>
+#include <stddef.h>
+#include <machine/bus.h>
+
+#include <sys/queue.h>
+#include <sys/types.h>
+#include <sys/systm.h>
+
+#include <dev/usb/usb.h>
+#include <dev/usb/usbdi.h>
+#include <dev/usb/usbdivar.h>
+
+#include "Global/RISCOS.h"
+#include "Global/Services.h"
+#include "Global/HALEntries.h"
+#include "Global/OSEntries.h"
+#include "cmodule.h"
+
+/* Have to avoid including stdio as there's a clash with the BSD stuff */
+#define __stdio_h
+
+#include "DebugLib/DebugLib.h"
+
+#include "musb.h"
+#include "tps.h"
+#include "musb_usb.h"
+
+typedef struct
+{
+    int type;
+    int flags;
+    void *hw;
+    int devno;
+} usbinfo;
+
+extern size_t HAL_USBControllerInfo(int idx,usbinfo *info,size_t size);
+extern int HAL_IRQEnable(int device);
+extern int HAL_IRQDisable(int device);
+extern device_ptr_t register_bus(device_ptr_t bus);
+
+static void init_device(usbinfo *info,int idx)
+{
+	musb_softc_t *musb = malloc(sizeof(musb_softc_t));
+	memset(musb,0,sizeof(musb_softc_t));
+	sprintf(musb->sc_bus.bdev.dv_xname,"MUSB%d",idx);
+	musb->musb_base = info->hw;
+	musb->devno = info->devno;
+	tps_init(&musb->tps,musb);
+	musb_init(musb);
+	/* Enable IRQ */
+	HAL_IRQEnable(musb->devno);
+	/* Register with USBDriver */
+	register_bus((device_ptr_t) musb);
+}
+
+void USBHAL_MUSBDriver_Init(void)
+{
+	/* Find and initialise all controllers */
+	int idx=0;
+	do {
+		usbinfo info;
+		size_t usbinfolen = HAL_USBControllerInfo(idx,&info,sizeof(info));
+		if((usbinfolen == sizeof(info)) && (info.type == 2))
+			init_device(&info,idx);
+		else if(!usbinfolen)
+			return;
+		idx++;
+	} while(1);
+}
+
+typedef int (*os_iicopv_function)(iic_transfer *tran,int count);
+int do_iicop(iic_transfer *tran,int count)
+{
+	os_iicopv_function os_iicopv = (os_iicopv_function) (OSentries[OS_IICOpV]);
+	return os_iicopv(tran,count);
+}
+
+void abort_pipe(void *addr)
+{
+	musb_abort_xfer((usbd_xfer_handle) addr,USBD_TIMEOUT);
+}
+
+int usbhal_musb_do_intr(struct usbd_bus *bus,int irqdevno)
+{
+	struct musb_softc *sc = (struct musb_softc *)bus;
+	if(irqdevno != sc->devno)
+		return 0;
+	HAL_IRQDisable(irqdevno);
+	int ret = musb_intr(sc);
+	HAL_IRQEnable(irqdevno);
+	return !ret;
+}
+
+void usbhal_musb_shutdown(struct usbd_bus *bus)
+{
+	struct musb_softc *sc = (struct musb_softc *)bus;
+	/* Disable IRQ */
+	HAL_IRQDisable(sc->devno);
+	/* Reset controller */
+	sc->musb_base->otg_sysconfig = OTG_SYSCONFIG_SOFTRESET;
+}
+
+/* Technically returns _kernel_oserror, but pretend void to avoid HAL file depending on kernel.h */
+void *messages_file_lookup(char *token, char *buffer, int *buffer_size, int num_args, ...)
+{
+	/* Assume that buffer is large enough, and output doesn't really matter */
+	memcpy(buffer, token, strlen(token)+1);
+	return NULL; 
+}
+@
+
+
+1.5
+log
+@HAL build fix
+Detail:
+  c/musb_hal - Add a dummy messages_file_lookup implementation for use with HAL builds of the code (as required by musb_peri.c / musb_root.c)
+Admin:
+  Tested on BB-xM
+
+
+Version 0.29. Tagged as 'MUSBDriver-0_29'
+@
+text
+@@
+
+
+1.4
+log
+@Remove unused include
+Admin:
+  Fewer depends. Not tagged.
+@
+text
+@d123 8
+@
+
+
+1.3
+log
+@Fix to allow building against NetBSD-0_85
+Detail:
+  c/cmodule - Don't use NetBSD/build/service.h, it no longer exists. Use the exported USB/USBDevFS.h instead. Fix service call reason codes to use USBDevFS names.
+  c/musb, c/musb_debug, c/musb_hal, c/musb_peri, c/musb_root, c/musb_usb, c/musb_util, c/tps - Strip redundant #includes
+Admin:
+  Tested in OMAP3 ROM build
+  Build output is binary-identical to previous version
+  Requires NetBSD-0_85
+
+
+Version 0.22. Tagged as 'MUSBDriver-0_22'
+@
+text
+@a38 1
+#include "tboxlibint/messages.h"
+@
+
+
+1.2
+log
+@Misc housekeeping
+Detail:
+  Makefile, !MkDebug,fd7 - Debug version of module can now be built just by passing "DEBUG=TRUE" to amu
+  c/cmodule, c/musb_hal - Only accept USB controllers if HAL_USBControllerInfo says the struct size is an exact match with what we expect
+  s/bufman - Delete unused file
+  s/call_veneer, s/triggercbs - Use Entry/EXIT macros to avoid single-reg LDM/STM performance warnings. Convert tabs to spaces.
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.17. Tagged as 'MUSBDriver-0_17'
+@
+text
+@a44 2
+#include "../../NetBSD/build/service.h"
+#include "oslib/devicefs.h"
+@
+
+
+1.1
+log
+@Add support for HAL builds of MUSBDriver
+Detail:
+  Makefile - Now builds a HAL-compatible static library during the export libs phase
+  !MkHAL,fd7 - Handy script for building the HAL lib
+  c/musb_hal - HAL version of cmodule.c
+  c/musb, c/musb_debug, c/musb_peri, c/musb_root, c/musb_usb, c/musb_util, c/tps, h/cmodule, h/musb, h/musb_util, h/tps - Changed to support the HAL build. Biggest change was getting rid of all global vars; everything is now done via the bus ptr instead.
+  c/port - Removed microtime and moved riscos_irq_clear here, to match change made in main USB drivers
+Admin:
+  HAL & non-HAL versions tested on rev C2 BB, rev A2 BB-xM, rev C1 TouchBook
+  Needs latest Kernel & NetBSD USB drivers
+
+
+Version 0.12. Tagged as 'MUSBDriver-0_12'
+@
+text
+@d87 1
+a87 1
+		if((usbinfolen >= sizeof(info)) && (info.type == 2))
+@
+

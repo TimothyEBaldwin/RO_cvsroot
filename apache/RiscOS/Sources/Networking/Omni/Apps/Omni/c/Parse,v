@@ -1,0 +1,1669 @@
+head	1.5;
+access;
+symbols
+	Omni-2_30:1.5
+	Omni-2_29:1.4
+	Omni-2_28:1.4
+	Omni-2_27:1.4
+	Omni-2_26:1.4
+	Omni-2_25:1.4
+	Omni-2_24:1.4
+	Omni-2_23:1.4
+	Omni-2_22:1.4
+	Omni-2_21:1.4
+	Omni-2_20:1.4
+	Omni-2_19:1.4
+	Omni-2_18:1.4
+	Omni-2_17:1.4
+	Omni-2_16:1.4
+	Omni-2_15:1.4
+	Omni-2_14:1.4
+	Omni-2_13:1.4
+	Omni-2_12:1.4
+	Omni-2_11:1.4
+	Omni-2_10:1.4
+	Omni-2_09:1.4
+	Omni-2_08:1.4
+	Omni-2_07:1.3
+	Omni-2_06:1.3
+	Omni-2_05:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.09.20.21.05.41;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	ljMsoSQjcEAv2TSA;
+
+1.4
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.03.23.17.44.10;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.07.19.24.16;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.02.19.41.34;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.02.19.41.34;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Various fixes
+Events.c: refactor ActiveMounts() to not return a pointer to a local buffer array; avoid potential NULL pointer issue on 'ir'.
+FileType.c: avoid undefined sprintf() when destination appears as one of the args
+List.c: defer dereferencing 'wr' until checked for NULL
+Print.c: don't leak 'tmp' on error
+Parse.c: defer dereferencing 'wr' until checked for NULL, tweak dprintf() to avoid potential NULL pointer read in debug output
+Found by cppcheck static analysis.
+
+Version 2.30. Tagged as 'Omni-2_30'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	Parse.c - core application routines
+ *
+ * Project:	!Omni OmniClient(tm) project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	7 October 1994
+ * Last Edited:	3 May 1995
+ *
+ * Copyright 1994,1995 by ANT Limited
+ */
+
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <Desk/Error.h>
+#include <Desk/Hourglass.h>
+#include <Desk/Menu.h>
+#include <Desk/Str.h>
+#include <Desk/WimpSWIs.h>
+
+#include <DebugLib/DebugLib.h>
+
+#include "Client.h"
+#include "ExtLib.h"
+#include "Filer.h"
+#include "Heap.h"
+#include "List.h"
+#include "Mount.h"
+#include "Parse.h"
+#include "Print.h"
+#include "Sort.h"
+
+
+/*  Free an Item from memory.
+ */
+static void ItemFree(item_record *ir)
+{
+  dprintf (("", "ItemFree: %x\n", (int) ir));
+  if (!ir) return;
+  if (ir->shortname) FREE(ir->shortname);
+  if (ir->fullname) FREE(ir->fullname);
+  if (ir->field1) FREE(ir->field1);
+  if (ir->field2) FREE(ir->field2);
+  if (ir->field3) FREE(ir->field3);
+  FREE(ir);
+  dprintf (("", "ItemFree: ok\n"));
+}
+
+
+/*  Free a chain of Items from memory.
+ */
+extern void ItemChainFree(wind_record *wr)
+{
+  item_record *ir = NULL;
+
+  dprintf (("", "ItemChainFree:\n"));
+  if (!wr) return;
+  ir = (item_record *) wr->items.next;
+  while (ir != NULL)
+  {
+    item_record *ir_tmp = (item_record *) ir->header.next;
+    dprintf (("", "ItemChainFree: %x %x\n", (int) ir, (int) ir_tmp));
+    Desk_LinkList_Unlink(&wr->items, &(ir->header));   /* wr->anchor */
+    ItemFree(ir);
+    ir = ir_tmp;
+  }
+  Desk_LinkList_Init(&wr->items);
+}
+
+
+/*  Count number of Items in chain.
+ */
+static int ItemCount(wind_record *wr)
+{
+  item_record *ir = NULL;
+  int count = 0;
+
+  if (!wr) return(0);
+  ir = (item_record *) wr->items.next;
+  while (ir != NULL)
+  {
+    count++;
+    ir = (item_record *) ir->header.next;
+  }
+  return(count);
+}
+
+
+/*  List all items - DEBUG ROUTINE.
+ */
+#ifdef DEBUG
+static void ItemList(wind_record *wr)
+{
+  item_record *ir = NULL;
+
+  dprintf (("", "ItemList:\n"));
+  if (!wr) return;
+  ir = (item_record *) wr->items.next;
+  while (ir != NULL)
+  {
+    dprintf (("", "ItemList: ir %x clientid %x ", (int) ir, ir->client_id));
+    dprintf (("", "serverid %x mountid %x ", ir->server_id, ir->mount_id));
+    dprintf (("", "fullname '%s'\n", ir->fullname));
+    ir = (item_record *) ir->header.next;
+  }
+}
+#endif
+
+
+/*  Delete an item record from main server window.
+ *  Check for associated open mounts windows, and delete records from them.
+ */
+static void ItemDelete(wind_record *wr, item_record *ir)
+{
+  int client_id = -1;
+  int server_id = -1;
+  wind_record *wrl;
+
+  if ((!wr) || (!ir)) return;
+  wrl = (wind_record *) wr->anchor.next;
+  dprintf (("", "ItemDelete: %x %x\n", (int) wr, (int) ir));
+  /* Delete item record from list */
+  client_id = ir->client_id;
+  server_id = ir->server_id;
+  Desk_LinkList_Unlink(&wr->items, &(ir->header));
+  ItemFree(ir);
+
+  /* Search for related (same client) open mount windows, and delete all items from them. */
+  while (wrl)
+  {
+    dprintf (("", "ItemDelete: open window %x\n", (int) wr));
+    if (wrl->client_id == client_id)
+    {
+      dprintf (("", "ItemDelete: match on client - deleting window contents\n"));
+      if (wrl->index) FREE(wrl->index);
+      wrl->index = NULL;
+      wrl->nitems = 0;
+      ItemChainFree(wrl);
+    }
+    wrl = (wind_record *) wrl->header.next;
+  }
+}
+
+
+/*  Make a new item from a buffer containing data that has come
+ *  from an OmniOp enumerate servers call.
+ */
+static char *ItemAddServer(wind_record *wr, client_record *cr, char *s, char *e)
+{
+  item_record *ir = NULL;
+  int *ip = NULL;
+  char buf[64];
+  char *line = NULL;
+
+  dprintf (("", "ItemAddServer: enter %x %x\n", (int) s, (int) e));
+  /* Check for invalid data (too short) */
+  if (e < s+7) return(e);
+  ir = (item_record *) heap_alloc(sizeof(item_record));
+  if (!ir) return(e);
+
+  /* Parse data */
+  ip = (int *) s;
+  s+=4;
+  ir->server_id = *ip;
+  ir->client_id = cr->client_id;
+  ir->mount_id = -1;
+  Desk_LinkList_AddToTail(&wr->items, &(ir->header));
+  ir->shortname = cpystr(s++);
+  if (ir->shortname) s+=strlen(ir->shortname);
+  ir->fullname = cpystr(s++);
+  if (ir->fullname) s+=strlen(ir->fullname);
+  strncpy(buf, s, 48);
+  s+=strlen(buf)+1;
+  if (buf[0] == '\n')
+  {
+    ir->field1 = NULL;
+    line = strtok(buf, "\n");
+  }
+  else
+  {
+    line = strtok(buf, "\n");
+    ir->field1 = cpystr(line);
+    line = strtok(NULL, "\n");
+  }
+  ir->field2 = cpystr(line);
+  line = strtok(NULL, "\n");
+  ir->field3 = cpystr(line);
+  dprintf (("", "ItemAddServer: %x %x ", ir->server_id, ir->client_id));
+  dprintf (("", "'%s' '%s' ", ir->shortname ? ir->shortname : "", ir->fullname ? ir->fullname : ""));
+  dprintf (("", "'%s' '%s' ", ir->field1 ? ir->field1 : "", ir->field2 ? ir->field2 : ""));
+  dprintf (("", "'%s'\n", ir->field3 ? ir->field3 : ""));
+  ir->alias = Desk_FALSE;
+  /* Word align */
+  if ((int) s % 4 > 0) s+=4-((int) s % 4);
+  dprintf (("", "ItemAddServer: exit %x %x\n", (int) s, (int) e));
+  wr->update = Desk_TRUE;
+  return(s);
+}
+
+
+/*  Find item in linked list from item text.
+ */
+static item_record *ItemNameFind(wind_record *wr, char *s)
+{
+  item_record *r = (item_record *) wr->items.next;
+
+  dprintf (("", "ItemNameFind:\n"));
+  while (r != NULL)
+  {
+    dprintf (("", "ItemNameFind: %x\n", (int) r));
+    if ((r->shortname) && (!Desk_stricmp(r->shortname, s))) return(r);
+    if ((r->fullname) && (!Desk_stricmp(r->fullname, s))) return(r);
+    r = (item_record *) r->header.next;
+  }
+  return(NULL);
+}
+
+
+/*  Add window_record items from the mounts list chain.
+ */
+static void MListItemAdd(wind_record *wr, int client_id, bool servers)
+{
+  mlist_record *mr = (mlist_record *) mlist_anchor.next;
+  item_record *ir = NULL;
+
+  dprintf (("", "MListItemAdd: %x %x\n", (int) wr, client_id));
+  while (mr != NULL)
+  {
+    if (mr->client_id == client_id)
+    {
+      dprintf (("", "MListItemAdd: found %x\n", (int) mr));
+      if (servers)
+      {
+        char *dot = NULL;
+        char shortname[32];
+
+        /* Valid server items only (not hidden or no server name) */
+        dprintf (("", "MListItemAdd: '%s' hidden? %d\n", mr->server, mr->hidden));
+        if ((!mr->server) || (mr->hidden) || (ItemNameFind(wr, mr->server)))
+        {
+          dprintf (("", "skipping!\n"));
+          mr = (mlist_record *) mr->header.next;
+          continue;
+        }
+        ir = (item_record *) heap_alloc(sizeof(item_record));
+        if (!ir) return;
+        ir->server_id = mr->server_id;
+        if (ir->server_id == -1) ir->server_id = (int) ir;
+        dprintf (("", "MListItemAdd: new server id %d\n", ir->server_id));
+        ir->client_id = mr->client_id;
+        ir->mount_id = mr->mount_id;
+        Desk_LinkList_AddToTail(&wr->items, &(ir->header));
+        /* Shortname is to first '.' character, if one exists */
+        strncpy(shortname, mr->server, 31);
+        dot = strchr(shortname, '.');
+        if (dot) *dot = '\0';
+        ir->shortname = cpystr(shortname);
+        ir->fullname = cpystr(mr->server);
+        dprintf (("", "MListItemAdd: valid server '%s' '%s'\n", ir->shortname, ir->fullname));
+        ir->field1 = NULL;
+        ir->field2 = NULL;
+        ir->field3 = NULL;
+        ir->alias = Desk_FALSE;
+      }
+      else
+      {
+        /* Valid mount items only (not hidden) */
+        dprintf (("", "MListItemAdd: mount '%s' hidden? %d\n", mr->server, mr->hidden));
+        if ((!mr->server) || (!mr->mount) || (mr->hidden) || (ItemNameFind(wr, mr->mount)))
+        {
+          dprintf (("", "skipping!\n"));
+          mr = (mlist_record *) mr->header.next;
+          continue;
+        }
+        /* Correct mounts window? Search by name 'cos we don't have correct server_id */
+        ir = ItemNameFind(&wind_filer, mr->server);
+        dprintf (("", "ir->server %x wr->server %x\n", ir ? ir->server_id : 0, wr->server_id));
+        if ((!ir) || (ir->server_id != wr->server_id) || (ir->client_id != wr->client_id))
+        {
+          dprintf (("", "skipping! 2\n"));
+          mr = (mlist_record *) mr->header.next;
+          continue;
+        }
+        ir = (item_record *) heap_alloc(sizeof(item_record));
+        if (!ir) return;
+        ir->server_id = wr->server_id;
+        ir->client_id = mr->client_id;
+        ir->mount_id = mr->mount_id;
+        Desk_LinkList_AddToTail(&wr->items, &(ir->header));
+
+	/* *** Put in alias name here, not pathname */
+        ir->shortname = cpystr(mr->mount);
+        ir->fullname = cpystr(mr->path ? mr->path : mr->mount);
+        dprintf (("", "MListItemAdd: valid mount '%s' '%s'\n", ir->shortname, ir->fullname));
+
+        ir->field1 = NULL;
+        ir->field2 = NULL;
+        ir->field3 = NULL;
+        ir->alias = Desk_TRUE;
+      }
+    }
+    mr = (mlist_record *) mr->header.next;
+  }
+}
+
+
+/*  Make a new item from a buffer containing data that has come
+ *  from an OmniOp enumerate servers call.
+ */
+static char *ItemAddMount(wind_record *wr, client_record *cr, char *s, char *e)
+{
+  item_record *ir = NULL;
+  int *ip = NULL;
+
+  dprintf (("", "ItemAddMount: enter %x %x\n", (int) s, (int) e));
+  /* Check for invalid data (too short) */
+  if (e < s+6) return(e);
+  ir = (item_record *) heap_alloc(sizeof(item_record));
+  if (!ir) return(e);
+
+  /* Parse data */
+  ip = (int *) s;
+  s+=4;
+  ir->server_id = wr->server_id;
+  ir->client_id = cr->client_id;
+  ir->mount_id = *ip;
+  Desk_LinkList_AddToTail(&wr->items, &(ir->header));
+  ir->shortname = cpystr(s++);
+  if (ir->shortname) s+=strlen(ir->shortname);
+  ir->fullname = cpystr(s++);
+  if (ir->fullname) s+=strlen(ir->fullname);
+    else ir->fullname = cpystr(ir->shortname);
+  ir->field1 = NULL;
+  ir->field2 = NULL;
+  ir->field3 = NULL;
+  ir->alias = Desk_FALSE;
+  dprintf (("", "ItemAddMount: %x %x ", ir->server_id, ir->client_id));
+  dprintf (("", "%x ", ir->mount_id));
+  dprintf (("", "'%s' '%s'\n", ir->shortname ? ir->shortname : "", ir->fullname ? ir->fullname : ""));
+  /* Word align */
+  if ((int) s % 4 > 0) s+=4-((int) s % 4);
+  dprintf (("", "ItemAddMount: exit %x %x\n", (int) s, (int) e));
+  wr->update = Desk_TRUE;
+  return(s);
+}
+
+
+/*  Call client module for new details of servers/mounts on local network.
+ *  Adds records to wind_record items list.
+ */
+extern void ItemParse(wind_record *wr, int client_id, int server_id)
+{
+  char blk[144];
+  char *end = NULL;
+  client_record *cr = NULL;
+  Desk_os_error *err = NULL;
+  int done = 0;
+
+  /* Check valid client_id word */
+  dprintf (("", "ItemParse: %x %x ", (int) wr, client_id));
+  dprintf (("", "%x\n", server_id));
+  if (!wr) return;
+
+  if ((cr = ClientFind(client_id, NULL, -1, NULL)) != NULL)
+  {
+    if (prog_config.autolocate)
+    {
+      /* Loop until we have all the information, parsing as we go ... */
+      do
+      {
+        int old_done = done;
+
+        dprintf (("", "ItemParse: loop\n"));
+        if (server_id != -1)
+        {
+          err = ClientEnumerateServerMounts (cr->client_id, blk, sizeof (blk), done, server_id, NULL,
+                                             &end, &done);
+        }
+        else
+        {
+          err = ClientEnumerateServers (cr->client_id, blk, sizeof (blk), done,
+                                        &end, &done);
+        }
+
+        dprintf (("", "ItemParse: %x %x ", (int) blk, (int) end));
+        dprintf (("", "done %x err %x\n", done, (int) err));
+        if (end == &blk[0]) done = 0;
+        /* AppleTalk wants to be able to return errors at this point */
+        if (err && cr->client_id == 0x4A640 && old_done == 0) Desk_Error_Check(err);
+        if (!err)
+        {
+          char *p = &blk[0];
+
+          /* Attempt to parse */
+          dprintf (("", "ItemParse: parse attempt\n"));
+          if (server_id != -1) while (p < end) p = ItemAddMount(wr, cr, p, end);
+            else while (p < end) p = ItemAddServer(wr, cr, p, end);
+        }
+      } while ((!err) && (done > 0));
+    }
+
+    /* Get any information from the mounts list */
+    MListItemAdd(wr, client_id, (server_id == -1));
+  }
+
+  /* Rebuild index list, and reset count of nitems, etc, etc */
+  if (wr->index) FREE(wr->index);
+  wr->index = NULL;
+  wr->nitems = ItemCount(wr);
+  wr->index = heap_alloc(sizeof(item_record *) * wr->nitems);
+  if (!wr->index) return;
+  /* Sort messages index */
+  SortMessages(wr, wr->sort);
+
+# ifdef DEBUG
+  ItemList(wr);
+# endif
+}
+
+
+/*  Update filer windows (if open).
+ */
+extern _kernel_oserror *ParseLists(int client_id)
+{
+  client_record *cr = NULL;
+  wind_record *wr = (wind_record *) &wind_filer;
+  item_record *ir = (item_record *) wind_filer.items.next;
+  Desk_window_state state;
+  int loop;
+
+  dprintf (("", "ParseLists: %x\n", client_id));
+  /* Return with no error if no filer windows open */
+  if ((!wind_filer.w) && (!wind_filer.anchor.next)) return(NULL);
+
+  /* If a single client scan, release item records for just that client */
+  Desk_Hourglass_Start(25);
+  if (client_id > 0)
+  {
+    /* Scan & delete */
+    dprintf (("", "ParseLists: single client scan\n"));
+    while (ir != NULL)
+    {
+      item_record *ir_tmp = (item_record *) ir->header.next;
+
+      dprintf (("", "ParseLists: scan %x\n", (int) ir));
+      if (ir->client_id == client_id)
+      {
+        /* Matched! Delete item + any associated windows. Update flag */
+        dprintf (("", "ParseLists: matched! delete item\n"));
+        ItemDelete(wr, ir);
+        wr->update = Desk_TRUE;
+      }
+      ir = ir_tmp;
+    }
+
+    /* Call client module for new details, builds new tree */
+    ItemParse(wr, client_id, -1);
+
+    /* If any open mount windows that need new information, then parse them */
+    ir = (item_record *) wind_filer.items.next;
+    while (ir != NULL)
+    {
+      dprintf (("", "ParseLists: parse %x\n", (int) ir));
+      wr = FilerFind(-1, -1, client_id, ir->server_id);
+      if ((ir->client_id == client_id) && wr != NULL)
+      {
+        /* Matched! Fetch & Parse. Update flag */
+        dprintf (("", "ParseLists: matched! parse\n"));
+        ItemParse(wr, client_id, ir->server_id);
+        wr->update = Desk_TRUE;
+      }
+      ir = (item_record *) ir->header.next;
+    }
+  }
+  else
+  {
+    dprintf (("", "ParseLists: all clients\n"));
+
+    /* Scan & delete */
+    while (ir != NULL)
+    {
+      item_record *ir_tmp = (item_record *) ir->header.next;
+
+      dprintf (("", "ParseLists: matched! delete%x\n", (int) ir));
+      /* Matched! Delete item + any associated windows. Update flag */
+      ItemDelete(wr, ir);
+      wr->update = Desk_TRUE;
+      ir = ir_tmp;
+    }
+
+    /* Call client module(s) for new details, builds new tree */
+    cr = (client_record *) client_anchor.next;
+    while (cr != NULL)
+    {
+      ItemParse(wr, cr->client_id, -1);
+      cr = (client_record *) cr->header.next;
+    }
+
+    /* If any open mount windows that need new information, then parse them */
+    ir = (item_record *) wind_filer.items.next;
+    while (ir != NULL)
+    {
+      dprintf (("", "ParseLists: fetch %x\n", (int) ir));
+      wr = FilerFind(-1, -1, ir->client_id, ir->server_id);
+      if (wr != NULL)
+      {
+        /* Matched! Fetch & Parse. Update flag */
+        dprintf (("", "ParseLists: matched! parse\n"));
+        ItemParse(wr, ir->client_id, ir->server_id);
+        wr->update = Desk_TRUE;
+      }
+      ir = (item_record *) ir->header.next;
+    }
+  }
+
+  /* If any empty mount windows left on screen, delete them now */
+  dprintf (("", "ParseLists: scan for empty windows\n"));
+  wr = (wind_record *) wind_filer.anchor.next;
+  while (wr != NULL)
+  {
+    wind_record *wr_tmp = (wind_record *) wr->header.next;
+    dprintf (("", "ParseLists: scan %x\n", (int) wr));
+    if (wr->items.next == NULL)
+    {
+      FilerDelete(wr);
+      Menu_Close();
+      Desk_menu_currentopen = NULL;
+    }
+    wr = wr_tmp;
+  }
+
+  /* Update the item numbers of any mount windows */
+  if (wind_filer.anchor.next)
+  {
+    for (loop = 0; loop < wind_filer.nitems; loop++)
+    {
+      item_record *ir = wind_filer.index[loop];
+      dprintf (("", "ParseLists: reset item numbers\n"));
+      wr = FilerFind(-1, -1, ir->client_id, ir->server_id);
+      if (wr != NULL)
+      {
+        dprintf (("", "ParseLists: %d -> %d\n", wr->item, loop+1));
+        wr->item = loop+1;
+      }
+    }
+  }
+
+  /* If any server/mount windows need a redraw, let's do it! */
+  if (wind_filer.update)
+  {
+    dprintf (("", "ParseLists: forced main redraw\n"));
+    Desk_Wimp_GetWindowState(wind_filer.w, &state);
+    FilerUpdateWidth(&wind_filer);
+    FilerResetExtent(&state.openblock, &wind_filer, true, false);
+    wind_filer.update = false;
+  }
+  wr = (wind_record *) wind_filer.anchor.next;
+  while (wr != NULL)
+  {
+    dprintf (("", "ParseLists: redraw %x\n", (int) wr));
+    if (wr->update)
+    {
+      dprintf (("", "ParseLists: force mount redraw\n"));
+      Desk_Wimp_GetWindowState(wr->w, &state);
+      FilerUpdateWidth(wr);
+      FilerResetExtent(&state.openblock, wr, true, false);
+      wr->update = false;
+    }
+    wr = (wind_record *) wr->header.next;
+  }
+
+  /* Operation complete! (phew) */
+  dprintf (("", "ParseLists: exiting\n"));
+  Desk_Hourglass_Off();
+  return(NULL);
+}
+
+
+/*  Create/modify a mount list entry for this.
+ */
+static bool MListAdd(int client_id, int mount_id, char *mount)
+{
+  bool temporary = false;
+  bool error;
+  char *server  = NULL;
+  char *user    = NULL;
+  char *path    = NULL;
+  char *auth    = NULL;
+  int server_id = 0;
+  mlist_record *mr = NULL;
+
+  /* Check for a valid mount alias */
+  dprintf (("", "MListAdd: %x %x ", client_id, mount_id));
+  dprintf (("", "'%s'\n", (mount) ? mount : ""));
+
+  /* New, or existing item in list ? */
+  mr = MountFind(-1, mount, -1, client_id);
+  if (mr)
+  {
+    RMAFREE(mr->server);
+    RMAFREE(mr->user);
+    RMAFREE(mr->mount);
+    RMAFREE(mr->path);
+    RMAFREE(mr->auth);
+    mr->mount_id = mount_id;
+  }
+  else
+  {
+    /* Create temporary item */
+    mr = (mlist_record *) rma_alloc(sizeof(mlist_record));
+    if (mr == NULL)
+    {
+      Desk_Error_OutOfMemory(Desk_FALSE, "mount list header");
+      return false;
+    }
+    Desk_LinkList_AddToTail(&mlist_anchor, &(mr->header));
+    mr->server_id = -1;
+    mr->mount_id = mount_id;
+    mr->client_id = client_id;
+    mr->server = NULL;
+    mr->user = NULL;
+    mr->passwd = NULL;
+    mr->mount = NULL;
+    mr->path = NULL;
+    mr->auth = NULL;
+    mr->transient = true;
+    mr->hidden = false;
+    mr->locked = false;
+    mr->preset = false;
+    mr->connected = false;
+    temporary = true;
+    mr->open = false;
+  }
+
+  /* Re-read mount fields back from successful mount */
+  error = Desk_Error_Check (ClientGetActiveMountInfo (
+                                mr->client_id, mr->mount_id,
+                                &server, &user, &mount, &path, &auth, &server_id));
+  if (!error)
+  {
+    mr->server = cpyrma(server);
+    mr->user = cpyrma(user);
+    if (temporary) mr->passwd = NULL;
+    mr->mount = cpyrma(mount);
+    mr->path = cpyrma(path);
+    mr->auth = cpyrma(auth);
+    mr->server_id = server_id;
+  }
+  dprintf (("", "MListAdd: %x %x\n", error, mr->mount_id));
+  dprintf (("", "MListAdd: '%s' '%s'\n", (mr->server) ? mr->server : "", (mr->mount) ? mr->mount : ""));
+  if (error)
+  {
+    mr->mount_id = -1;
+    MountDeleteList(mr);
+    return false;
+  }
+  return true;
+}
+
+
+/*  Make a new mount from a buffer containing data that has come
+ *  from an OmniOp enumerate active mounts call.
+ */
+static char *MountAdd(client_record *cr, char *s, char *e)
+{
+  mlist_record mr;
+  mlist_record *mrl;
+  int *ip = NULL;
+
+  dprintf (("", "MountAdd: enter %x %x\n", (int) s, (int) e));
+  /* Check for invalid data (too short) */
+  if (e < s+12) return(e);
+
+  /* Parse data */
+  ip = (int *) s;
+  s+=8;
+  mr.server_id = *ip++;
+  mr.client_id = cr->client_id;
+  mr.mount_id = *ip;
+  mr.mount = cpystr(s++);
+  if (mr.mount) s+=strlen(mr.mount);
+
+  /* See if we have an associated mlist entry, possibly with HIDDEN set */
+  mrl = MountFind(-1, mr.mount, -1, -1);
+  if (mrl) mrl->connected = Desk_TRUE;
+  if ((!mrl) || (!mrl->hidden))
+  {
+    if (!MountCreate(&mr)) return(e);
+    dprintf (("", "MountAdd: %x %x ", mr.server_id, mr.client_id));
+    dprintf (("", "%x ", mr.mount_id));
+    dprintf (("", "'%s'\n", mr.mount));
+    /* Make sure we have an Mount list entry for this */
+    if (!MListAdd(cr->client_id, mr.mount_id, mr.mount)) return(e);
+  }
+  /* Word align */
+  if ((int) s % 4 > 0) s+=4-((int) s % 4);
+  dprintf (("", "MountAdd: exit %x %x\n", (int) s, (int) e));
+  return(s);
+}
+
+
+/*  Call client module for new details of active mounts.
+ *  Adds records to mount_anchor mounts list.
+ */
+static void MountParse(int client_id)
+{
+  char blk[33];
+  char *end = NULL;
+  client_record *cr = NULL;
+  Desk_os_error *err = NULL;
+  int done = 0;
+
+  /* Check valid client_id word */
+  dprintf (("", "MountParse: %x\n", client_id));
+  if ((cr = ClientFind(client_id, NULL, -1, NULL)) == NULL) return;
+
+  /* Loop until we have all the information, parsing as we go ... */
+  do
+  {
+    dprintf (("", "MountParse: loop\n"));
+    err = ClientEnumerateActiveMounts (cr->client_id, blk, sizeof (blk), done,
+                                       &end, &done);
+    dprintf (("", "MountParse: %x %x ", (int) blk, (int) end));
+    dprintf (("", "done %x err %x\n", done, (int) err));
+    if (end == &blk[0]) done = 0;
+    if (!err)
+    {
+      char *p = &blk[0];
+
+      /* Attempt to parse */
+      dprintf (("", "MountParse: parse attempt\n"));
+      while (p < end) p = MountAdd(cr, p, end);
+    }
+  } while ((!err) && (done > 0));
+}
+
+
+/*  Update icons on iconbar (active mounts).
+ */
+extern _kernel_oserror *ParseMounts(int client_id)
+{
+  client_record *cr = NULL;
+  mount_record *mr = (mount_record *) mount_anchor.next;
+  bool update = Desk_FALSE;    /* BAL: This variable is set, but not used */
+
+  dprintf (("", "ParseMounts: client %x\n", client_id));
+
+  /* If a single client scan, release mount records for just that client */
+  if (client_id > 0)
+  {
+    /* Scan & delete */
+    while (mr != NULL)
+    {
+      mount_record *mr_tmp = (mount_record *) mr->header.next;
+
+      dprintf (("", "ParseMounts: mr %x\n", (int) mr));
+      if (mr->client_id == client_id)
+      {
+        /* Matched! Delete mount. Update flag */
+        MountDelete(mr);
+        update = true;
+      }
+      mr = mr_tmp;
+    }
+
+    /* Valid client_id ? */
+    cr = ClientFind(client_id, NULL, -1, NULL);
+    if (cr == NULL) return(NULL);
+    dprintf (("", "ParseMounts: valid client\n"));
+
+    /* Call client module for new details, builds new tree */
+    MountParse(client_id);
+  }
+  else
+  {
+    dprintf (("", "ParseMounts: all clients\n"));
+    /* Scan & delete */
+    while (mr != NULL)
+    {
+      mount_record *mr_tmp = (mount_record *) mr->header.next;
+
+      dprintf (("", "ParseMounts: mr %x\n", (int) mr));
+      /* Matched! Delete mount. Update flag */
+      MountDelete(mr);
+      update = true;
+      mr = mr_tmp;
+    }
+
+    /* Call client module(s) for new details, builds new tree */
+    cr = (client_record *) client_anchor.next;
+    while (cr != NULL)
+    {
+      MountParse(cr->client_id);
+      cr = (client_record *) cr->header.next;
+    }
+  }
+
+  /* Operation complete! (phew) */
+  dprintf (("", "ParseMounts: exiting\n"));
+  return(NULL);
+}
+
+
+/*  Make a new printer from a buffer containing data that has come
+ *  from an OmniOp enumerate network printers call.
+ */
+static char *PrinterAdd(client_record *cr, char *s, char *e)
+{
+  plist_record *pr;
+  int *ip = NULL;
+
+  dprintf (("", "PrinterAdd: enter %x %x\n", (int) s, (int) e));
+  /* Check for invalid data (too short) */
+  if (e < s+12) return(e);
+  pr = rma_alloc(sizeof(plist_record));
+  if (!pr) return(e);
+
+  /* Parse data */
+  ip = (int *) s;
+  s+=4;
+  pr->client_id = cr->client_id;
+  pr->flags = *ip;
+  pr->printer = cpyrma(s++);
+  if (pr->printer) s+=strlen(pr->printer);
+  pr->server = cpyrma(s++);
+  if (pr->server) s+=strlen(pr->server);
+  Desk_LinkList_AddToTail(&plist_anchor, &(pr->header));
+
+  dprintf (("", "PrinterAdd: %x %x ", pr->client_id, pr->flags));
+  dprintf (("", "'%s' '%s'\n", pr->server, pr->printer));
+  /* Word align */
+  if ((int) s % 4 > 0) s+=4-((int) s % 4);
+  dprintf (("", "PrinterAdd: exit %x %x\n", (int) s, (int) e));
+  return(s);
+}
+
+
+/*  Call client module for new details of network printers.
+ *  Adds records to plist_anchor printers list.
+ */
+static void PrinterParse(int client_id)
+{
+  char blk[97];
+  char *end = NULL;
+  client_record *cr = NULL;
+  Desk_os_error *err = NULL;
+  int done = 0;
+
+  /* Check valid client_id word */
+  dprintf (("", "PrinterParse: %x\n", client_id));
+  if ((cr = ClientFind(client_id, NULL, -1, NULL)) == NULL) return;
+
+  /* Loop until we have all the information, parsing as we go ... */
+  do
+  {
+    dprintf (("", "PrinterParse: loop\n"));
+    err = ClientEnumeratePrinters (cr->client_id, blk, sizeof (blk), done,
+                                   &end, &done);
+    dprintf (("", "PrinterParse: %x %x ", (int) blk, (int) end));
+    dprintf (("", "done %x err %x\n", done, (int) err));
+    if (end == &blk[0]) done = 0;
+    if (!err)
+    {
+      char *p = &blk[0];
+
+      /* Attempt to parse */
+      dprintf (("", "PrinterParse: parse attempt\n"));
+      while (p < end) p = PrinterAdd(cr, p, end);
+    }
+  } while ((!err) && (done > 0));
+}
+
+
+/*  Update network printers list.
+ */
+extern _kernel_oserror *ParsePrinters(int client_id)
+{
+  client_record *cr = NULL;
+  plist_record *mr = (plist_record *) plist_anchor.next;
+
+  dprintf (("", "ParsePrinters: client %x\n", client_id));
+
+  /* If a single client scan, release printer records for just that client */
+  if (client_id > 0)
+  {
+    /* Scan & delete */
+    while (mr != NULL)
+    {
+      plist_record *mr_tmp = (plist_record *) mr->header.next;
+
+      dprintf (("", "ParsePrinters: mr %x\n", (int) mr));
+      if (mr->client_id == client_id)
+      {
+        /* Matched! Delete mount. Update flag */
+        PListClear(mr);
+      }
+      mr = mr_tmp;
+    }
+
+    /* Valid client_id ? */
+    cr = ClientFind(client_id, NULL, -1, NULL);
+    if (cr == NULL) return(NULL);
+    dprintf (("", "ParsePrinters: valid client\n"));
+
+    /* Call client module for new details, builds new tree */
+    PrinterParse(client_id);
+  }
+  else
+  {
+    dprintf (("", "ParsePrinters: all clients\n"));
+    /* Scan & delete */
+    while (mr != NULL)
+    {
+      plist_record *mr_tmp = (plist_record *) mr->header.next;
+
+      dprintf (("", "ParsePrinters: mr %x\n", (int) mr));
+      /* Matched! Delete mount. Update flag */
+      PListClear(mr);
+      mr = mr_tmp;
+    }
+
+    /* Call client module(s) for new details, builds new tree */
+    cr = (client_record *) client_anchor.next;
+    while (cr != NULL)
+    {
+      PrinterParse(cr->client_id);
+      cr = (client_record *) cr->header.next;
+    }
+  }
+
+#ifdef DEBUG
+  mr = (plist_record *) plist_anchor.next;
+  while (mr)
+  {
+    dprintf (("", "ParsePrinters: mr %x\n", (int) mr));
+    dprintf (("", "client_id %x flags %x ", mr->client_id, mr->flags));
+    dprintf (("", "'%s' '%s'\n", mr->server, mr->printer));
+    mr = (plist_record *) mr->header.next;
+  }
+#endif
+
+  /* Operation complete! (phew) */
+  dprintf (("", "ParsePrinters: exiting\n"));
+  return(NULL);
+}
+@
+
+
+1.4
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@d140 1
+a140 1
+  wind_record *wrl = (wind_record *) wr->anchor.next;
+d143 1
+d300 1
+a300 1
+        dprintf (("", "ir->server %x wr->server %x\n", ir->server_id, wr->server_id));
+@
+
+
+1.3
+log
+@  * Fixed bug which I introduced in previous version, where errors that
+    occurred when trying to connect to a mount would cause two errors to be
+    reported.
+Detail:
+  * When I went through blindly changing all _kernel_swi or Desk_SWI calls
+    to _swix, I failed to notice that one or two of the calls rely on the
+    output parameters being filled in even if an error occurs - _swix does not
+    do this.  I've now created a set of type safe C veneers for all calls to
+    client modules, which use _swix or _kernel_swi as necessary.  This has the
+    additional benefit of making the code more readable and getting rid of
+    quite a few uses of magic numbers.
+Admin:
+  * Compiled and tested on a Risc PC.
+
+Version 2.06. Tagged as 'Omni-2_06'
+@
+text
+@d114 1
+a118 1
+  return;
+d130 1
+d432 1
+a432 1
+  wr->index = heap_alloc(sizeof(item_record) * wr->nitems);
+d436 2
+d439 1
+@
+
+
+1.2
+log
+@  Several major bugfixes and further tidying to make Omni fit into our
+  build environment better.
+Detail:
+  * Bug fix: ClientList function (Client.c) creates a textual menu desription
+    for a list of clients (Info and Mounts submenus).  The description was
+    generated on the stack and a pointer to it was returned.  The buffer is now
+    static.
+  * Bug fix: select or adjust clicks on the Omni icon just after it's loaded
+    would kill the task part of Omni.  FilerCreate function (List.c) always
+    calls FilerDelete, which would always attempt to close any existing filer
+    window.  However, on the first call, no window exists so it passes the Wimp
+    a 0 window handle.  This only appeared to happen on RISC OS 4, but I suspect
+    this is to do with RISC OS 4's stricter protection of zero page.  Current
+    fix is for FilerDelete to check if window handle is 0 before closing it;
+    this is not very elegant - would be nicer to only call FilerDelete when the
+    window was actually closed.
+  * Bug fix: writable icon handling overhauled completely.  Many of the buffers
+    which Omni would read the contents of writable icons into were too short
+    to hold the maximum amount of text allowed in the icon.  New Icon_GetText
+    call added (ExtLib.c) to allow Omni to work directly on indirected icon
+    buffers wherever possible, thus removing the whole issue.
+  * Stripped commented-out code from several places.
+  * Changed use of Desk_bool to bool in most places.  This is a bit grim, but
+    the way Desk_bool is implemented means you need to cast it in many places,
+    which is even more grim.
+  * Removed a few error assignements(!) because
+    a) they weren't even being checked
+    b) Desk's psuedo-exception system should now catch them
+  * Got rid of home-grown strcasecmp calls and used Desk's instead.
+  * Removed many local constants definitions and get them from system header
+    files instead.
+  * Removed Hdrs.h which would include *every* header file in *every* C file
+    in the interests of compilation times.  C files now only include what they
+    need.
+  * Reimplemented the fully recursive Menu_Dispose along the lines of the
+    non-recursive Desk_Menu_Dispose, which had changed since ANT's DeskLib
+    split-off.
+  * Altered quite a bit of code to prevent compiler warnings (mainly
+    "use of '=' in condition context" and "variable declared but not used").
+  * Uses 'proper' module finalisation instead of atexit in the interests of
+    consistency and symmetry.
+  * Added MemCheck support.
+  * Reimplemented rma_alloc and rma_free in C (side effect of MemCheck support).
+  * Altered assembler to use system header files instead of local ones.
+  * Omni previously used a seeming random mixture of _kernel_swi and Desk_SWI
+    SWI veneers.  All have now been changed to use _swix/_swi as appropriate.
+  * Converted to use srccommit.
+Admin:
+  Files removed:
+   c.Error
+   c.StrCaseCmp
+   h.Debug
+   h.Hdrs
+   h.ModuleWrap
+   h.OmniClient
+   h.StrCaseCmp
+   hdr.Macros
+   hdr.RegDefs
+   hdr.SwiNos
+
+  Files added:
+   Docs.DeskLibDiffs
+   Docs.EventHandling
+   h.Omni
+
+  * Compiled.
+  * All windows, menus checked to make sure they at least display.
+  * Played around with a new NFS and LanMan mounts.
+  * Basically, there shouldn't be any showstoppers, but the change from a very
+    old DeskLib to Desk is a large one.  I'd be surprised if there aren't a
+    few problems and this should definitely be thrashed a bit by people
+    willing to do so before anyone has any confidence in it.
+
+
+
+Version 2.05. Tagged as 'Omni-2_05'
+@
+text
+@d397 2
+a398 3
+          err = _swix (cr->client_id, _INR (0, 4) | _OUT (1) | _OUT (3),
+                       4, blk, 96, done, server_id,
+                       &end, &done);
+d402 2
+a403 3
+          err = _swix (cr->client_id, _INR (0, 3) | _OUT (1) | _OUT (3),
+                       3, blk, 144, done,
+                       &end, &done);
+d603 5
+a607 2
+  char *r1, *r2, *r3, *r4, *r5;
+  int r6;
+d654 3
+a656 5
+  r1 = r2 = r3 = r4 = r5 = NULL;
+  r6 = 0;
+  error = Desk_Error_Check (_swix (mr->client_id, _INR (0, 1) | _OUTR (1, 6),
+                            9, mr->mount_id,
+                            &r1, &r2, &r3, &r4, &r5, &r6));
+d659 2
+a660 2
+    mr->server = cpyrma(r1);
+    mr->user = cpyrma(r2);
+d662 4
+a665 4
+    mr->mount = cpyrma(r3);
+    mr->path = cpyrma(r4);
+    mr->auth = cpyrma(r5);
+    mr->server_id = r6;
+d739 2
+a740 3
+    err = _swix (cr->client_id, _INR (0, 3) | _OUT (1) | _OUT (3),
+                 5, blk, 32, done,
+                 &end, &done);
+d875 2
+a876 3
+    err = _swix (cr->client_id, _INR (0, 3) | _OUT (1) | _OUT (3),
+                 16, blk, 96, done,
+                 &end, &done);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d31 7
+d41 1
+a41 1
+#include <Desk/SWI.h>
+d44 11
+a54 1
+#include "Hdrs.h"
+d61 1
+a61 1
+  TRACE1("ItemFree: %x\n", (int) ir);
+d69 1
+a69 1
+  TRACE("ItemFree: ok\n");
+d79 1
+a79 1
+  TRACE("ItemChainFree:\n");
+d85 1
+a85 1
+    TRACE2("ItemChainFree: %x %x\n", (int) ir, (int) ir_tmp);
+d96 1
+a96 1
+extern int ItemCount(wind_record *wr)
+d114 1
+a114 1
+extern void ItemList(wind_record *wr)
+d119 1
+a119 1
+  TRACE("ItemList:\n");
+d124 3
+a126 3
+    TRACE2("ItemList: ir %x clientid %x ", (int) ir, ir->client_id);
+    TRACE2("serverid %x mountid %x ", ir->server_id, ir->mount_id);
+    TRACE1("fullname '%s'\n", ir->fullname);
+d142 1
+a142 1
+  TRACE2("ItemDelete: %x %x\n", (int) wr, (int) ir);
+d152 1
+a152 1
+    TRACE1("ItemDelete: open window %x\n", (int) wr);
+d155 1
+a155 1
+      TRACE("ItemDelete: match on client - deleting window contents\n");
+d176 1
+a176 1
+  TRACE2("ItemAddServer: enter %x %x\n", (int) s, (int) e);
+d209 4
+a212 4
+  TRACE2("ItemAddServer: %x %x ", ir->server_id, ir->client_id);
+  TRACE2("'%s' '%s' ", ir->shortname ? ir->shortname : "", ir->fullname ? ir->fullname : "");
+  TRACE2("'%s' '%s' ", ir->field1 ? ir->field1 : "", ir->field2 ? ir->field2 : "");
+  TRACE1("'%s'\n", ir->field3 ? ir->field3 : "");
+d216 1
+a216 1
+  TRACE2("ItemAddServer: exit %x %x\n", (int) s, (int) e);
+d228 1
+a228 1
+  TRACE("ItemNameFind:\n");
+d231 3
+a233 3
+    TRACE1("ItemNameFind: %x\n", (int) r);
+    if ((r->shortname) && (!strcasecmp(r->shortname, s))) return(r);
+    if ((r->fullname) && (!strcasecmp(r->fullname, s))) return(r);
+d242 1
+a242 1
+static void MListItemAdd(wind_record *wr, int client_id, Desk_bool servers)
+d247 1
+a247 1
+  TRACE2("MListItemAdd: %x %x\n", (int) wr, client_id);
+d252 1
+a252 1
+      TRACE1("MListItemAdd: found %x\n", (int) mr);
+d259 1
+a259 1
+        TRACE2("MListItemAdd: '%s' hidden? %d\n", mr->server, mr->hidden);
+d262 1
+a262 1
+          TRACE("skipping!\n");
+d270 1
+a270 1
+        TRACE1("MListItemAdd: new server id %d\n", ir->server_id);
+d280 1
+a280 1
+        TRACE2("MListItemAdd: valid server '%s' '%s'\n", ir->shortname, ir->fullname);
+d289 1
+a289 1
+        TRACE2("MListItemAdd: mount '%s' hidden? %d\n", mr->server, mr->hidden);
+d292 1
+a292 1
+          TRACE("skipping!\n");
+d298 1
+a298 1
+        TRACE2("ir->server %x wr->server %x\n", ir->server_id, wr->server_id);
+d301 1
+a301 1
+          TRACE("skipping! 2\n");
+d315 1
+a315 1
+        TRACE2("MListItemAdd: valid mount '%s' '%s'\n", ir->shortname, ir->fullname);
+d336 1
+a336 1
+  TRACE2("ItemAddMount: enter %x %x\n", (int) s, (int) e);
+d358 3
+a360 3
+  TRACE2("ItemAddMount: %x %x ", ir->server_id, ir->client_id);
+  TRACE1("%x ", ir->mount_id);
+  TRACE2("'%s' '%s'\n", ir->shortname ? ir->shortname : "", ir->fullname ? ir->fullname : "");
+d363 1
+a363 1
+  TRACE2("ItemAddMount: exit %x %x\n", (int) s, (int) e);
+d381 2
+a382 2
+  TRACE2("ItemParse: %x %x ", (int) wr, client_id);
+  TRACE1("%x\n", server_id);
+d394 1
+a394 1
+        TRACE("ItemParse: loop\n");
+d396 5
+a400 1
+          err = Desk_SWI(5,4, cr->client_id, 4,blk,96,done,server_id, NULL,&end,NULL,&done);
+d402 8
+a409 3
+          err = Desk_SWI(4,4, cr->client_id, 3,blk,144,done, NULL,&end,NULL,&done);
+        TRACE2("ItemParse: %x %x ", (int) blk, (int) end);
+        TRACE2("done %x err %x\n", done, (int) err);
+d418 1
+a418 1
+          TRACE("ItemParse: parse attempt\n");
+d451 1
+a451 1
+  TRACE1("ParseLists: %x\n", client_id);
+d460 1
+a460 1
+    TRACE("ParseLists: single client scan\n");
+d465 1
+a465 1
+      TRACE1("ParseLists: scan %x\n", (int) ir);
+d469 1
+a469 1
+        TRACE("ParseLists: matched! delete item\n");
+d483 3
+a485 2
+      TRACE1("ParseLists: parse %x\n", (int) ir);
+      if ((ir->client_id == client_id) && (wr = FilerFind(-1, -1, client_id, ir->server_id)))
+d488 1
+a488 1
+        TRACE("ParseLists: matched! parse\n");
+d497 1
+a497 1
+    TRACE("ParseLists: all clients\n");
+d504 1
+a504 1
+      TRACE1("ParseLists: matched! delete%x\n", (int) ir);
+d523 3
+a525 2
+      TRACE1("ParseLists: fetch %x\n", (int) ir);
+      if (wr = FilerFind(-1, -1, ir->client_id, ir->server_id))
+d528 1
+a528 1
+        TRACE("ParseLists: matched! parse\n");
+d537 1
+a537 1
+  TRACE("ParseLists: scan for empty windows\n");
+d542 1
+a542 1
+    TRACE1("ParseLists: scan %x\n", (int) wr);
+d558 3
+a560 2
+      TRACE("ParseLists: reset item numbers\n");
+      if (wr = FilerFind(-1, -1, ir->client_id, ir->server_id))
+d562 1
+a562 1
+        TRACE2("ParseLists: %d -> %d\n", wr->item, loop+1);
+d571 1
+a571 1
+    TRACE("ParseLists: forced main redraw\n");
+d574 2
+a575 2
+    FilerResetExtent(&state.openblock, &wind_filer, Desk_TRUE, Desk_FALSE);
+    wind_filer.update = Desk_FALSE;
+d580 1
+a580 1
+    TRACE1("ParseLists: redraw %x\n", (int) wr);
+d583 1
+a583 1
+      TRACE("ParseLists: force mount redraw\n");
+d586 2
+a587 2
+      FilerResetExtent(&state.openblock, wr, Desk_TRUE, Desk_FALSE);
+      wr->update = Desk_FALSE;
+d593 1
+a593 1
+  TRACE("ParseLists: exiting\n");
+d601 1
+a601 1
+static Desk_bool MListAdd(int client_id, int mount_id, char *mount)
+d603 2
+a604 2
+  Desk_bool temporary = Desk_FALSE;
+  Desk_bool error;
+d610 2
+a611 2
+  TRACE2("MListAdd: %x %x ", client_id, mount_id);
+  TRACE1("'%s'\n", (mount) ? mount : "");
+d631 1
+a631 1
+      return(Desk_FALSE);
+d643 7
+a649 7
+    mr->transient = Desk_TRUE;
+    mr->hidden = Desk_FALSE;
+    mr->locked = Desk_FALSE;
+    mr->preset = Desk_FALSE;
+    mr->connected = Desk_FALSE;
+    temporary = Desk_TRUE;
+    mr->open = Desk_FALSE;
+d655 3
+a657 1
+  error = Desk_Error_Check(Desk_SWI(2,7, mr->client_id, 9,mr->mount_id, NULL,&r1,&r2,&r3,&r4,&r5,&r6));
+d668 2
+a669 2
+  TRACE2("MListAdd: %x %x\n", error, mr->mount_id);
+  TRACE2("MListAdd: '%s' '%s'\n", (mr->server) ? mr->server : "", (mr->mount) ? mr->mount : "");
+d674 1
+a674 1
+    return(Desk_FALSE);
+d676 1
+a676 1
+  return(Desk_TRUE);
+d689 1
+a689 1
+  TRACE2("MountAdd: enter %x %x\n", (int) s, (int) e);
+d708 3
+a710 3
+    TRACE2("MountAdd: %x %x ", mr.server_id, mr.client_id);
+    TRACE1("%x ", mr.mount_id);
+    TRACE1("'%s'\n", mr.mount);
+d716 1
+a716 1
+  TRACE2("MountAdd: exit %x %x\n", (int) s, (int) e);
+d724 1
+a724 1
+extern void MountParse(int client_id)
+d733 1
+a733 1
+  TRACE1("MountParse: %x\n", client_id);
+d739 6
+a744 4
+    TRACE("MountParse: loop\n");
+    err = Desk_SWI(4,4, cr->client_id, 5,blk,32,done, NULL,&end,NULL,&done);
+    TRACE2("MountParse: %x %x ", (int) blk, (int) end);
+    TRACE2("done %x err %x\n", done, (int) err);
+d751 1
+a751 1
+      TRACE("MountParse: parse attempt\n");
+d764 1
+a764 1
+  Desk_bool update = Desk_FALSE;
+d766 1
+a766 1
+  TRACE1("ParseMounts: client %x\n", client_id);
+d776 1
+a776 1
+      TRACE1("ParseMounts: mr %x\n", (int) mr);
+d781 1
+a781 1
+        update = Desk_TRUE;
+d787 3
+a789 2
+    if (!(cr = ClientFind(client_id, NULL, -1, NULL))) return(NULL);
+    TRACE("ParseMounts: valid client\n");
+d796 1
+a796 1
+    TRACE("ParseMounts: all clients\n");
+d802 1
+a802 1
+      TRACE1("ParseMounts: mr %x\n", (int) mr);
+d805 1
+a805 1
+      update = Desk_TRUE;
+d819 1
+a819 1
+  TRACE("ParseMounts: exiting\n");
+d832 1
+a832 1
+  TRACE2("PrinterAdd: enter %x %x\n", (int) s, (int) e);
+d849 2
+a850 2
+  TRACE2("PrinterAdd: %x %x ", pr->client_id, pr->flags);
+  TRACE2("'%s' '%s'\n", pr->server, pr->printer);
+d853 1
+a853 1
+  TRACE2("PrinterAdd: exit %x %x\n", (int) s, (int) e);
+d861 1
+a861 1
+extern void PrinterParse(int client_id)
+d870 1
+a870 1
+  TRACE1("PrinterParse: %x\n", client_id);
+d876 6
+a881 4
+    TRACE("PrinterParse: loop\n");
+    err = Desk_SWI(4,4, cr->client_id, 16,blk,96,done, NULL,&end,NULL,&done);
+    TRACE2("PrinterParse: %x %x ", (int) blk, (int) end);
+    TRACE2("done %x err %x\n", done, (int) err);
+d888 1
+a888 1
+      TRACE("PrinterParse: parse attempt\n");
+d902 1
+a902 1
+  TRACE1("ParsePrinters: client %x\n", client_id);
+d912 1
+a912 1
+      TRACE1("ParsePrinters: mr %x\n", (int) mr);
+d922 3
+a924 2
+    if (!(cr = ClientFind(client_id, NULL, -1, NULL))) return(NULL);
+    TRACE("ParsePrinters: valid client\n");
+d931 1
+a931 1
+    TRACE("ParsePrinters: all clients\n");
+d937 1
+a937 1
+      TRACE1("ParsePrinters: mr %x\n", (int) mr);
+d956 3
+a958 3
+    TRACE1("ParsePrinters: mr %x\n", (int) mr);
+    TRACE2("client_id %x flags %x ", mr->client_id, mr->flags);
+    TRACE2("'%s' '%s'\n", mr->server, mr->printer);
+d964 1
+a964 1
+  TRACE("ParsePrinters: exiting\n");
+@
+
+
+1.1.1.1
+log
+@  Initial import of Omni into CVS.
+
+Detail:
+  This is an import of the sources obtained from ANT some time ago, with
+  sufficient changes to allow it to build in our standard environment.  In
+  particular, this involved converting Omni to use Desk instead of DeskLib.
+  ANT's DeskLib was not 'off-the-shelf' - it was based on DeskLib 2.04 (very
+  old), with their own modifications.
+  
+  This means that there are quite severe bugs in the Omni code, which will
+  show up if you attempt to use this version, which were previously masked by
+  some of ANT's DeskLib alterations.  (Hopefully) most of these have already
+  been identified, fixed and will be checked-in soon.  I felt that a
+  minimal version that would simply build would be worthwhile, so that as
+  many changes as possible end up under CVS' control.
+
+Admin:
+  Compiled.
+  Untested.
+@
+text
+@@

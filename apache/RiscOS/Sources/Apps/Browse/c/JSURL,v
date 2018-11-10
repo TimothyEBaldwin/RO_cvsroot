@@ -1,0 +1,1916 @@
+head	1.7;
+access;
+symbols
+	Browse-2_16:1.7
+	Browse-2_15:1.7
+	Browse-2_14:1.7
+	Browse-2_13:1.7
+	Browse-2_12:1.7
+	Browse-2_11:1.7
+	Browse-2_10:1.7
+	Browse-2_09:1.7
+	ahodgkin_208_i4_2:1.6
+	ahodgkin_208_i4:1.4
+	ahodgkin_208_i3:1.4
+	ahodgkin_208_i2:1.4
+	ahodgkin_208_i1:1.4
+	ahodgkin_207release:1.3
+	ahodgkin_206release:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2005.04.26.09.42.34;	author ahodgkin;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2000.11.14.08.45.06;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2000.05.31.15.58.38;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.09.10.09.28.08;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.09.23.13.18.09;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.09.07.11.46.51;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.07.09.10.27.12;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@  Huge pile of changes bringing relatively ancient sources up to date.
+Detail:
+  This check-in includes Phoenix version 2.11 (26-Apr-2005); only the
+  debug and JavaScript builds of Phoenix have been tested and resources
+  will definitely be out of date for other versions. The various "!..."
+  scripts have been updated to require a minimum of 2MB with no maximum
+  limit for building, as CC 5.60 is quite RAM hungry.
+Admin:
+  Phoenix 2.11 JS builds OK, works reasonably well. Many outstanding
+  issues of course, as this is a very outdated browser now.
+
+Version 2.09. Tagged as 'Browse-2_09'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    JSURL.c                                           */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: JavaScript support - URL objects. Based in part   */
+/*          on source in libmocha from the Mozilla browser    */
+/*          sources.                                          */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 04-May-1998 (ADH): Created. The URL half of this  */
+/*                             - as opposed to the Location   */
+/*                             half - is not complete, as it  */
+/*                             really needs a proper DOM      */
+/*                             backing it up.                 */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <HTMLLib/HTMLLib.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "Browser.h"
+#include "Fetch.h"
+#include "FetchPage.h"
+#include "Filetypes.h"
+#include "Frames.h"
+#include "History.h"
+#include "JavaScript.h"
+#include "URLutils.h"
+
+#ifdef JAVASCRIPT
+
+  #include "JSconsts.h"
+
+  #include "JSURL.h"
+
+  /* Locals */
+
+  static JSBool replace_location = JS_FALSE;
+
+  /* Static function prototypes */
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_get_property          (JSContext * cx, JSObject * obj, jsval id, jsval * vp);
+  PR_STATIC_CALLBACK(JSBool) jsurl_set_property          (JSContext * cx, JSObject * obj, jsval id, jsval * vp);
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_get_location_property (JSContext * cx, JSObject * obj, jsval id, jsval * vp);
+  PR_STATIC_CALLBACK(JSBool) jsurl_set_location_property (JSContext * cx, JSObject * obj, jsval id, jsval * vp);
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_constructor           (JSContext * cx, JSObject * obj, uintN argc, jsval * argv, jsval *rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_constructor  (JSContext * cx, JSObject * obj, uintN argc, jsval * argv, jsval *rval);
+  PR_STATIC_CALLBACK(void)   jsurl_finalise              (JSContext * cx, JSObject * obj);
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_to_string             (JSContext * cx, JSObject * obj, uintN argc, jsval * argv, jsval * rval);
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_to_string    (JSContext * cx, JSObject * obj, uintN argc, jsval * argv, jsval * rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_assign       (JSContext * cx, JSObject * obj, uintN argc, jsval * argv, jsval * rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_reload       (JSContext * cx, JSObject * obj, uintN argc, jsval * argv, jsval * rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_replace      (JSContext * cx, JSObject * obj, uintN argc, jsval * argv, jsval * rval);
+
+  /* URL object properties */
+
+  enum url_slot
+  {
+    URL_HREF,           /* The entire URL as a string      */
+    URL_PROTOCOL,       /* Protocol:...                    */
+    URL_HOST,           /* Protocol://host/...             */
+    URL_HOSTNAME,       /* Protocol://hostname:...         */
+    URL_PORT,           /* Protocol://hostname:port/...    */
+    URL_PATHNAME,       /* Protocol://host/pathname[#?...] */
+    URL_HASH,           /* Protocol://host/pathname#hash   */
+    URL_SEARCH,         /* Protocol://host/pathname?search */
+    URL_TARGET,         /* Target window or null           */
+    URL_TEXT,           /* Text within A container         */
+    URL_X         = -1, /* Layout X coordinate             */
+    URL_Y         = -2  /* Layout Y coordinate             */
+  };
+
+  static JSPropertySpec jsurl_properties[] =
+  {
+    { "href",     URL_HREF,     JSPROP_ENUMERATE },
+    { "protocol", URL_PROTOCOL, JSPROP_ENUMERATE },
+    { "host",     URL_HOST,     JSPROP_ENUMERATE },
+    { "hostname", URL_HOSTNAME, JSPROP_ENUMERATE },
+    { "port",     URL_PORT,     JSPROP_ENUMERATE },
+    { "pathname", URL_PATHNAME, JSPROP_ENUMERATE },
+    { "hash",     URL_HASH,     JSPROP_ENUMERATE },
+    { "search",   URL_SEARCH,   JSPROP_ENUMERATE },
+    { "target",   URL_TARGET,   JSPROP_ENUMERATE },
+    { "text",     URL_TEXT,     JSPROP_ENUMERATE | JSPROP_READONLY },
+    { "x",        URL_X,        JSPROP_ENUMERATE | JSPROP_READONLY },
+    { "y",        URL_Y,        JSPROP_ENUMERATE | JSPROP_READONLY },
+    { 0 }
+  };
+
+  /* URL object class description */
+
+  JSClass jsurl_class =
+  {
+    "Url", JSCLASS_HAS_PRIVATE,
+
+    JS_PropertyStub,  JS_PropertyStub, jsurl_get_property, jsurl_set_property,
+    JS_EnumerateStub, JS_ResolveStub,  JS_ConvertStub,     jsurl_finalise
+  };
+
+  /* URL object methods */
+
+  static JSFunctionSpec jsurl_methods[] =
+  {
+    { lm_toString_str, jsurl_to_string, 0},
+    { 0 }
+  };
+
+  /* Location object class description. A location is different */
+  /* from a URL, since setting the property of a location makes */
+  /* the parent window visit that location.                     */
+
+  JSClass jsurl_location_class =
+  {
+    "Location", JSCLASS_HAS_PRIVATE,
+
+    JS_PropertyStub,  JS_PropertyStub, jsurl_get_location_property, jsurl_set_location_property,
+    JS_EnumerateStub, JS_ResolveStub,  JS_ConvertStub,              jsurl_finalise
+  };
+
+  /* Location object methods */
+
+  static JSFunctionSpec jsurl_location_methods[] =
+  {
+    { lm_toString_str, jsurl_location_to_string, 0 },
+    { lm_assign_str,   jsurl_location_assign,    1 },
+    { lm_reload_str,   jsurl_location_reload,    1 },
+    { lm_replace_str,  jsurl_location_replace,   1 },
+    { 0 }
+  };
+
+  /**************************************************************/
+  /* jsurl_get_property()                                       */
+  /*                                                            */
+  /* Called when the interpreter is getting the value of a      */
+  /* property in a URL object.                                  */
+  /*                                                            */
+  /* Parameters as standard for an interpreter handler          */
+  /* (callback) function.                                       */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_get_property(JSContext * cx, JSObject * obj, jsval id, jsval * vp)
+  {
+    jsint             slot;
+    JSURL           * url;
+    char            * str = NULL;
+    JSString        * dup = NULL;
+    char            * tmp = NULL;
+    url_description * parsed;
+
+    dprintf(("JScr", "jsurl_get_property: Called\n"));
+
+    /* 'id' should be a JS int, which holds the tinyid of the */
+    /* property that is being obtained.                       */
+
+    if (!JSVAL_IS_INT(id)) return JS_TRUE;
+    slot = JSVAL_TO_INT(id);
+
+    dprintf(("JScr", "jsurl_get_property: Slot %d\n", slot));
+
+    /* Is this a URL object or a Location object? */
+
+    url = JS_GetInstancePrivate(cx,
+                                obj,
+                                &jsurl_class,
+                                NULL);
+    if (!url)
+    {
+      url = JS_GetInstancePrivate(cx,
+                                  obj,
+                                  &jsurl_location_class,
+                                  NULL);
+
+      if (!url) return JS_TRUE;
+
+      dprintf(("JScr", "jsurl_get_property: Object is a Location %p\n", url));
+    }
+
+    #ifdef TRACE
+
+      else dprintf(("JScr", "jsurl_get_property: Object is a URL %p\n", url));
+
+    #endif
+
+    /* Get a parsed version of the URL */
+
+    if (!url->href || !*JS_GetStringBytes(url->href))
+    {
+      *vp = JSVAL_NULL;
+      return JS_TRUE;
+    }
+
+    parsed = urlutils_return_description(JS_GetStringBytes(url->href));
+
+    if (!parsed) return JS_FALSE;
+
+    /* Deal with the various properties */
+
+    switch (slot)
+    {
+      case URL_HREF:     str = parsed->full;     break;
+      case URL_HOSTNAME: str = parsed->host;     break;
+      case URL_PORT:     str = parsed->port;     break;
+      case URL_PATHNAME: str = parsed->path;     break;
+      case URL_HASH:     str = parsed->fragment; break;
+      case URL_SEARCH:   str = parsed->query;    break;
+
+      /* This is meant to be the full hostname including port */
+
+      case URL_HOST:
+      {
+        if (!parsed->port || !*parsed->port)
+        {
+          str = parsed->host;
+        }
+        else
+        {
+          tmp = malloc(strlen(parsed->host) + strlen(parsed->port) + 2); /* '+2' = ':' + terminator */
+
+          if (!tmp)
+          {
+            urlutils_free_description(parsed);
+
+            return JS_FALSE;
+          }
+
+          strcpy(tmp, parsed->host);
+          strcat(tmp, ":");
+          strcat(tmp, parsed->port);
+
+          str = tmp;
+        }
+      }
+      break;
+
+      /* Protocol should include ":" (at least, it does in Navigator / MSIE 4 upwards) */
+
+      case URL_PROTOCOL:
+      {
+        tmp = malloc(strlen(parsed->protocol) + 2); /* '+2' = ':' + terminator */
+
+        if (!tmp)
+        {
+          urlutils_free_description(parsed);
+
+          return JS_FALSE;
+        }
+
+        strcpy(tmp, parsed->protocol);
+        strcat(tmp, ":");
+
+        str = tmp;
+      }
+      break;
+
+      /* Target string for the URL */
+
+      case URL_TARGET:
+      {
+        if (!url->target)
+        {
+          urlutils_free_description(parsed);
+
+          *vp = JSVAL_NULL;
+          return JS_TRUE;
+        }
+
+        str = JS_GetStringBytes(url->target);
+      }
+      break;
+
+      /* Text associated with the URL, e.g. the part between */
+      /* <A HREF...> and </A> in the HTML                    */
+
+      case URL_TEXT:
+      {
+        if (!url->text)
+        {
+          urlutils_free_description(parsed);
+
+          *vp = JSVAL_NULL;
+          return JS_TRUE;
+        }
+
+        str = JS_GetStringBytes(url->text);
+      }
+      break;
+
+      /* Don't modify user-defined methods or properties */
+
+      default:
+      {
+        urlutils_free_description(parsed);
+
+        return JS_TRUE;
+      }
+      break;
+    }
+
+    /* Duplicate str; throw away the parsed URL */
+    /* and any temporary string data.           */
+
+    if (str) dup = JS_NewStringCopyZ(cx, str);
+
+    urlutils_free_description(parsed);
+    free(tmp);
+
+    if (!dup) return JS_FALSE;
+
+    /* Return 'str' in the correct form */
+
+    *vp = STRING_TO_JSVAL(dup);
+
+    /* Finished */
+
+    dprintf(("JScr", "jsurl_get_property: Successful\n"));
+
+    return JS_TRUE;
+  }
+
+  /**************************************************************/
+  /* jsurl_set_property()                                       */
+  /*                                                            */
+  /* Called when the interpreter is setting the value of a      */
+  /* property in a URL object.                                  */
+  /*                                                            */
+  /* Parameters as standard for an interpreter handler          */
+  /* (callback) function.                                       */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_set_property(JSContext * cx, JSObject * obj, jsval id, jsval * vp)
+  {
+    JSURL * url;
+    char  * prop_name;
+    jsint   slot;
+
+    dprintf(("JScr", "jsurl_set_property: Called\n"));
+
+    /* Is this a URL object or a Location object? */
+
+    url = JS_GetInstancePrivate(cx,
+                                obj,
+                                &jsurl_class,
+                                NULL);
+    if (!url)
+    {
+      url = JS_GetInstancePrivate(cx,
+                                  obj,
+                                  &jsurl_location_class,
+                                  NULL);
+
+      if (!url) return JS_TRUE;
+
+      dprintf(("JScr", "jsurl_set_property: Object is a Location %p\n", url));
+    }
+
+    #ifdef TRACE
+
+      else dprintf(("JScr", "jsurl_set_property: Object is a URL %p\n", url));
+
+    #endif
+
+    /* If the property is setting an event handler, find out now */
+
+    if (JSVAL_IS_STRING(id))
+    {
+      prop_name = JS_GetStringBytes(JSVAL_TO_STRING(id));
+
+      if (prop_name)
+      {
+        if (
+             !utils_strcasecmp(prop_name, lm_onClick_str)     ||
+             !utils_strcasecmp(prop_name, lm_onMouseDown_str) ||
+             !utils_strcasecmp(prop_name, lm_onMouseOver_str) ||
+             !utils_strcasecmp(prop_name, lm_onMouseOut_str)  ||
+             !utils_strcasecmp(prop_name, lm_onMouseUp_str)
+           )
+        {
+          // Set a flag for the anchor structure within HTMLLib?
+          // - not sure how to approach this.
+
+          dprintf(("JScr", "jsurl_set_property: \0211Can't set event handler for object\0217\n"));
+
+          return JS_FALSE;
+        }
+      }
+    }
+
+    /* 'id' should be a JS int if it isn't a string, which holds */
+    /* the tinyid of the property that is being changed.         */
+
+    if (!JSVAL_IS_INT(id)) return JS_TRUE;
+    slot = JSVAL_TO_INT(id);
+
+    dprintf(("JScr", "jsurl_set_property: Slot %d\n", slot));
+
+    if (slot < 0)
+    {
+      /* Don't alter user-defined or method properties */
+
+      return JS_TRUE;
+    }
+
+    /* vp should point to the string that should be set */
+
+    if (
+         !JSVAL_IS_STRING(*vp)                        &&
+         !JS_ConvertValue(cx, *vp, JSTYPE_STRING, vp)
+       )
+       return JS_TRUE;
+
+    // Can't really set any properties, as they won't be reflected
+    // in the document yet.
+
+    switch (slot)
+    {
+      case URL_HREF:
+      {
+        url->href = JSVAL_TO_STRING(*vp);
+
+// Is this to get a GC root (or whatever) to keep the property
+// from being garbage collected?
+//
+//        href = JS_GetStringBytes(url->href);
+//        free_href = JS_FALSE;
+      }
+      break;
+
+      case URL_PROTOCOL:
+      case URL_HOST:
+      case URL_HOSTNAME:
+      case URL_PORT:
+      case URL_PATHNAME:
+      case URL_HASH:
+      case URL_SEARCH:
+
+      case URL_TARGET:
+
+      /* Don't alter user-defined properties */
+
+      default:
+      {
+        return JS_TRUE;
+      }
+      break;
+    }
+
+    dprintf(("JScr", "jsurl_set_property: THIS SHOULD NEVER BE PRINTED!\n"));
+
+    return JS_TRUE;
+  }
+
+  /**************************************************************/
+  /* jsurl_get_location_property()                              */
+  /*                                                            */
+  /* Called when the interpreter is getting the value of a      */
+  /* property in a Location object.                             */
+  /*                                                            */
+  /* Parameters as standard for an interpreter handler          */
+  /* (callback) function.                                       */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_get_location_property(JSContext * cx, JSObject * obj, jsval id, jsval * vp)
+  {
+    JSURL        * url;
+    browser_data * decoder;
+    const char   * url_string;
+    JSString     * str;
+
+    /* Usual check the slot, get the object, get the */
+    /* browser rigmarole...                          */
+
+    if (!JSVAL_IS_INT(id) || JSVAL_TO_INT(id) < 0) return JS_TRUE;
+
+    url = JS_GetInstancePrivate(cx,
+                                obj,
+                                &jsurl_location_class,
+                                NULL);
+    if (!url) return JS_TRUE;
+
+    decoder = url->url_decoder;
+    if (!decoder) return JS_TRUE;
+
+    /* What is the current location URL? */
+
+    url_string = browser_current_url(decoder);
+    if (!url_string) url_string = browser_fetch_url(decoder);
+    if (!url_string) url_string = "";
+
+    /* If the location has changed, store the new value */
+
+    if (
+         !url->href ||
+         urlutils_urlsscmp(JS_GetStringBytes(url->href), url_string)
+       )
+    {
+      str = JS_NewStringCopyZ(cx, url_string);
+      if (!str) return JS_FALSE;
+
+      url->href = str;
+    }
+
+    /* Exit through the Get routine */
+
+    return jsurl_get_property(cx, obj, id, vp);
+  }
+
+  /**************************************************************/
+  /* jsurl_set_location_property()                              */
+  /*                                                            */
+  /* Called when the interpreter is setting the value of a      */
+  /* property in a Location object.                             */
+  /*                                                            */
+  /* Parameters as standard for an interpreter handler          */
+  /* (callback) function.                                       */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_set_location_property(JSContext * cx, JSObject * obj, jsval id, jsval * vp)
+  {
+    const char * url_string;
+    JSString   * str;
+    JSURL      * url;
+    jsint        slot;
+    JSBool       replace = replace_location;
+    jsval        val;
+
+    replace_location = JS_FALSE;
+
+    if (!JSVAL_IS_INT(id)) return JS_TRUE;
+
+    slot = JSVAL_TO_INT(id);
+
+    /* Get the underlying URL structure */
+
+    url = JS_GetPrivate(cx, obj);
+
+    if (!url)              return JS_TRUE;
+    if (!url->url_decoder) return JS_TRUE;
+
+    /* Setting these properties should not cause a fetch. */
+
+    if (slot < 0 || slot == URL_TARGET) return jsurl_set_property(cx, obj, id, vp);
+
+    /* Make sure vp is a string. */
+
+    if (
+         !JSVAL_IS_STRING(*vp) &&
+         !JS_ConvertValue(cx, *vp, JSTYPE_STRING, vp)
+       )
+       return JS_FALSE;
+
+    /* Two cases: setting href vs. setting a component property. */
+
+    if (slot == URL_HREF || slot == URL_PROTOCOL)
+    {
+      url_description * desc;
+      const char      * base;
+      char            * new_url;
+
+      /* Get the new value and current base / fetch URL */
+
+      url_string = JS_GetStringBytes(JSVAL_TO_STRING(*vp));
+
+      if (fetch_fetching(url->url_decoder)) base = browser_fetch_url(url->url_decoder);
+      else                                  base = NULL;
+
+      if (!base) base = browser_base_url(url->url_decoder);
+      if (!base) base = url_string;
+
+      /* If we can get a description, the URL (even if only a relative */
+      /* item) is sensible                                             */
+
+      desc = urlutils_return_description(url_string);
+      if (!desc) return JS_FALSE;
+      urlutils_free_description(desc);
+
+      /* Relativise the URL to the base and copy it into 'str' */
+
+      new_url = urlutils_relativise_url(base, url_string);
+
+      str = JS_NewStringCopyZ(cx, new_url ? new_url : url_string);
+      free(new_url);
+      if (!str) return JS_FALSE;
+
+      /* Set the value */
+
+      val = STRING_TO_JSVAL(str);
+      vp  = &val;
+    }
+    else
+    {
+      /* Get the href property directly */
+
+      if (
+           !jsurl_get_location_property(cx,
+                                        obj,
+                                        INT_TO_JSVAL(URL_HREF),
+                                        &val)
+         )
+         return JS_FALSE;
+    }
+
+    /* Set slot's property. */
+
+    if (!jsurl_set_property(cx, obj, id, vp)) return JS_FALSE;
+
+    if (url->href) url_string = JS_GetStringBytes(url->href);
+    else           url_string = "";
+
+    /* Record the fetch that needs to start as soon as possible */
+
+    javascript_set_pending_fetch(url->url_decoder,
+                                 url_string,
+                                 (replace == JS_TRUE ? 1 : 0),
+                                 1);
+
+    /* Finished */
+
+    return JS_TRUE;
+  }
+
+  /**************************************************************/
+  /* jsurl_get_url_string()                                     */
+  /*                                                            */
+  /* Get the URL string associated with a given URL or Location */
+  /* object.                                                    */
+  /*                                                            */
+  /* Parameters: Pointer to a JSContext struct for the object;  */
+  /*                                                            */
+  /*             Pointer to the URL or Location object.         */
+  /*                                                            */
+  /* Returns:    Pointer to the (unmodifiable) URL string the   */
+  /*             given object represents, or NULL if there's a  */
+  /*             problem.                                       */
+  /**************************************************************/
+
+  static const char * jsurl_get_url_string(JSContext * cx, JSObject * obj)
+  {
+    JSURL        * url;
+    browser_data * decoder;
+
+    url = JS_GetInstancePrivate(cx, obj, &jsurl_location_class, NULL);
+    if (!url) return NULL;
+
+    decoder = url->url_decoder;
+    if (!decoder->bcx) return NULL;
+
+    return browser_current_url(decoder);
+  }
+
+  /**************************************************************/
+  /* jsurl_constructor()                                        */
+  /*                                                            */
+  /* Constructor function for JS_InitClass for the URL object   */
+  /* class.                                                     */
+  /*                                                            */
+  /* Parameters are as standard for a constructor function.     */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_constructor(JSContext * cx, JSObject * obj,
+                                               uintN argc, jsval * argv, jsval *rval)
+  {
+    return JS_TRUE;
+  }
+
+  /**************************************************************/
+  /* jsurl_location_constructor()                               */
+  /*                                                            */
+  /* Constructor function for JS_InitClass for the Location     */
+  /* object class.                                              */
+  /*                                                            */
+  /* Parameters are as standard for a constructor function.     */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_constructor(JSContext * cx, JSObject * obj,
+                                                        uintN argc, jsval * argv, jsval *rval)
+  {
+    return JS_TRUE;
+  }
+
+  /**************************************************************/
+  /* jsurl_new_url()                                            */
+  /*                                                            */
+  /* Create a URL object.                                       */
+  /*                                                            */
+  /* Parameters: Pointer to a browser_data struct relevant to   */
+  /*             the current context;                           */
+  /*                                                            */
+  /*             Context to create the object in;               */
+  /*                                                            */
+  /*             URL to store;                                  */
+  /*                                                            */
+  /*             Target to store;                               */
+  /*                                                            */
+  /*             Associated text to store;                      */
+  /*                                                            */
+  /*             Pointer to the parent (document) object.       */
+  /*                                                            */
+  /* Returns:    Pointer to a JSURL (the new URL object) or     */
+  /*             NULL if the creation fails.                    */
+  /*                                                            */
+  /* Assymes:    The URL, target or associated text pointers    */
+  /*             may be NULL. Other pointers must be valid and  */
+  /*             not NULL.                                      */
+  /**************************************************************/
+
+  JSURL * jsurl_new_url(browser_data * b, JSContext * cx, const char * urlc, const char * target,
+                        const char * text, JSObject * document)
+  {
+    JSObject * obj;
+    JSURL    * url;
+    JSString * str;
+
+    /* If not already initialised, set up the URL object class */
+
+    if (!b->url_prototype)
+    {
+      obj = JS_InitClass(cx,
+                         b->window_object,
+                         b->event_receiver_prototype,
+                         &jsurl_class,
+                         jsurl_constructor,
+                         0,
+                         jsurl_properties,
+                         NULL,
+                         NULL,
+                         NULL);
+
+      if (!obj) return NULL;
+
+      b->url_prototype = obj;
+    }
+
+    /* Allocate space for the URL object */
+
+    url = JS_malloc(cx, sizeof *url);
+    if (!url) return NULL;
+
+    memset(url, 0, sizeof *url);
+
+    /* Create the object */
+
+    obj = JS_NewObject(cx,
+                       &jsurl_class,
+                       b->url_prototype,
+                       b->document); // Could be incorrect; should be result of lm_GetOuterObject, lm_init.c
+
+    if (!obj || !JS_SetPrivate(cx, obj, url))
+    {
+      JS_free(cx, url);
+      return NULL;
+    }
+
+    /* Define URL object functions */
+
+    if (
+         !JS_DefineFunctions(cx,
+                             obj,
+                             jsurl_methods)
+       )
+       return NULL;
+
+    /* Fill in the various fields and add them as GC roots */
+
+    url->url_decoder = b;
+    url->url_type    = FORM_TYPE_NONE;
+    url->index       = URL_NOT_INDEXED;
+    url->url_object  = obj;
+
+    if (url) str = JS_NewStringCopyZ(cx, urlc);
+    else     str = JS_NewStringCopyZ(cx, "");
+
+    if (!str) return NULL;
+
+    url->href = str;
+    if (!JS_AddNamedRoot(cx, &url->href, "url.href")) return NULL;
+
+    if (target) str = JS_NewStringCopyZ(cx, target);
+    else        str = JS_NewStringCopyZ(cx, "");
+
+    if (!str) return NULL;
+
+    url->target = str;
+    if (!JS_AddNamedRoot(cx, &url->target, "url.target")) return NULL;
+
+    if (text) str = JS_NewStringCopyZ(cx, text);
+    else      str = JS_NewStringCopyZ(cx, "");
+
+    if (!str) return NULL;
+
+    url->text = str;
+    if (!JS_AddNamedRoot(cx, &url->text, "url.text")) return NULL;
+
+    return url;
+  }
+
+  /**************************************************************/
+  /* jsurl_finalise()                                           */
+  /*                                                            */
+  /* Get rid of a URL object.                                   */
+  /*                                                            */
+  /* Parameters are as standard for an interpreter object       */
+  /* finalisation callback function.                            */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(void) jsurl_finalise(JSContext * cx, JSObject * obj)
+  {
+    JSURL * url;
+
+    dprintf(("JScr", "jsurl_finalise: Called\n"));
+
+    url = JS_GetPrivate(cx, obj);
+
+    if (!url)
+    {
+      dprintf(("JScr", "jsurl_finalise: Can't get URL structure; exitting\n"));
+
+      return;
+    }
+
+    /* Unlock various things for garbage collection */
+
+    JS_RemoveRoot(cx, &url->href);
+    JS_RemoveRoot(cx, &url->target);
+    JS_RemoveRoot(cx, &url->text);
+
+    /* Throw away the object */
+
+    JS_free(cx, url);
+
+    dprintf(("JScr", "jsurl_finalise: Successful\n"));
+
+    return;
+  }
+
+  /**************************************************************/
+  /* jsurl_to_string()                                          */
+  /*                                                            */
+  /* Implementation of the URL object toString() method.        */
+  /*                                                            */
+  /* Parameters are as standard for a JavaScript method         */
+  /* implementation.                                            */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_to_string(JSContext * cx, JSObject * obj,
+                                             uintN argc, jsval * argv, jsval * rval)
+  {
+    return jsurl_get_property(cx,
+                              obj,
+                              INT_TO_JSVAL(URL_HREF),
+                              rval);
+  }
+
+  /**************************************************************/
+  /* jsurl_define_location()                                    */
+  /*                                                            */
+  /* Define the Location object for a given browser.            */
+  /*                                                            */
+  /* Parameters: Pointer to a browser_data struct to define the */
+  /*             object for.                                    */
+  /*                                                            */
+  /* Returns:    Pointer to the new object, or NULL if the      */
+  /*             object could not be defined.                   */
+  /**************************************************************/
+
+  JSObject * jsurl_define_location(browser_data * decoder)
+  {
+    JSObject  * obj;
+    JSContext * cx;
+    JSURL     * url;
+
+    /* See if we've already got the object */
+
+    obj = decoder->location;
+    if (obj) return obj;
+
+    /* Get the context and allocate space for the URL */
+
+    cx  = decoder->bcx;
+    url = JS_malloc(cx, sizeof *url);
+
+    if (!url) return NULL;
+
+    memset(url, 0, sizeof *url);
+
+    /* Initialise the class inside the browser's Window object */
+
+    obj = JS_InitClass(cx,
+                       decoder->window_object,
+                       NULL,
+                       &jsurl_location_class,
+                       jsurl_location_constructor,
+                       0,
+                       jsurl_properties,
+                       jsurl_location_methods,
+                       NULL,
+                       NULL);
+
+    if (!obj || !JS_SetPrivate(cx, obj, url))
+    {
+      JS_free(cx, url);
+      return NULL;
+    }
+
+    /* Add GC roots */
+
+    if (!JS_AddNamedRoot(cx, &url->href,   "loc.text"))   return NULL;
+    if (!JS_AddNamedRoot(cx, &url->target, "loc.target")) return NULL;
+    if (!JS_AddNamedRoot(cx, &url->text,   "loc.text"))   return NULL;
+
+    /* Set up the 'location' property within the Window object */
+
+    if (
+         !decoder->window_object ||
+         !JS_DefineProperty(cx,
+                            decoder->window_object,
+                            lm_location_str,
+                            OBJECT_TO_JSVAL(obj),
+                            NULL,
+                            NULL,
+                            JSPROP_ENUMERATE | JSPROP_READONLY)
+       )
+       return NULL;
+
+    /* Set up the 'location' property within the Document object too */
+
+    if (
+         !decoder->document ||
+         !JS_DefineProperty(cx,
+                            decoder->document,
+                            lm_location_str,
+                            OBJECT_TO_JSVAL(obj),
+                            NULL,
+                            NULL,
+                            JSPROP_ENUMERATE | JSPROP_READONLY)
+       )
+       return NULL;
+
+    /* Define the Location object (the current URL) */
+
+    url->url_decoder  = decoder;
+    url->url_type     = FORM_TYPE_NONE;
+    url->url_object   = obj;
+    url->index        = URL_NOT_INDEXED;
+    decoder->location = obj;
+
+    return obj;
+  }
+
+  /**************************************************************/
+  /* jsurl_location_to_string()                                 */
+  /*                                                            */
+  /* Implementation of the Location object toString() method.   */
+  /*                                                            */
+  /* Parameters are as standard for a JavaScript method         */
+  /* implementation.                                            */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_to_string(JSContext * cx, JSObject * obj,
+                                                      uintN argc, jsval * argv, jsval * rval)
+  {
+    return jsurl_get_location_property(cx, obj, INT_TO_JSVAL(URL_HREF), rval);
+  }
+
+  /**************************************************************/
+  /* jsurl_location_assign()                                    */
+  /*                                                            */
+  /* Implementation of the Location object assign() method.     */
+  /*                                                            */
+  /* Parameters are as standard for a JavaScript method         */
+  /* implementation.                                            */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_assign(JSContext * cx, JSObject * obj,
+                                                   uintN argc, jsval * argv, jsval * rval)
+  {
+    JSURL * url;
+    jsval   v;
+
+    url = JS_GetInstancePrivate(cx, obj, &jsurl_location_class, argv);
+    if (!url)
+    {
+      replace_location = JS_FALSE;
+      return JS_FALSE;
+    }
+
+    v = argv[0];
+
+    if (
+         !jsurl_set_location_property(cx,
+                                      obj,
+                                      INT_TO_JSVAL(URL_HREF),
+                                      &v)
+       )
+       return JS_FALSE;
+
+    replace_location = JS_FALSE;
+    *rval            = OBJECT_TO_JSVAL(url->url_object);
+
+    return JS_TRUE;
+  }
+
+  /**************************************************************/
+  /* jsurl_location_reload()                                    */
+  /*                                                            */
+  /* Implementation of the Location object reload() method.     */
+  /*                                                            */
+  /* Parameters are as standard for a JavaScript method         */
+  /* implementation.                                            */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_reload(JSContext * cx, JSObject * obj,
+                                                   uintN argc, jsval * argv, jsval * rval)
+  {
+    _kernel_oserror * e;
+    browser_data    * b;
+    JSURL           * url;
+
+    if (!JS_InstanceOf(cx, obj, &jsurl_location_class, argv)) return JS_FALSE;
+
+    url = JS_GetInstancePrivate(cx,
+                                obj,
+                                &jsurl_location_class,
+                                argv);
+
+    if (!url) return JS_FALSE;
+
+    b = url->url_decoder;
+    if (!b) return JS_FALSE;
+
+    if (JSVAL_IS_BOOLEAN(argv[0]) && JSVAL_TO_BOOLEAN(argv[0]))
+    {
+      /* Do a 'proper' reload */
+
+      b->reloading   = 1;
+      b->reload_lock = 1;
+    }
+
+    e = fetchpage_new(b, jsurl_get_url_string(cx, obj), 0, 1, 1);
+
+    if (e)
+    {
+      show_error_ret(e);
+      return JS_FALSE;
+    }
+
+    return JS_TRUE;
+  }
+
+  /**************************************************************/
+  /* jsurl_location_replace()                                   */
+  /*                                                            */
+  /* Implementation of the Location object replace() method.    */
+  /*                                                            */
+  /* Parameters are as standard for a JavaScript method         */
+  /* implementation.                                            */
+  /**************************************************************/
+
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_replace(JSContext * cx, JSObject * obj,
+                                                    uintN argc, jsval * argv, jsval * rval)
+  {
+    JSURL * url;
+
+    url = JS_GetInstancePrivate(cx,
+                                obj,
+                                &jsurl_location_class,
+                                argv);
+
+    if (!url) return JS_FALSE;
+
+    replace_location = JS_TRUE;
+
+    return jsurl_location_assign(cx, obj, argc, argv, rval);
+  }
+
+#endif
+@
+
+
+1.6
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@d1072 1
+a1072 1
+    e = fetchpage_new(b, jsurl_get_url_string(cx, obj), 0, 1);
+@
+
+
+1.5
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a47 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+d184 1
+a184 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_get_property: Called\n");
+    #endif
+d192 1
+a192 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_get_property: Slot %d\n", slot);
+    #endif
+d209 1
+a209 3
+      #ifdef TRACE
+        if (tl & (1u<<24)) Printf("jsurl_get_property: Object is a Location %p\n", url);
+      #endif
+d214 1
+a214 4
+      else
+      {
+        if (tl & (1u<<24)) Printf("jsurl_get_property: Object is a URL %p\n", url);
+      }
+d349 1
+a349 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_get_property: Successful\n");
+    #endif
+d370 1
+a370 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_set_property: Called\n");
+    #endif
+d387 1
+a387 3
+      #ifdef TRACE
+        if (tl & (1u<<24)) Printf("jsurl_set_property: Object is a Location %p\n", url);
+      #endif
+d392 1
+a392 4
+      else
+      {
+        if (tl & (1u<<24)) Printf("jsurl_set_property: Object is a URL %p\n", url);
+      }
+d415 1
+a415 3
+          #ifdef TRACE
+            if (tl & (1u<<24)) Printf("jsurl_set_property: \0211Can't set event handler for object\0217\n");
+          #endif
+d428 1
+a428 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_set_property: Slot %d\n", slot);
+    #endif
+d481 1
+a481 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_set_property: This should never be printed!\n", slot);
+    #endif
+d843 1
+a843 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_finalise: Called\n");
+    #endif
+d849 1
+a849 3
+      #ifdef TRACE
+        if (tl & (1u<<24)) Printf("jsurl_finalise: Can't get URL structure; exitting\n");
+      #endif
+d864 1
+a864 3
+    #ifdef TRACE
+      if (tl & (1u<<24)) Printf("jsurl_finalise: Successful\n");
+    #endif
+@
+
+
+1.4
+log
+@New overview document in Docs, requested by some Pace people.
+
+Printing engine will attempt not to seperate headings from non-heading
+items. If the current line is a heading and the next is not, and falls
+off the bottom edge of the paper, then both lines will be carried over
+to the next page. Similarly for DT and DD items. Maximum line height to
+push rather than split is now altered to 2/3 of page height (was 1/2).
+
+JavaScript fix; a URL's "protocol" value should include a ':' at the end.
+@
+text
+@d15 18
+a32 16
+/***************************************************/
+/* File   : JSURL.c                                */
+/*                                                 */
+/* Purpose: JavaScript support - URL objects.      */
+/*          Based in part on source in libmocha    */
+/*          from the Mozilla browser sources.      */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 04-May-98: Created. The URL half of    */
+/*                     this - as opposed to the    */
+/*                     Location half - is not      */
+/*                     complete, as it really      */
+/*                     needs a proper DOM backing  */
+/*                     it up.                      */
+/***************************************************/
+d39 2
+a40 1
+#include "swis.h"
+d42 1
+a42 1
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+d44 8
+a51 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a52 1
+#include "svcprint.h"
+d83 2
+a84 2
+  PR_STATIC_CALLBACK(JSBool) jsurl_constructor           (JSContext * cx, JSObject * obj, uint argc, jsval * argv, jsval *rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_constructor  (JSContext * cx, JSObject * obj, uint argc, jsval * argv, jsval *rval);
+d87 1
+a87 1
+  PR_STATIC_CALLBACK(JSBool) jsurl_to_string             (JSContext * cx, JSObject * obj, uint argc, jsval * argv, jsval * rval);
+d89 4
+a92 4
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_to_string    (JSContext * cx, JSObject * obj, uint argc, jsval * argv, jsval * rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_assign       (JSContext * cx, JSObject * obj, uint argc, jsval * argv, jsval * rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_reload       (JSContext * cx, JSObject * obj, uint argc, jsval * argv, jsval * rval);
+  PR_STATIC_CALLBACK(JSBool) jsurl_location_replace      (JSContext * cx, JSObject * obj, uint argc, jsval * argv, jsval * rval);
+d170 9
+a178 9
+  /*************************************************/
+  /* jsurl_get_property()                          */
+  /*                                               */
+  /* Called when the interpreter is getting the    */
+  /* value of a property in a URL object.          */
+  /*                                               */
+  /* Parameters as standard for an interpreter     */
+  /* handler (callback) function.                  */
+  /*************************************************/
+d370 9
+a378 9
+  /*************************************************/
+  /* jsurl_set_property()                          */
+  /*                                               */
+  /* Called when the interpreter is setting the    */
+  /* value of a property in a URL object.          */
+  /*                                               */
+  /* Parameters as standard for an interpreter     */
+  /* handler (callback) function.                  */
+  /*************************************************/
+d515 9
+a523 9
+  /*************************************************/
+  /* jsurl_get_location_property()                 */
+  /*                                               */
+  /* Called when the interpreter is getting the    */
+  /* value of a property in a Location object.     */
+  /*                                               */
+  /* Parameters as standard for an interpreter     */
+  /* handler (callback) function.                  */
+  /*************************************************/
+d570 9
+a578 9
+  /*************************************************/
+  /* jsurl_set_location_property()                 */
+  /*                                               */
+  /* Called when the interpreter is setting the    */
+  /* value of a property in a Location object.     */
+  /*                                               */
+  /* Parameters as standard for an interpreter     */
+  /* handler (callback) function.                  */
+  /*************************************************/
+d684 14
+a697 17
+  /*************************************************/
+  /* jsurl_get_url_string()                        */
+  /*                                               */
+  /* Get the URL string associated with a given    */
+  /* URL or Location object.                       */
+  /*                                               */
+  /* Parameters: Pointer to a JSContext struct for */
+  /*             the object;                       */
+  /*                                               */
+  /*             Pointer to the URL or Location    */
+  /*             object.                           */
+  /*                                               */
+  /* Returns:    Pointer to the (unmodifiable) URL */
+  /*             string the given object           */
+  /*             represents, or NULL if there's a  */
+  /*             problem.                          */
+  /*************************************************/
+d713 8
+a720 9
+  /*************************************************/
+  /* jsurl_constructor()                           */
+  /*                                               */
+  /* Constructor function for JS_InitClass for the */
+  /* URL object class.                             */
+  /*                                               */
+  /* Parameters are as standard for a constructor  */
+  /* function.                                     */
+  /*************************************************/
+d723 1
+a723 1
+                                               uint argc, jsval * argv, jsval *rval)
+d728 8
+a735 9
+  /*************************************************/
+  /* jsurl_location_constructor()                  */
+  /*                                               */
+  /* Constructor function for JS_InitClass for the */
+  /* Location object class.                        */
+  /*                                               */
+  /* Parameters are as standard for a constructor  */
+  /* function.                                     */
+  /*************************************************/
+d738 1
+a738 1
+                                                        uint argc, jsval * argv, jsval *rval)
+d743 25
+a767 28
+  /*************************************************/
+  /* jsurl_new_url()                               */
+  /*                                               */
+  /* Create a URL object.                          */
+  /*                                               */
+  /* Parameters: Pointer to a browser_data struct  */
+  /*             relevant to the current context;  */
+  /*                                               */
+  /*             Context to create the object in;  */
+  /*                                               */
+  /*             URL to store;                     */
+  /*                                               */
+  /*             Target to store;                  */
+  /*                                               */
+  /*             Associated text to store;         */
+  /*                                               */
+  /*             Pointer to the parent (document)  */
+  /*             object.                           */
+  /*                                               */
+  /* Returns:    Pointer to a JSURL (the new URL   */
+  /*             object) or NULL if the creation   */
+  /*             fails.                            */
+  /*                                               */
+  /* Assymes:    The URL, target or associated     */
+  /*             text pointers may be NULL. Other  */
+  /*             pointers must be valid and not    */
+  /*             NULL.                             */
+  /*************************************************/
+d859 8
+a866 8
+  /*************************************************/
+  /* jsurl_finalise()                              */
+  /*                                               */
+  /* Get rid of a URL object.                      */
+  /*                                               */
+  /* Parameters are as standard for an interpreter */
+  /* object finalisation callback function.        */
+  /*************************************************/
+d904 8
+a911 9
+  /*************************************************/
+  /* jsurl_to_string()                             */
+  /*                                               */
+  /* Implementation of the URL object toString()   */
+  /* method.                                       */
+  /*                                               */
+  /* Parameters are as standard for a JavaScript   */
+  /* method implementation.                        */
+  /*************************************************/
+d914 1
+a914 1
+                                             uint argc, jsval * argv, jsval * rval)
+d922 11
+a932 13
+  /*************************************************/
+  /* jsurl_define_location()                       */
+  /*                                               */
+  /* Define the Location object for a given        */
+  /* browser.                                      */
+  /*                                               */
+  /* Parameters: Pointer to a browser_data struct  */
+  /*             to define the object for.         */
+  /*                                               */
+  /* Returns:    Pointer to the new object, or     */
+  /*             NULL if the object could not be   */
+  /*             defined.                          */
+  /*************************************************/
+d1018 8
+a1025 9
+  /*************************************************/
+  /* jsurl_location_to_string()                    */
+  /*                                               */
+  /* Implementation of the Location object         */
+  /* toString() method.                            */
+  /*                                               */
+  /* Parameters are as standard for a JavaScript   */
+  /* method implementation.                        */
+  /*************************************************/
+d1028 1
+a1028 1
+                                                      uint argc, jsval * argv, jsval * rval)
+d1033 8
+a1040 9
+  /*************************************************/
+  /* jsurl_location_assign()                       */
+  /*                                               */
+  /* Implementation of the Location object         */
+  /* assign() method.                              */
+  /*                                               */
+  /* Parameters are as standard for a JavaScript   */
+  /* method implementation.                        */
+  /*************************************************/
+d1043 1
+a1043 1
+                                                   uint argc, jsval * argv, jsval * rval)
+d1071 8
+a1078 9
+  /*************************************************/
+  /* jsurl_location_reload()                       */
+  /*                                               */
+  /* Implementation of the Location object         */
+  /* reload() method.                              */
+  /*                                               */
+  /* Parameters are as standard for a JavaScript   */
+  /* method implementation.                        */
+  /*************************************************/
+d1081 1
+a1081 1
+                                                   uint argc, jsval * argv, jsval * rval)
+d1118 8
+a1125 9
+  /*************************************************/
+  /* jsurl_location_replace()                      */
+  /*                                               */
+  /* Implementation of the Location object         */
+  /* replace() method.                             */
+  /*                                               */
+  /* Parameters are as standard for a JavaScript   */
+  /* method implementation.                        */
+  /*************************************************/
+d1128 1
+a1128 1
+                                                    uint argc, jsval * argv, jsval * rval)
+@
+
+
+1.3
+log
+@Another intermediate check-in, resources may not be up to date; items
+most likely to be buildable are PhoenixJ and BrowseD. Done because I'm
+about to make some rather dodgy changes to code otherwise unchanged
+since the Customer browser and I may well have to back them out...
+
+In Handlers.c now set the HFlags_HasBeenVisited bit of a token at the point
+it is first clicked on. Means the link returns to a "visited" colour after
+the highlight flash immediately. This will persist for as long as the browser
+window is kept open on that page, though if the URL doesn't end up making it
+into the history for whatever reason it would "unhighlight" on reload; fair
+enough, really. The highlight is window-local, so there are no redraw worries
+for other open windows with links to the same URL (though other same-URL
+links on the same page aren't updated either).
+
+All forms submissions force a reload (principally for eudoramail.com, but
+many other sites have similar requirements).
+
+!MkClean and !MkClnAll didn't correctly call the utility to strip Makefile
+dependencies. Fixed.
+
+On fetch closedown, fetchpage_preprocess_token could be called on a token
+which had already been run through the preprocessor. Now checks the flags
+word before proceeding.
+
+Image RAM cache and garbage collection system implemented - see new Choices
+file entries CollectAfter, FreeRAMLimit and UnusedImageLimit to get an
+overview. This contains groundwork for JavaScript image array support.
+
+More JavaScript support improvements. Any one window object will know its
+parent, top, this, etc.; frames array working except for a frameset created
+via. multiple documents; opener for something created with window.open is
+currently not set and don't know why (property is being created, pointer to
+valid object is held, but JS engine returns 'null'. Ho hum) - JSChain won't
+work yet, then.
+@
+text
+@a241 1
+      case URL_PROTOCOL: str = parsed->protocol; break;
+d273 20
+@
+
+
+1.2
+log
+@Everyone else seems to be checking lots of stuff in lately, so I've
+decided to join in. This is an intermediate check-in and so not all
+resources etc. will be up to date. You should be able to make Phoenix
+and a debug build out of it. As a reminder, to make a JavaScript build:
+
+ * Build JSLib and NSPRLib. Recommend you leave -DUSEMEMLIB in there (as
+   used by default) so you can watch it leak into a dynamic area... :-)
+   If you do this, you'll need to build MemLib too, of course. If you
+   do NOT use MemLib, *undefine JS_USING_MEMLIB in Main.c*!
+ * Run !MkClean. This now strips dynamic dependencies from the MakeFile
+   automatically, to save you having to do it yourself.
+ * Run one of the TaskObey files with the "J" suffix, e.g. !DeskBrwsJ -
+   this uses the same .o directory for object files and exports to the
+   same position in the Targets directory as the non-JavaScript build,
+   but it does produce a unique binary in 'abs' and symbols table in
+   'syms'.
+ * Sourcing an appropriate !Run (with increased WimpSlot value), !Boot
+   and About resource is done automatically.
+ * Some, but not all of the !xxxD (debug) TaskObey files will make
+   JavaScript versions in passing - check the JSUFFIX value on the Make
+   command line parameters in the file.
+
+This'll only work on RISC OS 3.1 due to the use of MemLib.
+
+Here's the change list:
+
+Included MNG icons in sprites files; added Sprites23 for some builds.
+Added in ANT URL file icon (b28) derived from URI file icon, because
+the Save dialogue can need it.
+
+No, you do *not* need to define the same keyboard shortcuts in each
+frame since the ancestor keeps the input focus and we've basically
+dropped non-nested Wimp support. Maintaining no less than 4 lists of
+identical shortcuts was a pain. Some Res files now only have the
+lists in the main browser window and button bar objects (these two
+are both required still).
+
+Ursula build Markers button arrangement changed from 1x3 horizontal to
+2x2 tilted, as in Phoenix, by popular demand.
+
+Couple of hotlist bugs fixed; dragging an item and deleteing it with
+Ctrl+X didn't terminate the drag, and deleteting an item underneath a
+menu opened for it didn't close the menu.
+
+'SendReferer' option added to all Choices files, all set to 'always'.
+Put just beneath 'Clone' as it refers to header items, though really,
+both Clone and SendReferer should probably be in the "Fetch controls"
+section rather than "Multiuser environments and proxying"! Front-end
+control of this is available.
+
+In image_export_original, save_save_source, save_transfer_source and
+save_save_object, flex_set_budge(0) was called to lock the heap but the
+return value wasn't stored. flex_set_budge(1) was then used to unlock
+the heap. All calls now remember and restore the old value, which is
+both safer in case one calls another and allows the flex_set_budge
+call in Main.c to have an application-wide meaning, as intended.
+
+Some restructuring to the data load and RAM transfer sections of
+Protocols.c; remote hotlist builds wouldn't allow files to be loaded
+to browser windows before, and can now drop URL, URI or text files to
+the Open URL dialogue.
+
+New option "MinimumFontSize", lets the 'size' attribute of the 'font'
+element be overridden. Default value is 1, to allow the full range of
+values for the attribute. Setting to 7, for example, would give font
+size 7 text at all times. Another new option, "ToggleOnXOnly", to
+make Toggle Size only extend the window vertically (with Ctrl then
+being used to toggle to genuine full size, rather than vice versa).
+All Choices files updated to hold both of these options; only the
+first has front-end control available (see debug build Res file).
+
+JavaScript Document object exists; frames array etc. working. Can now
+just about use "http://www.acorn.com/~ahodgkin/jschain/" but it does
+abort after a bit - problems with frames again, I suspect. Is is pretty
+slow, too. Can now press Escape to terminate a script.
+
+Main.c erroneously referred to Controls file entry "StopWebServe" as
+"StopWebProxy". Fixed.
+
+Keyboard shortcuts to raise SaveFile are now possible in a general sense;
+the code before was in the ToBeShown handler and just checked for a parent
+component of -1. It then assumed "save frame HTML source". Now there's the
+savefile_raise_from_shortcut function, which together with the seven new
+event codes in SaveFile.h allows saving of HTML source and frame location,
+export of links, images, backgrounds and the page as text or draw, to all
+be invoked by keyboard shortcuts. Some Res files have some of these defined.
+
+In reformat_check_height, the first check to see if setpara should be set
+references a field in tpLast without checking if it is NULL. Whilst the
+'line > 0' check should mean that tpLast wasn't NULL anyway, a direct
+call to the function from outside of the reformatter might have tripped
+up on this - the check for tpLast != NULL is now made.
+
+Adjust-click on close icon in window showing file: URL attempts to open
+the parent Filer window.
+
+Reformatter used to try and find a selectable token if keyboard control
+was enabled in a really stupid place - could make reformatting become
+very slow if no selectables were present, especially if the page had a
+few tables on it. Preprocessor now does this (since it goes through all
+of the tokens anyway), the reformatter just doing a last check to ensure
+no frames have obscured the selectable and if so, it tries to move it.
+Done in the reformatter as generating a line array implies the data really
+is visible.
+
+Ctrl+Tab URL completion now builds a full list of matches from the hotlist
+and history and can cycle through them (Ctrl+Shift+Tab stepping backwards).
+
+Will give a real error rather than just "Data Abort" if it goes wrong
+now. Someone somewhere is setting bit 30 of the error which confused
+the replacement signal handler. Flag bits are now masked off (as they
+should've been to start with).
+@
+text
+@d50 1
+d452 10
+d569 7
+d593 2
+d596 1
+a596 1
+      /* Make sure the URL is absolute and sanity-check its protocol. */
+a598 1
+      desc       = urlutils_return_description(url_string);
+d600 10
+d611 3
+d615 1
+a615 1
+      urlutils_free_description(desc);
+d617 2
+a618 1
+      str = JS_NewStringCopyZ(cx, url_string);
+d621 2
+a642 5
+    url = JS_GetPrivate(cx, obj);
+
+    if (!url)              return JS_TRUE;
+    if (!url->url_decoder) return JS_TRUE;
+
+d646 6
+a651 1
+    /* Fetch the URL */
+d653 1
+a653 11
+    {
+      _kernel_oserror * e = fetchpage_new(url->url_decoder,
+                                          url_string,
+                                          (replace == JS_TRUE ? 1 : 0),
+                                          1);
+      if (e)
+      {
+        show_error_ret(e);
+        return JS_FALSE;
+      }
+    }
+@
+
+
+1.1
+log
+@Check-in of Browse v2.06; using very small log file to try and avoid
+CVS crashing. Some of the Resources may well be out of date due to CVS
+locks being in place after earlier server-end core dumps, which I can't
+remove myself.
+
+I'll try and check one file in at the end with the full change log so
+people know what's happened (it's reached about 16K...) - I'll make
+that the TaskObey file '!All' in the top level directory. So for the
+full log, look for the changes on this file.
+@
+text
+@a54 1
+#include "JSconsts.h"
+d57 7
+a63 1
+#include "JSURL.h"
+d65 1
+a65 1
+#ifdef JAVASCRIPT
+d104 1
+a104 1
+  static JSPropertySpec url_props[] =
+d133 1
+a133 1
+  static JSFunctionSpec url_methods[] =
+d153 1
+a153 1
+  static JSFunctionSpec loc_methods[] =
+d176 1
+a176 1
+    JSString        * str = NULL;
+d274 1
+d288 1
+a288 1
+        str = url->target;
+d299 1
+a299 1
+          urlutils_free_description(parsed);   abs
+d305 1
+a305 1
+        str = url->text;
+d307 1
+d353 1
+a353 1
+  PR_STATIC_CALLBACK(JSBool) jsurl_get_property(JSContext * cx, JSObject * obj, jsval id, jsval * vp)
+d355 3
+a357 11
+    JSURL      * url;
+    JSString   * str;
+    const char * href;
+    char       * prop_name;
+
+    jsint             slot;
+    JSURL           * url;
+    JSString        * str = NULL;
+    JSString        * dup = NULL;
+    char            * tmp = NULL;
+    url_description * parsed;
+d490 41
+a530 1
+    return JS_TRUE;
+d545 85
+a654 1
+    const char   * url_string;
+d743 1
+a743 1
+                         url_props,
+d765 1
+a765 1
+                       b->document); // This is NOT necessarily correct!
+d778 1
+a778 1
+                             url_methods)
+d789 1
+a789 1
+    if (url) str = JS_NewStringCopyZ(cx, url);
+d800 1
+a800 1
+    if (!target) return NULL;
+d802 1
+a802 1
+    url->target = target;
+d808 1
+a808 1
+    if (!text) return NULL;
+d810 1
+a810 1
+    url->text = text;
+d852 1
+a852 1
+    free(url);
+d922 2
+a923 2
+                       url_props,
+                       loc_methods,
+d942 1
+d953 13
+a965 12
+//    /* Set up the 'location' property within the Document object too */
+//
+//    if (
+//         !JS_DefineProperty(cx,
+//                            decoder->document,
+//                            lm_location_str,
+//                            OBJECT_TO_JSVAL(obj),
+//                            NULL,
+//                            NULL,
+//                            JSPROP_ENUMERATE | JSPROP_READONLY)
+//       )
+//       return NULL;
+d1011 5
+a1015 1
+    if (!url) return JS_FALSE;
+d1027 2
+a1028 1
+    *rval = OBJECT_TO_JSVAL(url->url_object);
+d1047 2
+d1052 10
+d1082 1
+a1082 1
+  /* jsurl_location_reload()                       */
+d1085 1
+a1085 1
+  /* reload() method.                              */
+d1103 1
+a1103 1
+    url->url_decoder->replace_location = JS_TRUE;
+@

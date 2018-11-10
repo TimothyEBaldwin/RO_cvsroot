@@ -1,0 +1,119 @@
+head	4.1;
+access;
+symbols
+	RISC_OSLib-5_97:4.1
+	RISC_OSLib-5_96:4.1
+	RISC_OSLib-5_95:4.1
+	RISC_OSLib-5_94:4.1
+	RISC_OSLib-5_93:4.1
+	RISC_OSLib-5_92:4.1
+	RISC_OSLib-5_91:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.1
+date	2016.05.24.22.50.28;	author jlee;	state Exp;
+branches;
+next	;
+commitid	RYaH5CsBb1WpUM7z;
+
+
+desc
+@@
+
+
+4.1
+log
+@When multiple CPU architectures are supported, allow dynamically linked clients to be given optimal versions of routines where possible
+Detail:
+  This set of changes adds support for representing architecture-specific variants of routines within the export tables which the shared C library uses to fill in the client's stubs.
+  This allows builds of the module which target multiple architectures (e.g. IOMD, Raspberry Pi, or softloads) to offer the most optimal versions of routines to clients wherever multiple variants exist.
+  If only one architecture is supported, only one version of each routine will be built, and no variant tables will be generated.
+  Currently routine selection for staticly linked clients isn't supported - staticly linked targets will only use the most backwards-compatible version of the routines, as before. Also not all routines are catered for yet (e.g. _ll_udiv)
+  File changes:
+  - s/h_common - New file containing macros used during variant table construction
+  - Makefile - Set SHARED_C_LIBRARY to {TRUE} for SCL builds of assembler code, as per the SHARED_C_LIBRARY #define
+  - kernel/s/k_body, s/longlong - For routines which have multiple variants available for the target architectures, build all variants, and generate variant table entries using the new RoutineVariant macro. This has required some reordering of the different variants to make sure that when both versions are built, the most backwards-compatible one will be first (and thus will be called by staticly linked clients)
+  - s/h_modmacro - "Entry" macro (when building SCL export tables) changed to use DCD instead of B, to allow byte-aligned symbols to be represented (low bits of symbol address is now used as 'is a variant table' flag)
+  - s/initmodule - Client stub initialisation rewritten to take into account the B -> DCD change, and to detect and evaluate variant entries
+  - clib/s/cl_entries, kernel/s/k_entries, kernel/s/k_entries2 - Update library entry tables to reference the variant forms of routines where relevant
+Admin:
+  Tested on Raspberry Pi 1, 2, 3 (ROM), RISC OS 3.1 & StrongARM 3.7 (softload 26bit build)
+  Requires Kernel-5_35-4_79_2_325
+
+
+Version 5.91. Tagged as 'RISC_OSLib-5_91'
+@
+text
+@; Copyright 2016 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+; True if building shared library (ROM or softload), false if building static
+; lib (e.g. ANSILib)
+      [ :LNOT: :DEF: SHARED_C_LIBRARY
+        GBLL    SHARED_C_LIBRARY
+SHARED_C_LIBRARY SETL {FALSE}
+      ]
+
+; Macro for declaring the existence of architecture-specific variants of
+; routines, to allow shared library clients to be linked directly to the most
+; optimal routine
+; N.B. stub 'Entry' macros must link to symbol |xxx$variant| in order for the
+; variants to be detected
+; N.B. currently only features which have a safe default of 0 can be tested for
+; - features where the safe default is 1 (MUL Rd == Rn restriction, etc.) will
+; need some modifications making to PickRoutineVariant.
+;
+; Variant symbols have a byte offset of 1, allowing the stub setup code to
+; detect the presence of a variant entry just by looking at the alignment of the
+; pointer (no need to update Entry's to reflect whether variants in use)
+;
+; Note that a suffix of '$variant' was chosen so that the '$' would prevent the
+; symbol name being included in the embedded ROM debug symbols - This makes
+; sure that (when variants aren't required) the original function name is the
+; only one that makes it into the debug symbols.
+
+        MACRO
+        RoutineVariant $sym, $archflag, $featflag0, $featflag1, $featflag2
+        ALIGN
+   [ SHARED_C_LIBRARY
+        LCLS    VariantName
+VariantName SETS VBar :CC: "$sym" :CC: :CHR:36 :CC: "variant" :CC: VBar
+        EXPORT  $VariantName
+     [ No$archflag :LAND: Support$archflag
+        DCB     CPUFeature_$featflag0
+$VariantName
+      [ "$featflag1" <> ""
+        DCB     CPUFeature_$featflag1
+      |
+        DCB     255
+      ]
+      [ "$featflag2" <> ""
+        DCB     CPUFeature_$featflag2
+      |
+        DCB     255
+      ]
+        DCB     255 ; PickRoutineVariant will need adjusting if fourth flag needed
+        DCD     $sym._Support$archflag - .
+        DCD     $sym._No$archflag - .
+     |
+$VariantName * $sym
+     ]
+   ]
+        MEND
+
+        END
+@

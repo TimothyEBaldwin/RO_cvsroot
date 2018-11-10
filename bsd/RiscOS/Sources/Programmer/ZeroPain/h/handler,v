@@ -1,0 +1,237 @@
+head	1.5;
+access;
+symbols
+	ZeroPain-0_08:1.5
+	ZeroPain-0_07:1.4
+	ZeroPain-0_06:1.4
+	ZeroPain-0_05:1.3
+	ZeroPain-0_04:1.3
+	ZeroPain-0_03:1.2
+	ZeroPain-0_02:1.1.1.1
+	ZeroPain-0_01:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.04.18.20.34.34;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	vk4lmWXjxJtKQXyA;
+
+1.4
+date	2016.04.05.20.58.06;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	fP6GuTPKZj3wRt1z;
+
+1.3
+date	2015.07.21.20.07.39;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	0qzzvda1ORVmUbuy;
+
+1.2
+date	2015.07.05.09.56.38;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	qRhlXCNGfe8E25sy;
+
+1.1
+date	2015.07.01.21.44.02;	author jlee;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	a7idPnOv6AQc3Dry;
+
+1.1.1.1
+date	2015.07.01.21.44.02;	author jlee;	state Exp;
+branches;
+next	;
+commitid	a7idPnOv6AQc3Dry;
+
+
+desc
+@@
+
+
+1.5
+log
+@Enter logging only role
+With the advent of the kernel's compatibility page in Kernel-5_87 and later, much of the utility of ZeroPain allowing buggy apps to plod on is redundant.
+However, developers still find its logging useful, since it's easier to read than letting an abort happen (with the compatibility page turned off).
+Move the kill switch to 5.26 and remove the emulation of kernel workspace values, leaving two states
+a) you have the compatibility page for now, and silence for reads
+b) you have ZeroPain loaded, and get logs for reads
+and all writes in any mode aborts.
+
+Version 0.08. Tagged as 'ZeroPain-0_08'
+@
+text
+@/*
+ * Copyright (c) 2015, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#ifndef HANDLER_H
+#define HANDLER_H
+
+#include "kernel.h"
+#include <stdint.h>
+#include <stdbool.h>
+
+/* Note - must be kept in sync with handler_asm! */
+typedef struct {
+	uint32_t r[16];
+	uint32_t psr;
+	uint32_t dfar;
+} context_t;
+
+typedef enum
+{
+	DomainId,
+	MetroGnome,
+	VecPtrTab,
+
+	RSI6Count
+} rsi6val;
+
+extern uint32_t* rsi6vals[RSI6Count];
+
+/* To ensure references to them get relocated, the following need to be declared
+   as data */
+extern uint32_t handler_install[];
+extern uint32_t handler_remove[];
+/* Macros to allow invocation as functions */
+#define handler_install(ptr) ((*(_kernel_oserror*(*)(bool(*)(context_t *, uint32_t))) handler_install)(ptr))
+#define handler_remove (*(_kernel_oserror*(*)(void)) handler_remove)
+
+extern bool handler_do(context_t *context, uint32_t sctlr);
+
+extern bool log_detailed(const context_t *context, char *buffer, size_t len, void *vecptrtab);
+
+#endif
+@
+
+
+1.4
+log
+@Leverage SeriousErrorV for producing more detailed log entries. Extend kill switch deadline to the release of RISC OS 5.24.
+Detail:
+  c/cmodule - Extend kill switch deadline to the release of RISC OS 5.24. Look up VecPtrTab so we can make a manual call to SeriousErrorV from ABT mode. Make sure the Debugger module is listening to SeriousErrorV.
+  c/handler_c - Don't perform address translation for null pointers (zeroapgeaddrs currently has a null legacy address for VecPtrTab)
+  c/log, h/log - Update log buffer handling to add support for detailed logs produced by SeriousErrorV/Debugger. Since the logs can be large we currently only allow one to be stored in memory at a time.
+  s/handler_asm - Implement log_detailed function to decide (a) whether it's safe to call SeriousErrorV, and (b) deal with the fact that SeriousErrorV_Collect must be called in ABT mode in order to avoid overwriting any important SVC stack content
+  h/handler - Adding VecPtrTab to rsi6val enum & log_detailed prototype
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.06. Tagged as 'ZeroPain-0_06'
+@
+text
+@a44 1
+	IRQsema,
+a45 4
+	CLibCounter,
+	RISCOSLibWord,
+	CLibWord,
+	ESC_Status,
+@
+
+
+1.3
+log
+@Add unaligned load support
+Detail:
+  s/handler_asm - Read system control register and pass it through to the C code
+  h/handler - Updated function prototype for C abort handler code
+  c/handler_c - Use the supplied system control register value to determine whether rotated or unaligned load behaviour is in effect, and whether all unaligned loads should fail (i.e. don't trap the zero page access) due to alignment exceptions being enabled
+Admin:
+  Tested on Raspberry Pi 1 with LDM/LDR/LDRB with all three unaligned access settings
+
+
+Version 0.04. Tagged as 'ZeroPain-0_04'
+@
+text
+@d51 1
+d68 2
+@
+
+
+1.2
+log
+@Modify to allow inclusion in ROM builds
+Detail:
+  Makefile - Define ROM_MODULE when being built for ROM
+  h/handler, s/handler_asm - Ensure abort handler stub is running from RAM (so it can use PC-relative LDR to get workspace values)
+  c/cmodule - Disable ROM date check when running from ROM. Allow log configuration to fail when running from ROM.
+  c/log - When running from ROM, wait until log configuration succeeds before outputing any logs
+Admin:
+  Tested on Iyonix
+
+
+Version 0.03. Tagged as 'ZeroPain-0_03'
+@
+text
+@d62 1
+a62 1
+#define handler_install(ptr) ((*(_kernel_oserror*(*)(bool(*)(context_t *))) handler_install)(ptr))
+d65 1
+a65 1
+extern bool handler_do(context_t *context);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d57 7
+a63 2
+extern _kernel_oserror *handler_install(void);
+extern _kernel_oserror *handler_remove(void);
+@
+
+
+1.1.1.1
+log
+@Initial import of ZeroPain module
+Detail:
+  This is a compatibility/logging module designed to work with zero page
+  relocation. It will trap any emulate LDR/LDRB/LDM which reads from the first
+  16K of the logical address space. Attempts to access some known kernel
+  workspace locations will cause the correct value to be returned, while all
+  other locations will return zero. Whenever an instruction is trapped and
+  emulated an entry will be added to a log file so that the user is aware of
+  the issue.
+Admin:
+  Tested on Iyonix with zero page relocation
+
+@
+text
+@@

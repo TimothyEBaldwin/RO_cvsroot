@@ -1,0 +1,488 @@
+head	1.8;
+access;
+symbols
+	CLXLite-2_07:1.8
+	CLXLite-2_06:1.8
+	CLXLite-2_05:1.7
+	CLXLite-2_04:1.7
+	CLXLite-2_03:1.7
+	CLXLite-2_02:1.7
+	CLXLite-2_01:1.6
+	CLXLite-2_00:1.5
+	CLX-1_35:1.5
+	CLX-1_34:1.5
+	CLX-1_33:1.5
+	CLX-1_32:1.5
+	CLX-1_31:1.5
+	CLX-1_30:1.5
+	CLX-1_29:1.5
+	CLX-1_28:1.5
+	CLX-1_27:1.5
+	CLX-1_26:1.5
+	CLX-1_25:1.5
+	CLX-1_24:1.4
+	CLX-1_23:1.4
+	CLX-1_22:1.4
+	CLX-1_21:1.4
+	CLX-1_20:1.4
+	CLX-1_19:1.4
+	dellis_autobuild_BaseSW:1.4
+	CLX-1_18:1.4
+	CLX-1_17:1.4
+	CLX-1_16:1.4
+	dcotton_autobuild_BaseSW:1.5
+	CLX-1_15:1.4
+	CLX-1_14:1.3
+	CLX-1_13:1.3
+	CLX-1_12:1.3
+	CLX-1_11:1.3
+	CLX-1_10:1.3
+	CLX-1_09:1.2
+	CLX-1_08:1.2
+	CLX-1_07:1.1
+	CLX-1_06:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2014.11.25.09.17.16;	author rsprowson;	state Exp;
+branches;
+next	1.7;
+commitid	jnCpHAIF2HTzXxZx;
+
+1.7
+date	2010.05.19.15.03.12;	author bavison;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2009.06.12.19.19.55;	author bavison;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2000.12.04.12.24.56;	author jberanek;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.11.30.12.16.17;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.11.11.09.49.42;	author jberanek;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.10.08.21.36.10;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.05.20.12.14.11;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@Makefile tweak
+CLibrary now includes the others itself so we don't have to.
+Resolve a couple of trivial warnings in the code.
+Build, but not tested.
+
+Version 2.06. Tagged as 'CLXLite-2_06'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+  Title:        filestamp.h - easily portable file stamp functions
+  Copyright:    (C) 1987, Acorn Computers Ltd., Cambridge, England.
+  $Revision: 1.7 $  LH 31-Oct-88
+  $Revision: 1.7 $  LDS 18-Apr-89
+*/
+
+#ifndef  NULL
+# define NULL             0
+#endif
+
+#ifdef __riscos
+#include "CLib/kernel.h"
+#include <time.h>
+#include "filestamp.h"
+#include "host.h"
+
+/* osfile function code */
+#define  READ_INFO        5
+#define  SET_LOAD         2
+#define  SET_EXEC         3
+#define  FILEFOUND        1
+/* osword function code */
+#define  READ_TIME        1
+#define  READ_CMOS_TIME  14
+#define  FMT_5BYTE        3
+/* scale factor for reducing 5 byte times to 4 bytes */
+#define  TIMESF           7
+#define  TIMEMASK       127
+
+static int round = 0;
+
+unsigned filestamp_get(char *file)
+{
+  _kernel_osfile_block f;
+  int rc;
+  char *new_path = file;
+
+  rc = _kernel_osfile(READ_INFO, new_path, &f);
+
+  if (round) {
+    unsigned t = ((f.load & 255) * 96 + f.exec % 100) % 100;
+    if (t > f.exec) --f.load;
+    f.exec -= t;
+  }
+
+  if (rc >= 0) {
+    if (rc == FILEFOUND) {
+      return ((unsigned)f.exec >> TIMESF) |
+             (f.load << (32-TIMESF));
+    } else {
+      return FILESTAMP_NEVER;
+    }
+  }
+  return 0;
+}
+
+int filestamp_set(char *file, TimeStamp ts)
+{
+  _kernel_osfile_block f;
+  int host, rc;
+  char *new_path;
+
+  new_path = file;
+
+  if ((rc = _kernel_osfile(READ_INFO, new_path, &f)) < 0)
+  {
+    return 1;
+  }
+  if (rc != FILEFOUND)
+  {
+    return -1;
+  }
+  if ((host = host_system()) == _kernel_HOST_UNDEFINED)
+  {
+    return 1;
+  }
+  f.exec = ts << TIMESF;
+  ts = ts >> (32 - TIMESF);
+  if (host != _kernel_ARTHUR) ts |= 0xffffff;  /* Brazil */
+  f.load = (f.load & ~TIMEMASK) | ts;
+  if (_kernel_osfile(SET_LOAD, new_path, &f) < 0)
+  {
+    return 1;
+  }
+  if (_kernel_osfile(SET_EXEC, new_path, &f) < 0)
+  {
+    return 1;
+  }
+  return 1;
+}
+
+int filestamp_mk_execable(char *file)
+{
+  _kernel_osfile_block f;
+  int host, rc;
+  char *new_path;
+
+  new_path = file;
+
+  if ((rc = _kernel_osfile(READ_INFO, new_path, &f)) < 0)
+  {
+    return 1;
+  }
+  if (rc != FILEFOUND)
+  {
+    return -1;
+  }
+  if ((host = host_system()) == _kernel_HOST_UNDEFINED)
+  {
+    return 1;
+  }
+  if (host != _kernel_ARTHUR) {
+    f.exec = (int)0xffffffff;
+    if (_kernel_osfile(SET_EXEC, new_path, &f) < 0)
+    {
+      return 1;
+    }
+  }
+  f.load = (host == _kernel_ARTHUR ? (f.load & 0xff) | 0xfffffe00 : 0);
+  if (_kernel_osfile(SET_LOAD, new_path, &f) < 0)
+  {
+    return 1;
+  }
+  return 0;
+}
+
+unsigned filestamp_now(void)
+{
+  unsigned w[4];
+  int host;
+
+  if ((host = host_system()) == _kernel_HOST_UNDEFINED) return FILESTAMP_NEVER;
+  if (host == _kernel_ARTHUR) {
+    w[0] = FMT_5BYTE;
+    if (_kernel_osword(READ_CMOS_TIME, (int *)w) < 0) return FILESTAMP_NEVER;
+  } else {
+    /* use 5-byte timer... */
+    if (_kernel_osword(READ_TIME, (int *)w) < 0) return FILESTAMP_NEVER;
+  }
+
+  return (w[0] >> TIMESF) | (w[1] << (32-TIMESF));
+}
+
+extern void filestamp_ignore_centiseconds(int yes)
+{
+  round = yes;
+}
+#else
+
+#include <sys/time.h>
+#include <sys/stat.h>
+#include "filestamp.h"
+#include "host.h"
+
+unsigned filestamp_get(char *file)
+{
+        struct stat st;
+        if (stat(file, &st) < 0) {
+                return -1;
+        }
+        return (unsigned) st.st_mtime;
+}
+
+int filestamp_set(char *file, TimeStamp ts)
+{
+        file=file;
+        ts=ts;
+        return 0;
+}
+
+int filestamp_mk_execable(char *file)
+{
+        file=file;
+}
+
+unsigned filestamp_now(void)
+{
+        time_t t;
+        return (unsigned) (time(&t));
+}
+
+extern void filestamp_ignore_centiseconds(int yes)
+{
+        yes=yes;
+}
+#endif
+@
+
+
+1.7
+log
+@  Changes to facilitate platform independence.
+Detail:
+  * Added shell-script make wrapper
+  * Removed Norcroft-specific options from Makefile
+  * Added GCC equivalents of inline assembler
+  * Force use of our kernel.h with GCC (its own one is incomplete)
+  * Workarounds to allow full-fat CLX library to use shared makefiles
+Admin:
+  Tested by rebuilding the DDE tools
+
+Version 2.02. Tagged as 'CLXLite-2_02'
+@
+text
+@d18 2
+a19 2
+  $Revision: 1.6 $  LH 31-Oct-88
+  $Revision: 1.6 $  LDS 18-Apr-89
+d128 1
+a128 1
+    f.exec = 0xffffffff;
+d142 1
+a142 1
+unsigned filestamp_now()
+@
+
+
+1.6
+log
+@  Fix bug in amu
+Detail:
+  Testing whether !Depend had been updated was unreliable because
+  filestamp_get() and filestamp_now() round in opposite directions.
+  Since filestamp_now() was only used by amu, I've changed it to match
+  filestamp_get().
+Admin:
+  Tested using amu - requires additional changes to amu itself.
+
+Version 2.01. Tagged as 'CLXLite-2_01'
+@
+text
+@d18 2
+a19 2
+  $Revision: 1.5 $  LH 31-Oct-88
+  $Revision: 1.5 $  LDS 18-Apr-89
+d27 1
+a27 1
+#include "kernel.h"
+@
+
+
+1.5
+log
+@  Build fixes
+Detail:
+  Build fixes for Unix:
+
+* We now use -I{RISCOS_CLIB_HDRS} -I- to ensure that RISCOS C
+   library headers aren't used in preference to system headers.
+
+* INSTALL(1) now used to install the clx library.  This is available
+   on both Solaris and Linux systems.
+
+Admin:
+  Built on Solaris and on a Linux glibc 2.1.3 system.
+
+
+Version 1.25. Tagged as 'CLX-1_25'
+@
+text
+@d18 2
+a19 2
+  $Revision: 1.4 $  LH 31-Oct-88
+  $Revision: 1.4 $  LDS 18-Apr-89
+d156 1
+a156 1
+  return ((w[0] +127) >> TIMESF) | (w[1] << (32-TIMESF));
+@
+
+
+1.4
+log
+@  Added demangler code to the library.
+Detail:
+  dem.c and dem.h have been added, so they can now be removed from
+    all the tools it infests.
+  filestamp.c modified to build on Solaris as well as RISC OS.
+Admin:
+  Exports VersionNum as CLXVersion to prevent search path problems
+    in components which put C:CLX on the include path.
+  RISC OS build tested.
+  Solaris build tested.
+
+Version 1.15. Tagged as 'CLX-1_15'
+@
+text
+@d18 2
+a19 2
+  $Revision: 1.3 $  LH 31-Oct-88
+  $Revision: 1.3 $  LDS 18-Apr-89
+a164 1
+#define __time_h /* Stop Norcroft header from being included */
+@
+
+
+1.3
+log
+@  Fixed build error
+Detail:
+  filestamp.c wasn't building (at least on 1 platform), adding a
+  #include <time.h> fixed it.  Unix makefile now also cleans up the
+  *.[ch] symlinks on clean: target now.
+Admin:
+  Built on Linux x86 platform.
+
+Version 1.10. Tagged as 'CLX-1_10'
+@
+text
+@d18 2
+a19 2
+  $Revision: 1.2 $  LH 31-Oct-88
+  $Revision: 1.2 $  LDS 18-Apr-89
+a20 3
+#include <time.h>
+#include "filestamp.h"
+#include "host.h"
+d28 3
+d168 2
+@
+
+
+1.2
+log
+@  filestamp functions for UNIX added.
+  host functions for UNIX corrected.
+Detail:
+  host.c will now tell UNIX targets that:
+    The command to change directory is "cd" and not "dir"
+    The directory separator is / and not .
+    Home directory synonym is ~ and not &
+  filestamp.c functions for UNIX added (were never there!)
+    filestamp_now() returns result of time() C library call
+    filestamp_get(file) returns st_mtime from stat(file) result
+    filestamp_mk_execable does nothing.
+    filestamp_ignore_centiseconds does nothing.
+Admin:
+  Tested on Solaris (x86 and SPARC) and RISC OS.
+  Required by Solaris builds of modgen (1.01 and later)
+  Required by other UNIX builds which rely on host bits being right!
+  This implementation of filestamp_* functions will have severe
+    difficulties functioning in an environment which utilises 64-bit
+    time_t.
+
+Version 1.08. Tagged as 'CLX-1_08'
+@
+text
+@d18 2
+a19 2
+  $Revision: 1.1 $  LH 31-Oct-88
+  $Revision: 1.1 $  LDS 18-Apr-89
+d21 1
+@
+
+
+1.1
+log
+@Added filestamp.(c|h) which are requied by amu.
+
+Version 1.06. Tagged as 'CLX-1_06'
+@
+text
+@d18 2
+a19 2
+  $Revision: 1.03 $  LH 31-Oct-88
+  $Revision: 1.04 $  LDS 18-Apr-89
+a20 1
+#include "kernel.h"
+d27 4
+d162 38
+@

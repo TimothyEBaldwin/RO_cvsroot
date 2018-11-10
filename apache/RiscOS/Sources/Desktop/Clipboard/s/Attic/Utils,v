@@ -1,0 +1,135 @@
+head	1.2;
+access;
+symbols
+	Clipboard-0_04:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	99.02.22.11.58.04;	author bavison;	state dead;
+branches;
+next	1.1;
+
+1.1
+date	99.02.19.11.22.10;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@* Task-related initialisation moved from module init to Start routine
+* State handler added, called from SWI, UserMessage, UserMessageAck handlers
+* Implemented NewAction, DeleteAction, DeleteActions, FreeClipboard and
+  FreeMsgQueue
+* DA memory allocation adapted so as not to use max-size "-1" DAs
+* RMA memory allocation functions completed to match DA functions - will now
+  assemble with DA support option turned off!
+
+Version 0.05. Tagged as 'Clipboard-0_05'
+@
+text
+@; Copyright 1999 Element 14 Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+
+
+
+my_send_message
+; On entry:
+;   R0 = event code to use (17, 18 or 19)
+;   R1 -> message block
+;   R2 = destination task/window handle, or 0 to broadcast
+;   R3 = destination icon handle, if applicable
+;   R4 = address to hold the message's my_ref field (returned from Wimp_SendMessage)
+;   Processor is in USR or SVC mode
+; On exit:
+;   All registers preserved. If the processor is in SVC mode, the message is queued
+;   and the my_ref is filled in with -1 to indicate that it isn't valid yet.
+        Entry   "R5"
+        MOV     R14, PC
+        ANDS    R14, R14, #SVC_mode     ; so EQ => USR, NE => SVC
+        BNE     %FT01
+        ; Just send the message
+        SWI     XWimp_SendMessage
+        LDR     R14, [R1, #ms_myref]
+        STR     R14, [R4]
+        EXIT
+01      ; Queue the message
+        MOV     R14, #-1
+        STR     R14, [R4]               ; mark my_ref invalid for now
+        Push    "R0, R2, R3"
+        MOV     R0, #ModHandReason_Claim
+        LDR     R3, [R1, #ms_size]
+        ADD     R3, R3, #MsgQ_Size
+        SWI     XOS_Module              ; claim new message queue block
+        Pull    "R0, R2, R3", VS
+        EXIT    VS
+        ; Find last link in message queue
+        ADR     R5, MsgQueue - MsgQ_Next
+02      LDR     R0, [R5, #MsgQ_Next]
+        TEQ     R0, #0
+        MOVNE   R5, R0
+        BNE     %BT02
+        ; Found it; add new block to end
+        STR     R2, [R5, #MsgQ_Next]
+        MOV     R5, R2
+        Pull    "R0, R2, R3"
+        ; Now set up new block
+        ASSERT  MsgQ_Next = 0
+        ASSERT  MsgQ_Handle = MsgQ_EventCode + 4
+        ASSERT  MsgQ_Icon = MsgQ_Handle + 4
+        ASSERT  MsgQ_MyRefPtr = MsgQ_Icon + 4
+        MOV     R14, #0
+        STR     R14, [R5], #MsgQ_EventCode ; store "next" link
+        STMIA   R5!, {R0, R2-R4}        ; store event code, handles, my_ref pointer
+        LDR     R2, [R1, #ms_size]      ; number of bytes to copy
+03      LDRB    R0, [R1], #1
+        STRB    R0, [R5], #1            ; copy byte into queue block
+        SUBS    R2, R2, #1
+        BGT     %BT03
+        EXIT
+
+
+        END
+@
+
+
+1.1
+log
+@* Updated API to match that from the spec 1309,419/FS
+* Added symbols for all flag bits in SWIs and messages
+* Major reorganisation of workspace layout, primarily to facilitate multiple
+  concurrent data transfer transactions - because of this, most of the
+  useful functionality is currently commented out, pending updating to use
+  the new structures
+* Replaced "event" queue with a simple queue of ready-to-send Wimp message
+  blocks - this way, event handling can be handled in the same place in the
+  code, irrespective of whether we're in the foreground or background
+* Reorganised finalisation code so that task and module operations are
+  performed in separate routines and (mostly) in strictly the reverse order
+  to at initialisation. This allows code sharing between module finalisation,
+  the exit handler, the UpCall_NewApplication handler, and the task quit
+  code, as well as eradicating several memory leaks in the process
+
+Version 0.04. Tagged as 'Clipboard-0_04'
+@
+text
+@@

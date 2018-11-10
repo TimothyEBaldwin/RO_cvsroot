@@ -1,0 +1,1307 @@
+head	4.5;
+access;
+symbols
+	Net-6_26:4.5
+	Net-6_25:4.5
+	Net-6_24:4.4
+	Net-6_23:4.4
+	Net-6_22:4.4
+	Net-6_21:4.4
+	RO_5_07:4.4
+	Net-6_20:4.4
+	Net-6_19:4.3
+	Net-6_18:4.2
+	Ursula_merge:4.2
+	Ursula_13May1998_merge:4.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.2
+	Ursula_RiscPC:4.2.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.2
+	UrsulaBuild_FinalSoftload:4.2
+	rthornb_UrsulaBuild-12Aug1998:4.2
+	aglover_UrsulaBuild-05Aug1998:4.2
+	rthornb_UrsulaBuild-29Jul1998:4.2
+	rthornb_UrsulaBuild-22Jul1998:4.2
+	rthornb_UrsulaBuild-15Jul1998:4.2
+	rthornb_UrsulaBuild-07Jul1998:4.2
+	rthornb_UrsulaBuild-17Jun1998:4.2
+	rthornb_UrsulaBuild-03Jun1998:4.2
+	rthornb_UrsulaBuild-27May1998:4.2
+	rthornb_UrsulaBuild-21May1998:4.2
+	Ursula_bp:4.2
+	Ursula:4.2.0.6
+	Ursula_13May1998_bp:4.2
+	Ursula_13May1998:4.2.0.2
+	rthornb_UrsulaBuild_01May1998:4.2
+	Daytona:4.2.0.4
+	Daytona_bp:4.2
+	RO_3_71:4.1.3.1
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	RO_3_60:4.1.1.1
+	StrongARM:4.1.3
+	Black:4.1.1;
+locks; strict;
+comment	@# @;
+
+
+4.5
+date	2015.05.29.19.29.03;	author rsprowson;	state Exp;
+branches;
+next	4.4;
+commitid	2VVHsW5ULMhIonny;
+
+4.4
+date	2003.12.03.19.22.00;	author bavison;	state Exp;
+branches;
+next	4.3;
+
+4.3
+date	2003.01.17.14.59.57;	author kbracey;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	97.05.13.11.25.47;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	96.11.05.09.28.27;	author nturton;	state Exp;
+branches
+	4.1.1.1
+	4.1.3.1;
+next	;
+
+4.1.1.1
+date	96.11.05.09.28.27;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.3.1
+date	96.11.05.22.31.33;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.5
+log
+@Have Net look after its own messages
+Net was trying to share some messages with the Econet module, though on balance this wasn't particularly useful as it then needed to duplicate message handling code to keep 2 files open. Because those messages were held in AUNMsgs they didn't get tokenised in ROM, overall ending up taking more space.
+
+Register in ResourcesFS at run time for RAM targets, add tokenisation directives for ROM targets, removed redundant !Configure related strings.
+Changed the messages fd to be int's to ensure word alignment.
+Removed inappropriate Service_MessageFileClosed handler, MessageTrans reopens the files (since the fd is in the RMA) so no need to reopen them a second time. This service call is intended to recache direct pointers to tokens, but none are ever taken.
+Save time by just making textbuf a zero length string rather than memset()ing the whole buffer.
+Resolved a couple more compiler warnings (but NetG still doesn't compile).
+Fix bug where a failure to enable the internet event would decrement the internet event count for any other modules interested in that event.
+Use CMHG finalisation rather than atexit().
+Error "AUN not configured" now uses a non zero trappable error number.
+Error number for BadSWI corrected from 0x111 to 0x110.
+
+Requires HdrSrc-2_51 for the error number.
+
+Version 6.25. Tagged as 'Net-6_25'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* tables.c
+ *
+ * Author: Keith Ruttle (Acorn)
+ *
+ * Description
+ * ===========
+ * Routing table routines
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.06 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ * 13-Oct-95  15:44  JPD  Version 1.00
+ * First version with change record.
+ *
+ **End of change record*
+ */
+
+#ifdef OldCode
+#include "defs.h"
+#include <sys/ioctl.h>
+#include <sys/syslog.h>
+#else
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "net/route.h"
+#include "netinet/in.h"
+#include "sys/ioctl.h"
+#include "protocols/routed.h"
+
+#include "mnsg.h"
+#include "debug.h"
+#include "af.h"
+#include "trace.h"
+#include "table.h"
+#include "data.h"
+#include "startup.h"
+#include "defs.h"
+#include "interface.h"
+#include "inetfn.h"
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+struct rt_entry *
+rtlookup(dst)
+        struct sockaddr *dst;
+{
+        struct rt_entry *rt;
+        struct rthash *rh;
+        u_int hash;
+        struct afhash h;
+        int doinghost = 1;
+
+        inet_hash(dst, &h);
+        hash = h.afh_hosthash;
+        rh = &hosthash[hash & ROUTEHASHMASK];
+again:
+        for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw) {
+                if (rt->rt_hash != hash)
+                        continue;
+                if (equal(&rt->rt_dst, dst))
+                        return (rt);
+        }
+        if (doinghost) {
+                doinghost = 0;
+                hash = h.afh_nethash;
+                rh = &nethash[hash & ROUTEHASHMASK];
+                goto again;
+        }
+        return (0);
+}
+#else
+struct rt_entry *rtlookup(struct sockaddr *dst)
+{
+   struct rt_entry *rt;
+   struct rthash *rh;
+   u_int hash;
+   struct afhash h;
+   int doinghost = 1;
+
+   inet_hash((struct sockaddr_in *)dst, &h);
+   hash = h.afh_hosthash;
+   rh = &hosthash[hash & ROUTEHASHMASK];
+again:
+   for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+   {
+      if (rt->rt_hash != hash)
+         continue;
+      if (equal(&rt->rt_dst, dst))
+         return rt;
+   }
+   if (doinghost)
+   {
+      doinghost = 0;
+      hash = h.afh_nethash;
+      rh = &nethash[hash & ROUTEHASHMASK];
+      goto again;
+   }
+   return 0;
+
+} /* rtlookup() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+struct sockaddr wildcard = { 0 };
+#else
+#ifdef notyet
+static struct sockaddr wildcard = { 0 };
+#endif
+#endif
+
+#ifdef OldCode
+struct rt_entry *
+rtfind(dst)
+        struct sockaddr *dst;
+{
+        struct rt_entry *rt;
+        struct rthash *rh;
+        u_int hash;
+        struct afhash h;
+        int doinghost = 1;
+
+        inet_hash(dst, &h);
+        hash = h.afh_hosthash;
+        rh = &hosthash[hash & ROUTEHASHMASK];
+
+again:
+        for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw) {
+                if (rt->rt_hash != hash)
+                        continue;
+                if (doinghost) {
+                        if (equal(&rt->rt_dst, dst))
+                                return (rt);
+                } else {
+                        if (inet_netmatch(&rt->rt_dst, dst))
+                                return (rt);
+                }
+        }
+        if (doinghost) {
+                doinghost = 0;
+                hash = h.afh_nethash;
+                rh = &nethash[hash & ROUTEHASHMASK];
+                goto again;
+        }
+#ifdef notyet
+        if (dst != &wildcard) {
+                dst = &wildcard, hash = 0;
+                goto again;
+        }
+#endif
+        return (0);
+}
+#else
+
+struct rt_entry *rtfind(struct sockaddr *dst)
+{
+   struct rt_entry *rt;
+   struct rthash *rh;
+   u_int hash;
+   struct afhash h;
+   int doinghost = 1;
+
+   inet_hash((struct sockaddr_in *)dst, &h);
+   hash = h.afh_hosthash;
+   rh = &hosthash[hash & ROUTEHASHMASK];
+
+again:
+   for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+   {
+      if (rt->rt_hash != hash)
+         continue;
+      if (doinghost)
+      {
+         if (equal(&rt->rt_dst, dst))
+            return rt;
+      }
+      else
+      {
+         if (inet_netmatch((struct sockaddr_in *)&rt->rt_dst,
+                                                     (struct sockaddr_in *)dst))
+            return rt;
+      }
+   }
+   if (doinghost)
+   {
+      doinghost = 0;
+      hash = h.afh_nethash;
+      rh = &nethash[hash & ROUTEHASHMASK];
+      goto again;
+   }
+#ifdef notyet
+   if (dst != &wildcard)
+   {
+      dst = &wildcard, hash = 0;
+      goto again;
+   }
+#endif
+
+   return 0;
+
+} /* rtfind() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+rtadd(dst, gate, metric, state)
+        struct sockaddr *dst, *gate;
+        int metric, state;
+{
+        struct afhash h;
+        struct rt_entry *rt;
+        struct rthash *rh;
+        int flags;
+        u_int hash;
+
+        inet_hash(dst, &h);
+        flags = inet_rtflags(dst);
+
+        if (flags & RTF_SUBNET) {
+                state |= RTS_SUBNET;
+                flags &= ~RTF_SUBNET;
+        }
+        if (flags & RTF_HOST) {
+                hash = h.afh_hosthash;
+                rh = &hosthash[hash & ROUTEHASHMASK];
+        } else {
+                hash = h.afh_nethash;
+                rh = &nethash[hash & ROUTEHASHMASK];
+        }
+        rt = (struct rt_entry *)malloc(sizeof (*rt));
+        if (rt == 0)
+                return;
+        rt->rt_hash = hash;
+        rt->rt_dst = *dst;
+        rt->rt_router = *gate;
+        rt->rt_timer = 0;
+        rt->rt_flags = RTF_UP | flags;
+        rt->rt_state = state | RTS_CHANGED;
+        rt->rt_ifp = if_ifwithdstaddr(&rt->rt_router);
+        if (rt->rt_ifp == 0)
+                rt->rt_ifp = if_ifwithnet(&rt->rt_router);
+        if ((state & RTS_INTERFACE) == 0)
+                rt->rt_flags |= RTF_GATEWAY;
+        rt->rt_metric = metric;
+        insque(rt, rh);
+        TRACE_ACTION("Add route", rt);
+        if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+            (void) socketioctl(*routedsock, SIOCADDRT, (char *)&rt->rt_rt);
+}
+#else
+void rtadd(struct sockaddr *dst, struct sockaddr *gate, int metric, int state)
+{
+   struct afhash h;
+   struct rt_entry *rt;
+   struct rthash *rh;
+   int flags;
+   u_int hash;
+
+   DEBUGP3("#rtadd() %08X, %08X\n\r",
+                                 ((struct sockaddr_in *)dst)->sin_addr.s_addr,
+                                 ((struct sockaddr_in *)gate)->sin_addr.s_addr);
+
+   inet_hash((struct sockaddr_in *)dst, &h);
+   flags = inet_rtflags(dst);
+
+   if (flags & RTF_SUBNET)
+   {
+      state |= RTS_SUBNET;
+      flags &= ~RTF_SUBNET;
+   }
+
+   if (flags & RTF_HOST)
+   {
+      hash = h.afh_hosthash;
+      rh = &hosthash[hash & ROUTEHASHMASK];
+   }
+   else
+   {
+      hash = h.afh_nethash;
+      rh = &nethash[hash & ROUTEHASHMASK];
+   }
+
+   rt = (struct rt_entry *)malloc(sizeof (*rt));
+   if (rt == 0)
+      return;
+
+   rt->rt_hash = hash;
+   rt->rt_dst = *dst;
+   rt->rt_router = *gate;
+   rt->rt_timer = 0;
+   rt->rt_flags = RTF_UP | flags;
+   rt->rt_state = state | RTS_CHANGED;
+   rt->rt_ifp = if_ifwithdstaddr(&rt->rt_router);
+   if (rt->rt_ifp == 0)
+      rt->rt_ifp = if_ifwithnet(&rt->rt_router);
+   if ((state & RTS_INTERFACE) == 0)
+      rt->rt_flags |= RTF_GATEWAY;
+   rt->rt_metric = metric;
+   insque((struct qelem *)rt, (struct qelem *)rh);
+
+   TRACE_ACTION("Add route", rt);
+
+#ifndef DEBUG
+   if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+      (void) rtioctl(ADD, &rt->rt_rt);
+#else
+   if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+      if (rtioctl(ADD, &rt->rt_rt) < 0)
+         DEBUGP1("#rtadd() socketioctl to add route failed\n\r");
+#endif
+
+   DEBUGP1("#rtadd() exit\n\r");
+
+   return;
+
+} /* rtadd() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+rtchange(rt, gate, metric)
+        struct rt_entry *rt;
+        struct sockaddr *gate;
+        short metric;
+{
+        int add = 0, delete = 0, newgateway = 0;
+        struct rtentry oldroute;
+
+        if (!equal(&rt->rt_router, gate)) {
+                newgateway++;
+                TRACE_ACTION("Change route from ", rt);
+        } else if (metric != rt->rt_metric)
+                TRACE_NEWMETRIC(rt, metric);
+        if ((rt->rt_state & RTS_INTERNAL) == 0) {
+
+                if (newgateway) {
+                        add++;
+                        if (rt->rt_metric != HOPCNT_INFINITY)
+                                delete++;
+                } else if (metric == HOPCNT_INFINITY)
+                        delete++;
+                else if (rt->rt_metric == HOPCNT_INFINITY)
+                        add++;
+        }
+        if (delete)
+                oldroute = rt->rt_rt;
+        if ((rt->rt_state & RTS_INTERFACE) && delete) {
+                rt->rt_state &= ~RTS_INTERFACE;
+                rt->rt_flags |= RTF_GATEWAY;
+        }
+        if (add) {
+                rt->rt_router = *gate;
+                rt->rt_ifp = if_ifwithdstaddr(&rt->rt_router);
+                if (rt->rt_ifp == 0)
+                        rt->rt_ifp = if_ifwithnet(&rt->rt_router);
+        }
+        rt->rt_metric = metric;
+        rt->rt_state |= RTS_CHANGED;
+        if (newgateway)
+                TRACE_ACTION("Change route to ", rt);
+        if (add)
+                (void) socketioctl(*routedsock, SIOCADDRT, (char *)&rt->rt_rt);
+        if (delete)
+                (void) socketioctl(*routedsock, SIOCDELRT, (char *)&oldroute);
+}
+#else
+void rtchange(struct rt_entry *rt, struct sockaddr *gate, short metric)
+{
+   int add = 0, delete = 0, newgateway = 0;
+   struct rtentry oldroute;
+
+   DEBUGP2("#rtchange() %08X\n\r",
+                                 ((struct sockaddr_in *)gate)->sin_addr.s_addr);
+
+   if (!equal(&rt->rt_router, gate))
+   {
+      newgateway++;
+      TRACE_ACTION("Change route from ", rt);
+   }
+   else
+      if (metric != rt->rt_metric)
+         TRACE_NEWMETRIC(rt, metric);
+
+   if ((rt->rt_state & RTS_INTERNAL) == 0)
+   {
+      if (newgateway)
+      {
+         add++;
+         if (rt->rt_metric != HOPCNT_INFINITY)
+            delete++;
+      }
+      else
+         if (metric == HOPCNT_INFINITY)
+            delete++;
+         else
+            if (rt->rt_metric == HOPCNT_INFINITY)
+               add++;
+   }
+
+   if (delete)
+      oldroute = rt->rt_rt;
+
+   if ((rt->rt_state & RTS_INTERFACE) && delete)
+   {
+      rt->rt_state &= ~RTS_INTERFACE;
+      rt->rt_flags |= RTF_GATEWAY;
+   }
+
+   if (add)
+   {
+      rt->rt_router = *gate;
+      rt->rt_ifp = if_ifwithdstaddr(&rt->rt_router);
+      if (rt->rt_ifp == 0)
+         rt->rt_ifp = if_ifwithnet(&rt->rt_router);
+   }
+
+   rt->rt_metric = metric;
+   rt->rt_state |= RTS_CHANGED;
+
+   if (newgateway)
+      TRACE_ACTION("Change route to ", rt);
+
+   if (add)
+      (void) rtioctl(ADD, &rt->rt_rt);
+
+   if (delete)
+      (void) rtioctl(DELETE, &oldroute);
+
+   return;
+
+} /* rtchange() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+rtdelete(rt)
+        struct rt_entry *rt;
+{
+
+        TRACE_ACTION("Delete route", rt);
+        if (rt->rt_metric < HOPCNT_INFINITY) {
+            if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+                (void) socketioctl(*routedsock, SIOCDELRT, (char *)&rt->rt_rt);
+        }
+        remque(rt);
+        free((char *)rt);
+}
+#else
+void rtdelete(struct rt_entry *rt)
+{
+   TRACE_ACTION("Delete route", rt);
+
+   if (rt->rt_metric < HOPCNT_INFINITY)
+   {
+      if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+         (void) rtioctl(DELETE, &rt->rt_rt);
+   }
+
+   remque((struct qelem *)rt);
+   free((char *)rt);
+
+   return;
+
+} /* rtdelete() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+rtdeleteall(sig)
+        int sig;
+{
+        struct rthash *rh;
+        struct rt_entry *rt;
+        struct rthash *base = hosthash;
+        int doinghost = 1;
+
+again:
+        for (rh = base; rh < &base[ROUTEHASHSIZ]; rh++) {
+                rt = rh->rt_forw;
+                for (; rt != (struct rt_entry *)rh; rt = rt->rt_forw) {
+                        if (rt->rt_state & RTS_INTERFACE ||
+                            rt->rt_metric >= HOPCNT_INFINITY)
+                                continue;
+                        TRACE_ACTION("Delete route", rt);
+                        if ((rt->rt_state & (RTS_INTERNAL|RTS_EXTERNAL)) == 0)
+                            (void) socketioctl(*routedsock, SIOCDELRT, (char *)&rt->rt_rt);
+                }
+        }
+        if (doinghost) {
+                doinghost = 0;
+                base = nethash;
+                goto again;
+        }
+}
+#else
+#if 0
+static void rtdeleteall(int sig)
+{
+   struct rthash *rh;
+   struct rt_entry *rt;
+   struct rthash *base = hosthash;
+   int doinghost = 1;
+
+again:
+   for (rh = base; rh < &base[ROUTEHASHSIZ]; rh++)
+   {
+      rt = rh->rt_forw;
+      for (; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+      {
+         if (rt->rt_state & RTS_INTERFACE || rt->rt_metric >= HOPCNT_INFINITY)
+            continue;
+
+         TRACE_ACTION("Delete route", rt);
+
+         if ((rt->rt_state & (RTS_INTERNAL|RTS_EXTERNAL)) == 0)
+            (void) socketioctl(*routedsock, SIOCDELRT, (char *)&rt->rt_rt);
+      }
+   }
+
+   if (doinghost)
+   {
+      doinghost = 0;
+      base = nethash;
+      goto again;
+   }
+
+   return;
+
+} /* rtdeleteall() */
+#endif
+#endif
+
+/******************************************************************************/
+
+void rtinit(void)
+{
+   struct rthash *rh;
+
+   for (rh = nethash; rh < &nethash[ROUTEHASHSIZ]; rh++)
+      rh->rt_forw = rh->rt_back = (struct rt_entry *)rh;
+   for (rh = hosthash; rh < &hosthash[ROUTEHASHSIZ]; rh++)
+      rh->rt_forw = rh->rt_back = (struct rt_entry *)rh;
+
+   return;
+
+} /* rtinit() */
+
+static int seqno;
+
+static int rtioctl(int action, struct rtuentry *ort)
+{
+        int r, retval;
+	struct {
+		struct rt_msghdr w_rtm;
+		struct sockaddr_in w_dst;
+		struct sockaddr w_gate;
+		struct sockaddr_in w_netmask;
+	} w;
+#define rtm w.w_rtm
+
+        r = socket(PF_ROUTE, SOCK_RAW, 0);
+        if (r < 0)
+            return (-1);
+
+	bzero(&w, sizeof(w));
+	rtm.rtm_msglen = sizeof(w);
+	rtm.rtm_version = RTM_VERSION;
+	rtm.rtm_type = (action == ADD ? RTM_ADD :
+				(action == DELETE ? RTM_DELETE : RTM_CHANGE));
+#undef rt_dst
+	rtm.rtm_flags = ort->rtu_flags;
+	rtm.rtm_seq = ++seqno;
+	rtm.rtm_addrs = RTA_DST|RTA_GATEWAY;
+	memcpy(&w.w_dst, &ort->rtu_dst, sizeof(w.w_dst));
+	memcpy(&w.w_gate, &ort->rtu_router, sizeof(w.w_gate));
+	w.w_dst.sin_family = AF_INET;
+	w.w_dst.sin_len = sizeof(w.w_dst);
+	w.w_gate.sa_family = AF_INET;
+	w.w_gate.sa_len = sizeof(w.w_gate);
+	if (rtm.rtm_flags & RTF_HOST) {
+		rtm.rtm_msglen -= sizeof(w.w_netmask);
+	} else {
+		register char *cp;
+		int len;
+
+		rtm.rtm_addrs |= RTA_NETMASK;
+		w.w_netmask.sin_addr.s_addr =
+			inet_maskof(w.w_dst.sin_addr.s_addr);
+		for (cp = (char *)(1 + &w.w_netmask.sin_addr);
+				    --cp > (char *) &w.w_netmask; )
+			if (*cp)
+				break;
+		len = cp - (char *)&w.w_netmask;
+		if (len) {
+			len++;
+			w.w_netmask.sin_len = len;
+			len = 1 + ((len - 1) | (sizeof(long) - 1));
+		} else
+			len = sizeof(long);
+		rtm.rtm_msglen -= (sizeof(w.w_netmask) - len);
+	}
+	retval = socketwrite(r, &w, rtm.rtm_msglen);
+	socketclose(r);
+	return (retval);
+}
+
+/******************************************************************************/
+
+/* EOF tables.c */
+@
+
+
+4.4
+log
+@ANSIized.
+
+Version 6.20. Tagged as 'Net-6_20'
+@
+text
+@d48 3
+@
+
+
+4.3
+log
+@Made 32-bit compatible.
+Changed to use VersionNum.
+
+Version 6.19. Tagged as 'Net-6_19'
+@
+text
+@d64 1
+@
+
+
+4.2
+log
+@Version RO_3_71 taken
+@
+text
+@a570 11
+#ifdef OldCode
+rtinit()
+{
+        struct rthash *rh;
+
+        for (rh = nethash; rh < &nethash[ROUTEHASHSIZ]; rh++)
+                rh->rt_forw = rh->rt_back = (struct rt_entry *)rh;
+        for (rh = hosthash; rh < &hosthash[ROUTEHASHSIZ]; rh++)
+                rh->rt_forw = rh->rt_back = (struct rt_entry *)rh;
+}
+#else
+a582 2
+
+#endif
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d15 28
+d46 21
+d68 1
+d97 34
+d132 1
+d134 5
+d140 1
+d181 1
+d183 53
+d280 61
+d342 11
+d398 8
+d407 63
+d482 10
+d493 12
+d531 31
+d563 9
+d581 78
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@a0 42
+/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* tables.c
+ *
+ * Author: Keith Ruttle (Acorn)
+ *
+ * Description
+ * ===========
+ * Routing table routines
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.06 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ * 13-Oct-95  15:44  JPD  Version 1.00
+ * First version with change record.
+ *
+ **End of change record*
+ */
+
+#ifdef OldCode
+a17 21
+#else
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "net/route.h"
+#include "netinet/in.h"
+#include "sys/ioctl.h"
+#include "protocols/routed.h"
+
+#include "mnsg.h"
+#include "debug.h"
+#include "af.h"
+#include "trace.h"
+#include "table.h"
+#include "data.h"
+#include "startup.h"
+#include "defs.h"
+#include "interface.h"
+#endif
+
+/******************************************************************************/
+a18 1
+#ifdef OldCode
+a46 34
+#else
+struct rt_entry *rtlookup(struct sockaddr *dst)
+{
+   struct rt_entry *rt;
+   struct rthash *rh;
+   u_int hash;
+   struct afhash h;
+   int doinghost = 1;
+
+   inet_hash((struct sockaddr_in *)dst, &h);
+   hash = h.afh_hosthash;
+   rh = &hosthash[hash & ROUTEHASHMASK];
+again:
+   for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+   {
+      if (rt->rt_hash != hash)
+         continue;
+      if (equal(&rt->rt_dst, dst))
+         return rt;
+   }
+   if (doinghost)
+   {
+      doinghost = 0;
+      hash = h.afh_nethash;
+      rh = &nethash[hash & ROUTEHASHMASK];
+      goto again;
+   }
+   return 0;
+
+} /* rtlookup() */
+
+#endif
+
+/******************************************************************************/
+a47 1
+#ifdef OldCode
+a48 5
+#else
+#ifdef notyet
+static struct sockaddr wildcard = { 0 };
+#endif
+#endif
+a49 1
+#ifdef OldCode
+a89 1
+#else
+a90 53
+struct rt_entry *rtfind(struct sockaddr *dst)
+{
+   struct rt_entry *rt;
+   struct rthash *rh;
+   u_int hash;
+   struct afhash h;
+   int doinghost = 1;
+
+   inet_hash((struct sockaddr_in *)dst, &h);
+   hash = h.afh_hosthash;
+   rh = &hosthash[hash & ROUTEHASHMASK];
+
+again:
+   for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+   {
+      if (rt->rt_hash != hash)
+         continue;
+      if (doinghost)
+      {
+         if (equal(&rt->rt_dst, dst))
+            return rt;
+      }
+      else
+      {
+         if (inet_netmatch((struct sockaddr_in *)&rt->rt_dst,
+                                                     (struct sockaddr_in *)dst))
+            return rt;
+      }
+   }
+   if (doinghost)
+   {
+      doinghost = 0;
+      hash = h.afh_nethash;
+      rh = &nethash[hash & ROUTEHASHMASK];
+      goto again;
+   }
+#ifdef notyet
+   if (dst != &wildcard)
+   {
+      dst = &wildcard, hash = 0;
+      goto again;
+   }
+#endif
+
+   return 0;
+
+} /* rtfind() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+a134 61
+#else
+void rtadd(struct sockaddr *dst, struct sockaddr *gate, int metric, int state)
+{
+   struct afhash h;
+   struct rt_entry *rt;
+   struct rthash *rh;
+   int flags;
+   u_int hash;
+
+   DEBUGP3("#rtadd() %08X, %08X\n\r",
+                                 ((struct sockaddr_in *)dst)->sin_addr.s_addr,
+                                 ((struct sockaddr_in *)gate)->sin_addr.s_addr);
+
+   inet_hash((struct sockaddr_in *)dst, &h);
+   flags = inet_rtflags(dst);
+
+   if (flags & RTF_SUBNET)
+   {
+      state |= RTS_SUBNET;
+      flags &= ~RTF_SUBNET;
+   }
+
+   if (flags & RTF_HOST)
+   {
+      hash = h.afh_hosthash;
+      rh = &hosthash[hash & ROUTEHASHMASK];
+   }
+   else
+   {
+      hash = h.afh_nethash;
+      rh = &nethash[hash & ROUTEHASHMASK];
+   }
+
+   rt = (struct rt_entry *)malloc(sizeof (*rt));
+   if (rt == 0)
+      return;
+
+   rt->rt_hash = hash;
+   rt->rt_dst = *dst;
+   rt->rt_router = *gate;
+   rt->rt_timer = 0;
+   rt->rt_flags = RTF_UP | flags;
+   rt->rt_state = state | RTS_CHANGED;
+   rt->rt_ifp = if_ifwithdstaddr(&rt->rt_router);
+   if (rt->rt_ifp == 0)
+      rt->rt_ifp = if_ifwithnet(&rt->rt_router);
+   if ((state & RTS_INTERFACE) == 0)
+      rt->rt_flags |= RTF_GATEWAY;
+   rt->rt_metric = metric;
+   insque((struct qelem *)rt, (struct qelem *)rh);
+
+   TRACE_ACTION("Add route", rt);
+
+#ifndef DEBUG
+   if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+      (void) rtioctl(ADD, &rt->rt_rt);
+#else
+   if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+      if (rtioctl(ADD, &rt->rt_rt) < 0)
+         DEBUGP1("#rtadd() socketioctl to add route failed\n\r");
+#endif
+a135 11
+   DEBUGP1("#rtadd() exit\n\r");
+
+   return;
+
+} /* rtadd() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+a180 8
+#else
+void rtchange(struct rt_entry *rt, struct sockaddr *gate, short metric)
+{
+   int add = 0, delete = 0, newgateway = 0;
+   struct rtentry oldroute;
+
+   DEBUGP2("#rtchange() %08X\n\r",
+                                 ((struct sockaddr_in *)gate)->sin_addr.s_addr);
+a181 63
+   if (!equal(&rt->rt_router, gate))
+   {
+      newgateway++;
+      TRACE_ACTION("Change route from ", rt);
+   }
+   else
+      if (metric != rt->rt_metric)
+         TRACE_NEWMETRIC(rt, metric);
+
+   if ((rt->rt_state & RTS_INTERNAL) == 0)
+   {
+      if (newgateway)
+      {
+         add++;
+         if (rt->rt_metric != HOPCNT_INFINITY)
+            delete++;
+      }
+      else
+         if (metric == HOPCNT_INFINITY)
+            delete++;
+         else
+            if (rt->rt_metric == HOPCNT_INFINITY)
+               add++;
+   }
+
+   if (delete)
+      oldroute = rt->rt_rt;
+
+   if ((rt->rt_state & RTS_INTERFACE) && delete)
+   {
+      rt->rt_state &= ~RTS_INTERFACE;
+      rt->rt_flags |= RTF_GATEWAY;
+   }
+
+   if (add)
+   {
+      rt->rt_router = *gate;
+      rt->rt_ifp = if_ifwithdstaddr(&rt->rt_router);
+      if (rt->rt_ifp == 0)
+         rt->rt_ifp = if_ifwithnet(&rt->rt_router);
+   }
+
+   rt->rt_metric = metric;
+   rt->rt_state |= RTS_CHANGED;
+
+   if (newgateway)
+      TRACE_ACTION("Change route to ", rt);
+
+   if (add)
+      (void) rtioctl(ADD, &rt->rt_rt);
+
+   if (delete)
+      (void) rtioctl(DELETE, &oldroute);
+
+   return;
+
+} /* rtchange() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+a193 10
+#else
+void rtdelete(struct rt_entry *rt)
+{
+   TRACE_ACTION("Delete route", rt);
+
+   if (rt->rt_metric < HOPCNT_INFINITY)
+   {
+      if ((rt->rt_state & (RTS_INTERNAL | RTS_EXTERNAL)) == 0)
+         (void) rtioctl(DELETE, &rt->rt_rt);
+   }
+a194 12
+   remque((struct qelem *)rt);
+   free((char *)rt);
+
+   return;
+
+} /* rtdelete() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+a220 31
+#else
+#if 0
+static void rtdeleteall(int sig)
+{
+   struct rthash *rh;
+   struct rt_entry *rt;
+   struct rthash *base = hosthash;
+   int doinghost = 1;
+
+again:
+   for (rh = base; rh < &base[ROUTEHASHSIZ]; rh++)
+   {
+      rt = rh->rt_forw;
+      for (; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+      {
+         if (rt->rt_state & RTS_INTERFACE || rt->rt_metric >= HOPCNT_INFINITY)
+            continue;
+
+         TRACE_ACTION("Delete route", rt);
+
+         if ((rt->rt_state & (RTS_INTERNAL|RTS_EXTERNAL)) == 0)
+            (void) socketioctl(*routedsock, SIOCDELRT, (char *)&rt->rt_rt);
+      }
+   }
+
+   if (doinghost)
+   {
+      doinghost = 0;
+      base = nethash;
+      goto again;
+   }
+a221 9
+   return;
+
+} /* rtdeleteall() */
+#endif
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+a230 78
+#else
+void rtinit(void)
+{
+   struct rthash *rh;
+
+   for (rh = nethash; rh < &nethash[ROUTEHASHSIZ]; rh++)
+      rh->rt_forw = rh->rt_back = (struct rt_entry *)rh;
+   for (rh = hosthash; rh < &hosthash[ROUTEHASHSIZ]; rh++)
+      rh->rt_forw = rh->rt_back = (struct rt_entry *)rh;
+
+   return;
+
+} /* rtinit() */
+
+#endif
+
+static int seqno;
+
+static int rtioctl(int action, struct rtuentry *ort)
+{
+        int r, retval;
+	struct {
+		struct rt_msghdr w_rtm;
+		struct sockaddr_in w_dst;
+		struct sockaddr w_gate;
+		struct sockaddr_in w_netmask;
+	} w;
+#define rtm w.w_rtm
+
+        r = socket(PF_ROUTE, SOCK_RAW, 0);
+        if (r < 0)
+            return (-1);
+
+	bzero(&w, sizeof(w));
+	rtm.rtm_msglen = sizeof(w);
+	rtm.rtm_version = RTM_VERSION;
+	rtm.rtm_type = (action == ADD ? RTM_ADD :
+				(action == DELETE ? RTM_DELETE : RTM_CHANGE));
+#undef rt_dst
+	rtm.rtm_flags = ort->rtu_flags;
+	rtm.rtm_seq = ++seqno;
+	rtm.rtm_addrs = RTA_DST|RTA_GATEWAY;
+	memcpy(&w.w_dst, &ort->rtu_dst, sizeof(w.w_dst));
+	memcpy(&w.w_gate, &ort->rtu_router, sizeof(w.w_gate));
+	w.w_dst.sin_family = AF_INET;
+	w.w_dst.sin_len = sizeof(w.w_dst);
+	w.w_gate.sa_family = AF_INET;
+	w.w_gate.sa_len = sizeof(w.w_gate);
+	if (rtm.rtm_flags & RTF_HOST) {
+		rtm.rtm_msglen -= sizeof(w.w_netmask);
+	} else {
+		register char *cp;
+		int len;
+
+		rtm.rtm_addrs |= RTA_NETMASK;
+		w.w_netmask.sin_addr.s_addr =
+			inet_maskof(w.w_dst.sin_addr.s_addr);
+		for (cp = (char *)(1 + &w.w_netmask.sin_addr);
+				    --cp > (char *) &w.w_netmask; )
+			if (*cp)
+				break;
+		len = cp - (char *)&w.w_netmask;
+		if (len) {
+			len++;
+			w.w_netmask.sin_len = len;
+			len = 1 + ((len - 1) | (sizeof(long) - 1));
+		} else
+			len = sizeof(long);
+		rtm.rtm_msglen -= (sizeof(w.w_netmask) - len);
+	}
+	retval = socketwrite(r, &w, rtm.rtm_msglen);
+	socketclose(r);
+	return (retval);
+}
+
+/******************************************************************************/
+
+/* EOF tables.c */
+@
+
+
+4.1.1.1
+log
+@Import from cleaned 360 CD
+@
+text
+@@

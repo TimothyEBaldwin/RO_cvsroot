@@ -1,0 +1,1000 @@
+head	1.5;
+access;
+symbols
+	HTMLLib-0_04:1.5
+	HTMLLib-0_03:1.5
+	HTMLLib-0_02:1.5
+	HTMLLib-0_01:1.4
+	ahodgkin_207release:1.4
+	ahodgkin_206release:1.3
+	ahodgkin_205release:1.3
+	ahodgkin_204release:1.3
+	ahodgkin_133beta:1.2.2.2
+	kbracey_126:1.2.2.2
+	kbracey_AW97patch:1.2.2.2
+	ahodgkin_AW97:1.2.2.2
+	kbracey_PreGordon:1.2.2.1
+	Web_bp:1.2
+	Web:1.2.0.2
+	ARTtmp_merge:1.1.2.2
+	ARTtmp:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2006.03.13.21.10.18;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	98.08.26.10.04.36;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.02.17.10.42.15;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.04.29.15.50.46;	author kbracey;	state Exp;
+branches
+	1.2.2.1;
+next	1.1;
+
+1.1
+date	97.04.08.10.26.42;	author kbracey;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.2.2.1
+date	97.05.30.10.03.12;	author kbracey;	state Exp;
+branches;
+next	1.2.2.2;
+
+1.2.2.2
+date	97.07.31.13.30.01;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+1.1.2.1
+date	97.04.08.10.26.43;	author kbracey;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	97.04.09.16.44.36;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  New build variants; minor API tweaks; const/restrict additions.
+Detail:
+  Builds Unicode versions as well as non-Unicode versions now, and
+  exports them. Required by March 2006 era Browse sources. API tweaks
+  including filling in more info fields with border widths. Tightened
+  up use of const/restrict in various interfaces.
+Admin:
+  Tested under Browse, new facilities work as expected. Builds all
+  four variants (non-Unicode/Unicode, application/module) from clean
+  and returns to clean state with !MkClean.
+
+Version 0.02. Tagged as 'HTMLLib-0_02'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * A simple memory usage debugging thingy
+ */
+
+/* #define DEBUG */  /* DEBUG off by default */
+#ifdef DEBUG
+#define MEMORY_DEBUG
+#endif
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "swis.h"
+#include "struct.h"
+#include "html2_ext.h"
+#include "internal.h"
+#ifdef MEMORY_DEBUG
+FILE *fp=NULL;
+#endif
+
+#ifdef MEMORY_DEBUG
+/* Included from the Aquarius sources - thanks for Neil K. */
+#include "get_fn_nam.c"
+#endif
+
+#define FRED 0x44455246u
+#define HTMG 0x474D5448u
+
+typedef struct MEMLIST {
+  unsigned int context;
+#ifdef MEMORY_DEBUG
+  char *allocated_in;
+#endif
+  struct MEMLIST *own;
+  struct MEMLIST *next;
+  unsigned int guard;
+} MemList, *MemListPtr;
+
+static MemList *main_memory=NULL;
+static unsigned int __html_memory_context=0;
+static unsigned int __html_next_context=1;
+
+static void html_mem_error(char *s)
+{
+    _kernel_oserror e;
+    e.errnum = 1;
+    sprintf(e.errmess, "Internal error: %s", s);
+    _swix(Wimp_ReportError, _INR(0,2), &e, 3, "HTMLLib");
+}
+
+char *__html_malloc(size_t bytes, size_t size)
+{
+#ifdef MEMORY_DEBUG
+char *fn_name;
+#endif
+char *ptr, *p;
+size_t real_bytes;
+MemList *memlist;
+
+/* #define ROUNDTNEXTWORD */
+
+#ifdef ROUNDTONEXTWORD
+    real_bytes=((bytes / 8)+2)*8;
+#else
+#   ifdef ROUNDTOWORD
+        real_bytes=((bytes / 8)+1)*8;
+#else
+#       ifdef ADDONEBYTE
+            real_bytes=bytes+1;
+#       else
+            real_bytes=bytes;
+#       endif  /* ADDONEBYTE */
+#    endif /* ROUNDTOWORD */
+#endif /* ROUNDTONEXTWORD */
+
+#ifdef MEMORY_DEBUG
+  Printf("Allocating memory trace structure (%d, %d)\n",bytes,size);
+#endif
+
+memlist=calloc(sizeof(MemList) + (real_bytes*size), 1);
+if (memlist==NULL) return NULL;
+memlist->next=main_memory;
+if (memlist->next) memlist->next->own=memlist;
+main_memory=memlist;
+
+memlist->context=__html_memory_context;
+
+#ifdef MEMORY_DEBUG
+Printf("Rounding to size and adding bits\n");
+
+if (fp==NULL)
+#ifdef __riscos
+   fp=fopen("adfs::4.$.mallocop","w");
+#else
+   fp=fopen("./malloc.output","w");
+#endif
+#endif /* MEMORY_DEBUG */
+
+
+   ptr=(char *)(memlist + 1);
+
+   p=ptr+(real_bytes*size);
+
+   memlist->guard=HTMG;
+#ifdef MEMORY_DEBUG
+   fn_name = mem__get_fn_name(CALLER_FP());
+   memlist->allocated_in=calloc(strlen(fn_name)+1,1);
+   p=memlist->allocated_in;
+   while(*fn_name != '\0') {
+     *p=*fn_name;
+     p++; fn_name++;
+   }
+   *p='\0';
+#endif
+
+#ifdef MEMORY_DEBUG
+   fprintf(fp,"%s asked for %d bytes (allocated: %d at %x)\n",
+       memlist->allocated_in, bytes*size, (real_bytes*size),
+       (int)ptr);
+   Printf("%s asked for %d bytes (allocated: %d at %x)\n",
+       memlist->allocated_in, bytes*size, (real_bytes*size),
+       (int)ptr);
+#endif
+
+
+   return ptr;
+}
+
+#ifdef MEMORY_DEBUG
+#include "swis.h"
+#endif
+
+static void __html_memlist_free(MemList *memlist)
+{
+   memlist->guard = FRED;
+  if (memlist->own == NULL) {
+    main_memory=memlist->next;
+    if (memlist->next != NULL) memlist->next->own=NULL;
+  } else {
+    memlist->own->next=memlist->next;
+    if (memlist->next != NULL) memlist->next->own=memlist->own;
+  }
+
+#ifdef MEMORY_DEBUG
+  _swix(OS_WriteI+4, 0);
+  _swix(OS_WriteI+31, 0);
+  _swix(OS_WriteI+0, 0);
+  _swix(OS_WriteI+0, 0);
+#endif
+#ifdef MEMORY_DEBUG
+  free(memlist->allocated_in);
+#endif
+  free(memlist);
+#ifdef MEMORY_DEBUG
+  _swix(OS_WriteI+5, 0);
+#endif
+}
+
+void __html_free(void *ptr, int free_all)
+{
+#ifdef MEMORY_DEBUG
+char *fn_name;
+#endif
+MemList *memlist, *next;
+
+   if (!ptr)
+     return;
+
+#ifdef MEMORY_DEBUG
+   Printf("-");
+#endif
+
+#ifdef MEMORY_DEBUG
+   fn_name = mem__get_fn_name (CALLER_FP());
+#endif
+
+   memlist=main_memory;
+#ifdef MEMORY_DEBUG
+   Printf("%s asked for free: Finding Memory block ", fn_name);
+#endif
+
+   while(memlist != NULL) {
+     if ((char *)(memlist + 1) == ptr) break;
+     memlist=memlist->next;
+#ifdef DEBUG
+     Printf(".");
+#endif
+   }
+
+   if (memlist==NULL) {
+     char buf[80];
+#ifdef MEMORY_DEBUG
+     fprintf(fp,"%s asked to free %x - not found!\n", fn_name, (int)ptr);
+
+#endif
+     sprintf(buf, "Asked to free unknown block %p (context %d)\n", ptr, ((int*)ptr)[-4]);
+     html_mem_error(buf);
+
+     return;
+   }
+
+   if (memlist->guard != HTMG)
+   {
+       html_mem_error("Guard word corrupted");
+       return;
+   }
+
+#ifdef MEMORY_DEBUG
+   Printf(" found ");
+
+   fprintf(fp,"%s asked to free %x (allocated in %s - guardword=\"%4s\")(%d)\n",
+       fn_name, (int)ptr, memlist->allocated_in, (char *)&memlist->guard, free_all);
+#endif
+
+  if (free_all==0) {
+    __html_memlist_free(memlist);
+
+#ifdef MEMORY_DEBUG
+    Printf("and free'ed\n");
+#endif
+  } else {
+#ifdef MEMORY_DEBUG
+    fprintf(fp,"Mass free called for:\n");
+#endif
+    free_all=memlist->context;
+    /*Printf("MASS FREEING context %d\n", free_all);*/
+    memlist=main_memory;
+    while (memlist != NULL) {
+      if (memlist->context==free_all) {
+        next=memlist->next;
+#ifdef MEMORY_DEBUG
+        fprintf(fp,"freeing 0x%x (allocated at 0x%x) C=%4d\n",
+          (int)memlist->start,
+          (int)memlist,
+          memlist->context);
+#endif
+        __html_memlist_free(memlist);
+        memlist=next;
+      } else memlist=memlist->next;
+    }
+#ifdef MEMORY_DEBUG
+    Printf("Mass free done\n");
+#endif
+  }
+}
+
+unsigned int __html_return_context(void *block)
+{
+  MemList * header = ((MemList *) block) - 1;
+
+  /* Return 0 if this doesn't seem to be an HtmlAlloc'd block
+   * (valid context numbers start at 1, hence returning 0 to
+   * indicate failure is OK)
+   */
+
+  if (header->guard != HTMG) return 0;
+
+  return header->context;
+}
+
+#ifdef MEMORY_DEBUG
+void __html_memory_list(void)
+{
+MemList *m = main_memory;
+unsigned int count=0;
+
+    while(m != NULL) {
+      fprintf(fp,"%30s\t0x%6x\t%4d\t%2d\n",
+         m->allocated_in,
+         (int)m->start,
+         (int)m->guard - (int) m->start,
+         m->context);
+
+      Printf("%30s\t0x%6x\t%4d\n",
+         m->allocated_in,
+         (int)m->start,
+         (int)m->guard - (int) m->start);
+      count=count+((int)m->guard - (int) m->start);
+      m=m->next;
+    }
+
+    fprintf(fp,"\nTotal: %d\n", (int) count);
+    Printf("\nTotal: %d\n", (int) count);
+}
+#endif
+
+void __html_set_memory_context(unsigned int context)
+{
+   __html_memory_context=context;
+}
+
+void __html_set_memory_context_from_block(const void * block)
+{
+    __html_memory_context=((MemList *)block)[-1].context;
+}
+
+unsigned int __html_memory_init(void)
+{
+   return __html_memory_context=__html_next_context++;
+}
+@
+
+
+1.4
+log
+@Whilst I appreciated HTMLLib's memory systems telling me what was going
+wrong, I was less than impressed with the spelling of "corrupted"...
+@
+text
+@d306 1
+a306 1
+void __html_set_memory_context_from_block(void *block)
+@
+
+
+1.3
+log
+@Web branch merged
+@
+text
+@d218 1
+a218 1
+       html_mem_error("Guard word corruptted");
+@
+
+
+1.2
+log
+@Merged in ARTtmp_merge
+@
+text
+@d15 1
+a15 42
+/* -*-C-*-
+ *
+ * $Version: networking $
+ *
+ * $Source: /projects2/renaissa/cvsroot/ART/Web/HTMLLib/c/Attic/malloc,v $
+ *
+ * $Log: malloc,v $
+ * Revision 1.1.2.2  1997/04/09 16:44:36  kbracey
+ * Spacing rules drastically improved. Major error in memory context handling
+ * fixed. Bug in __html_strip_lf fixed.
+ *
+ * Revision 1.1.2.1  1997/04/08 10:26:43  kbracey
+ * Initial revision
+ *
+ * Revision 1.6  96/11/28  14:55:09  kbracey
+ * Moved memlist structure into head of allocated block. Won't
+ * attempt to find caller name unless MEMORY_DEBUG on.
+ * Stopped doing VDU 4,31,0,0,5 unless MEMORY_DEBUG on.
+ *
+ * Revision 1.5  95/10/30  10:55:13  pwain
+ * Removed compliler warnings by moving a few
+ * variable declarations inside a #ifdef in the
+ * memory allocation listing code.
+ *
+ * Revision 1.4  95/10/30  10:27:33  pwain
+ * Added check to ensure memory structure returned via
+ * malloc() call is now a valid pointer.
+ *
+ * Revision 1.3  95/10/18  10:42:29  pwain
+ * Changed __html_free() to have and extra parameter
+ * and if this is >= 1 all memory associated with the
+ * same context as the pointer passed in is zapped
+ * with free().
+ *
+ * Revision 1.2  95/10/16  08:12:03  pwain
+ * Added lots more debugging code.
+ *
+ * Revision 1.1  95/10/12  12:46:48  pwain
+ * Initial revision
+ *
+ *
+ *
+d44 1
+a44 1
+  int  context;
+d251 1
+a251 1
+	__html_memlist_free(memlist);
+d261 14
+d304 5
+@
+
+
+1.2.2.1
+log
+@Added HtmlMalloc and HtmlFree client calls
+@
+text
+@d15 42
+a56 1
+/*
+d85 1
+a85 1
+  unsigned int context;
+a330 5
+}
+
+void __html_set_memory_context_from_block(void *block)
+{
+    __html_memory_context=((MemList *)block)[-1].context;
+@
+
+
+1.2.2.2
+log
+@Added HtmlReturnContext (__html_return_context) to get the context of a
+block of memory (e.g. an HStream structure). This allows clients to check
+if some particular block belongs to a stream that is about to be freed,
+say, and take appropriate action before the freeing. Merged in a few
+changes by Kevin Bracey to help with vertical white space problems,
+mostly involving SCRIPT tags - there was also a bug in BASE which didn't
+check for an HREF before trying to read the attributes value, so broken
+HTML like <BASE FONT=1> would stop all subsequent HREFs from being
+correctly relativised.
+@
+text
+@d251 1
+a251 1
+        __html_memlist_free(memlist);
+a258 14
+}
+
+unsigned int __html_return_context(void *block)
+{
+  MemList * header = ((MemList *) block) - 1;
+
+  /* Return 0 if this doesn't seem to be an HtmlAlloc'd block
+   * (valid context numbers start at 1, hence returning 0 to
+   * indicate failure is OK)
+   */
+
+  if (header->guard != HTMG) return 0;
+
+  return header->context;
+@
+
+
+1.1
+log
+@file malloc was initially added on branch ARTtmp.
+@
+text
+@d1 336
+@
+
+
+1.1.2.1
+log
+@Initial revision
+@
+text
+@a0 333
+/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* -*-C-*-
+ *
+ * $Version: networking $
+ *
+ * $Source: /ax/networking:Phileas/HTML/c/malloc: $
+ *
+ * $Log:	malloc,v $
+ * Revision 1.6  96/11/28  14:55:09  kbracey
+ * Moved memlist structure into head of allocated block. Won't
+ * attempt to find caller name unless MEMORY_DEBUG on.
+ * Stopped doing VDU 4,31,0,0,5 unless MEMORY_DEBUG on.
+ *
+ * Revision 1.5  95/10/30  10:55:13  pwain
+ * Removed compliler warnings by moving a few
+ * variable declarations inside a #ifdef in the
+ * memory allocation listing code.
+ *
+ * Revision 1.4  95/10/30  10:27:33  pwain
+ * Added check to ensure memory structure returned via
+ * malloc() call is now a valid pointer.
+ *
+ * Revision 1.3  95/10/18  10:42:29  pwain
+ * Changed __html_free() to have and extra parameter
+ * and if this is >= 1 all memory associated with the
+ * same context as the pointer passed in is zapped
+ * with free().
+ *
+ * Revision 1.2  95/10/16  08:12:03  pwain
+ * Added lots more debugging code.
+ *
+ * Revision 1.1  95/10/12  12:46:48  pwain
+ * Initial revision
+ *
+ *
+ *
+ * A simple memory usage debugging thingy
+ */
+
+/* #define DEBUG */  /* DEBUG off by default */
+#ifdef DEBUG
+#define MEMORY_DEBUG
+#endif
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#ifdef MEMORY_DEBUG
+FILE *fp=NULL;
+#endif
+
+#ifdef MEMORY_DEBUG
+/* Included from the Aquarius sources - thanks for Neil K. */
+#include "get_fn_nam.c"
+#endif
+
+#define MEMLISTINBLOCK
+
+typedef struct MEMLIST {
+  int  context;
+#ifndef MEMLISTINBLOCK
+  char *start;
+#endif
+  char *guard;
+#ifdef MEMORY_DEBUG
+  char *allocated_in;
+#endif
+  struct MEMLIST *own;
+  struct MEMLIST *next;
+} MemList, *MemListPtr;
+
+static MemList *main_memory=NULL;
+unsigned int __html_memory_context=0;
+
+char *__html_malloc(size_t bytes, size_t size)
+{
+#ifdef MEMORY_DEBUG
+char *fn_name;
+#endif
+char *ptr, *p;
+size_t real_bytes;
+MemList *memlist;
+
+/* #define ROUNDTNEXTWORD */
+
+#ifdef ROUNDTONEXTWORD
+    real_bytes=((bytes / 8)+2)*8;
+#else
+#   ifdef ROUNDTOWORD
+        real_bytes=((bytes / 8)+1)*8;
+#else
+#       ifdef ADDONEBYTE
+            real_bytes=bytes+1;
+#       else
+            real_bytes=bytes;
+#       endif  /* ADDONEBYTE */
+#    endif /* ROUNDTOWORD */
+#endif /* ROUNDTONEXTWORD */
+
+#ifdef MEMORY_DEBUG
+  Printf("Allocating memory trace structure (%d, %d)\n",bytes,size);
+#endif
+
+#ifdef MEMLISTINBLOCK
+memlist=calloc(sizeof(MemList) + (real_bytes*size) + 16, 1);
+#else
+memlist=calloc(sizeof(MemList), 1);
+#endif
+if (memlist==NULL) return NULL;
+memlist->next=main_memory;
+if (memlist->next) memlist->next->own=memlist;
+main_memory=memlist;
+
+memlist->context=__html_memory_context;
+
+#ifdef MEMORY_DEBUG
+Printf("Rounding to size and adding bits\n");
+
+if (fp==NULL)
+#ifdef __riscos
+   fp=fopen("adfs::4.$.mallocop","w");
+#else
+   fp=fopen("./malloc.output","w");
+#endif
+#endif /* MEMORY_DEBUG */
+
+
+#ifdef MEMLISTINBLOCK
+   ptr=(char *)(memlist + 1);
+#else
+   ptr=calloc((real_bytes*size)+16,sizeof(char));
+
+   if (ptr==NULL) {
+#ifdef MEMORY_DEBUG
+     Printf("Failed to allocate memory - returning NULL\n");
+#endif
+     __html_memlist_free(memlist);
+     return NULL;
+   }
+#endif /* MEMLISTINBLOCK */
+
+   p=ptr+(real_bytes*size);
+
+#ifndef MEMLISTINBLOCK
+   memlist->start=ptr;
+#endif
+   memlist->guard=p;
+   p[0]='H';
+   p[1]='T';
+   p[2]='M';
+   p[3]='\0';
+#ifdef MEMORY_DEBUG
+   fn_name = mem__get_fn_name(CALLER_FP());
+   memlist->allocated_in=calloc(strlen(fn_name)+1,1);
+   p=memlist->allocated_in;
+   while(*fn_name != '\0') {
+     *p=*fn_name;
+     p++; fn_name++;
+   }
+   *p='\0';
+   p=memlist->guard;
+#endif
+
+#ifdef MEMORY_DEBUG
+   fprintf(fp,"%s asked for %d bytes (allocated: %d at %x (%x))\n",
+       memlist->allocated_in, bytes*size, (real_bytes*size),
+       (int)ptr, (int)p);
+   Printf("%s asked for %d bytes (allocated: %d at %x (%x))\n",
+       memlist->allocated_in, bytes*size, (real_bytes*size),
+       (int)ptr, (int)p);
+#endif
+
+
+   return ptr;
+}
+
+#ifdef MEMORY_DEBUG
+#include "swis.h"
+#endif
+
+void __html_memlist_free(MemList *memlist)
+{
+  if (memlist->own == NULL) {
+    main_memory=memlist->next;
+    if (memlist->next != NULL) memlist->next->own=NULL;
+  } else {
+    memlist->own->next=memlist->next;
+    if (memlist->next != NULL) memlist->next->own=memlist->own;
+  }
+#ifdef MEMORY_DEBUG
+  _swix(OS_WriteI+4, 0);
+  _swix(OS_WriteI+31, 0);
+  _swix(OS_WriteI+0, 0);
+  _swix(OS_WriteI+0, 0);
+#endif
+#ifndef MEMLISTINBLOCK
+  free(memlist->start);
+#endif
+#ifdef MEMORY_DEBUG
+  free(memlist->allocated_in);
+#endif
+  free(memlist);
+#ifdef MEMORY_DEBUG
+  _swix(OS_WriteI+5, 0);
+#endif
+}
+
+void __html_free(void *ptr, int free_all)
+{
+#ifdef MEMORY_DEBUG
+char *fn_name;
+#endif
+MemList *memlist, *next;
+
+   if (!ptr)
+     return;
+
+#ifdef MEMORY_DEBUG
+   Printf("-");
+#endif
+
+#ifdef MEMORY_DEBUG
+   fn_name = mem__get_fn_name (CALLER_FP());
+#endif
+
+   memlist=main_memory;
+#ifdef MEMORY_DEBUG
+   Printf("%s asked for free: Finding Memory block ", fn_name);
+#endif
+
+   while(memlist != NULL) {
+#ifdef MEMLISTINBLOCK
+     if ((char *)(memlist + 1) == ptr) break;
+#else
+     if (memlist->start==(char *)ptr) break;
+#endif
+     memlist=memlist->next;
+#ifdef DEBUG
+     Printf(".");
+#endif
+   }
+
+   if (memlist==NULL) {
+#ifdef MEMORY_DEBUG
+     fprintf(fp,"%s asked to free %x - not found!\n", fn_name, (int)ptr);
+
+#endif
+     printf("ERROR - cannot free memory!\n");
+
+     return;
+   }
+
+#ifdef MEMORY_DEBUG
+   Printf(" found ");
+
+   fprintf(fp,"%s asked to free %x (allocated in %s - guardword=\"%s\")(%d)\n",
+       fn_name, (int)ptr, memlist->allocated_in, memlist->guard, free_all);
+#endif
+
+  if (free_all==0) {
+    __html_memlist_free(memlist);
+
+#ifdef MEMORY_DEBUG
+    Printf("and free'ed\n");
+#endif
+  } else {
+#ifdef MEMORY_DEBUG
+    fprintf(fp,"Mass free called for:\n");
+#endif
+    free_all=memlist->context;
+    memlist=main_memory;
+    while (memlist != NULL) {
+      if (memlist->context==free_all) {
+        next=memlist->next;
+#ifdef MEMORY_DEBUG
+        fprintf(fp,"freeing 0x%x (allocated at 0x%x) C=%4d\n",
+          (int)memlist->start,
+          (int)memlist,
+          memlist->context);
+#endif
+	__html_memlist_free(memlist);
+        memlist=next;
+      } else memlist=memlist->next;
+    }
+#ifdef MEMORY_DEBUG
+    Printf("Mass free done\n");
+#endif
+  }
+}
+
+void __html_memory_list(void)
+{
+#ifdef MEMORY_DEBUG
+MemList *m = main_memory;
+unsigned int count=0;
+
+    while(m != NULL) {
+      fprintf(fp,"%30s\t0x%6x\t%4d\t%2d\n",
+         m->allocated_in,
+         (int)m->start,
+         (int)m->guard - (int) m->start,
+         m->context);
+
+      Printf("%30s\t0x%6x\t%4d\n",
+         m->allocated_in,
+         (int)m->start,
+         (int)m->guard - (int) m->start);
+      count=count+((int)m->guard - (int) m->start);
+      m=m->next;
+    }
+
+    fprintf(fp,"\nTotal: %d\n", (int) count);
+    Printf("\nTotal: %d\n", (int) count);
+#endif
+}
+
+void __html_memory_init(void)
+{
+   __html_memory_context++;
+}
+@
+
+
+1.1.2.2
+log
+@Spacing rules drastically improved. Major error in memory context handling
+fixed. Bug in __html_strip_lf fixed.
+@
+text
+@d19 1
+a19 5
+ * $Source: /projects2/renaissa/cvsroot/ART/Web/HTMLLib/c/Attic/malloc,v $
+ *
+ * $Log: malloc,v $
+ * Revision 1.1.2.1  1997/04/08 10:26:43  kbracey
+ * Initial revision
+d21 1
+a60 4
+#include "swis.h"
+#include "struct.h"
+#include "html2_ext.h"
+#include "internal.h"
+d70 1
+a70 2
+#define FRED 0x44455246u
+#define HTMG 0x474D5448u
+d74 4
+a82 1
+  unsigned int guard;
+d86 1
+a86 10
+static unsigned int __html_memory_context=0;
+static unsigned int __html_next_context=1;
+
+static void html_mem_error(char *s)
+{
+    _kernel_oserror e;
+    e.errnum = 1;
+    sprintf(e.errmess, "Internal error: %s", s);
+    _swix(Wimp_ReportError, _INR(0,2), &e, 3, "HTMLLib");
+}
+d117 5
+a121 1
+memlist=calloc(sizeof(MemList) + (real_bytes*size), 1);
+d141 1
+d143 11
+d157 8
+a164 1
+   memlist->guard=HTMG;
+d174 1
+d178 1
+a178 1
+   fprintf(fp,"%s asked for %d bytes (allocated: %d at %x)\n",
+d180 2
+a181 2
+       (int)ptr);
+   Printf("%s asked for %d bytes (allocated: %d at %x)\n",
+d183 1
+a183 1
+       (int)ptr);
+d194 1
+a194 1
+static void __html_memlist_free(MemList *memlist)
+a195 1
+   memlist->guard = FRED;
+a202 1
+
+d209 3
+d245 1
+d247 3
+a256 1
+     char buf[80];
+d261 1
+a261 2
+     sprintf(buf, "Asked to free unknown block %p (context %d)\n", ptr, ((int*)ptr)[-4]);
+     html_mem_error(buf);
+a265 6
+   if (memlist->guard != HTMG)
+   {
+       html_mem_error("Guard word corruptted");
+       return;
+   }
+
+d269 2
+a270 2
+   fprintf(fp,"%s asked to free %x (allocated in %s - guardword=\"%4s\")(%d)\n",
+       fn_name, (int)ptr, memlist->allocated_in, (char *)&memlist->guard, free_all);
+a283 1
+    /*Printf("MASS FREEING context %d\n", free_all);*/
+a303 1
+#ifdef MEMORY_DEBUG
+d306 1
+a326 1
+}
+a327 4
+
+void __html_set_memory_context(unsigned int context)
+{
+   __html_memory_context=context;
+d330 1
+a330 1
+unsigned int __html_memory_init(void)
+d332 1
+a332 1
+   return __html_memory_context=__html_next_context++;
+@

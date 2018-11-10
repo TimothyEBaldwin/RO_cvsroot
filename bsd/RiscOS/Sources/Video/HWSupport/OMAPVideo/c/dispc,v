@@ -1,0 +1,1994 @@
+head	1.12;
+access;
+symbols
+	OMAPVideo-0_41:1.12
+	OMAPVideo-0_40:1.11
+	OMAPVideo-0_39:1.11
+	OMAPVideo-0_38:1.11
+	OMAPVideo-0_37:1.11
+	OMAPVideo-0_36:1.11
+	OMAPVideo-0_35:1.11
+	OMAPVideo-0_34:1.11
+	OMAPVideo-0_33:1.10
+	OMAPVideo-0_32:1.10
+	OMAPVideo-0_31:1.10
+	OMAPVideo-0_30:1.10
+	OMAPVideo-0_29:1.10
+	OMAPVideo-0_28:1.10
+	OMAPVideo-0_27:1.9
+	OMAPVideo-0_26:1.9
+	OMAPVideo-0_25:1.9
+	OMAPVideo-0_24:1.9
+	OMAPVideo-0_23:1.9
+	OMAPVideo-0_22:1.9
+	OMAPVideo-0_21:1.8
+	OMAPVideo-0_20:1.8
+	OMAPVideo-0_19:1.7
+	OMAPVideo-0_18:1.6
+	OMAPVideo-0_17:1.6
+	OMAPVideo-0_16:1.6
+	OMAPVideo-0_15:1.6
+	OMAPVideo-0_14:1.6
+	OMAPVideo-0_13:1.6
+	OMAPVideo-0_12:1.5
+	OMAPVideo-0_11:1.5
+	OMAPVideo-0_10:1.4
+	OMAPVideo-0_09:1.4
+	OMAPVideo-0_08:1.4
+	OMAPVideo-0_07:1.3
+	OMAPVideo-0_06:1.3
+	OMAPVideo-0_05:1.3
+	OMAPVideo-0_04:1.3
+	OMAPVideo-0_03:1.2
+	OMAPVideo-0_02:1.1
+	OMAPVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.12
+date	2018.05.31.21.48.53;	author jlee;	state Exp;
+branches;
+next	1.11;
+commitid	qHkabDo5zjgySuEA;
+
+1.11
+date	2015.05.17.17.50.08;	author jlee;	state Exp;
+branches;
+next	1.10;
+commitid	J3i0xRSaySaJePly;
+
+1.10
+date	2013.12.15.22.56.06;	author jlee;	state Exp;
+branches;
+next	1.9;
+commitid	4M7nRqPE9VC3Ahhx;
+
+1.9
+date	2012.06.04.23.54.21;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	FoeSemiFbzb4Sr7w;
+
+1.8
+date	2012.05.06.09.20.42;	author rsprowson;	state Exp;
+branches;
+next	1.7;
+commitid	Dmkx2IqcO2G8YD3w;
+
+1.7
+date	2012.05.06.09.16.44;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	imAmvVvRmuLKWD3w;
+
+1.6
+date	2011.10.23.21.01.50;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	0rwNv0ztfd3f9wEv;
+
+1.5
+date	2011.03.19.18.19.47;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	kv85AixjkSL8gucv;
+
+1.4
+date	2010.10.31.20.17.57;	author jlee;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2010.05.20.20.05.44;	author jlee;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2010.04.22.20.42.57;	author jlee;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2010.02.28.19.01.15;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.12
+log
+@Big refactor, introduce GraphicsV overlay API support
+Detail:
+  This change introduces initial support for the GraphicsV overlay API.
+  RGB & YUV overlays are supported, along with rotation and scaling.
+  Vertical flipping isn't supported yet, and there are still a number of bugs to track down, along with some potential improvements.
+  The code has also been refactored significantly, in an attempt to protect all critical state with spinlocks/mutexes (as appropriate), and to reduce the number of globals so that it's easier to see what's touching what. Previously very little locking was performed, which could lead to issues if VSyncs or synclost interrupts occurred during certain operations. Now, the data should be structured in such a way that this shouldn't cause problems.
+  Notable things:
+  * State which needs to be writable from interrupt handlers is protected by spinlocks
+  * State which needs to be readable from interrupt handlers is protected by reader-writer spinlocks
+  * State which doesn't need to be accessed from interrupt handlers is unprotected (mutexes can be introduced in the future to make the code SMP-safe)
+  * Using non-alpha screen modes for the desktop will currently result in only "basic" overlays being supported (i.e. overlays which appear ontop of the desktop). In some cases this could be improved by falling back to a software pointer, but for now the only way to get Z-Order overlays is to use a screen mode with an alpha channel.
+  * Memory allocation for overlays is abstracted via the buffer interface (h/buffer). This has three implementations: basic buffers for untransformed overlays, VRFB-transformed buffers for OMAP3, and TILER-transformed buffers for OMAP4.
+  * Ultimately all overlay memory is allocated as physically contiguous pages within a PMP - although since TILER contains its own MMU this isn't strictly necessary on OMAP4
+  * Overlay memory is mapped as write-through cacheable for CPU access; experimentation with different cache policies has yet to be performed. However a potential future optimisation would be to perform lazy unmapping of overlay buffers, reducing the map/unmap overhead in well-behaved code which only maps buffers when they're needed
+Admin:
+  Tested on BB-xM, Pandaboard
+
+
+Version 0.41. Tagged as 'OMAPVideo-0_41'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include <string.h>
+#include "Global/RISCOS.h"
+#include "Global/HALEntries.h"
+#include "Global/GraphicsV.h"
+#include "swis.h"
+
+#include "DebugLib/DebugLib.h"
+
+#include "dispc.h"
+#include "dsi.h"
+#include "graphicsv.h"
+#include "dss.h"
+#include "regs.h"
+#include "consts.h"
+#include "utils.h"
+#include "vars.h"
+#include "globals.h"
+
+/* Scaling coefficients, from the TRM (spruf98d, section 15.6.1.3.5)
+   The values are packed into the registers as follows:
+   * The H registers contain HC0,HC1,HC2,HC3 (low byte to high)
+   * The HV registers contain HC4,VC0,VC1,VC2
+   * The V registers contain VC00, VC22 (which correspond to HC0 and HC4)
+   Corrections have been applied to make sure all table rows sum to 128
+*/
+
+static const int8_t upscale_3tap[8][3] =
+{
+/*	VC2	VC1	VC0 */
+	{0,	(int8_t)128,0}, /* Note: Although 128 causes an overflow, apparently that's OK! */
+	{3,	123,	2},
+	{12,	111,	5},
+	{32,	89,	7},
+	{0,	64,	64},
+	{7,	89,	32},
+	{5,	111,	12},
+	{2,	123,	3},
+};
+
+static const int8_t upscale_5tap[8][5] =
+{
+/* HC4/VC22	HC3/VC2	HC2/VC1	HC1/VC0	HC0/VC00 */
+	{0,	0,	(int8_t)128,0,	0},
+	{-1,	13,	124,	-8,	0},
+	{-2,	30,	112,	-11,	-1},
+	{-5,	51,	95,	-11,	-2},
+	{0,	-9,	73,	73,	-9},
+	{-2,	-11,	95,	51,	-5},
+	{-1,	-11,	112,	30,	-2},
+	{0,	-8,	124,	13,	-1},
+};
+
+static const int8_t downscale_3tap[8][3] =
+{
+/*	VC2	VC1	VC0 */
+	{36,	56,	36},
+	{40,	57,	31},
+	{45,	56,	27},
+	{50,	55,	23},
+	{18,	55,	55},
+	{23,	55,	50},
+	{27,	56,	45},
+	{31,	57,	40},
+};
+
+static const int8_t downscale_5tap[8][5] =
+{
+/* HC4/VC22	HC3/VC2	HC2/VC1	HC1/VC0	HC0/VC00 */
+	{0,	36,	56,	36,	0},
+	{4,	40,	55,	31,	-2},
+	{8,	44,	54,	27,	-5},
+	{12,	48,	53,	22,	-7},
+	{-9,	17,	52,	51,	17},
+	{-7,	22,	53,	48,	12},
+	{-5,	27,	54,	44,	8},
+	{-2,	31,	55,	40,	4},
+};
+
+/* For each register, for each 3/5 tap config, and whether it's H or V scaling, the byte offsets within the above table rows to grab the data from */
+static const uint32_t h_coefficient_offsets[3] = { /* 5-tap only */
+	0x01020304, /* H */
+	0xffffff00, /* HV */
+	0xffffffff, /* V */
+};
+
+static const uint32_t v_coefficient_offsets[2][3] =
+{
+	{ /* 3-tap */
+		0xffffffff, /* H */
+		0x000102ff, /* HV */
+		0xffffffff, /* V */
+	},
+	{ /* 5-tap */
+		0xffffffff, /* H */
+		0x010203ff, /* HV */
+		0xffff0004, /* V */
+	},
+};
+
+static uint32_t grab_coef_bytes(uint32_t offsets,const uint8_t *bytes)
+{
+	uint32_t out=0;
+	for(int byte=0;byte<4;byte++)
+	{
+		out = out<<8;
+		uint32_t offset = offsets>>24;
+		if(offset != 0xff)
+			out |= bytes[offset];
+		offsets = offsets<<8;
+	}
+	return out;
+}
+
+void dispc_program_vid_scale_coefficients(volatile struct fir_coef *coef, volatile uint32_t *coef_v,int h_upscale,int v_upscale,int v5tap)
+{
+	const uint32_t *h_coef_offsets = h_coefficient_offsets;
+	const uint32_t *v_coef_offsets = v_coefficient_offsets[v5tap];
+	const uint8_t *h_coef_table = (const uint8_t *) (h_upscale?upscale_5tap:downscale_5tap);
+	const uint8_t *v_coef_table = (v_upscale?(v5tap?(const uint8_t *) upscale_5tap:(const uint8_t *) upscale_3tap):(v5tap?(const uint8_t *) downscale_5tap:(const uint8_t *) downscale_3tap));
+	for(int phase=0;phase<8;phase++)
+	{
+		coef[phase].h = grab_coef_bytes(h_coef_offsets[0],h_coef_table);
+		coef[phase].hv = grab_coef_bytes(h_coef_offsets[1],h_coef_table) | grab_coef_bytes(v_coef_offsets[1],v_coef_table);
+		if(v5tap)
+		{
+			coef_v[phase] = grab_coef_bytes(v_coef_offsets[2],v_coef_table);
+			v_coef_table += 5;
+		}
+		else
+			v_coef_table += 3;
+		h_coef_table += 5;
+	}
+}
+
+static bool dispc_get_lloverlaycfg(const overlaycfg_t *o,lloverlaycfg_t *ll,const modelocked_t *modelocked,const irqlocked_t *irqlocked)
+{
+	if((o->target == TARGET_NONE) || !(o->ba) || !(o->enabled))
+		return false;
+	const irqlocked_head_t *head = &irqlocked->heads[o->target];
+	const modelocked_head_t *state = &modelocked->heads[o->target];
+	if(head->blanked || !state->enabled)
+		return false;
+	uint32_t interlaceoffset = (state->interlaced?o->stride:0);
+	int32_t x = o->x + state->x;
+	int32_t y = o->y + state->y;
+	/* Calculate clipping rectangle */
+	int32_t clip[4];
+	uint8_t interlace = (interlaceoffset ? 1 : 0);
+	clip[0] = MAX(x+o->clip[0],0);
+	clip[1] = MAX(y+o->clip[1],0);
+	clip[2] = MIN(x+o->clip[2],state->mode.width);
+	clip[3] = MIN(y+o->clip[3],state->mode.height << interlace);
+	if (o->desktopclip)
+	{
+		clip[0] = MAX(clip[0],state->x);
+		clip[1] = MAX(clip[1],state->y);
+		clip[2] = MIN(clip[2],state->x+state->dw);
+		clip[3] = MIN(clip[3],state->y+state->dh);
+	}
+	if ((clip[0] >= clip[2]) || (clip[1] >= clip[3]))
+		return false;
+	/* Crop to screen */
+	int32_t dispw = o->scaled_w;
+	int32_t disph = o->scaled_h;
+	if ((dispw <= 0) || (disph <= 0))
+		return false;
+	int32_t bufw = o->buf_w;
+	int32_t bufh = o->buf_h;
+	int32_t fir_x = CALC_FIR(bufw,dispw);
+	int32_t fir_y = CALC_FIR(bufh,disph);
+	int32_t accui_x = 0;
+	int32_t accui_y = 0;
+	uint32_t ba_x_offset = 0;
+	uint32_t ba_y_offset = 0;
+	uint32_t bpp = pixel_format_bpp[o->format];
+	uint32_t alignment = buffer_alignment_pixels[o->format];
+	uint8_t extra_flags = headattrs[o->target].formats[o->format].extra_flags;
+	/* YUV with 90/270 rotation needs to be treated as 32bpp for some of these adjustments to be correct */
+	bool awkward_yuv = (o->rotation & 1) && (bpp==16) && (alignment==1);
+	if(awkward_yuv)
+	{
+		bpp = 32;
+		alignment = 0; /* Also means we don't have to worry about X alignment */
+	}
+	int32_t excess = clip[0]-x;
+	if(excess > 0)
+	{
+		/* FIR register gives number of buffer pixels per screen pixel
+		   So we can easily use it to convert screen pixels (x) back to corresponding number of buffer pixels
+		   The low bits of the result can be used to generate the accumulator initialisation value */
+		accui_x = excess*fir_x;
+		int32_t crop = accui_x >> 10;
+		/* If cropping would result in an unaligned buffer, increase the amount we're cropping by, while still maintaining the position of each pixel
+		   This will result in column(s) being lost from the left of the screen */
+		int32_t x2=clip[0];
+		while (crop & alignment)
+		{
+			x2++;
+			excess++;
+			accui_x = excess*fir_x;
+			crop = accui_x >> 10;
+		}
+		dispw -= excess;
+//		bufw -= crop;
+		ba_x_offset = (crop*bpp)>>3;
+		x = x2;
+	}
+	excess = clip[1]-y;
+	if(excess > 0)
+	{
+		accui_y = excess*fir_y;
+		int32_t crop = accui_y >> 10;
+		/* Awkward YUV is awkward. */
+		uint32_t y2=clip[1];
+		if (awkward_yuv || (extra_flags & EXTRAFLAG_PLANAR))
+		{
+			while (crop & 1)
+			{
+				y2++;
+				excess++;
+				accui_y = excess*fir_y;
+				crop = accui_y >> 10;
+			}
+		}
+		disph -= excess;
+//		bufh -= crop;
+		if (awkward_yuv)
+		{
+			crop>>=1;
+		}
+		ba_y_offset += crop*o->stride;
+		y = y2;
+	}
+	/* The ACCUI values need biasing for things to work correctly
+	   And for OMAP4 (which has larger ACCUI register range), truncate to be within range of 1 pixel */
+	accui_x = (accui_x & 1023) - 512;
+	accui_y = (accui_y & 1023) - 512;
+	int32_t accui_y2 = accui_y;
+	if(interlaceoffset)
+	{
+		y = y>>1;
+//		bufh = bufh>>1;
+		disph = disph>>1;
+		accui_y2 += fir_y;
+		clip[3] = clip[3]>>1;
+	}
+	excess = (x+dispw) - clip[2];
+	if(excess > 0)
+	{
+		int32_t crop = (excess*fir_x) >> 10;
+		while (crop & alignment)
+		{
+			excess++;
+			crop = (excess*fir_x) >> 10;
+		}
+		dispw -= excess;
+//		bufw -= crop;
+	}
+	excess = (y+disph) - clip[3];
+	if(excess > 0)
+	{
+		disph -= excess;
+//		bufh -= (excess*fir_y) >> 10;
+	}
+	/* Recalculate the buffer width & height from the display size
+	   This is necessary to avoid various rounding errors that can occur above (rounding errors which can make the hardware unhappy) */
+	dispw++;
+	do {
+		/* TODO: For large downscale values, sometimes this ends up cropping by a large amount. Need to try and avoid this (allow the unaligned buffer?) */
+		dispw--;
+		bufw = (1023+dispw*fir_x)>>10;
+	} while (bufw & alignment);
+	bufh = (1023+disph*fir_y)>>10;
+	if((dispw<=0) || (disph<=0) || (bufw<=0) || (bufh<=0))
+		return false;
+#if OMAP==3
+	/* Visible width/height of 1 divides FIR values by two, for some reason */
+	if ((dispw == 1) && (fir_x != 1024))
+	{
+		fir_x >>= 1;
+	}
+	if ((disph == 1) && (fir_y != 1024))
+	{
+		fir_y >>= 1;
+	}
+#endif
+#if OMAP==4
+	/* OMAP4 struggles if an upscaled image has only one row/column (of the original buffer) visible
+	   For now, take the safe way out and hide the overlay */
+	if (((fir_x < 1024) && (bufw < 2)) || ((fir_y < 1024) && (bufh < 2)))
+	{
+		return false;
+	}
+#endif
+	ll->format = o->format;
+	ll->target = o->target;
+	ll->rotation = o->rotation;
+	ll->highprio = o->highprio;
+	ll->v5tap = o->v5tap;
+	ll->ba[0] = o->ba+ba_x_offset+ba_y_offset+interlaceoffset;
+	ll->ba[1] = o->ba+ba_x_offset+ba_y_offset;
+	if (extra_flags & EXTRAFLAG_PLANAR)
+	{
+		ll->ba_uv[0] = o->ba_uv+ba_x_offset+(ba_y_offset>>1)+interlaceoffset;
+		ll->ba_uv[1] = o->ba_uv+ba_x_offset+(ba_y_offset>>1);
+	}
+	ll->position = (x<<OVERLAY_POSITION_X_SHIFT) | (y<<OVERLAY_POSITION_Y_SHIFT);
+	ll->size = ((dispw-1)<<OVERLAY_SIZE_X_SHIFT) | ((disph-1)<<OVERLAY_SIZE_Y_SHIFT);
+	ll->row_inc = (o->stride+1+interlaceoffset)-((bufw*bpp)>>3);
+	ll->pic_size = ((bufw-1)<<OVERLAY_SIZE_X_SHIFT) | ((bufh-1)<<OVERLAY_SIZE_Y_SHIFT);
+	ll->fir = (fir_x<<VID_OVERLAY_FIR_HINC_SHIFT) | (fir_y<<VID_OVERLAY_FIR_VINC_SHIFT);
+	ll->accui[0] = ((accui_x<<VID_OVERLAY_ACCUI_HACC_SHIFT) & VID_OVERLAY_ACCUI_HACC_MASK) | ((accui_y<<VID_OVERLAY_ACCUI_VACC_SHIFT) & VID_OVERLAY_ACCUI_VACC_MASK);
+	ll->accui[1] = ((accui_x<<VID_OVERLAY_ACCUI_HACC_SHIFT) & VID_OVERLAY_ACCUI_HACC_MASK) | ((accui_y2<<VID_OVERLAY_ACCUI_VACC_SHIFT) & VID_OVERLAY_ACCUI_VACC_MASK);
+	return true;
+}
+
+void dispc_update_overlay(overlayidx idx,const modelocked_t *modelocked,const irqlocked_t *irqlocked)
+{
+	if (idx == OVERLAY_MAX)
+	{
+		return;
+	}
+	lloverlaycfg_t ll;
+	const overlaycfg_t *o = &irqlocked->overlays[idx];
+//	dprintf(("","ovl %d: target %d w %d h %d ba %08x\n",idx,o->target,o->width,o->height,o->ba));
+	/* Update overlay */
+	if(dispc_get_lloverlaycfg(o,&ll,modelocked,irqlocked))
+		(overlayattrs[idx].enable)(idx,&ll);
+	else
+		(overlayattrs[idx].disable)(idx);
+}
+
+void dispc_change_pixelrate(uint32_t pixelrate,volatile uint32_t *dispc_config,volatile uint32_t *dispc_control)
+{
+	if(*dispc_control & DISPC_CONTROL_LCDENABLE)
+	{
+		dprintf(("","Disabling LCD prior to update\n"));
+		/* -1. TODO - Should this be done irrespective of LCDENABLE state? */
+		/* 0. TODO - Disable external chip? */
+		/* 1. Disable all pipelines - should already be handled */
+		/* 2. Disable HSync, VSync, pixel data, AC bias */
+		*dispc_config |= DISPC_CONFIG_PIXELGATED | DISPC_CONFIG_HSYNCGATED | DISPC_CONFIG_VSYNCGATED | DISPC_CONFIG_ACBIASGATED;
+		/* 3. Force an update */
+		/* TODO - Should schedule update for TV as well? */
+		*dispc_control |= DISPC_CONTROL_GOLCD;
+		/* 4. Wait */
+		int timeout=100000000;
+		while((*dispc_control & DISPC_CONTROL_GOLCD) && --timeout) {};
+		if(!timeout)
+		{
+			dprintf(("","dispc_change_pixelrate: Timeout waiting for DISPC_CONTROL_GOLCD clear\n"));
+		}
+		/* 5. Disable LCD */
+		*dispc_control &= ~DISPC_CONTROL_LCDENABLE;
+		/* X. Wait for FRAMEDONE bit (according to most other docs) */
+		/* TODO - Except we can't be sure that we've received it before or after we cleared LCDENABLE! Need to do it from an interrupt routine? */
+		/* 6. Disable free-running clock
+		      (not necessary - seems to be an SDI-only thing) */
+	}
+
+	/* 7-23. Reprogram PLL */
+	dsi_pll_program_for_dispc(pixelrate);
+}
+
+void dispc_getmode(const lcdtimings_t *timings,dispcmode_t *dm)
+{
+	const lcdconfig_t *config = &hwconfig->lcd_configs[current_lcd];
+	/* Build appropriate DISPC_CONTROL value */
+	uint32_t control = dm->control & (DISPC_CONTROL_DIGITALENABLE | DISPC_CONTROL_GODIGITAL);
+	switch(config->lcd_type)
+	{
+	case LCD_TFT:
+		control |= DISPC_CONTROL_STNTFT;
+		switch(config->dsi_bpp)
+		{
+		case 12:
+			control |= DISPC_CONTROL_TFTDATALINES_12BPP;
+			break;
+		case 16:
+			control |= DISPC_CONTROL_TFTDATALINES_16BPP;
+			break;
+		case 18:
+			control |= DISPC_CONTROL_TFTDATALINES_18BPP;
+			break;
+		case 24:
+			control |= DISPC_CONTROL_TFTDATALINES_24BPP;
+			break;
+		/* else error? */
+		}
+		break;
+	case LCD_STN_COLOUR:
+		control |= 0;
+		break;
+	case LCD_STN_MONO4:
+		control |= DISPC_CONTROL_MONOCOLOR;
+		break;
+	case LCD_STN_MONO8:
+		control |= DISPC_CONTROL_MONOCOLOR | DISPC_CONTROL_M8B;
+		break;
+	/* else error? */
+	}
+	/* Program display timings */
+	dm->size_lcd = ((timings->width-1)<<DISPC_SIZE_LCD_PPL_SHIFT) | ((timings->height-1)<<DISPC_SIZE_LCD_LPP_SHIFT); /* 1-based */
+	dm->timing_h = ((timings->hsw-1)<<DISPC_TIMING_H_HSW_SHIFT) | ((timings->hfp-1)<<DISPC_TIMING_H_HFP_SHIFT) | ((timings->hbp-1)<<DISPC_TIMING_H_HBP_SHIFT); /* All 1-based */
+	dm->timing_v = ((timings->vsw-1)<<DISPC_TIMING_V_VSW_SHIFT) | (timings->vfp<<DISPC_TIMING_V_VFP_SHIFT) | (timings->vbp<<DISPC_TIMING_V_VBP_SHIFT); /* Only VSW is 1-based! */
+	uint32_t pol_freq;
+	pol_freq = config->acbias_freq << DISPC_POL_FREQ_ACB_SHIFT;
+	if(config->flags & LCDCONFIG_RF)
+		pol_freq |= DISPC_POL_FREQ_RF;
+	if(config->flags & LCDCONFIG_IEO)
+		pol_freq |= DISPC_POL_FREQ_IEO;
+	if(config->flags & LCDCONFIG_IPC)
+		pol_freq |= DISPC_POL_FREQ_IPC;
+	if(timings->syncpol & SyncPol_InvertHSync)
+		pol_freq |= DISPC_POL_FREQ_IHS;
+	if(timings->syncpol & SyncPol_InvertVSync)
+		pol_freq |= DISPC_POL_FREQ_IVS;
+	dm->pol_freq = pol_freq;
+	dm->control = control;
+}
+
+uint32_t bandwidth_estimate(const overlaycfg_t *o,const modelocked_t *modelocked)
+{
+	if (o->target == TARGET_NONE)
+	{
+		return 0;
+	}
+	/* Estimate bits per screen pixel */
+	int32_t fir_x = CALC_FIR(o->buf_w,o->scaled_w);
+	int32_t fir_y = CALC_FIR(o->buf_h,o->scaled_h);
+	uint32_t bpsp = pixel_format_bpp[o->format]*fir_x;
+	if (fir_y >= 1024)
+	{
+		/* Downscale */
+		bpsp = bpsp*fir_y;
+	}
+	else
+	{
+		/* Upscale - assume there's a line buffer so it doesn't need to read two lines at once? */
+		bpsp = bpsp*1024;
+	}
+	/* Total number of bits per second */
+	uint64_t bps = ((uint64_t) bpsp)*((uint64_t) modelocked->heads[o->target].mode.pixelrate);
+	/* Convert down to KB/s */
+	return (uint32_t) (bps >> (10+10+10+3));
+}
+@
+
+
+1.11
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@a36 1
+#include "globals.h"
+a39 1
+#include "venc.h"
+d41 4
+a45 1
+#if 0 /* Not finished yet */
+d51 1
+d59 1
+a59 1
+	{12,	111,	52},
+d62 1
+a62 1
+	{72,	89,	32},
+d99 1
+a99 1
+	{-12,	48,	53,	22,	-7},
+d132 1
+a136 1
+		out = out<<8;
+d141 1
+a141 1
+static void dispc_program_vid_scale_coefficients(int vidoverlay,int h_upscale,int v_upscale,int v5tap)
+a142 1
+	volatile vid_regs *r = (vidoverlay?&dispc->vid2:&dispc->vid1);
+d149 2
+a150 2
+		r->fir_coef[phase].h = grab_coef_bytes(h_coef_offsets[0],h_coef_table);
+		r->fir_coef[phase].hv = grab_coef_bytes(h_coef_offsets[1],h_coef_table) | grab_coef_bytes(v_coef_offsets[1],v_coef_table);
+d153 1
+a153 1
+			dispc->vid_fir_coef_v[vidoverlay][phase] = grab_coef_bytes(v_coef_offsets[2],v_coef_table);
+a160 1
+#endif
+d162 1
+a162 1
+static bool dispc_get_lloverlaycfg(overlaycfg_t *o,lloverlaycfg_t *ll)
+d166 22
+a187 2
+	const headcfg_t *head = &headcfgs[o->target];
+	if(head->blanked || !head->enabled)
+a188 1
+	uint32_t interlaceoffset = (head->interlaced?o->stride:0);
+d190 12
+a201 5
+	int32_t w = o->width;
+	int32_t h = o->height;
+	int32_t x = o->x;
+	int32_t y = o->y;
+	uint32_t ba = o->ba;
+d203 5
+a207 1
+	if(x<0)
+d209 25
+a233 3
+		w += x;
+		ba += ((uint32_t)(-x*bpp))>>3;
+		x = 0;
+d235 2
+a236 1
+	if(y<0)
+d238 22
+a259 3
+		h += y;
+		ba -= y*o->stride;
+		y = 0;
+d261 5
+d269 43
+a311 1
+		h = h>>1;
+d313 6
+a318 5
+	if(x+w>head->mode.width)
+		w = head->mode.width-x;
+	if(y+h>head->mode.height)
+		h = head->mode.height-y;
+	if((w<=0) || (h<=0))
+d320 14
+a333 2
+	ll->ba[0] = ba+interlaceoffset;
+	ll->ba[1] = ba;
+d335 6
+a340 2
+	ll->size = ((w-1)<<OVERLAY_SIZE_X_SHIFT) | ((h-1)<<OVERLAY_SIZE_Y_SHIFT);
+	ll->row_inc = (o->stride+1+interlaceoffset)-((w*bpp)>>3);
+d344 1
+a344 1
+void dispc_update_overlay(overlayidx idx)
+d346 4
+d351 1
+a351 2
+	overlaycfg_t *o = &overlaycfgs[idx];
+	int irqs;
+d353 2
+a354 6
+	if(!begin_quick_hardware_update(&irqs))
+		return; /* TODO - Mark as pending */
+	/* Update features */
+	for(int i=0;i<TARGET_MAX;i++)
+		omap_update_features((overlaytarget)i);
+	if(dispc_get_lloverlaycfg(o,&ll))
+a357 1
+	end_quick_hardware_update(irqs);
+d367 1
+a367 5
+		/* 1. Disable all pipelines (including TV ones?) */
+		for(int idx=0;idx<OVERLAY_MAX;idx++)
+		{
+			(overlayattrs[idx].disable)(idx);
+		}
+d448 26
+@
+
+
+1.10
+log
+@Update for new GraphicsV registration process. Remove VIDC20 16bpp gamma demangle code. Advertise red/blue swapped 16bpp & 32bpp modes when using TV-out.
+Detail:
+  c/cmodule - Updated to use new GraphicsV registration process and OS_Hardware reason code #defines
+  c/dispc, c/venc, h/graphicsv, h/venc - Use Hdr:VIDCList instead of local VIDC list definition
+  c/graphicsv - Implement GraphicsV_PixelFormats, and return an appropriate list based on whether TV-out is in use. Call through to the HAL for GraphicsV_IICOp instead of relying on the OS to call the HAL for us.
+  c/palette - Remove VIDC20 16bpp gamma demangle code, the OS now supplies the data in a sensible format. Dont use mouse palette function intended for 555 mode emulation if CPR isn't in use (i.e. we're on TV-out, i.e. gamma won't be available either)
+Admin:
+  Tested in OMAP3 ROM on BB-xM
+  OMAP4 version builds but is unstested
+  Requires HdrSrc-2_38 and Kernel-5_35-4_79_2_203
+
+
+Version 0.28. Tagged as 'OMAPVideo-0_28'
+@
+text
+@d42 1
+d162 1
+a162 1
+static void dispc_update_gfx_overlay(volatile gfx_regs_t *r,overlay_t *o)
+d164 6
+a169 66
+	/* TODO - Needs updating for non-16x32bit burst? */
+	/* TODO - Needs updating for rotation */
+	/* TODO - Needs updating for configurable arbitration */
+	/* TODO - Needs updating for overlay optimisation */
+	/* TODO - Enable replication for <24bpp data */
+	uint32_t temp;
+	int32_t ppl,lpp;
+	uint32_t gobits=0;
+	/* If we're moving it from one display to another, we need to update both - so gobits should take into account both the initial and final display */
+	uint32_t attr=r->attributes;
+	uint32_t interlaceoffset;
+	if(attr & OVERLAY_ATTRIBUTES_ENABLE)
+		gobits = ((attr & OVERLAY_ATTRIBUTES_GFXCHANNELOUT)?DISPC_CONTROL_GODIGITAL:DISPC_CONTROL_GOLCD);
+	switch(o->target)
+	{
+	default: /* TODO - Error here! */
+	case TARGET_NONE:
+		if(attr & OVERLAY_ATTRIBUTES_ENABLE)
+		{
+			/* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed
+			   on the TV, it instead appears on the LCD. Try retaining the output channel
+			   flag and see if it disabled properly. */
+#if OMAP==3
+			r->attributes &= OVERLAY_ATTRIBUTES_GFXCHANNELOUT;
+			dispc->control1 |= gobits;
+#endif
+#if OMAP==4
+			r->attributes &= OVERLAY_ATTRIBUTES_GFXCHANNELOUT | OVERLAY_ATTRIBUTES_CHANNELOUT2;
+			if (gobits == DISPC_CONTROL_GODIGITAL)
+			{
+				dispc->control1 |= DISPC_CONTROL_GODIGITAL;
+			}
+			else
+			{
+				dispc->control2 |= DISPC_CONTROL_GOLCD;
+			}
+#endif
+		}
+		return;
+	case TARGET_LCD:
+#if OMAP==3
+		temp = dispc->size_lcd;
+#endif
+#if OMAP==4
+		temp = dispc->size_lcd2;
+#endif
+		ppl = REG_EXTRACT(temp,DISPC_SIZE_LCD_PPL)+1;
+		lpp = REG_EXTRACT(temp,DISPC_SIZE_LCD_LPP)+1;
+#if OMAP==3
+		if(dispc->control1 & DISPC_CONTROL_LCDENABLE) /* TODO - Does this even matter? */
+#endif
+#if OMAP==4
+		if(dispc->control2 & DISPC_CONTROL_LCDENABLE) /* TODO - Does this even matter? */
+#endif
+			gobits |= DISPC_CONTROL_GOLCD;
+		interlaceoffset = 0;
+		break;
+	case TARGET_TV:
+		temp = dispc->size_dig;
+		ppl = REG_EXTRACT(temp,DISPC_SIZE_DIG_PPL)+1;
+		lpp = REG_EXTRACT(temp,DISPC_SIZE_DIG_LPP)+1;
+		if(dispc->control1 & DISPC_CONTROL_DIGITALENABLE)
+			gobits |= DISPC_CONTROL_GODIGITAL;
+		interlaceoffset = o->stride;
+		break;
+	}
+d176 1
+d180 1
+a180 1
+		ba += ((uint32_t)(-x*overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT]))>>3;
+d194 12
+a205 236
+	if(x+w>ppl)
+		w = ppl-x;
+	if(y+h>lpp)
+		h = lpp-y;
+	if((w>0) && (h>0) && (o->ba) && !blanked)
+	{
+		r->ba[1] = ba;
+		r->ba[0] = ba+interlaceoffset;
+		r->position = (x<<OVERLAY_POSITION_X_SHIFT) | (y<<OVERLAY_POSITION_Y_SHIFT);
+		r->size = ((w-1)<<OVERLAY_SIZE_X_SHIFT) | ((h-1)<<OVERLAY_SIZE_Y_SHIFT);
+		r->row_inc = (o->stride+1+interlaceoffset)-((w*overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT])>>3);
+		/* TODO - make this arbitration configurable */
+#if OMAP==3
+		uint32_t attr2 = OVERLAY_ATTRIBUTES_ENABLE | o->format | OVERLAY_ATTRIBUTES_ROTATION_0 | OVERLAY_ATTRIBUTES_GFXBURSTSIZE_16X32 | (o->target == TARGET_TV?OVERLAY_ATTRIBUTES_GFXCHANNELOUT:0) | OVERLAY_ATTRIBUTES_GFXARBITRATION;
+#endif
+#if OMAP==4
+		uint32_t attr2 = OVERLAY_ATTRIBUTES_ENABLE | o->format | OVERLAY_ATTRIBUTES_ROTATION_0 | OVERLAY_ATTRIBUTES_GFXBURSTSIZE_16X32 | (o->target == TARGET_TV?OVERLAY_ATTRIBUTES_GFXCHANNELOUT:OVERLAY_ATTRIBUTES_CHANNELOUT2_LCD2) | OVERLAY_ATTRIBUTES_GFXARBITRATION;
+#endif
+		if(attr != attr2) /* TODO - May malfunction if reserved fields aren't 0? Do we reeally even care about avoiding redoing this? */
+		{
+			r->pixel_inc = 1;
+			temp = REG_EXTRACT(r->fifo_size_status,OVERLAY_FIFO_SIZE_STATUS);
+#if OMAP==3
+			r->fifo_threshold = ((temp-1)<<OVERLAY_FIFOHIGHTHRESHOLD_SHIFT) | ((temp-(16*4))<<OVERLAY_FIFOLOWTHRESHOLD_SHIFT);
+#endif
+#if OMAP==4
+			r->fifo_threshold = ((temp-1)<<OVERLAY_FIFOHIGHTHRESHOLD_SHIFT) | ((temp-(32*4))<<OVERLAY_FIFOLOWTHRESHOLD_SHIFT);
+#endif
+			/* Graphics specific settings */
+			dispc->gfx_preload = fifo_preload_for_lcd[hwconfig->lcd_configs[current_lcd].lcd_type]; /* TODO - What about digital output? What if we add LCD_NONE for no LCD available? */
+			r->table_ba = gfx_palette_p;
+			r->attributes = attr2;
+		}
+		/* Enable/disable gamma table */
+		uint32_t config = dispc->config1;
+		if((&overlays[overlay_desktop] == o) && (o->format != OVERLAY_ATTRIBUTES_FORMAT_BMP1) && (o->format != OVERLAY_ATTRIBUTES_FORMAT_BMP2) && (o->format != OVERLAY_ATTRIBUTES_FORMAT_BMP4) && (o->format != OVERLAY_ATTRIBUTES_FORMAT_BMP8))
+		{
+			if(!(config & DISPC_CONFIG_PALETTEGAMMATABLE))
+				dispc->config1 = config | DISPC_CONFIG_PALETTEGAMMATABLE;
+		}
+		else if(config & DISPC_CONFIG_PALETTEGAMMATABLE)
+			dispc->config1 = config & ~DISPC_CONFIG_PALETTEGAMMATABLE;
+#if OMAP==3
+		dispc->control1 |= gobits;
+#endif
+#if OMAP==4
+		if (gobits & DISPC_CONTROL_GODIGITAL)
+		{
+			dispc->control1 |= DISPC_CONTROL_GODIGITAL;
+		}
+		if (gobits & DISPC_CONTROL_GOLCD)
+		{
+			dispc->control2 |= DISPC_CONTROL_GOLCD;
+		}
+#endif
+	}
+	else
+	{
+		/* Can't be seen - disable it */
+		if(attr & OVERLAY_ATTRIBUTES_ENABLE)
+		{
+#if OMAP==3
+			r->attributes &= OVERLAY_ATTRIBUTES_GFXCHANNELOUT; /* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed on the TV, it instead appears on the LCD. Try retaining the output channel flag and see if it disabled properly. */
+			dispc->control1 |= gobits;
+#endif
+#if OMAP==4
+			r->attributes &= OVERLAY_ATTRIBUTES_GFXCHANNELOUT | OVERLAY_ATTRIBUTES_CHANNELOUT2; /* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed on the TV, it instead appears on the LCD. Try retaining the output channel flag and see if it disabled properly. */
+			if (gobits & DISPC_CONTROL_GODIGITAL)
+			{
+				dispc->control1 |= DISPC_CONTROL_GODIGITAL;
+			}
+			if (gobits & DISPC_CONTROL_GOLCD)
+			{
+				dispc->control2 |= DISPC_CONTROL_GOLCD;
+			}
+#endif
+		}
+	}
+}
+
+static void dispc_update_vid_overlay(volatile vid_regs_t *r,overlay_t *o,int idx)
+{
+	/* TODO - Needs updating for non-16x32bit burst? */
+	/* TODO - Needs updating for rotation */
+	/* TODO - Needs updating for configurable arbitration */
+	/* TODO - Needs updating for scaling */
+	/* TODO - Needs updating for overlay optimisation */
+	/* TODO - Enable replication for <24bpp data */
+	uint32_t temp;
+	int32_t ppl,lpp;
+	uint32_t gobits=0;
+	/* If we're moving it from one display to another, we need to update both - so gobits should take into account both the initial and final display */
+	uint32_t attr=r->attributes;
+	uint32_t interlaceoffset;
+	if(attr & OVERLAY_ATTRIBUTES_ENABLE)
+		gobits = ((attr & OVERLAY_ATTRIBUTES_VIDCHANNELOUT)?DISPC_CONTROL_GODIGITAL:DISPC_CONTROL_GOLCD);
+	switch(o->target)
+	{
+	default: /* TODO - Error here! */
+	case TARGET_NONE:
+		if(attr & OVERLAY_ATTRIBUTES_ENABLE)
+		{
+#if OMAP==3
+			r->attributes &= OVERLAY_ATTRIBUTES_VIDCHANNELOUT; /* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed on the TV, it instead appears on the LCD. Try retaining the output channel flag and see if it disabled properly. */
+			dispc->control1 |= gobits;
+#endif
+#if OMAP==4
+			r->attributes &= OVERLAY_ATTRIBUTES_VIDCHANNELOUT | OVERLAY_ATTRIBUTES_CHANNELOUT2; /* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed on the TV, it instead appears on the LCD. Try retaining the output channel flag and see if it disabled properly. */
+			if (gobits == DISPC_CONTROL_GODIGITAL)
+			{
+				dispc->control1 |= DISPC_CONTROL_GODIGITAL;
+			}
+			else
+			{
+				dispc->control2 |= DISPC_CONTROL_GOLCD;
+			}
+#endif
+		}
+		return;
+	case TARGET_LCD:
+#if OMAP==3
+		temp = dispc->size_lcd;
+#endif
+#if OMAP==4
+		temp = dispc->size_lcd2;
+#endif
+		ppl = REG_EXTRACT(temp,DISPC_SIZE_LCD_PPL)+1;
+		lpp = REG_EXTRACT(temp,DISPC_SIZE_LCD_LPP)+1;
+#if OMAP==3
+		if(dispc->control1 & DISPC_CONTROL_LCDENABLE) /* TODO - Does this even matter? */
+#endif
+#if OMAP==4
+		if(dispc->control2 & DISPC_CONTROL_LCDENABLE) /* TODO - Does this even matter? */
+#endif
+			gobits |= DISPC_CONTROL_GOLCD;
+		interlaceoffset = 0;
+		break;
+	case TARGET_TV:
+		temp = dispc->size_dig;
+		ppl = REG_EXTRACT(temp,DISPC_SIZE_DIG_PPL)+1;
+		lpp = REG_EXTRACT(temp,DISPC_SIZE_DIG_LPP)+1;
+		if(dispc->control1 & DISPC_CONTROL_DIGITALENABLE)
+			gobits |= DISPC_CONTROL_GODIGITAL;
+		interlaceoffset = o->stride;
+		break;
+	}
+	/* Crop to screen */
+	int32_t w = o->width;
+	int32_t h = o->height;
+	int32_t x = o->x;
+	int32_t y = o->y;
+	uint32_t ba = o->ba;
+	if(x<0)
+	{
+		w += x;
+		ba += ((uint32_t)(-x*overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT]))>>3;
+		x = 0;
+	}
+	if(y<0)
+	{
+		h += y;
+		ba -= y*o->stride;
+		y = 0;
+	}
+	if(interlaceoffset)
+	{
+		y = y>>1;
+		h = h>>1;
+	}
+	if(x+w>ppl)
+		w = ppl-x;
+	if(y+h>lpp)
+		h = lpp-y;
+	if((w>0) && (h>0) && (o->ba) && !blanked)
+	{
+		r->ba[1] = ba;
+		r->ba[0] = ba+interlaceoffset;
+		r->position = (x<<OVERLAY_POSITION_X_SHIFT) | (y<<OVERLAY_POSITION_Y_SHIFT);
+		r->picture_size = r->size = ((w-1)<<OVERLAY_SIZE_X_SHIFT) | ((h-1)<<OVERLAY_SIZE_Y_SHIFT); /* Picture size must be set, even if scaling isn't being used */
+		r->row_inc = (o->stride+1+interlaceoffset)-((w*overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT])>>3);
+#if OMAP==3
+		uint32_t attr2 = OVERLAY_ATTRIBUTES_ENABLE | o->format | OVERLAY_ATTRIBUTES_ROTATION_0 | OVERLAY_ATTRIBUTES_VIDRESIZEENABLE_NONE | OVERLAY_ATTRIBUTES_VIDBURSTSIZE_16X32 | (o->target == TARGET_TV?OVERLAY_ATTRIBUTES_VIDCHANNELOUT:0);
+#endif
+#if OMAP==4
+		uint32_t attr2 = OVERLAY_ATTRIBUTES_ENABLE | o->format | OVERLAY_ATTRIBUTES_ROTATION_0 | OVERLAY_ATTRIBUTES_VIDRESIZEENABLE_NONE | OVERLAY_ATTRIBUTES_VIDBURSTSIZE_16X32 | (o->target == TARGET_TV?OVERLAY_ATTRIBUTES_VIDCHANNELOUT:OVERLAY_ATTRIBUTES_CHANNELOUT2_LCD2);
+#endif
+		if(attr != attr2) /* TODO - May malfunction if reserved fields aren't 0? Do we reeally even care about avoiding redoing this? */
+		{
+			r->pixel_inc = 1;
+			temp = REG_EXTRACT(r->fifo_size_status,OVERLAY_FIFO_SIZE_STATUS);
+#if OMAP==3
+			r->fifo_threshold = ((temp-1)<<OVERLAY_FIFOHIGHTHRESHOLD_SHIFT) | ((temp-(16*4))<<OVERLAY_FIFOLOWTHRESHOLD_SHIFT);
+#endif
+#if OMAP==4
+			r->fifo_threshold = ((temp-1)<<OVERLAY_FIFOHIGHTHRESHOLD_SHIFT) | ((temp-(32*4))<<OVERLAY_FIFOLOWTHRESHOLD_SHIFT);
+#endif
+			/* Video specific settings */
+			dispc->vid_preload[idx] = fifo_preload_for_lcd[hwconfig->lcd_configs[current_lcd].lcd_type];
+			r->attributes = attr2;
+		}
+#if OMAP==3
+		dispc->control1 |= gobits;
+#endif
+#if OMAP==4
+		if (gobits & DISPC_CONTROL_GODIGITAL)
+		{
+			dispc->control1 |= DISPC_CONTROL_GODIGITAL;
+		}
+		if (gobits & DISPC_CONTROL_GOLCD)
+		{
+			dispc->control2 |= DISPC_CONTROL_GOLCD;
+		}
+#endif
+	}
+	else
+	{
+		/* Can't be seen - disable it */
+		if(attr & OVERLAY_ATTRIBUTES_ENABLE)
+		{
+#if OMAP==3
+			r->attributes &= OVERLAY_ATTRIBUTES_VIDCHANNELOUT; /* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed on the TV, it instead appears on the LCD. Try retaining the output channel flag and see if it disabled properly. */
+			dispc->control1 |= gobits;
+#endif
+#if OMAP==4
+			r->attributes &= OVERLAY_ATTRIBUTES_VIDCHANNELOUT | OVERLAY_ATTRIBUTES_CHANNELOUT2; /* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed on the TV, it instead appears on the LCD. Try retaining the output channel flag and see if it disabled properly. */
+			if (gobits & DISPC_CONTROL_GODIGITAL)
+			{
+				dispc->control1 |= DISPC_CONTROL_GODIGITAL;
+			}
+			if (gobits & DISPC_CONTROL_GOLCD)
+			{
+				dispc->control2 |= DISPC_CONTROL_GOLCD;
+			}
+#endif
+		}
+	}
+d210 2
+a211 2
+	/* The different padding in the graphics & video registers means we must have two seperate update functions :( */
+	overlay_t *o = &overlays[idx];
+d216 7
+a222 14
+	switch(idx)
+	{
+	case OVERLAY_GFX:
+		dispc_update_gfx_overlay(&dispc->gfx,o);
+		break;
+	case OVERLAY_VID1:
+		dispc_update_vid_overlay(&dispc->vid1,o,0);
+		break;
+	case OVERLAY_VID2:
+		dispc_update_vid_overlay(&dispc->vid2,o,0);
+		break;
+	default: /* TODO - Error! */
+		break;
+	}
+d226 1
+a226 1
+void dispc_set_lcdmode(lcdtimings_t *timings)
+d228 1
+a228 11
+	/* TODO - Need way of specifying spatial/temporal dithering stuff for mono displays */
+	/* TODO - Need way of specifying TDM stuff */
+	/* TODO - Needs updating for non-RFBI bypass mode */
+	/* TODO - Need way of setting digital hold time */
+	/* TODO - Need way of setting LCDENABLEPOL, LCDENABLESIGNAL (only relevant to SDI?) */
+	/* TODO - Need to call HAL to turn external chip on/off */
+	/* The flow used here is similar to that shown in spruf98d fig 15-147 (p2343), except the PLL reprogramming steps use the DSI PLL */
+	if(timings != &current_timings)
+		memcpy(&current_timings,timings,sizeof(lcdtimings_t));
+	int irqs;
+	if(!begin_slow_hardware_update(&irqs))
+d230 26
+a255 2
+		dprintf(("","dispc_set_lcdmode: Banned!\n"));
+		return; /* TODO - Mark as pending */
+a256 43
+	dprintf(("","dispc_set_lcdmode: rate=%d syncpol=%d\n",timings->pixelrate,timings->syncpol));
+	dprintf(("","hsw=%d hfp=%d hbp=%d width=%d\n",timings->hsw,timings->hfp,timings->hbp,timings->width));
+	dprintf(("","vsw=%d vfp=%d vbp=%d height=%d\n",timings->vsw,timings->vfp,timings->vbp,timings->height));
+
+#if OMAP==3
+	volatile uint32_t *dispc_config = &dispc->config1;
+	volatile uint32_t *dispc_control = &dispc->control1;
+#endif
+#if OMAP==4
+	volatile uint32_t *dispc_config = &dispc->config2;
+	volatile uint32_t *dispc_control = &dispc->control2;
+#endif
+	/* We can skip this if we aren't changing pixel rate */
+	if(timings->pixelrate != dsi_pll_current_pixel_rate)
+	{
+		if(*dispc_control & DISPC_CONTROL_LCDENABLE)
+		{
+			dprintf(("","Disabling LCD prior to update\n"));
+			/* -1. TODO - Should this be done irrespective of LCDENABLE state? */
+			/* 0. TODO - Disable external chip? */
+			/* 1. Disable all pipelines (including TV ones?) */
+			dispc->gfx.attributes &= ~OVERLAY_ATTRIBUTES_ENABLE;
+			dispc->vid1.attributes &= ~OVERLAY_ATTRIBUTES_ENABLE;
+			dispc->vid2.attributes &= ~OVERLAY_ATTRIBUTES_ENABLE;
+			/* 2. Disable HSync, VSync, pixel data, AC bias */
+			*dispc_config |= DISPC_CONFIG_PIXELGATED | DISPC_CONFIG_HSYNCGATED | DISPC_CONFIG_VSYNCGATED | DISPC_CONFIG_ACBIASGATED;
+			/* 3. Force an update */
+			/* TODO - Should schedule update for TV as well? */
+			*dispc_control |= DISPC_CONTROL_GOLCD;
+			/* 4. Wait */
+			int timeout=100000000;
+			while((*dispc_control & DISPC_CONTROL_GOLCD) && --timeout) {};
+			if(!timeout)
+			{
+				dprintf(("","dispc_set_lcdmode: Timeout waiting for DISPC_CONTROL_GOLCD clear\n"));
+			}
+			/* 5. Disable LCD */
+			*dispc_control &= ~DISPC_CONTROL_LCDENABLE;
+			/* X. Wait for FRAMEDONE bit (according to most other docs) */
+			/* TODO - Except we can't be sure that we've received it before or after we cleared LCDENABLE! Need to do it from an interrupt routine? */
+			/* 6. Disable free-running clock
+			      (not necessary - seems to be an SDI-only thing) */
+		}
+d258 3
+a260 2
+		/* 7-23. Reprogram PLL */
+		dsi_pll_program_for_dispc(timings->pixelrate);
+d262 3
+a264 15
+		/* Select DSI_ALWON_FCLK as DISPC functional clock */
+#if OMAP==3
+		dss->control |= DSS_CONTROL_DISPC_CLK_SWITCH;
+#endif
+#if OMAP==4
+		dss->control = DSS_CONTROL_FCK_CLK_SWITCH_PLL2 | DSS_CONTROL_LCD2_CLK_SWITCH;
+#endif
+	}
+	else
+		*dispc_control &= ~DISPC_CONTROL_GOLCD; /* Prevent any updates from occuring in the middle of our update. TODO - this isn't foolproof */
+
+	/* 24. Re-enable free-running clock, LCD
+	       (not necessary - free-running clock is SDI-only thing, and we only want to enable the LCD once we've programmed the mode timings!) */
+
+	lcdconfig_t *config = &hwconfig->lcd_configs[current_lcd];
+d266 1
+a266 1
+	uint32_t control = *dispc_control & (DISPC_CONTROL_DIGITALENABLE | DISPC_CONTROL_GODIGITAL);
+d270 1
+a270 1
+		control = DISPC_CONTROL_STNTFT;
+d289 1
+a289 1
+		control = 0;
+d292 1
+a292 1
+		control = DISPC_CONTROL_MONOCOLOR;
+d295 1
+a295 1
+		control = DISPC_CONTROL_MONOCOLOR | DISPC_CONTROL_M8B;
+a298 3
+#if OMAP==3
+	/* Program for RFBI bypass mode */
+	control |= DISPC_CONTROL_GPOUT0 | DISPC_CONTROL_GPOUT1;
+d300 3
+a302 9
+	dispc->size_lcd = ((timings->width-1)<<DISPC_SIZE_LCD_PPL_SHIFT) | ((timings->height-1)<<DISPC_SIZE_LCD_LPP_SHIFT); /* 1-based */
+	dispc->timing_h = ((timings->hsw-1)<<DISPC_TIMING_H_HSW_SHIFT) | ((timings->hfp-1)<<DISPC_TIMING_H_HFP_SHIFT) | ((timings->hbp-1)<<DISPC_TIMING_H_HBP_SHIFT); /* All 1-based */
+	dispc->timing_v = ((timings->vsw-1)<<DISPC_TIMING_V_VSW_SHIFT) | (timings->vfp<<DISPC_TIMING_V_VFP_SHIFT) | (timings->vbp<<DISPC_TIMING_V_VBP_SHIFT); /* Only VSW is 1-based! */
+#endif
+#if OMAP==4
+	dispc->size_lcd2 = ((timings->width-1)<<DISPC_SIZE_LCD_PPL_SHIFT) | ((timings->height-1)<<DISPC_SIZE_LCD_LPP_SHIFT); /* 1-based */
+	dispc->timing_h2 = ((timings->hsw-1)<<DISPC_TIMING_H_HSW_SHIFT) | ((timings->hfp-1)<<DISPC_TIMING_H_HFP_SHIFT) | ((timings->hbp-1)<<DISPC_TIMING_H_HBP_SHIFT); /* All 1-based */
+	dispc->timing_v2 = ((timings->vsw-1)<<DISPC_TIMING_V_VSW_SHIFT) | (timings->vfp<<DISPC_TIMING_V_VFP_SHIFT) | (timings->vbp<<DISPC_TIMING_V_VBP_SHIFT); /* Only VSW is 1-based! */
+#endif
+d315 2
+a316 223
+#if OMAP==3
+	dispc->pol_freq = pol_freq;
+#endif
+#if OMAP==4
+	dispc->pol_freq2 = pol_freq;
+#endif
+	/* TODO - Make this configurable - CPR */
+	*dispc_config |= DISPC_CONFIG_CPR;
+	/* Update transparency settings */
+	dispc_flush_transparency_cfg(false);
+	/* Default CPR value for RISC OS */
+#if OMAP==3
+	dispc->cpr_coef_r = 256;
+	dispc->cpr_coef_g = 256 << 11;
+	dispc->cpr_coef_b = 256 << 22;
+#endif
+#if OMAP==4
+	dispc->cpr2_coef_r = 256;
+	dispc->cpr2_coef_g = 256 << 11;
+	dispc->cpr2_coef_b = 256 << 22;
+#endif
+#if OMAP==3
+	/* Load palette + frame data. TODO - Tweak? */
+	*dispc_config = (*dispc_config &~DISPC_CONFIG_LOADMODE_MASK) | DISPC_CONFIG_LOADMODE_BOTH;
+#endif
+	/* Re-enable all the other clocks */
+	*dispc_config &= ~(DISPC_CONFIG_PIXELGATED | DISPC_CONFIG_HSYNCGATED | DISPC_CONFIG_VSYNCGATED | DISPC_CONFIG_ACBIASGATED);
+
+	/* Flush any pending overlay updates */
+	for(int i=0;i<OVERLAY_MAX;i++)
+		dispc_update_overlay((overlayidx)i);
+#if OMAP==4
+	uint32_t mask = DISPC_IRQ_VSYNC2 | DISPC_IRQ_SYNCLOST2;
+	do
+	{
+		dispc->irqstatus = mask; /* Clear any pending interrupts first */
+	} while (dispc->irqstatus & mask);
+#ifdef DEBUGLIB /* Enable these IRQs for debug builds so we can see when they occur. */
+	mask |= DISPC_IRQ_GFXBUFFERUNDERFLOW | DISPC_IRQ_OCPERROR | DISPC_IRQ_VID1BUFFERUNDERFLOW | DISPC_IRQ_VID2BUFFERUNDERFLOW;
+#endif
+#endif
+#if OMAP==3
+	uint32_t mask = DISPC_IRQ_VSYNC | DISPC_IRQ_SYNCLOST;
+#ifdef DEBUGLIB /* Enable these IRQs for debug builds so we can see when they occur. */
+	mask |= DISPC_IRQ_GFXFIFOUNDERFLOW | DISPC_IRQ_OCPERROR | DISPC_IRQ_VID1FIFOUNDERFLOW | DISPC_IRQ_VID2FIFOUNDERFLOW;
+#endif
+#endif
+	/* Now enable display */
+	*dispc_control = control | DISPC_CONTROL_GOLCD | DISPC_CONTROL_LCDENABLE;
+	dispc->irqenable = mask;
+
+	/* Enable power to any external chips */
+	(hwconfig->lcd_configs[current_lcd].power)(dev,65536);
+
+	dprintf(("","dispc_set_lcdmode: Done\n"));
+	end_slow_hardware_update(irqs);
+}
+
+void dispc_flush_transparency_cfg(bool go)
+{
+	int irqs;
+	if(!begin_quick_hardware_update(&irqs))
+		return;
+#if OMAP==4
+	uint32_t orig_config2 = dispc->config2;
+	uint32_t config2 = orig_config2 & ~(DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION);
+	config2 |= transparency_lut[TARGET_LCD][current_transparencycfgs[TARGET_LCD]];
+#endif
+	uint32_t orig_config1 = dispc->config1;
+	uint32_t config1 = orig_config1 & ~(DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION | DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_LCDALPHABLENDERENABLE | DISPC_CONFIG_TVALPHABLENDERENABLE);
+	config1 |= transparency_lut[TARGET_TV][current_transparencycfgs[TARGET_TV]];
+
+	/* TODO - Check for errors (e.g. VIDSRC when colour space conversion/scaling in use */
+#if OMAP==3
+	config1 |= transparency_lut[TARGET_LCD][current_transparencycfgs[TARGET_LCD]];
+#endif
+#if OMAP==4
+	if (config2 != orig_config2)
+	{
+		dispc->config2 = config2;
+		if(go)
+		{
+			uint32_t control = dispc->control2;
+			config2 = config2 ^ orig_config2;
+			if ((control & DISPC_CONTROL_LCDENABLE) && (config2 & (DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION)))
+				control |= DISPC_CONTROL_GOLCD;
+			dispc->control2 = control;
+		}
+	}
+#endif
+	if(config1 != orig_config1)
+	{
+		dispc->config1 = config1;
+		if(go)
+		{
+			uint32_t control = dispc->control1;
+			config1 = config1 ^ orig_config1;
+#if OMAP==3
+			if((control & DISPC_CONTROL_LCDENABLE) && (config1 & (DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION | DISPC_CONFIG_LCDALPHABLENDERENABLE)))
+				control |= DISPC_CONTROL_GOLCD;
+			if((control & DISPC_CONTROL_DIGITALENABLE) && (config1 & (DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_TVALPHABLENDERENABLE)))
+				control |= DISPC_CONTROL_DIGITALENABLE;
+#endif
+#if OMAP==4
+			if ((control & DISPC_CONTROL_DIGITALENABLE) && (config1 & (DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_TVALPHABLENDERENABLE)))
+				control |= DISPC_CONTROL_DIGITALENABLE;
+#endif
+			dispc->control1 = control;
+		}
+	}
+	end_quick_hardware_update(irqs);
+}
+
+
+
+int dispc_irq_handler(_kernel_swi_regs *r, void *pw)
+{
+	(void) r;
+	(void) pw;
+	/* Get cause */
+	uint32_t cause = dispc->irqstatus & dispc->irqenable;
+	if(!cause)
+		return 1; /* Wasn't us! */
+	/* SYNCLOST handling - as per note on p2192 of spruf98d:
+	   * Disable offending display (LCD or TV)
+	   * Wait for current frame to complete (FRAMEDONE or EVSYNC_EVEN/EVSYNC_ODD)
+	   * Perform DSS SOFTRESET
+	   * Reprogram and pray it's fixed! */
+#if OMAP==3
+	if(cause & DISPC_IRQ_SYNCLOST)
+	{
+		/* This still feels icky */
+		dispc->irqstatus = DISPC_IRQ_FRAMEDONE;
+		dispc->control1 &= ~DISPC_CONTROL_LCDENABLE;
+		dispc->irqenable = (dispc->irqenable & ~DISPC_IRQ_SYNCLOST) | DISPC_IRQ_FRAMEDONE;
+		set_ban(BHUB_SYNCLOST);
+	}
+#endif
+#if OMAP==4
+	if(cause & DISPC_IRQ_SYNCLOST2)
+	{
+		/* This still feels icky */
+		dispc->irqstatus = DISPC_IRQ_FRAMEDONE2;
+		dispc->control2 &= ~DISPC_CONTROL_LCDENABLE;
+		dispc->irqenable = (dispc->irqenable & ~DISPC_IRQ_SYNCLOST2) | DISPC_IRQ_FRAMEDONE2;
+		set_ban(BHUB_SYNCLOST);
+	}
+#endif
+	if(cause & DISPC_IRQ_SYNCLOSTDIGITAL)
+	{
+		dispc->irqstatus = DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD;
+		dispc->control1 &= ~DISPC_CONTROL_DIGITALENABLE;
+		dispc->irqenable = (dispc->irqenable & ~DISPC_IRQ_SYNCLOSTDIGITAL) | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD;
+		set_ban(BHUB_SYNCLOSTDIGITAL);
+	}
+#ifdef DEBUGLIB
+#if OMAP==3
+	if((cause & ~(DISPC_IRQ_VSYNC | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) != 0)
+#endif
+#if OMAP==4
+	if((cause & ~(DISPC_IRQ_VSYNC2 | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) != 0)
+#endif
+		dprintf(("","dispc_irq_handler: Cause %08x\n",cause));
+#endif
+	/* Clear IRQs */
+	dispc->irqstatus = cause;
+	/* Clear in interrupt controller */
+	_swix(OS_Hardware, _IN(0) | _INR(8,9), dev->dev.devicenumber&~(1u<<31), 0, EntryNo_HAL_IRQClear);
+	/* We can now enable interrupts? */
+	int irqs = _kernel_irqs_disabled();
+	if(irqs)
+		_kernel_irqs_on();
+	/* Only tell RISC OS about VSync if we haven't encountered SYNCLOST, and only if it's the right kind of vsync */
+#if OMAP==3
+	if(((cause & DISPC_IRQ_VSYNC) && (default_display == TARGET_LCD) && !(ban_hardware_update & BHUB_SYNCLOST))
+	|| ((cause & (DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) && (default_display == TARGET_TV) && !(ban_hardware_update & BHUB_SYNCLOSTDIGITAL)))
+#endif
+#if OMAP==4
+	if(((cause & DISPC_IRQ_VSYNC2) && (default_display == TARGET_LCD) && !(ban_hardware_update & BHUB_SYNCLOST))
+	|| ((cause & (DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) && (default_display == TARGET_TV) && !(ban_hardware_update & BHUB_SYNCLOSTDIGITAL)))
+#endif
+	{
+		/* Let RISC OS know it was a VSync */
+		_kernel_oserror *e =_swix(OS_CallAVector,_IN(4) | _IN(9),GraphicsV_VSync | (graphicsv_driver_number<<24),GraphicsV);
+		if(e)
+			dprintf(("","%08x %s\n",e->errnum,e->errmess));
+	}
+#if OMAP==3
+	if(((cause & DISPC_IRQ_FRAMEDONE) && (ban_hardware_update & BHUB_SYNCLOST))
+	|| ((cause & (DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) && (ban_hardware_update & BHUB_SYNCLOSTDIGITAL)))
+	{
+		uint32_t oldctrl = dispc->control1;
+#endif
+#if OMAP==4
+	if(((cause & DISPC_IRQ_FRAMEDONE2) && (ban_hardware_update & BHUB_SYNCLOST))
+	|| ((cause & (DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) && (ban_hardware_update & BHUB_SYNCLOSTDIGITAL)))
+	{
+		uint32_t oldctrl = dispc->control2;
+#endif
+		/* SYNCLOST handling, part two
+		   Reset the DSS, then reprogram whatever outputs were active before the incident */
+		dprintf(("","dispc_irq_handler: dss_reset: cause %08x ban %08x oldctrl %08x\n",cause,ban_hardware_update,oldctrl));
+		/* Clear all bans beforehand? Seems icky */
+		bool restore_lcd = ((oldctrl & DISPC_CONTROL_LCDENABLE) || (ban_hardware_update & BHUB_SYNCLOST));
+		bool restore_tv = ((oldctrl & DISPC_CONTROL_DIGITALENABLE) || (ban_hardware_update & BHUB_SYNCLOSTDIGITAL));
+		clear_ban(BHUB_SYNCLOST);
+		clear_ban(BHUB_SYNCLOSTDIGITAL);
+		dss_reset();
+		if(restore_lcd)
+		{
+			dispc_set_lcdmode(&current_timings); /* Should fully reprogram everything that we need */
+		}
+		if(restore_tv)
+		{
+			/* We need to fool the code into resetting the mode */
+			tvouttype type = current_tvtype;
+			current_tvtype = TVOUT_NONE;
+			venc_set_tvmode(current_tvmode,type,testcard,NULL);
+		}
+	}
+	if(irqs)
+		_kernel_irqs_off();
+	return 0;
+@
+
+
+1.9
+log
+@Improve TV-out support
+Detail:
+  c/cmodule, c/dispc, c/graphicsv, c/venc, h/venc - Updated TV-out code to center the desktop within the display, while also taking into account the border/porch timings in order to allow vertical shifting using *TV.
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.22. Tagged as 'OMAPVideo-0_22'
+@
+text
+@d649 1
+a649 1
+	if(timings->syncpol & VIDCLIST3_HSYNC)
+d651 1
+a651 1
+	if(timings->syncpol & VIDCLIST3_VSYNC)
+@
+
+
+1.8
+log
+@Merge of OMAP3 and OMAP4 video driver sources.
+With 85%+ shared code, tracking changes between these two modules was getting complicated, so now this single module will serve both OMAP3 targets and OMAP4.
+At present, the differences are simply selected at compile time with a switch. This may make sense to further rationalise either with tidier macros or run time detection (since the HAL knows which controller is running).
+Tested on OMAP3 in all 8 colour depths,
+Tested by Willi Theiss on OMAP4.
+
+Version 0.20. Tagged as 'OMAPVideo-0_20'
+@
+text
+@d870 1
+a870 1
+			venc_set_tvmode(current_tvmode,type,testcard);
+@
+
+
+1.7
+log
+@Merge of headers with OMAP4Video
+For the most part, this is just adding "_t" suffixes to all the typedefs.
+The OMAP4 controller registers are in "regs4.h" and OMAP3 in "regs3.h", they are selected between with a compile time switch - hence !MkROM becomes !Ms !MkRom3 and !MkRom4.
+OMAP3 version tested & still works, OMAP4 will not work.
+
+Version 0.19. Tagged as 'OMAPVideo-0_19'
+@
+text
+@d6 1
+a6 1
+ * modification, are permitted provided that the following conditions are met: 
+d15 1
+a15 1
+ * 
+d51 2
+a52 1
+static const int8_t upscale_3tap[8][3] = {
+d64 2
+a65 1
+static const int8_t upscale_5tap[8][5] = {
+d77 2
+a78 1
+static const int8_t downscale_3tap[8][3] = {
+d90 2
+a91 1
+static const int8_t downscale_5tap[8][5] = {
+d110 2
+a111 1
+static const uint32_t v_coefficient_offsets[2][3] = {
+d182 18
+a199 2
+			r->attributes &= OVERLAY_ATTRIBUTES_GFXCHANNELOUT; /* EXPERIMENTATION - Sometimes when disabling an overlay that's being displayed on the TV, it instead appears on the LCD. Try retaining the output channel flag and see if it disabled properly. */
+			dispc->control |= gobits;
+d203 1
+d205 4
+d211 6
+a216 1
+		if(dispc->control & DISPC_CONTROL_LCDENABLE) /* TODO - Does this even matter? */
+d224 1
+a224 1
+		if(dispc->control & DISPC_CONTROL_DIGITALENABLE)
+d263 7
+a269 1
+		uint32_t attr2 = OVERLAY_ATTRIBUTES_ENABLE | o->format | OVERLAY_ATTRIBUTES_ROTATION_0 | OVERLAY_ATTRIBUTES_GFXBURSTSIZE_16X32 | (o->target == TARGET_TV?OVERLAY_ATTRIBUTES_GFXCHANNELOUT:0) | OVERLAY_ATTRIBUTES_GFXARBITRATION; /* TODO - make this arbitration configurable */
+d274 1
+d276 4
+d286 1
+a286 1
+		uint32_t config = dispc->config;
+d290 1
+a290 1
+				dispc->config = config | DISPC_CONFIG_PALETTEGAMMATABLE;
+d293 14
+a306 2
+			dispc->config = config & ~DISPC_CONFIG_PALETTEGAMMATABLE;
+		dispc->control |= gobits;
+d313 1
+d315 13
+a327 1
+			dispc->control |= gobits;
+d354 1
+d356 13
+a368 1
+			dispc->control |= gobits;
+d372 1
+d374 4
+d380 6
+a385 1
+		if(dispc->control & DISPC_CONTROL_LCDENABLE) /* TODO - Does this even matter? */
+d393 1
+a393 1
+		if(dispc->control & DISPC_CONTROL_DIGITALENABLE)
+d432 1
+d434 4
+d442 1
+d444 4
+d452 13
+a464 1
+		dispc->control |= gobits;
+d471 1
+d473 13
+a485 1
+			dispc->control |= gobits;
+d536 8
+d547 1
+a547 1
+		if(dispc->control & DISPC_CONTROL_LCDENABLE)
+d557 1
+a557 1
+			dispc->config |= DISPC_CONFIG_PIXELGATED | DISPC_CONFIG_HSYNCGATED | DISPC_CONFIG_VSYNCGATED | DISPC_CONFIG_ACBIASGATED;
+d559 2
+a560 2
+			/* TODO - Should schedule udpate for TV as well? */
+			dispc->control |= DISPC_CONTROL_GOLCD;
+d563 1
+a563 1
+			while((dispc->control & DISPC_CONTROL_GOLCD) && --timeout) {};
+d567 1
+a567 1
+			} 
+d569 1
+a569 1
+			dispc->control &= ~DISPC_CONTROL_LCDENABLE;
+d580 1
+d582 4
+d588 1
+a588 1
+		dispc->control &= ~DISPC_CONTROL_GOLCD; /* Prevent any updates from occuring in the middle of our update. TODO - this isn't foolproof */
+d595 1
+a595 1
+	uint32_t control = dispc->control & (DISPC_CONTROL_DIGITALENABLE | DISPC_CONTROL_GODIGITAL);
+d628 1
+d635 6
+d653 1
+d655 4
+d660 1
+a660 1
+	dispc->config |= DISPC_CONFIG_CPR;
+d664 1
+d666 12
+a677 4
+	dispc->cpr_coef_g = 256<<11;
+	dispc->cpr_coef_b = 256<<22;
+	/* Load palete + frame data. TODO - Tweak? */
+	dispc->config = (dispc->config &~DISPC_CONFIG_LOADMODE_MASK) | DISPC_CONFIG_LOADMODE_BOTH;
+d679 1
+a679 1
+	dispc->config &= ~(DISPC_CONFIG_PIXELGATED | DISPC_CONFIG_HSYNCGATED | DISPC_CONFIG_VSYNCGATED | DISPC_CONFIG_ACBIASGATED);
+d684 12
+a695 4
+	/* Now enable display */
+	dispc->control = control | DISPC_CONTROL_GOLCD | DISPC_CONTROL_LCDENABLE;
+	/* Make sure that appropriate IRQs are enabled */
+	dispc->irqenable = DISPC_IRQ_VSYNC | DISPC_IRQ_SYNCLOST
+d697 1
+a697 1
+	| DISPC_IRQ_GFXFIFOUNDERFLOW | DISPC_IRQ_OCPERROR | DISPC_IRQ_VID1FIFOUNDERFLOW | DISPC_IRQ_VID2FIFOUNDERFLOW
+d699 4
+a702 1
+	;
+d716 9
+a724 2
+	uint32_t orig_config = dispc->config;
+	uint32_t config = orig_config & ~(DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION | DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_LCDALPHABLENDERENABLE | DISPC_CONFIG_TVALPHABLENDERENABLE);
+d726 18
+a743 3
+	config |= transparency_lut[TARGET_LCD][current_transparencycfgs[TARGET_LCD]];
+	config |= transparency_lut[TARGET_TV][current_transparencycfgs[TARGET_TV]];
+	if(config != orig_config)
+d745 1
+a745 1
+		dispc->config = config;
+d748 4
+a751 3
+			uint32_t control = dispc->control;
+			config = config ^ orig_config;
+			if((control & DISPC_CONTROL_LCDENABLE) && (config & (DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION | DISPC_CONFIG_LCDALPHABLENDERENABLE)))
+d753 1
+a753 1
+			if((control & DISPC_CONTROL_DIGITALENABLE) && (config & (DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_TVALPHABLENDERENABLE)))
+d755 6
+a760 1
+			dispc->control = control;
+d781 1
+d786 1
+a786 1
+		dispc->control &= ~DISPC_CONTROL_LCDENABLE;
+d790 11
+d804 1
+a804 1
+		dispc->control &= ~DISPC_CONTROL_DIGITALENABLE;
+d809 1
+d811 4
+d826 1
+d829 5
+d840 1
+d844 8
+a853 1
+		uint32_t oldctrl = dispc->control;
+@
+
+
+1.6
+log
+@Fix black screen on boot issue. Use C99 number types.
+Detail:
+  c/dss - Fixed the cause of the black screens on boot on OMAP3 machines (DM37xx seems fine). It looks like the cause was due to skipping the step where you disable the LCD output before triggering the DSS reset.
+  c/cmodule, c/dispc, c/dss, c/graphicsv, h/globals - Removed code relating to previous attempts to fix the black screen issue
+  c/cmodule, c/dispc, c/dsi, c/dss, c/graphicsv, c/palette, c/regs, c/sdma, c/venc, h/dsi, h/dss, h/globals, h/graphicsv, h/palette, h/regs - Use the C99 number types instead of u32, u16, etc.
+Admin:
+  Tested on rev C2 BB, rev A2 BB-xM
+
+
+Version 0.13. Tagged as 'OMAPVideo-0_13'
+@
+text
+@d156 1
+a156 1
+static void dispc_update_gfx_overlay(volatile gfx_regs *r,overlay *o)
+d265 1
+a265 1
+static void dispc_update_vid_overlay(volatile vid_regs *r,overlay *o,int idx)
+d368 1
+a368 1
+	overlay *o = &overlays[idx];
+d390 1
+a390 1
+void dispc_set_lcdmode(lcdtimings *timings)
+d400 1
+a400 1
+		memcpy(&current_timings,timings,sizeof(lcdtimings));
+d455 1
+a455 1
+	lcdconfig *config = &hwconfig->lcd_configs[current_lcd];
+@
+
+
+1.5
+log
+@Fix GraphicsV_SetBlank. Improve SetBlank to turn off the overlays. Trim dead code.
+Detail:
+  c/cmodule, c/dispc, c/graphicsv, h/globals - Fixed do_setblank to set DISPC_CONTROL_GOLCD, to ensure the relevant clocks have their states updated. Added 'blanked' flag to allow the graphics overlays to be disabled entirely whenever the screen should be blanked.
+  c/dispc - Trim some dead code related to trying to fix the IGEP display issues.
+Admin:
+  Tested on rev C2 BB, A2 BB-xM, C1 TouchBook.
+  Fixes bug #263 - http://www.riscosopen.org/tracker/tickets/263
+
+
+Version 0.11. Tagged as 'OMAPVideo-0_11'
+@
+text
+@d43 1
+d51 1
+a51 1
+static const s8 upscale_3tap[8][3] = {
+d53 1
+a53 1
+	{0,	(s8)128,0}, /* Note: Although 128 causes an overflow, apparently that's OK! */
+d63 1
+a63 1
+static const s8 upscale_5tap[8][5] = {
+d65 1
+a65 1
+	{0,	0,	(s8)128,0,	0},
+d75 1
+a75 1
+static const s8 downscale_3tap[8][3] = {
+d87 1
+a87 1
+static const s8 downscale_5tap[8][5] = {
+d100 1
+a100 1
+static const u32 h_coefficient_offsets[3] = { /* 5-tap only */
+d106 1
+a106 1
+static const u32 v_coefficient_offsets[2][3] = {
+d119 1
+a119 1
+static u32 grab_coef_bytes(u32 offsets,const u8 *bytes)
+d121 1
+a121 1
+	u32 out=0;
+d124 1
+a124 1
+		u32 offset = offsets>>24;
+d136 4
+a139 4
+	const u32 *h_coef_offsets = h_coefficient_offsets;
+	const u32 *v_coef_offsets = v_coefficient_offsets[v5tap];
+	const u8 *h_coef_table = (const u8 *) (h_upscale?upscale_5tap:downscale_5tap);
+	const u8 *v_coef_table = (v_upscale?(v5tap?(const u8 *) upscale_5tap:(const u8 *) upscale_3tap):(v5tap?(const u8 *) downscale_5tap:(const u8 *) downscale_3tap));
+d154 1
+d163 3
+a165 3
+	u32 temp;
+	s32 ppl,lpp;
+	u32 gobits=0;
+d167 2
+a168 2
+	u32 attr=r->attributes;
+	u32 interlaceoffset;
+d199 5
+a203 5
+	s32 w = o->width;
+	s32 h = o->height;
+	s32 x = o->x;
+	s32 y = o->y;
+	u32 ba = o->ba;
+d207 1
+a207 1
+		ba += ((u32)(-x*overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT]))>>3;
+d232 1
+a232 1
+		u32 attr2 = OVERLAY_ATTRIBUTES_ENABLE | o->format | OVERLAY_ATTRIBUTES_ROTATION_0 | OVERLAY_ATTRIBUTES_GFXBURSTSIZE_16X32 | (o->target == TARGET_TV?OVERLAY_ATTRIBUTES_GFXCHANNELOUT:0) | OVERLAY_ATTRIBUTES_GFXARBITRATION; /* TODO - make this arbitration configurable */
+d244 1
+a244 1
+		u32 config = dispc->config;
+d273 3
+a275 3
+	u32 temp;
+	s32 ppl,lpp;
+	u32 gobits=0;
+d277 2
+a278 2
+	u32 attr=r->attributes;
+	u32 interlaceoffset;
+d309 5
+a313 5
+	s32 w = o->width;
+	s32 h = o->height;
+	s32 x = o->x;
+	s32 y = o->y;
+	u32 ba = o->ba;
+d317 1
+a317 1
+		ba += ((u32)(-x*overlay_format_bpp[o->format>>OVERLAY_ATTRIBUTES_FORMAT_SHIFT]))>>3;
+d342 1
+a342 1
+		u32 attr2 = OVERLAY_ATTRIBUTES_ENABLE | o->format | OVERLAY_ATTRIBUTES_ROTATION_0 | OVERLAY_ATTRIBUTES_VIDRESIZEENABLE_NONE | OVERLAY_ATTRIBUTES_VIDBURSTSIZE_16X32 | (o->target == TARGET_TV?OVERLAY_ATTRIBUTES_VIDCHANNELOUT:0);
+a445 6
+		if(exp_synclost_count>5)
+		{
+			dprintf(("","dispc_set_lcdmode: EXPERIMENT: Delaying after PLL reprogram to try and escape synclost loop\n"));
+			_swix(OS_Hardware,_IN(0)|_INR(8,9),100000,0,EntryNo_HAL_CounterDelay);
+		}
+
+d457 1
+a457 1
+	u32 control = dispc->control & (DISPC_CONTROL_DIGITALENABLE | DISPC_CONTROL_GODIGITAL);
+d496 1
+a496 1
+	u32 pol_freq;
+a521 6
+	if(exp_synclost_count>10)
+	{
+		dprintf(("","dispc_set_lcdmode: EXPERIMENT: Delaying after enabling clocks to try and escape synclost loop\n"));
+		_swix(OS_Hardware,_IN(0)|_INR(8,9),100000,0,EntryNo_HAL_CounterDelay);
+	}
+
+d528 1
+a528 1
+	dispc->irqenable = DISPC_IRQ_VSYNC | (exp_synclost_count<15?DISPC_IRQ_SYNCLOST:0)
+d537 1
+a537 1
+	dprintf(("","dispc_set_lcdmode: Done (%d)\n",exp_synclost_count));
+d546 2
+a547 2
+	u32 orig_config = dispc->config;
+	u32 config = orig_config & ~(DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION | DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_LCDALPHABLENDERENABLE | DISPC_CONFIG_TVALPHABLENDERENABLE);
+d556 1
+a556 1
+			u32 control = dispc->control;
+d572 2
+d575 1
+a575 1
+	u32 cause = dispc->irqstatus & dispc->irqenable;
+a589 1
+		exp_synclost_count++;
+d624 1
+a624 1
+		u32 oldctrl = dispc->control;
+@
+
+
+1.4
+log
+@Improve OMAPVideo power saving abilities and palette handling
+Detail:
+  Makefile, c/palette, h/palette, c/cmodule, c/dispc, c/graphicsv, h/globals - Rewrote palette handling code to support multiple different transformations on palettes, to adapt the palettes from the RISC OS formats to the DISPC formats. This means that palettes and the mouse cursor are now correctly R/B swapped for TV-out, RISC OS's gamma correction tables are now supported, and clever use of gamma tables allows 16bpp modes to be displayed correctly by mapping RISC OS's 555 format to the OMAP's 565 format (but there'll only be 4 blue bits instead of 5)
+  c/cmodule, c/dispc, c/graphicsv, h/globals - Add support for the HAL's new display power controls, and implement GraphicsV_SetBlank. For fixed LCDs this will ignore the requested DPMS state and instead just turn the power/backlight off.
+  h/sdma - Marked the functions as extern.
+Admin:
+  Tested on rev C2 beagleboard, rev C1 touchbook.
+  Requires OMAP3 HAL 0.34.
+
+
+Version 0.08. Tagged as 'OMAPVideo-0_08'
+@
+text
+@d223 1
+a223 1
+	if((w>0) && (h>0) && (o->ba))
+a236 1
+#if 1
+a237 4
+#else
+			/* EXPERIMENT - leave preload value at default like Linux DSS2 driver. May fix IGEP display issues? */
+			dispc->gfx_preload = 0x100;
+#endif
+d333 1
+a333 1
+	if((w>0) && (h>0) && (o->ba))
+a346 1
+#if 1
+a347 4
+#else
+			/* EXPERIMENT - leave preload value at default like Linux DSS2 driver. May fix IGEP display issues? */
+			dispc->vid_preload[idx] = 0x100;
+#endif
+a500 1
+#if 1
+a511 4
+#else
+	/* EXPERIMENT - Linux DSS2 driver seems to use pol_freq of 0 on IGEP. LEt's see if this fixes the display failures. */
+	pol_freq = 0;
+#endif
+@
+
+
+1.3
+log
+@Fix corrupt pointer overlay when pointer is fully off the left or top of the screen
+Detail:
+  c/dispc - Mixed signed & unsigned compares were causing the dispc_update_*_overlay functions to malfunction when the overlay was fully off the top or left of the screen.
+  Also replaced some s16's with s32's to reduce code size a teensy bit.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.04. Tagged as 'OMAPVideo-0_04'
+@
+text
+@d246 9
+d558 4
+@
+
+
+1.2
+log
+@Assorted OMAPVideo tweaks and fixes
+Detail:
+  c/dispc - Added some WIP code for programming scaling coefficients
+  c/dispc, c/graphicsv - Fixed code to not allow the graphics overlay to be enabled before its DMA address had been set (as was happening on boot)
+  c/dispc - Enable reporting of FIFO underflow & OCPERROR interrupts in debug builds, to help track down bugs
+  c/dispc - Check in some disabled code that was an attempt to fix the IGEP display problems. Code was to force FIFO preload values to 0x100, and to force DISPC_POL_FREQ to 0.
+  c/dsi - Keep the DSI complex I/O clock off
+  c/dsi, c/dss, h/dss, h/regs - rewrote calculate_dss_clock_divider to remove data lane frequency restriction, and to increase speed/accuracy when calculating rates for tricky values like 25.175MHz. Also in another attempt to fix the IGEP issues, it mimics the Linux driver by trying to generate a 48MHz DSI clock.
+  c/dss, c/venc - Tweaked DSS reset & VENC code to make sure VENC clcoks are enabled & disabled at the appropriate times.
+  c/graphicsv - Fix GraphicsV_SetDMAAddress so it works properly no matter what overlay the desktop is on
+  c/venc - A fix to get the PAL test card working, and a fudge to get PAL output working.
+Admin:
+  Tested on rev C2 beagleboard & IGEP.
+  IGEP reported as showing no concrete improvement in display stability :(
+
+
+Version 0.03. Tagged as 'OMAPVideo-0_03'
+@
+text
+@d161 3
+a163 1
+	u32 temp,ppl,lpp,gobits=0;
+d197 4
+a200 4
+	s16 w = o->width;
+	s16 h = o->height;
+	s16 x = o->x;
+	s16 y = o->y;
+d267 3
+a269 1
+	u32 temp,ppl,lpp,gobits=0;
+d303 4
+a306 4
+	s16 w = o->width;
+	s16 h = o->height;
+	s16 x = o->x;
+	s16 y = o->y;
+@
+
+
+1.1
+log
+@Add initial version of OMAP video driver module
+Detail:
+  All-new OMAP video driver, written as a module in C.
+  Functionality-wise it's basically the same as the original HAL-based driver, except it provides support for GraphicsV_Render via use of the OMAP SDMA controller, and there's currently no support for GraphicsV_IICOp.
+  However under the hood the module is significantly different, to ensure it can be expanded to expose the full feature set of the video controller once the new GraphicsV API is ready.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.01. Tagged as 'OMAPVideo-0_01'
+@
+text
+@d43 111
+a158 1
+	/* TODO - Needs updating for scaling */
+d221 1
+a221 1
+	if((w>0) && (h>0))
+d235 1
+d237 5
+a242 1
+			r->table_ba = gfx_palette_p;
+d325 1
+a325 1
+	if((w>0) && (h>0))
+d339 1
+d341 4
+d365 1
+d498 1
+d510 4
+d540 5
+a544 1
+	dispc->irqenable = DISPC_IRQ_VSYNC | (exp_synclost_count<15?DISPC_IRQ_SYNCLOST:0);
+d605 4
+a616 4
+#ifdef DEBUGLIB
+	if((cause & ~(DISPC_IRQ_VSYNC | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) != 0)
+		dprintf(("","dispc_irq_handler: Cause %08x\n",cause));
+#endif
+@
+

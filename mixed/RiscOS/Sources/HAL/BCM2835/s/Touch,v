@@ -1,0 +1,284 @@
+head	1.2;
+access;
+symbols
+	BCM2835-0_75-1:1.2
+	BCM2835-0_76:1.2
+	BCM2835-0_75-1_70_2_4:1.1.2.1
+	BCM2835-0_75:1.2
+	BCM2835-0_74:1.2
+	BCM2835-0_73-1_70_2_3:1.1.2.1
+	BCM2835-0_73:1.2
+	BCM2835-0_72:1.2
+	BCM2835-0_71-1_70_2_2:1.1.2.1
+	BCM2835-0_71:1.2
+	BCM2835-0_70-1_70_2_1:1.1
+	SMP:1.1.0.2
+	SMP_bp:1.1
+	BCM2835-0_70:1.1
+	BCM2835-0_69:1.1
+	BCM2835-0_68:1.1
+	BCM2835-0_67:1.1
+	BCM2835-0_66:1.1
+	BCM2835-0_65:1.1
+	BCM2835-0_64:1.1
+	BCM2835-0_63:1.1
+	BCM2835-0_62:1.1
+	BCM2835-0_61:1.1
+	BCM2835-0_60:1.1
+	BCM2835-0_59:1.1
+	BCM2835-0_58:1.1
+	BCM2835-0_57:1.1
+	BCM2835-0_56:1.1
+	BCM2835-0_55:1.1
+	BCM2835-0_53:1.1
+	BCM2835-0_52:1.1
+	BCM2835-0_51:1.1
+	BCM2835-0_50:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2017.07.31.22.09.53;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	xk6viwRsoGpALq1A;
+
+1.1
+date	2015.11.15.00.09.57;	author jlee;	state Exp;
+branches
+	1.1.2.1;
+next	;
+commitid	oJ6rSmtkg3Ajw7Jy;
+
+1.1.2.1
+date	2017.07.31.22.18.18;	author jlee;	state Exp;
+branches;
+next	;
+commitid	VmVokWQ7fiZsOq1A;
+
+
+desc
+@@
+
+
+1.2
+log
+@Fix compatibility with latest firmware
+Detail:
+  Firmware as of 28th July will allow the GPU to make use of the top 16MB of RAM in 1GB machines. This overlaps the ARM's IO space, essentially making that area of memory inaccessible to us.
+  This causes problems because we rely on a couple of buffers which are located in VC memory (virtual GPIO buffer & FT5406 touchscreen buffer)
+  At some point extra mailbox messages were added to allow the ARM to dictate the location of these buffers; so make use of those messages wherever possible.
+  File changes:
+  s/Messaging - Remove VirtGPIOBuf and TouchBuf related tags from the initialisation tag sequence. Add new GetVCBuffer function that can be called post-MMU init to deal with getting/setting the buffer addresses.
+  s/Top - Use GetVCBuffer to initialise VirtGPIOBuf
+  s/Touch - Use GetVCBuffer to get touchscreen buffer
+  hdr/StaticWS - Remove TouchBuf from workspace, no longer needed
+Admin:
+  Tested on Raspberry Pi 3 with firmware from March 2016 (Set commands not supported), 21st July 2017 (set commands supported, but upper 16MB not used), 28th July 2017 (set commands supported and necessary)
+
+
+Version 0.71. Tagged as 'BCM2835-0_71'
+@
+text
+@;
+; Copyright (c) 2015, RISC OS Open Ltd
+; All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+;
+
+        AREA    |ARM$$code|, CODE, READONLY, PIC
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:Proc
+        GET     Hdr:System
+        GET     Hdr:FSNumbers
+        GET     Hdr:NewErrors
+        GET     Hdr:BCMSupport
+        GET     hdr.BCM2835
+        GET     hdr.StaticWS
+        GET     hdr.CastleMacros
+
+        EXPORT  Touch_InitDevices
+
+        IMPORT  memcpy
+        IMPORT  GetVCBuffer
+
+        MACRO
+$class  HALDeviceField $field, $value
+        LCLS    myvalue
+      [ "$value" = ""
+myvalue SETS    "$field"
+      |
+myvalue SETS    "$value"
+      ]
+        ASSERT  . - %A0 = HALDevice_$class$field
+     [ ?HALDevice_$class$field = 2
+        DCW     $myvalue
+   ELIF ?HALDevice_$class$field = 4
+        DCD     $myvalue
+      |
+        %       ?HALDevice_$class$field
+      ]
+        MEND
+
+
+; Template for touchscreen device
+
+Touch_Dev
+0
+        HALDeviceField Type,               HALDeviceType_HID + HALDeviceHID_Touchscreen
+        HALDeviceField ID,                 HALDeviceID_Touchscreen_FT5406
+        HALDeviceField Location,           HALDeviceBus_Sys + HALDeviceSysBus_AHB ; Guess
+        HALDeviceField Version,            0
+        HALDeviceField Description,        Touch_Description
+        HALDeviceField Address,            0 ; Filled in later
+        HALDeviceField Reserved1,          0
+        HALDeviceField Activate,           Touch_Activate
+        HALDeviceField Deactivate,         Touch_Deactivate
+        HALDeviceField Reset,              Touch_Reset
+        HALDeviceField Sleep,              Touch_Sleep
+        HALDeviceField Device,             -1
+        HALDeviceField TestIRQ,            0
+        HALDeviceField ClearIRQ,           0
+        HALDeviceField Reserved2,          0
+        ASSERT  . - %A0 = HALDeviceSize
+
+Touch_Description
+        = "FT5406 Touch Panel Controller", 0
+
+        ALIGN
+
+        ; Initialise our HAL devices
+Touch_InitDevices ROUT
+        Entry   "v1"
+        ; Try and initialise the register softcopy buffer
+        LDR     a1, =ARM2VC_Tag_FBGetTouchBuf
+        MOV     a2, #256
+        LDR     a3, =ARM2VC_Tag_FBSetTouchBuf
+        BL      GetVCBuffer
+        MOVS    v1, a1
+        EXIT    EQ
+        ADRL    a1, TouchDevice
+        ADR     a2, Touch_Dev
+        MOV     a3, #HALDeviceSize
+        BL      memcpy
+        ADRL    a2, TouchDevice
+        STR     v1, [a2, #HALDevice_Address]
+        ; Register the device
+        MOV     a1, #0
+        CallOS  OS_AddDevice
+        EXIT
+
+Touch_Activate
+        MOV     a1, #1
+Touch_Deactivate
+Touch_Reset
+        MOV     pc, lr
+
+Touch_Sleep
+        MOV     a1, #0
+        MOV     pc, lr
+        
+        END
+@
+
+
+1.1
+log
+@Add basic HAL device for the official DSI display/touchscreen. Delete superfluous code.
+Detail:
+  Makefile, s/Touch - Basic HAL device for the official touchscreen, which just exposes the address of the buffer which the GPU periodically fills with a register dump of the touchscreen controller.
+  hdr/BCM2835 - Remove old comment. Add new tag for getting the touchscreen buffer address.
+  hdr/StaticWS - Remove old workspace entries. Add new entries for touchscreen.
+  s/Messaging - Remove the messagebox tags which set a screen mode on startup (BCMVideo will handle that for us), and just blank the screen instead (to stop the GPU displaying a coloured square). Add tag to get the touchscreen buffer address.
+  s/Top - Register touchscreen HAL device during HAL_InitDevices. Remove more old code.
+Admin:
+  Tested on Raspberry Pi 1 B
+
+
+Version 0.50. Tagged as 'BCM2835-0_50'
+@
+text
+@d34 4
+a37 1
+        $GetMEMM
+d45 1
+d95 6
+a100 2
+        LDR     v1, TouchBuf
+        CMP     v1, #0
+a105 9
+        ; Guess whether we've been given an ARM or GPU physical address
+        LDR     a1, FB_CacheMode
+        CMP     v1, a1
+        SUBHS   v1, v1, a1
+        ; Map in the memory (assumed to be RAM, not actual hardware regs)
+        MOV     a1, #1:SHL:L1_TEXShift ; VMSA Normal, non-cacheable
+        MOV     a2, v1
+        MOV     a3, #256
+        CallOS  OS_MapInIO         
+d107 1
+a107 1
+        STR     a1, [a2, #HALDevice_Address]
+@
+
+
+1.1.2.1
+log
+@Merge in latest HEAD
+Detail:
+  Merge in changes since BCM2835-0_70 to keep SMP branch up to date
+Admin:
+  Untested
+
+
+Version 0.71, 1.70.2.2. Tagged as 'BCM2835-0_71-1_70_2_2'
+@
+text
+@d34 1
+a34 4
+        GET     Hdr:System
+        GET     Hdr:FSNumbers
+        GET     Hdr:NewErrors
+        GET     Hdr:BCMSupport
+a41 1
+        IMPORT  GetVCBuffer
+d91 2
+a92 6
+        ; Try and initialise the register softcopy buffer
+        LDR     a1, =ARM2VC_Tag_FBGetTouchBuf
+        MOV     a2, #256
+        LDR     a3, =ARM2VC_Tag_FBSetTouchBuf
+        BL      GetVCBuffer
+        MOVS    v1, a1
+d98 9
+d108 1
+a108 1
+        STR     v1, [a2, #HALDevice_Address]
+@
+
+

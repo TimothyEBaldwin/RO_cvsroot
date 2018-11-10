@@ -1,0 +1,188 @@
+head	1.4;
+access;
+symbols
+	SDFS-0_10:1.4
+	SDFS-0_09:1.4
+	SDFS-0_08:1.4
+	SDFS-0_07:1.3
+	SDFS-0_06:1.2
+	SDFS-0_05:1.2
+	SDFS-0_04:1.1.1.1
+	SDFS-0_03:1.1.1.1
+	SDFS-0_02:1.1.1.1
+	SDFS-0_01:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2015.02.02.15.56.16;	author bavison;	state Exp;
+branches;
+next	1.3;
+commitid	1VtjfpayEnxXWr8y;
+
+1.3
+date	2015.02.02.14.14.19;	author bavison;	state Exp;
+branches;
+next	1.2;
+commitid	voAyuRp5997Ynr8y;
+
+1.2
+date	2014.07.14.09.38.38;	author bavison;	state Exp;
+branches;
+next	1.1;
+commitid	a4B2ED2t8zpWnkIx;
+
+1.1
+date	2012.06.07.21.29.43;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	PNKwkpA5TsZqYO7w;
+
+1.1.1.1
+date	2012.06.07.21.29.43;	author bavison;	state Exp;
+branches;
+next	;
+commitid	PNKwkpA5TsZqYO7w;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Fix for disc error 08 immediately after module reinit on Raspberry Pi B+ and 2
+Detail:
+  On these boards, because there's no card-detect line, SDIODriver only
+  issues the UnitAttached and UnitDetached service calls in its module
+  init/final code and when one of the rescan SWIs are called (usually by
+  SDFS). The "maybe-changed" timer is implemented within SDFS; when it has
+  elapsed, any DiscOp will try to select a card with the last-known-good ID
+  in that slot; if this fails (because there's no card, or the card has
+  changed, or even if the same card has been removed and reinserted) SDFS
+  will get SDIODriver to rescan the slot, at which point SDFS is re-entered
+  via the UnitAttached service call, which resets the "maybe-changed" timer
+  to 1 second.
+
+  The problem was that SDFS reused the same function that handles
+  Service_SDIOUnitAttached during its module initialisation, so for the
+  first second of SDFS's life, it believed the card ID which it was
+  informed of by SDIODriver is valid and has been accessed within the last
+  second. Except that if the card has actually been removed and reinserted,
+  the command issued by SDFS ends up timing out, resulting in disc error 08.
+Admin:
+  Tested on Pi B+ (assumed identical behaviour on Pi 2)
+
+Version 0.08. Tagged as 'SDFS-0_08'
+@
+text
+@/*
+ * CDDL HEADER START
+ *
+ * The contents of this file are subject to the terms of the
+ * Common Development and Distribution License (the "Licence").
+ * You may not use this file except in compliance with the Licence.
+ *
+ * You can obtain a copy of the licence at
+ * cddl/RiscOS/Sources/FileSys/SDFS/SDFS/LICENCE.
+ * See the Licence for the specific language governing permissions
+ * and limitations under the Licence.
+ *
+ * When distributing Covered Code, include this CDDL HEADER in each
+ * file and include the Licence file. If applicable, add the
+ * following below this CDDL HEADER, with the fields enclosed by
+ * brackets "[]" replaced with your own identifying information:
+ * Portions Copyright [yyyy] [name of copyright owner]
+ *
+ * CDDL HEADER END
+ */
+/*
+ * Copyright 2012 Ben Avison.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+#ifndef SERVICE_H
+#define SERVICE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "kernel.h"
+
+void service_SDIOSlotAttached(uint32_t bus, uint32_t slot, bool integrated, bool no_card_detect, bool integrated_mem);
+void service_SDIOSlotDetached(uint32_t bus, uint32_t slot, bool integrated, bool no_card_detect, bool integrated_mem);
+void service_SDIOUnitAttached(uint32_t bus, uint32_t slot, uint32_t rca, uint32_t unit, uint32_t fic, bool writeprotect, bool mmc, uint64_t capacity, bool called_from_init);
+void service_SDIOUnitDetached(uint32_t bus, uint32_t slot, uint32_t rca, uint32_t unit, uint32_t fic, bool writeprotect, bool mmc);
+void service_SDIOSlotReleased(uint32_t bus, uint32_t slot);
+
+#endif
+@
+
+
+1.3
+log
+@  Add Raspberry Pi Compute module support
+Detail:
+  The eMMC chip on the Compute module is now treated as a hard drive by SDFS.
+  A number of bugs (relating to top-bit-set disc addresses for example) were
+  required to facilitate this. If a board has an eMMC chip, then the default
+  SDFS drive is drive 4 rather than drive 0; this doesn't require any change
+  to the default CMOS values in the kernel or HAL (SDFS adjusts its
+  interpretation of the CMOS byte instead).
+Admin:
+  Tested on a Compute module (of course).
+
+Version 0.07. Tagged as 'SDFS-0_07'
+@
+text
+@d35 1
+a35 1
+void service_SDIOUnitAttached(uint32_t bus, uint32_t slot, uint32_t rca, uint32_t unit, uint32_t fic, bool writeprotect, bool mmc, uint64_t capacity);
+@
+
+
+1.2
+log
+@  Support the Raspberry Pi model B+
+Detail:
+  For removable slots without a card detect pin, use an alternate state
+  machine based upon timeouts to detect card removal or card changes. Note
+  that this requires cooperation from FileCore (the same code paths as with
+  selected floppy drives that had faulty disc changed pins) to avoid data
+  loss by assuming that a disc might need remounting if a certain time has
+  elapsed since the last successful operation. To avoid a significant speed
+  penalty from deselecting and reselecting cards, remounting isn't used for
+  rapid back-to-back operations.
+Admin:
+  Already in use in RC12a.
+
+Version 0.05. Tagged as 'SDFS-0_05'
+@
+text
+@d33 2
+a34 2
+void service_SDIOSlotAttached(uint32_t bus, uint32_t slot, bool integrated, bool no_card_detect);
+void service_SDIOSlotDetached(uint32_t bus, uint32_t slot, bool integrated, bool no_card_detect);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d33 2
+a34 2
+void service_SDIOSlotAttached(uint32_t bus, uint32_t slot, bool integrated);
+void service_SDIOSlotDetached(uint32_t bus, uint32_t slot, bool integrated);
+@
+
+
+1.1.1.1
+log
+@Initial import of SDFS module
+@
+text
+@@

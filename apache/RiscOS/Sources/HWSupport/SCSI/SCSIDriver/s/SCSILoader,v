@@ -1,0 +1,288 @@
+head	4.3;
+access;
+symbols
+	SCSIDriver-1_19:4.3
+	SCSIDriver-1_18:4.3
+	SCSIDriver-1_17:4.3
+	SCSIDriver-1_16:4.2
+	SCSIDriver-1_15:4.1
+	RO_5_07:4.1
+	SCSIDriver-1_14:4.1
+	SCSIDriver-1_13:4.1
+	SCSIDriver-1_12:4.1
+	SCSIDriver-1_11:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	2013.08.22.21.00.28;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	zz4KRePsSO4zDu2x;
+
+4.2
+date	2013.01.13.10.10.12;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+commitid	RqDXIERutm0V82Aw;
+
+4.1
+date	2003.05.23.13.23.17;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@Add support to loader for 128k EPROMs
+Contrary to the silkscreen (and logically, based on the number of pins on the chip socket) the SCSI podule supports EPROMs up to 1Mbit. This is confirmed on page 72 of the user manual.
+Also, correct failure to lookup the legacy IRQ semaphore location due to not initialising R0=6.
+Tested in Acorn SCSI podule on RISC OS 3.70 and 5.20.
+
+Version 1.17. Tagged as 'SCSIDriver-1_17'
+@
+text
+@; Copyright 2003 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:Podule
+        GET     Hdr:PublicWS
+        GET     Hdr:OSRSI6
+        GET     Hdr:FSNumbers
+        GET     Hdr:NewErrors
+        GET     hdr.SCSIErr
+        
+        AREA    |!!!Loader|,CODE,READONLY
+SCSILoader
+        B       ReadByte                ; Read via loader  }
+        B       ReturnWriteError        ; Write via loader } Can corrupt R2-R3
+        B       Reset                   ; Reset loader     } and R10 only
+        MOV     PC,LR                   ; Call loader      }
+        DCB     "32OK"                  ; Magic word
+
+SemaPtr
+        DCD     0
+
+Reset
+        MOV     R2,LR                   ; Push
+        BL      CheckIRQSemaphore
+        MOV     LR,R2                   ; Pull
+        BNE     ReturnIRQError
+        LDR     R10,=Podule_BaseAddressANDMask
+        AND     R10,R11,R10
+        ADD     R10,R10,#&3000          ; Bank address reg
+        MOV     R2,#0
+        STRB    R2,[R10]                ; Set bank
+        RETURNVC
+
+ReadByte
+        MOV     R2,LR                   ; Push
+        BL      CheckIRQSemaphore
+        MOV     LR,R2                   ; Pull
+        BNE     ReturnIRQError
+        CMP     R1,#&1F800              ; Top of 128k EPROM, the biggest the PCB supports
+        BCS     ReturnAddressError
+        LDR     R10,=Podule_BaseAddressANDMask
+        AND     R10,R11,R10
+        ADD     R2,R1,#&800             ; Virtual -> physical
+        MOV     R2,R2,ASR #11
+        ADD     R0,R10,#&3000           ; Bank address reg
+        PHPSEI  R3
+        STRB    R2,[R0]                 ; Set bank
+        BIC     R2,R1,#&3F800
+        LDRB    R0,[R10,R2,LSL #2]      ; Byte within bank (word spacing)
+        PLP     R3
+        RETURNVC
+
+CheckIRQSemaphore ROUT
+        LDR     R10,SemaPtr
+        TEQ     R10,#0                  ; Address not yet looked up
+        BNE     %FT10
+        Push    "R0-R2,LR"
+        MOV     R0,#6
+        MOV     R1,#0
+        MOV     R2,#OSRSI6_IRQsema
+        SWI     XOS_ReadSysInfo
+        MOVVS   R2,#0
+        CMP     R2,#0
+        LDREQ   R2,=Legacy_IRQsema
+        STR     R2,SemaPtr
+        MOV     R10,R2
+        Pull    "R0-R2,LR"
+10
+        LDR     R10,[R10]
+        TEQ     R10,#0                  ; => Z=0 if in an IRQ
+        MOV     PC,LR
+
+ReturnWriteError
+        ADR     R0,ErrorBlock_NotWriteable
+        B       ReturnVSet
+ReturnAddressError
+        ADR     R0,ErrorBlock_AddressTooBig
+        B       ReturnVSet
+ReturnIRQError
+        ADR     R0,ErrorBlock_SCSI_NotFromIRQ
+ReturnVSet
+        RETURNVS
+
+        MakeErrorBlock NotWriteable
+        MakeErrorBlock AddressTooBig
+        MakeErrorBlock SCSI_NotFromIRQ
+
+        DCB     "SCSICardLoader",9
+        DCB     "1.06 (19 Aug 2013)", 0
+        ALIGN
+
+        LTORG
+        ASSERT  (. - SCSILoader) < &800
+        END
+@
+
+
+4.2
+log
+@Knocked columns into line
+SCSIDriver: conventional columns used via automated tidier, assembles to same binary (not tested)
+SCSILoader: made 32 bit compatible, no longer peeks IRQsema, tested briefly in a podule
+SCSILog: conventional columns used via automated tider, assembles to same binary (not tested)
+
+Version 1.16. Tagged as 'SCSIDriver-1_16'
+@
+text
+@d54 1
+a54 1
+        CMP     R1,#&F800               ; Top of 64k EPROM
+d72 2
+a73 1
+        Push    "R1-R2,LR"
+d77 3
+a79 1
+        MOVVS   R2,#Legacy_IRQsema
+d82 1
+a82 1
+        Pull    "R1-R2,LR"
+d104 1
+a104 1
+        DCB     "1.05 (12 Jan 2013)", 0
+@
+
+
+4.1
+log
+@* 32-bit compatible.
+* Hard-coded podule addresses removed (for Iyonix compatibility).
+* Now builds as a driver module (SCSISoftWD33C93) for the new central
+  SCSIdriver despatch system. Can revert to building a standalone driver
+  by changing the "soft" switch in the sources.
+
+Version 1.11. Tagged as 'SCSIDriver-1_11'
+@
+text
+@a14 1
+Mask    *       &FFFFFC00
+d16 11
+d28 5
+a32 4
+        B       ReadByte
+        B       WriteByte
+        B       Reset
+        BICS    PC,R14,#V_bit           ; Call loader
+d34 1
+a34 1
+10
+d38 3
+a40 3
+        MOV     R10,#IRQsema
+        LDR     R10,[R10]
+        TEQ     R10,#0
+d42 1
+a42 1
+        LDR     R10,=Mask
+d44 4
+a47 8
+        ADD     R10,R10,#&3000
+        LDR     R2,&10
+        STRB    R2,[R10]
+        BICS    PC,LR,#V_bit
+
+ReturnIRQError
+        ADR     R0,Error_NotIRQ
+        ORRS    PC,LR,#V_bit
+d50 3
+a52 3
+        MOV     R10,#IRQsema
+        LDR     R10,[R10]
+        TEQ     R10,#0
+d54 5
+a58 7
+        LDR     R4,=Mask
+        AND     R4,R11,R4
+        ADD     R10,R4,#&3000
+        CMP     R1,#&F800
+        ADRHS   R0,Error_Address
+        ORRCSS  PC,LR,#V_bit
+        ADD     R2,R1,#&800
+d60 3
+a62 4
+        LDR     R3,&10
+        TEQP    PC,#I_bit+SVC_mode
+        ORR     R2,R2,R3
+        STRB    R2,[R10]
+d64 20
+a83 2
+        LDRB    R0,[R4,R2,LSL #2]
+        BICS    PC,R14,#V_bit
+d85 14
+a98 24
+WriteByte
+        ADR     R0,Error_Write
+        ORRS    PC,R14,#V_bit
+
+
+98      CMP     R0,#RCsoftcopyadr
+        BICEQ   R1,R1,#&3F
+        STREQ   R1,&10
+        BICS    PC,R14,#V_bit
+
+Error_Write
+        DCD     &580
+        DCB     "This podule doesn't support writeable devices", 0
+        ALIGN
+
+Error_Address
+        DCD     &584
+        DCB     "Address too big", 0
+        ALIGN
+
+Error_NotIRQ
+        DCD     &20111
+        DCB     "Not callable from IRQ routine", 0
+        ALIGN
+d101 1
+a101 1
+        DCB     "1.04 (11 Jul 89)", 0
+d105 1
+a105 1
+
+@
+

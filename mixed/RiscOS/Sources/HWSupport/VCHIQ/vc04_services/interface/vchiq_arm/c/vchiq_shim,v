@@ -1,0 +1,1830 @@
+head	1.2;
+access;
+symbols
+	VCHIQ-0_10:1.2
+	VCHIQ-0_09:1.2
+	VCHIQ-0_08:1.2
+	VCHIQ-0_07:1.2
+	VCHIQ-0_06:1.2
+	VCHIQ-0_05:1.2
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2013.03.03.20.23.29;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	uNS7q3oyxvlpXnGw;
+
+1.1
+date	2012.08.19.23.33.29;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.2
+log
+@Update to latest version of VCHIQ sources
+Detail:
+  This updates our VCHIQ sources to rev 95009dbb77 of the official sources from the Raspberry Pi Linux github repo.
+  From our perspective, the important changes are:
+  * Provides compatbility with the latest firmware
+  * Not compatible with older firmware (older than around Nov 2012?), including the firmware we've typically been using until now
+  * Clients of the module now need to specify the version number of the service they're communicating with
+  * Source is dual BSD/GPL licenced, with us opting to use the BSD license in order to allow the module to be included in ROM instead of as a softload on disc
+  * Ability to build softload version has been removed from the makefile, as it's now a redundant option
+  File changes:
+  - !MkRom - enable throwback
+  - Makefile - Update for building latest sources. Remove special softload rules. Enable ability to build ROM version.
+  - c/vchiq_riscos, s/asm - Update RISC OS compatbility layer to directly emulate the corresponding Linux calls now that the VCOS abstraction layer has been removed from the VCHIQ sources
+  - h/VCHIQ, h/VCHIQWrap, hdr/VCHIQ - Add the service version number entries to the vchiq_service_t/SERVICE_CREATION_T structs
+  - vc04_services/* - Updated to latest official sources, with relevant changes to allow compilation for RISC OS
+Admin:
+  Tested on Raspberry Pi
+  Updated GPU firmware will likely be required!
+
+
+Version 0.05. Tagged as 'VCHIQ-0_05'
+@
+text
+@/**
+ * Copyright (c) 2010-2012 Broadcom. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. The names of the above-listed copyright holders may not be used
+ *    to endorse or promote products derived from this software without
+ *    specific prior written permission.
+ *
+ * ALTERNATIVELY, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2, as published by the Free
+ * Software Foundation.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+#ifndef __riscos
+#include <linux/module.h>
+#include <linux/types.h>
+#else
+#include "riscosbits.h"
+#endif
+
+#include "interface/vchi/vchi.h"
+#include "vchiq.h"
+#include "vchiq_core.h"
+
+#include "vchiq_util.h"
+
+#include <stddef.h>
+
+#define vchiq_status_to_vchi(status) ((int32_t)status)
+
+typedef struct {
+	VCHIQ_SERVICE_HANDLE_T handle;
+
+	VCHIU_QUEUE_T queue;
+
+	VCHI_CALLBACK_T callback;
+	void *callback_param;
+#ifdef __riscos
+	void *private_word;
+#endif
+} SHIM_SERVICE_T;
+
+/* ----------------------------------------------------------------------
+ * return pointer to the mphi message driver function table
+ * -------------------------------------------------------------------- */
+const VCHI_MESSAGE_DRIVER_T *
+vchi_mphi_message_driver_func_table(void)
+{
+	return NULL;
+}
+
+/* ----------------------------------------------------------------------
+ * return a pointer to the 'single' connection driver fops
+ * -------------------------------------------------------------------- */
+const VCHI_CONNECTION_API_T *
+single_get_func_table(void)
+{
+	return NULL;
+}
+
+VCHI_CONNECTION_T *vchi_create_connection(
+	const VCHI_CONNECTION_API_T *function_table,
+	const VCHI_MESSAGE_DRIVER_T *low_level)
+{
+	(void)function_table;
+	(void)low_level;
+	return NULL;
+}
+
+/***********************************************************
+ * Name: vchi_msg_peek
+ *
+ * Arguments:  const VCHI_SERVICE_HANDLE_T handle,
+ *             void **data,
+ *             uint32_t *msg_size,
+
+
+ *             VCHI_FLAGS_T flags
+ *
+ * Description: Routine to return a pointer to the current message (to allow in
+ *              place processing). The message can be removed using
+ *              vchi_msg_remove when you're finished
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_msg_peek(VCHI_SERVICE_HANDLE_T handle,
+	void **data,
+	uint32_t *msg_size,
+	VCHI_FLAGS_T flags)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	VCHIQ_HEADER_T *header;
+
+	WARN_ON((flags != VCHI_FLAGS_NONE) &&
+		(flags != VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE));
+
+	if (flags == VCHI_FLAGS_NONE)
+		if (vchiu_queue_is_empty(&service->queue))
+			return -1;
+
+	header = vchiu_queue_peek(&service->queue);
+
+#ifdef __riscos
+	*data = header+1;
+#else
+	*data = header->data;
+#endif
+	*msg_size = header->size;
+
+	return 0;
+}
+EXPORT_SYMBOL(vchi_msg_peek);
+
+/***********************************************************
+ * Name: vchi_msg_remove
+ *
+ * Arguments:  const VCHI_SERVICE_HANDLE_T handle,
+ *
+ * Description: Routine to remove a message (after it has been read with
+ *              vchi_msg_peek)
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_msg_remove(VCHI_SERVICE_HANDLE_T handle)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	VCHIQ_HEADER_T *header;
+
+	header = vchiu_queue_pop(&service->queue);
+
+	vchiq_release_message(service->handle, header);
+
+	return 0;
+}
+EXPORT_SYMBOL(vchi_msg_remove);
+
+/***********************************************************
+ * Name: vchi_msg_queue
+ *
+ * Arguments:  VCHI_SERVICE_HANDLE_T handle,
+ *             const void *data,
+ *             uint32_t data_size,
+ *             VCHI_FLAGS_T flags,
+ *             void *msg_handle,
+ *
+ * Description: Thin wrapper to queue a message onto a connection
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_msg_queue(VCHI_SERVICE_HANDLE_T handle,
+	const void *data,
+	uint32_t data_size,
+	VCHI_FLAGS_T flags,
+	void *msg_handle)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	VCHIQ_ELEMENT_T element = {data, data_size};
+	VCHIQ_STATUS_T status;
+
+	(void)msg_handle;
+
+	WARN_ON(flags != VCHI_FLAGS_BLOCK_UNTIL_QUEUED);
+
+	status = vchiq_queue_message(service->handle, &element, 1);
+
+	/* vchiq_queue_message() may return VCHIQ_RETRY, so we need to
+	** implement a retry mechanism since this function is supposed
+	** to block until queued
+	*/
+	while (status == VCHIQ_RETRY) {
+		msleep(1);
+		status = vchiq_queue_message(service->handle, &element, 1);
+	}
+
+	return vchiq_status_to_vchi(status);
+}
+EXPORT_SYMBOL(vchi_msg_queue);
+
+/***********************************************************
+ * Name: vchi_bulk_queue_receive
+ *
+ * Arguments:  VCHI_BULK_HANDLE_T handle,
+ *             void *data_dst,
+ *             const uint32_t data_size,
+ *             VCHI_FLAGS_T flags
+ *             void *bulk_handle
+ *
+ * Description: Routine to setup a rcv buffer
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_bulk_queue_receive(VCHI_SERVICE_HANDLE_T handle,
+	void *data_dst,
+	uint32_t data_size,
+	VCHI_FLAGS_T flags,
+	void *bulk_handle)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	VCHIQ_BULK_MODE_T mode;
+	VCHIQ_STATUS_T status;
+
+	switch ((int)flags) {
+	case VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE
+		| VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+		WARN_ON(!service->callback);
+		mode = VCHIQ_BULK_MODE_CALLBACK;
+		break;
+	case VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE:
+		mode = VCHIQ_BULK_MODE_BLOCKING;
+		break;
+	case VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+	case VCHI_FLAGS_NONE:
+		mode = VCHIQ_BULK_MODE_NOCALLBACK;
+		break;
+	default:
+		WARN(1, "unsupported message\n");
+		return vchiq_status_to_vchi(VCHIQ_ERROR);
+	}
+
+	status = vchiq_bulk_receive(service->handle, data_dst, data_size,
+		bulk_handle, mode);
+
+	/* vchiq_bulk_receive() may return VCHIQ_RETRY, so we need to
+	** implement a retry mechanism since this function is supposed
+	** to block until queued
+	*/
+	while (status == VCHIQ_RETRY) {
+		msleep(1);
+		status = vchiq_bulk_receive(service->handle, data_dst,
+			data_size, bulk_handle, mode);
+	}
+
+	return vchiq_status_to_vchi(status);
+}
+EXPORT_SYMBOL(vchi_bulk_queue_receive);
+
+/***********************************************************
+ * Name: vchi_bulk_queue_transmit
+ *
+ * Arguments:  VCHI_BULK_HANDLE_T handle,
+ *             const void *data_src,
+ *             uint32_t data_size,
+ *             VCHI_FLAGS_T flags,
+ *             void *bulk_handle
+ *
+ * Description: Routine to transmit some data
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_bulk_queue_transmit(VCHI_SERVICE_HANDLE_T handle,
+	const void *data_src,
+	uint32_t data_size,
+	VCHI_FLAGS_T flags,
+	void *bulk_handle)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	VCHIQ_BULK_MODE_T mode;
+	VCHIQ_STATUS_T status;
+
+	switch ((int)flags) {
+	case VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE
+		| VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+		WARN_ON(!service->callback);
+		mode = VCHIQ_BULK_MODE_CALLBACK;
+		break;
+	case VCHI_FLAGS_BLOCK_UNTIL_DATA_READ:
+	case VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE:
+		mode = VCHIQ_BULK_MODE_BLOCKING;
+		break;
+	case VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+	case VCHI_FLAGS_NONE:
+		mode = VCHIQ_BULK_MODE_NOCALLBACK;
+		break;
+	default:
+		WARN(1, "unsupported message\n");
+		return vchiq_status_to_vchi(VCHIQ_ERROR);
+	}
+
+	status = vchiq_bulk_transmit(service->handle, data_src, data_size,
+		bulk_handle, mode);
+
+	/* vchiq_bulk_transmit() may return VCHIQ_RETRY, so we need to
+	** implement a retry mechanism since this function is supposed
+	** to block until queued
+	*/
+	while (status == VCHIQ_RETRY) {
+		msleep(1);
+		status = vchiq_bulk_transmit(service->handle, data_src,
+			data_size, bulk_handle, mode);
+	}
+
+	return vchiq_status_to_vchi(status);
+}
+EXPORT_SYMBOL(vchi_bulk_queue_transmit);
+
+/***********************************************************
+ * Name: vchi_msg_dequeue
+ *
+ * Arguments:  VCHI_SERVICE_HANDLE_T handle,
+ *             void *data,
+ *             uint32_t max_data_size_to_read,
+ *             uint32_t *actual_msg_size
+ *             VCHI_FLAGS_T flags
+ *
+ * Description: Routine to dequeue a message into the supplied buffer
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_msg_dequeue(VCHI_SERVICE_HANDLE_T handle,
+	void *data,
+	uint32_t max_data_size_to_read,
+	uint32_t *actual_msg_size,
+	VCHI_FLAGS_T flags)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	VCHIQ_HEADER_T *header;
+
+	WARN_ON((flags != VCHI_FLAGS_NONE) &&
+		(flags != VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE));
+
+	if (flags == VCHI_FLAGS_NONE)
+		if (vchiu_queue_is_empty(&service->queue))
+			return -1;
+
+	header = vchiu_queue_pop(&service->queue);
+
+#ifdef __riscos
+	memcpy(data, header+1, header->size < max_data_size_to_read ?
+		header->size : max_data_size_to_read);
+#else
+	memcpy(data, header->data, header->size < max_data_size_to_read ?
+		header->size : max_data_size_to_read);
+#endif
+
+	*actual_msg_size = header->size;
+
+	vchiq_release_message(service->handle, header);
+
+	return 0;
+}
+EXPORT_SYMBOL(vchi_msg_dequeue);
+
+/***********************************************************
+ * Name: vchi_msg_queuev
+ *
+ * Arguments:  VCHI_SERVICE_HANDLE_T handle,
+ *             VCHI_MSG_VECTOR_T *vector,
+ *             uint32_t count,
+ *             VCHI_FLAGS_T flags,
+ *             void *msg_handle
+ *
+ * Description: Thin wrapper to queue a message onto a connection
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+
+vchiq_static_assert(sizeof(VCHI_MSG_VECTOR_T) == sizeof(VCHIQ_ELEMENT_T));
+vchiq_static_assert(offsetof(VCHI_MSG_VECTOR_T, vec_base) ==
+	offsetof(VCHIQ_ELEMENT_T, data));
+vchiq_static_assert(offsetof(VCHI_MSG_VECTOR_T, vec_len) ==
+	offsetof(VCHIQ_ELEMENT_T, size));
+
+int32_t vchi_msg_queuev(VCHI_SERVICE_HANDLE_T handle,
+	VCHI_MSG_VECTOR_T *vector,
+	uint32_t count,
+	VCHI_FLAGS_T flags,
+	void *msg_handle)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+
+	(void)msg_handle;
+
+	WARN_ON(flags != VCHI_FLAGS_BLOCK_UNTIL_QUEUED);
+
+	return vchiq_status_to_vchi(vchiq_queue_message(service->handle,
+		(const VCHIQ_ELEMENT_T *)vector, count));
+}
+EXPORT_SYMBOL(vchi_msg_queuev);
+
+/***********************************************************
+ * Name: vchi_held_msg_release
+ *
+ * Arguments:  VCHI_HELD_MSG_T *message
+ *
+ * Description: Routine to release a held message (after it has been read with
+ *              vchi_msg_hold)
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_held_msg_release(VCHI_HELD_MSG_T *message)
+{
+	vchiq_release_message((VCHIQ_SERVICE_HANDLE_T)message->service,
+		(VCHIQ_HEADER_T *)message->message);
+
+	return 0;
+}
+
+/***********************************************************
+ * Name: vchi_msg_hold
+ *
+ * Arguments:  VCHI_SERVICE_HANDLE_T handle,
+ *             void **data,
+ *             uint32_t *msg_size,
+ *             VCHI_FLAGS_T flags,
+ *             VCHI_HELD_MSG_T *message_handle
+ *
+ * Description: Routine to return a pointer to the current message (to allow
+ *              in place processing). The message is dequeued - don't forget
+ *              to release the message using vchi_held_msg_release when you're
+ *              finished.
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_msg_hold(VCHI_SERVICE_HANDLE_T handle,
+	void **data,
+	uint32_t *msg_size,
+	VCHI_FLAGS_T flags,
+	VCHI_HELD_MSG_T *message_handle)
+{
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	VCHIQ_HEADER_T *header;
+
+	WARN_ON((flags != VCHI_FLAGS_NONE) &&
+		(flags != VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE));
+
+	if (flags == VCHI_FLAGS_NONE)
+		if (vchiu_queue_is_empty(&service->queue))
+			return -1;
+
+	header = vchiu_queue_pop(&service->queue);
+
+#ifdef __riscos
+	*data = header+1;
+#else
+	*data = header->data;
+#endif
+	*msg_size = header->size;
+
+	message_handle->service =
+		(struct opaque_vchi_service_t *)service->handle;
+	message_handle->message = header;
+
+	return 0;
+}
+
+/***********************************************************
+ * Name: vchi_initialise
+ *
+ * Arguments: VCHI_INSTANCE_T *instance_handle
+ *            VCHI_CONNECTION_T **connections
+ *            const uint32_t num_connections
+ *
+ * Description: Initialises the hardware but does not transmit anything
+ *              When run as a Host App this will be called twice hence the need
+ *              to malloc the state information
+ *
+ * Returns: 0 if successful, failure otherwise
+ *
+ ***********************************************************/
+
+int32_t vchi_initialise(VCHI_INSTANCE_T *instance_handle
+#ifdef __riscos
+			, void *private_word
+#endif
+			)
+{
+	VCHIQ_INSTANCE_T instance;
+	VCHIQ_STATUS_T status;
+
+	status = vchiq_initialise(&instance
+#ifdef __riscos
+				, private_word
+#endif
+				);
+
+	*instance_handle = (VCHI_INSTANCE_T)instance;
+
+	return vchiq_status_to_vchi(status);
+}
+EXPORT_SYMBOL(vchi_initialise);
+
+/***********************************************************
+ * Name: vchi_connect
+ *
+ * Arguments: VCHI_CONNECTION_T **connections
+ *            const uint32_t num_connections
+ *            VCHI_INSTANCE_T instance_handle)
+ *
+ * Description: Starts the command service on each connection,
+ *              causing INIT messages to be pinged back and forth
+ *
+ * Returns: 0 if successful, failure otherwise
+ *
+ ***********************************************************/
+int32_t vchi_connect(VCHI_CONNECTION_T **connections,
+	const uint32_t num_connections,
+	VCHI_INSTANCE_T instance_handle)
+{
+	VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+
+	(void)connections;
+	(void)num_connections;
+
+	return vchiq_connect(instance);
+}
+EXPORT_SYMBOL(vchi_connect);
+
+
+/***********************************************************
+ * Name: vchi_disconnect
+ *
+ * Arguments: VCHI_INSTANCE_T instance_handle
+ *
+ * Description: Stops the command service on each connection,
+ *              causing DE-INIT messages to be pinged back and forth
+ *
+ * Returns: 0 if successful, failure otherwise
+ *
+ ***********************************************************/
+int32_t vchi_disconnect(VCHI_INSTANCE_T instance_handle)
+{
+	VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+	return vchiq_status_to_vchi(vchiq_shutdown(instance));
+}
+EXPORT_SYMBOL(vchi_disconnect);
+
+
+/***********************************************************
+ * Name: vchi_service_open
+ * Name: vchi_service_create
+ *
+ * Arguments: VCHI_INSTANCE_T *instance_handle
+ *            SERVICE_CREATION_T *setup,
+ *            VCHI_SERVICE_HANDLE_T *handle
+ *
+ * Description: Routine to open a service
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+
+#ifdef __riscos
+extern void asm_call_callback(void *callback_param,VCHI_CALLBACK_REASON_T reason,void *handle,void *private_word,VCHI_CALLBACK_T func);
+#define CALL_CALLBACK(PARAM,REASON,ARG) asm_call_callback(PARAM,REASON,ARG,service->private_word,service->callback)
+#else
+#define CALL_CALLBACK(PARAM,REASON,ARG) service->callback(PARAM,REASON,ARG)
+#endif
+
+static VCHIQ_STATUS_T shim_callback(VCHIQ_REASON_T reason,
+	VCHIQ_HEADER_T *header, VCHIQ_SERVICE_HANDLE_T handle, void *bulk_user)
+{
+	SHIM_SERVICE_T *service =
+		(SHIM_SERVICE_T *)VCHIQ_GET_SERVICE_USERDATA(handle);
+
+	switch (reason) {
+	case VCHIQ_MESSAGE_AVAILABLE:
+		vchiu_queue_push(&service->queue, header);
+
+		if (service->callback)
+			CALL_CALLBACK(service->callback_param,
+				VCHI_CALLBACK_MSG_AVAILABLE, NULL);
+		break;
+	case VCHIQ_BULK_TRANSMIT_DONE:
+		if (service->callback)
+			CALL_CALLBACK(service->callback_param,
+				VCHI_CALLBACK_BULK_SENT, bulk_user);
+		break;
+	case VCHIQ_BULK_RECEIVE_DONE:
+		if (service->callback)
+			CALL_CALLBACK(service->callback_param,
+				VCHI_CALLBACK_BULK_RECEIVED, bulk_user);
+		break;
+	case VCHIQ_SERVICE_CLOSED:
+		if (service->callback)
+			CALL_CALLBACK(service->callback_param,
+				VCHI_CALLBACK_SERVICE_CLOSED, NULL);
+		break;
+	case VCHIQ_SERVICE_OPENED:
+		/* No equivalent VCHI reason */
+		break;
+	case VCHIQ_BULK_TRANSMIT_ABORTED:
+		if (service->callback)
+			CALL_CALLBACK(service->callback_param,
+				VCHI_CALLBACK_BULK_TRANSMIT_ABORTED, bulk_user);
+		break;
+	case VCHIQ_BULK_RECEIVE_ABORTED:
+		if (service->callback)
+			CALL_CALLBACK(service->callback_param,
+				VCHI_CALLBACK_BULK_RECEIVE_ABORTED, bulk_user);
+		break;
+	default:
+		WARN(1, "not supported\n");
+		break;
+	}
+
+	return VCHIQ_SUCCESS;
+}
+
+static SHIM_SERVICE_T *service_alloc(VCHIQ_INSTANCE_T instance,
+	SERVICE_CREATION_T *setup)
+{
+	SHIM_SERVICE_T *service = kzalloc(sizeof(SHIM_SERVICE_T), GFP_KERNEL);
+
+	(void)instance;
+
+	if (service) {
+		if (vchiu_queue_init(&service->queue, 64)) {
+			service->callback = setup->callback;
+			service->callback_param = setup->callback_param;
+#ifdef __riscos
+			service->private_word = vchiq_get_private_word(instance);
+#endif
+		} else {
+			kfree(service);
+			service = NULL;
+		}
+	}
+
+	return service;
+}
+
+static void service_free(SHIM_SERVICE_T *service)
+{
+	if (service) {
+		vchiu_queue_delete(&service->queue);
+		kfree(service);
+	}
+}
+
+int32_t vchi_service_open(VCHI_INSTANCE_T instance_handle,
+	SERVICE_CREATION_T *setup,
+	VCHI_SERVICE_HANDLE_T *handle)
+{
+	VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+	SHIM_SERVICE_T *service = service_alloc(instance, setup);
+	if (service) {
+		VCHIQ_SERVICE_PARAMS_T params;
+		VCHIQ_STATUS_T status;
+
+		memset(&params, 0, sizeof(params));
+		params.fourcc = setup->service_id;
+		params.callback = shim_callback;
+		params.userdata = service;
+		params.version = setup->version.version;
+		params.version_min = setup->version.version_min;
+
+		status = vchiq_open_service(instance, &params,
+			&service->handle);
+		if (status != VCHIQ_SUCCESS) {
+			service_free(service);
+			service = NULL;
+		}
+	}
+
+	*handle = (VCHI_SERVICE_HANDLE_T)service;
+
+	return (service != NULL) ? 0 : -1;
+}
+EXPORT_SYMBOL(vchi_service_open);
+
+int32_t vchi_service_create(VCHI_INSTANCE_T instance_handle,
+	SERVICE_CREATION_T *setup,
+	VCHI_SERVICE_HANDLE_T *handle)
+{
+	VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+	SHIM_SERVICE_T *service = service_alloc(instance, setup);
+	if (service) {
+		VCHIQ_SERVICE_PARAMS_T params;
+		VCHIQ_STATUS_T status;
+
+		memset(&params, 0, sizeof(params));
+		params.fourcc = setup->service_id;
+		params.callback = shim_callback;
+		params.userdata = service;
+		params.version = setup->version.version;
+		params.version_min = setup->version.version_min;
+		status = vchiq_add_service(instance, &params, &service->handle);
+
+		if (status != VCHIQ_SUCCESS) {
+			service_free(service);
+			service = NULL;
+		}
+	}
+
+	*handle = (VCHI_SERVICE_HANDLE_T)service;
+
+	return (service != NULL) ? 0 : -1;
+}
+EXPORT_SYMBOL(vchi_service_create);
+
+int32_t vchi_service_close(const VCHI_SERVICE_HANDLE_T handle)
+{
+	int32_t ret = -1;
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	if (service) {
+		VCHIQ_STATUS_T status = vchiq_close_service(service->handle);
+		if (status == VCHIQ_SUCCESS) {
+			service_free(service);
+			service = NULL;
+		}
+
+		ret = vchiq_status_to_vchi(status);
+	}
+	return ret;
+}
+EXPORT_SYMBOL(vchi_service_close);
+
+int32_t vchi_service_destroy(const VCHI_SERVICE_HANDLE_T handle)
+{
+	int32_t ret = -1;
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	if (service) {
+		VCHIQ_STATUS_T status = vchiq_remove_service(service->handle);
+		if (status == VCHIQ_SUCCESS) {
+			service_free(service);
+			service = NULL;
+		}
+
+		ret = vchiq_status_to_vchi(status);
+	}
+	return ret;
+}
+EXPORT_SYMBOL(vchi_service_destroy);
+
+int32_t vchi_get_peer_version( const VCHI_SERVICE_HANDLE_T handle, short *peer_version )
+{
+   int32_t ret = -1;
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   if(service)
+   {
+      VCHIQ_STATUS_T status = vchiq_get_peer_version(service->handle, peer_version);
+      ret = vchiq_status_to_vchi( status );
+   }
+   return ret;
+}
+EXPORT_SYMBOL(vchi_get_peer_version);
+
+/* ----------------------------------------------------------------------
+ * read a uint32_t from buffer.
+ * network format is defined to be little endian
+ * -------------------------------------------------------------------- */
+uint32_t
+vchi_readbuf_uint32(const void *_ptr)
+{
+	const unsigned char *ptr = _ptr;
+	return ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
+}
+
+/* ----------------------------------------------------------------------
+ * write a uint32_t to buffer.
+ * network format is defined to be little endian
+ * -------------------------------------------------------------------- */
+void
+vchi_writebuf_uint32(void *_ptr, uint32_t value)
+{
+	unsigned char *ptr = _ptr;
+	ptr[0] = (unsigned char)((value >> 0)  & 0xFF);
+	ptr[1] = (unsigned char)((value >> 8)  & 0xFF);
+	ptr[2] = (unsigned char)((value >> 16) & 0xFF);
+	ptr[3] = (unsigned char)((value >> 24) & 0xFF);
+}
+
+/* ----------------------------------------------------------------------
+ * read a uint16_t from buffer.
+ * network format is defined to be little endian
+ * -------------------------------------------------------------------- */
+uint16_t
+vchi_readbuf_uint16(const void *_ptr)
+{
+	const unsigned char *ptr = _ptr;
+	return ptr[0] | (ptr[1] << 8);
+}
+
+/* ----------------------------------------------------------------------
+ * write a uint16_t into the buffer.
+ * network format is defined to be little endian
+ * -------------------------------------------------------------------- */
+void
+vchi_writebuf_uint16(void *_ptr, uint16_t value)
+{
+	unsigned char *ptr = _ptr;
+	ptr[0] = (value >> 0)  & 0xFF;
+	ptr[1] = (value >> 8)  & 0xFF;
+}
+
+/***********************************************************
+ * Name: vchi_service_use
+ *
+ * Arguments: const VCHI_SERVICE_HANDLE_T handle
+ *
+ * Description: Routine to increment refcount on a service
+ *
+ * Returns: void
+ *
+ ***********************************************************/
+int32_t vchi_service_use(const VCHI_SERVICE_HANDLE_T handle)
+{
+	int32_t ret = -1;
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	if (service)
+		ret = vchiq_status_to_vchi(vchiq_use_service(service->handle));
+	return ret;
+}
+EXPORT_SYMBOL(vchi_service_use);
+
+/***********************************************************
+ * Name: vchi_service_release
+ *
+ * Arguments: const VCHI_SERVICE_HANDLE_T handle
+ *
+ * Description: Routine to decrement refcount on a service
+ *
+ * Returns: void
+ *
+ ***********************************************************/
+int32_t vchi_service_release(const VCHI_SERVICE_HANDLE_T handle)
+{
+	int32_t ret = -1;
+	SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+	if (service)
+		ret = vchiq_status_to_vchi(
+			vchiq_release_service(service->handle));
+	return ret;
+}
+EXPORT_SYMBOL(vchi_service_release);
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@d1 2
+a2 2
+/*
+ * Copyright (c) 2010-2011 Broadcom Corporation. All rights reserved.
+d4 28
+a31 13
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+d33 6
+a47 4
+#if defined(__KERNEL__)
+#include <linux/module.h>
+#endif
+
+d51 1
+a51 1
+   VCHIQ_SERVICE_HANDLE_T handle;
+d53 1
+a53 1
+   VCHIU_QUEUE_T queue;
+d55 2
+a56 2
+   VCHI_CALLBACK_T callback;
+   void *callback_param;
+d58 1
+a58 1
+   void *private_word;
+a64 1
+#ifdef WIN32
+d66 1
+a66 1
+mphi_get_func_table( void )
+d68 1
+a68 11
+   return NULL;
+}
+#endif
+
+/* ----------------------------------------------------------------------
+ * return pointer to the mphi message driver function table
+ * -------------------------------------------------------------------- */
+const VCHI_MESSAGE_DRIVER_T *
+vchi_mphi_message_driver_func_table( void )
+{
+   return NULL;
+d75 1
+a75 1
+single_get_func_table( void )
+d77 1
+a77 1
+   return NULL;
+d80 3
+a82 2
+VCHI_CONNECTION_T * vchi_create_connection( const VCHI_CONNECTION_API_T * function_table,
+                                            const VCHI_MESSAGE_DRIVER_T * low_level)
+d84 3
+a86 3
+   vcos_unused(function_table);
+   vcos_unused(low_level);
+   return NULL;
+d95 2
+d99 3
+a101 2
+ * Description: Routine to return a pointer to the current message (to allow in place processing)
+ *              The message can be removed using vchi_msg_remove when you're finished
+d106 4
+a109 4
+int32_t vchi_msg_peek( VCHI_SERVICE_HANDLE_T handle,
+                       void **data,
+                       uint32_t *msg_size,
+                       VCHI_FLAGS_T flags )
+d111 2
+a112 2
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_HEADER_T *header;
+d114 2
+a115 1
+   vcos_assert(flags == VCHI_FLAGS_NONE || flags == VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE);
+d117 3
+a119 3
+   if (flags == VCHI_FLAGS_NONE)
+      if (vchiu_queue_is_empty(&service->queue))
+         return -1;
+d121 1
+a121 1
+   header = vchiu_queue_peek(&service->queue);
+d124 1
+a124 1
+   *data = header+1;
+d126 1
+a126 1
+   *data = header->data;
+d128 1
+a128 1
+   *msg_size = header->size;
+d130 1
+a130 1
+   return 0;
+d132 1
+d139 2
+a140 1
+ * Description: Routine to remove a message (after it has been read with vchi_msg_peek)
+d145 1
+a145 1
+int32_t vchi_msg_remove( VCHI_SERVICE_HANDLE_T handle )
+d147 2
+a148 2
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_HEADER_T *header;
+d150 1
+a150 1
+   header = vchiu_queue_pop(&service->queue);
+d152 1
+a152 1
+   vchiq_release_message(service->handle, header);
+d154 1
+a154 1
+   return 0;
+d156 1
+d172 24
+a195 11
+int32_t vchi_msg_queue( VCHI_SERVICE_HANDLE_T handle,
+                        const void * data,
+                        uint32_t data_size,
+                        VCHI_FLAGS_T flags,
+                        void * msg_handle )
+{
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_ELEMENT_T element = {data, data_size};
+   VCHIQ_STATUS_T status;
+
+   vcos_unused(msg_handle);
+d197 1
+a197 14
+   vcos_assert(flags == VCHI_FLAGS_BLOCK_UNTIL_QUEUED);
+
+   status = vchiq_queue_message(service->handle, &element, 1);
+
+   // On some platforms, like linux kernel, vchiq_queue_message() may return
+   // VCHIQ_RETRY, so we need to implment a retry mechanism since this
+   // function is supposed to block until queued
+   while ( status == VCHIQ_RETRY )
+   {
+      vcos_sleep( 1 );
+      status = vchiq_queue_message(service->handle, &element, 1);
+   }
+
+   return vchiq_status_to_vchi(status);
+d199 1
+d215 40
+a254 85
+int32_t vchi_bulk_queue_receive( VCHI_SERVICE_HANDLE_T handle,
+                                 void * data_dst,
+                                 uint32_t data_size,
+                                 VCHI_FLAGS_T flags,
+                                 void * bulk_handle )
+{
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_BULK_MODE_T mode;
+   VCHIQ_STATUS_T status;
+
+   switch ((int)flags) {
+   case VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE | VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+      vcos_assert(service->callback);
+      mode = VCHIQ_BULK_MODE_CALLBACK;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE:
+      mode = VCHIQ_BULK_MODE_BLOCKING;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+   case VCHI_FLAGS_NONE:
+      mode = VCHIQ_BULK_MODE_NOCALLBACK;
+      break;
+   default:
+      vcos_assert(0);
+      return vchiq_status_to_vchi(VCHIQ_ERROR);
+   }
+
+   status = vchiq_bulk_receive(service->handle, data_dst, data_size,
+      bulk_handle, mode);
+
+   // On some platforms, like linux kernel, vchiq_bulk_receive() may return
+   // VCHIQ_RETRY, so we need to implment a retry mechanism since this
+   // function is supposed to block until queued
+   while ( status == VCHIQ_RETRY )
+   {
+      vcos_sleep( 1 );
+      status = vchiq_bulk_receive(service->handle, data_dst, data_size,
+         bulk_handle, mode);
+   }
+
+   return vchiq_status_to_vchi(status);
+}
+
+/***********************************************************
+ * Name: vchi_bulk_queue_receive_reloc
+ *
+ * Arguments:  VCHI_BULK_HANDLE_T handle,
+ *             VCHI_MEM_HANDLE_T h
+ *             uint32_t offset
+ *             const uint32_t data_size,
+ *             VCHI_FLAGS_T flags
+ *             void *bulk_handle
+ *
+ * Description: Routine to setup a relocatable rcv buffer
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_bulk_queue_receive_reloc( const VCHI_SERVICE_HANDLE_T handle,
+                                       VCHI_MEM_HANDLE_T h,
+                                       uint32_t offset,
+                                       uint32_t data_size,
+                                       const VCHI_FLAGS_T flags,
+                                       void * const bulk_handle )
+{
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_BULK_MODE_T mode;
+   VCHIQ_STATUS_T status;
+
+   switch ((int)flags) {
+   case VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE | VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+      vcos_assert(service->callback);
+      mode = VCHIQ_BULK_MODE_CALLBACK;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE:
+      mode = VCHIQ_BULK_MODE_BLOCKING;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+   case VCHI_FLAGS_NONE:
+      mode = VCHIQ_BULK_MODE_NOCALLBACK;
+      break;
+   default:
+      vcos_assert(0);
+      return vchiq_status_to_vchi(VCHIQ_ERROR);
+   }
+d256 1
+a256 14
+   status = vchiq_bulk_receive_handle(service->handle, h, (void*)offset,
+      data_size, bulk_handle, mode);
+
+   // On some platforms, like linux kernel, vchiq_bulk_receive_handle() may
+   // return VCHIQ_RETRY, so we need to implment a retry mechanism since
+   // this function is supposed to block until queued
+   while ( status == VCHIQ_RETRY )
+   {
+      vcos_sleep( 1 );
+      status = vchiq_bulk_receive_handle(service->handle, h, (void*)offset,
+         data_size, bulk_handle, mode);
+   }
+
+   return vchiq_status_to_vchi(status);
+d258 1
+d274 41
+a314 30
+int32_t vchi_bulk_queue_transmit( VCHI_SERVICE_HANDLE_T handle,
+                                  const void * data_src,
+                                  uint32_t data_size,
+                                  VCHI_FLAGS_T flags,
+                                  void * bulk_handle )
+{
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_BULK_MODE_T mode;
+   VCHIQ_STATUS_T status;
+
+   switch ((int)flags) {
+   case VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE | VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+      vcos_assert(service->callback);
+      mode = VCHIQ_BULK_MODE_CALLBACK;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_DATA_READ:
+   case VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE:
+      mode = VCHIQ_BULK_MODE_BLOCKING;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+   case VCHI_FLAGS_NONE:
+      mode = VCHIQ_BULK_MODE_NOCALLBACK;
+      break;
+   default:
+      vcos_assert(0);
+      return vchiq_status_to_vchi(VCHIQ_ERROR);
+   }
+
+   status = vchiq_bulk_transmit(service->handle, data_src, data_size,
+      bulk_handle, mode);
+d316 1
+a316 72
+   // On some platforms, like linux kernel, vchiq_bulk_transmit() may return
+   // VCHIQ_RETRY, so we need to implment a retry mechanism since this
+   // function is supposed to block until queued
+   while ( status == VCHIQ_RETRY )
+   {
+      vcos_sleep( 1 );
+      status = vchiq_bulk_transmit(service->handle, data_src, data_size,
+         bulk_handle, mode);
+   }
+
+   return vchiq_status_to_vchi(status);
+}
+
+/***********************************************************
+ * Name: vchi_bulk_queue_transmit_reloc
+ *
+ * Arguments:  VCHI_BULK_HANDLE_T handle,
+ *             VCHI_MEM_HANDLE_T h_src,
+ *             uint32_t offset,
+ *             uint32_t data_size,
+ *             VCHI_FLAGS_T flags,
+ *             void *bulk_handle
+ *
+ * Description: Routine to transmit some data from a relocatable buffer
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+
+int32_t vchi_bulk_queue_transmit_reloc( VCHI_SERVICE_HANDLE_T handle,
+                                        VCHI_MEM_HANDLE_T h_src,
+                                        uint32_t offset,
+                                        uint32_t data_size,
+                                        VCHI_FLAGS_T flags,
+                                        void * const bulk_handle )
+{
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_BULK_MODE_T mode;
+   VCHIQ_STATUS_T status;
+
+   switch ((int)flags) {
+   case VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE | VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+      vcos_assert(service->callback);
+      mode = VCHIQ_BULK_MODE_CALLBACK;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_DATA_READ:
+   case VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE:
+      mode = VCHIQ_BULK_MODE_BLOCKING;
+      break;
+   case VCHI_FLAGS_BLOCK_UNTIL_QUEUED:
+   case VCHI_FLAGS_NONE:
+      mode = VCHIQ_BULK_MODE_NOCALLBACK;
+      break;
+   default:
+      vcos_assert(0);
+      return vchiq_status_to_vchi(VCHIQ_ERROR);
+   }
+
+   status = vchiq_bulk_transmit_handle(service->handle, h_src, (void*)offset,
+      data_size, bulk_handle, mode);
+
+   // On some platforms, like linux kernel, vchiq_bulk_transmit_handle() may
+   // return VCHIQ_RETRY, so we need to implment a retry mechanism since this
+   // function is supposed to block until queued
+   while ( status == VCHIQ_RETRY )
+   {
+      vcos_sleep( 1 );
+      status = vchiq_bulk_transmit_handle(service->handle, h_src, (void*)offset,
+         data_size, bulk_handle, mode);
+   }
+
+   return vchiq_status_to_vchi(status);
+d318 1
+d334 15
+a348 14
+int32_t vchi_msg_dequeue( VCHI_SERVICE_HANDLE_T handle,
+                          void *data,
+                          uint32_t max_data_size_to_read,
+                          uint32_t *actual_msg_size,
+                          VCHI_FLAGS_T flags )
+{
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_HEADER_T *header;
+
+   vcos_assert(flags == VCHI_FLAGS_NONE || flags == VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE);
+
+   if (flags == VCHI_FLAGS_NONE)
+      if (vchiu_queue_is_empty(&service->queue))
+         return -1;
+d350 1
+a350 1
+   header = vchiu_queue_pop(&service->queue);
+d353 2
+a354 1
+   memcpy(data, header+1, header->size < max_data_size_to_read ? header->size : max_data_size_to_read);
+d356 2
+a357 1
+   memcpy(data, header->data, header->size < max_data_size_to_read ? header->size : max_data_size_to_read);
+d360 1
+a360 1
+   *actual_msg_size = header->size;
+d362 1
+a362 1
+   vchiq_release_message(service->handle, header);
+d364 1
+a364 1
+   return 0;
+d366 1
+d372 2
+a373 2
+ *             const void *data,
+ *             uint32_t data_size,
+d383 11
+a393 9
+vcos_static_assert(sizeof(VCHI_MSG_VECTOR_T) == sizeof(VCHIQ_ELEMENT_T));
+vcos_static_assert(offsetof(VCHI_MSG_VECTOR_T, vec_base) == offsetof(VCHIQ_ELEMENT_T, data));
+vcos_static_assert(offsetof(VCHI_MSG_VECTOR_T, vec_len) == offsetof(VCHIQ_ELEMENT_T, size));
+
+int32_t vchi_msg_queuev( VCHI_SERVICE_HANDLE_T handle,
+                         VCHI_MSG_VECTOR_T * vector,
+                         uint32_t count,
+                         VCHI_FLAGS_T flags,
+                         void *msg_handle )
+d395 1
+a395 1
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+d397 1
+a397 1
+   vcos_unused(msg_handle);
+d399 1
+a399 1
+   vcos_assert(flags == VCHI_FLAGS_BLOCK_UNTIL_QUEUED);
+d401 2
+a402 1
+   return vchiq_status_to_vchi(vchiq_queue_message(service->handle, (const VCHIQ_ELEMENT_T *)vector, count));
+d404 1
+a404 111
+
+#ifdef USE_MEMMGR
+
+/***********************************************************
+ * Name: vchi_msg_queuev_ex
+ *
+ * Arguments:  VCHI_SERVICE_HANDLE_T handle,
+ *             VCHI_MSG_VECTOR_EX_T *vector
+ *             uint32_t count
+ *             VCHI_FLAGS_T flags,
+ *             void *msg_handle
+ *
+ * Description: Thin wrapper to queue an array of messages onto a connection
+ * Supports resolving MEM_HANDLE's at last possible moment to avoid deadlocks.
+ *
+ * Currently just a shim, so deadlocks are still possible!
+ *
+ * Returns: int32_t - success == 0
+ *
+ ***********************************************************/
+int32_t vchi_msg_queuev_ex( const VCHI_SERVICE_HANDLE_T handle,
+                            VCHI_MSG_VECTOR_EX_T * const vector,
+                            const uint32_t count,
+                            const VCHI_FLAGS_T flags,
+                            void * const msg_handle )
+{
+   int32_t success = -1;
+   // For now, we don't actually support sending anything other than
+   // a pointer, so handles have to be patched up; this is likely
+   // to cause deadlocks. This code is not designed to be either
+   // pretty, efficient, or deadlock-free.
+
+   #define max_vecs 16
+   VCHI_MSG_VECTOR_T copy[max_vecs];
+   const uint8_t *orig[max_vecs];
+
+   int i;
+   vcos_unused(msg_handle);
+
+   if (count > sizeof(copy)/sizeof(copy[0]))
+   {
+      vcos_assert(0);
+      return -1;
+   }
+
+   for (i=0; i<count; i++)
+   {
+      VCHI_MSG_VECTOR_EX_T *v = vector+i;
+
+      switch (vector[i].type)
+      {
+      case VCHI_VEC_POINTER:
+         copy[i].vec_base = v->u.ptr.vec_base;
+         copy[i].vec_len =  v->u.ptr.vec_len;
+         break;
+      case VCHI_VEC_HANDLE:
+         vcos_assert(v->u.handle.offset+v->u.handle.vec_len <= mem_get_size(v->u.handle.handle));
+         copy[i].vec_base = (uint8_t*)mem_lock(v->u.handle.handle) + v->u.handle.offset;
+         orig[i] = copy[i].vec_base;
+         copy[i].vec_len = v->u.handle.vec_len;
+         break;
+      case VCHI_VEC_LIST:
+         vcos_assert(0); // FIXME: implement this
+         break;
+      default:
+         vcos_assert(0);
+      }
+   }
+   success = vchi_msg_queuev( handle,
+                              copy,
+                              count,
+                              flags &~ VCHI_FLAGS_INTERNAL,
+                              msg_handle );
+   if (vcos_verify(success == 0))
+   {
+      // now we need to patch up the vectors if any have been only partially consumed, and
+      // unlock memory handles.
+   
+      for (i=0; i<count; i++)
+      {
+         VCHI_MSG_VECTOR_EX_T *v = vector+i;
+
+         switch (vector[i].type)
+         {
+         case VCHI_VEC_POINTER:
+            if (flags & VCHI_FLAGS_ALLOW_PARTIAL)
+            {
+               v->u.ptr.vec_base = copy[i].vec_base;
+               v->u.ptr.vec_len  = copy[i].vec_len;
+            }
+            break;
+         case VCHI_VEC_HANDLE:
+            mem_unlock(v->u.handle.handle);
+            if (flags & VCHI_FLAGS_ALLOW_PARTIAL)
+            {
+               const uint8_t *old = orig[i];
+               uint32_t change = (const uint8_t*)copy[i].vec_base-old;
+               v->u.handle.offset += change;
+               v->u.handle.vec_len -= change;
+            }
+            break;
+         default:
+            vcos_assert(0);
+         }
+      }
+   }
+
+   return vchiq_status_to_vchi(success);
+}
+
+#endif
+d411 2
+a412 1
+ * Description: Routine to release a held message (after it has been read with vchi_msg_hold)
+d417 1
+a417 1
+int32_t vchi_held_msg_release( VCHI_HELD_MSG_T *message )
+d419 2
+a420 1
+   vchiq_release_message((VCHIQ_SERVICE_HANDLE_T)message->service, (VCHIQ_HEADER_T *)message->message);
+d422 1
+a422 1
+   return 0;
+d434 4
+a437 3
+ * Description: Routine to return a pointer to the current message (to allow in place processing)
+ *              The message is dequeued - don't forget to release the message using
+ *              vchi_held_msg_release when you're finished
+d442 5
+a446 5
+int32_t vchi_msg_hold( VCHI_SERVICE_HANDLE_T handle,
+                       void **data,
+                       uint32_t *msg_size,
+                       VCHI_FLAGS_T flags,
+                       VCHI_HELD_MSG_T *message_handle )
+d448 2
+a449 2
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   VCHIQ_HEADER_T *header;
+d451 2
+a452 1
+   vcos_assert(flags == VCHI_FLAGS_NONE || flags == VCHI_FLAGS_BLOCK_UNTIL_OP_COMPLETE);
+d454 3
+a456 3
+   if (flags == VCHI_FLAGS_NONE)
+      if (vchiu_queue_is_empty(&service->queue))
+         return -1;
+d458 1
+a458 1
+   header = vchiu_queue_pop(&service->queue);
+d461 1
+a461 1
+   *data = header+1;
+d463 1
+a463 1
+   *data = header->data;
+d465 1
+a465 1
+   *msg_size = header->size;
+d467 3
+a469 2
+   message_handle->service = (struct opaque_vchi_service_t *)service->handle;
+   message_handle->message = header;
+d471 1
+a471 1
+   return 0;
+d489 1
+a489 1
+int32_t vchi_initialise( VCHI_INSTANCE_T *instance_handle
+d491 1
+a491 1
+                         , void *private_word
+d493 1
+a493 1
+                         )
+d495 2
+a496 2
+   VCHIQ_INSTANCE_T instance;
+   VCHIQ_STATUS_T status;
+d498 1
+a498 1
+   status = vchiq_initialise(&instance
+d500 1
+a500 1
+                             , private_word
+d502 1
+a502 1
+                            );
+d504 1
+a504 1
+   *instance_handle = (VCHI_INSTANCE_T)instance;
+d506 1
+a506 1
+   return vchiq_status_to_vchi(status);
+d508 1
+d515 1
+a515 1
+ *            VCHI_INSTANCE_T instance_handle )
+d523 3
+a525 3
+int32_t vchi_connect( VCHI_CONNECTION_T **connections,
+                      const uint32_t num_connections,
+                      VCHI_INSTANCE_T instance_handle )
+d527 1
+a527 1
+   VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+d529 2
+a530 2
+   vcos_unused(connections);
+   vcos_unused(num_connections);
+d532 1
+a532 1
+   return vchiq_connect(instance);
+d534 1
+d548 1
+a548 1
+int32_t vchi_disconnect( VCHI_INSTANCE_T instance_handle )
+d550 2
+a551 2
+   VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+   return vchiq_status_to_vchi(vchiq_shutdown(instance));
+d553 1
+d577 2
+a578 1
+static VCHIQ_STATUS_T shim_callback(VCHIQ_REASON_T reason, VCHIQ_HEADER_T *header, VCHIQ_SERVICE_HANDLE_T handle, void *bulk_user)
+d580 2
+a581 1
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)VCHIQ_GET_SERVICE_USERDATA(handle);
+d583 40
+a622 34
+   switch (reason) {
+   case VCHIQ_MESSAGE_AVAILABLE:
+      vchiu_queue_push(&service->queue, header);
+
+      if (service->callback)
+         CALL_CALLBACK(service->callback_param, VCHI_CALLBACK_MSG_AVAILABLE, NULL);
+      break;
+   case VCHIQ_BULK_TRANSMIT_DONE:
+      if (service->callback)
+         CALL_CALLBACK(service->callback_param, VCHI_CALLBACK_BULK_SENT, bulk_user);
+      break;
+   case VCHIQ_BULK_RECEIVE_DONE:
+      if (service->callback)
+         CALL_CALLBACK(service->callback_param, VCHI_CALLBACK_BULK_RECEIVED, bulk_user);
+      break;
+   case VCHIQ_SERVICE_CLOSED:
+      if (service->callback)
+         CALL_CALLBACK(service->callback_param, VCHI_CALLBACK_SERVICE_CLOSED, NULL);
+      break;
+   case VCHIQ_SERVICE_OPENED:
+      /* No equivalent VCHI reason */
+      break;
+   case VCHIQ_BULK_TRANSMIT_ABORTED:
+      if (service->callback)
+         CALL_CALLBACK(service->callback_param, VCHI_CALLBACK_BULK_TRANSMIT_ABORTED, bulk_user);
+      break;
+   case VCHIQ_BULK_RECEIVE_ABORTED:
+      if (service->callback)
+         CALL_CALLBACK(service->callback_param, VCHI_CALLBACK_BULK_RECEIVE_ABORTED, bulk_user);
+      break;
+   default:
+      vcos_assert(0);
+      break;
+   }
+d624 1
+a624 1
+   return VCHIQ_SUCCESS;
+d628 1
+a628 1
+                                     SERVICE_CREATION_T *setup)
+d630 1
+a630 1
+   SHIM_SERVICE_T *service = vcos_calloc(1, sizeof(SHIM_SERVICE_T), "vchiq_shim");
+d632 1
+a632 1
+   vcos_unused(instance);
+d634 4
+a637 6
+   if (service)
+   {
+      if (vchiu_queue_init(&service->queue, 64))
+      {
+         service->callback = setup->callback;
+         service->callback_param = setup->callback_param;
+d639 1
+a639 1
+         service->private_word = vchiq_get_private_word(instance);
+d641 5
+a645 7
+      }
+      else
+      {
+         vcos_free(service);
+         service = NULL;
+      }
+   }
+d647 1
+a647 1
+   return service;
+d652 34
+a685 5
+   if (service)
+   {
+      vchiu_queue_delete(&service->queue);
+      vcos_free((void*)service);
+   }
+d687 1
+d689 23
+a711 15
+int32_t vchi_service_open( VCHI_INSTANCE_T instance_handle,
+                           SERVICE_CREATION_T *setup,
+                           VCHI_SERVICE_HANDLE_T *handle)
+{
+   VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+   SHIM_SERVICE_T *service = service_alloc(instance, setup);
+   if (service)
+   {
+      VCHIQ_STATUS_T status = vchiq_open_service(instance, setup->service_id, shim_callback, service, &service->handle);
+      if (status != VCHIQ_SUCCESS)
+      {
+         service_free(service);
+         service = NULL;
+      }
+   }
+d713 1
+a713 1
+   *handle = (VCHI_SERVICE_HANDLE_T)service;
+d715 1
+a715 1
+   return (service != NULL) ? 0 : -1;
+d717 1
+d719 1
+a719 3
+int32_t vchi_service_create( VCHI_INSTANCE_T instance_handle,
+                             SERVICE_CREATION_T *setup,
+                             VCHI_SERVICE_HANDLE_T *handle )
+d721 12
+a732 15
+   VCHIQ_INSTANCE_T instance = (VCHIQ_INSTANCE_T)instance_handle;
+   SHIM_SERVICE_T *service = service_alloc(instance, setup);
+   if (service)
+   {
+      VCHIQ_STATUS_T status = vchiq_add_service(instance, setup->service_id, shim_callback, service, &service->handle);
+      if (status != VCHIQ_SUCCESS)
+      {
+         service_free(service);
+         service = NULL;
+      }
+   }
+
+   *handle = (VCHI_SERVICE_HANDLE_T)service;
+
+   return (service != NULL) ? 0 : -1;
+d734 1
+d736 1
+a736 1
+int32_t vchi_service_close( const VCHI_SERVICE_HANDLE_T handle )
+d738 12
+a749 14
+   int32_t ret = -1;
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   if(service)
+   {
+      VCHIQ_STATUS_T status = vchiq_close_service(service->handle);
+      if (status == VCHIQ_SUCCESS)
+      {
+         service_free(service);
+         service = NULL;
+      }
+
+      ret = vchiq_status_to_vchi( status );
+   }
+   return ret;
+d751 1
+d753 1
+a753 1
+int32_t vchi_service_destroy( const VCHI_SERVICE_HANDLE_T handle )
+d759 1
+a759 7
+      VCHIQ_STATUS_T status = vchiq_remove_service(service->handle);
+      if (status == VCHIQ_SUCCESS)
+      {
+         service_free(service);
+         service = NULL;
+      }
+
+d764 1
+d771 1
+a771 1
+vchi_readbuf_uint32( const void *_ptr )
+d773 2
+a774 2
+   const unsigned char *ptr = _ptr;
+   return ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
+d782 1
+a782 1
+vchi_writebuf_uint32( void *_ptr, uint32_t value )
+d784 5
+a788 5
+   unsigned char *ptr = _ptr;
+   ptr[0] = (unsigned char)((value >> 0)  & 0xFF);
+   ptr[1] = (unsigned char)((value >> 8)  & 0xFF);
+   ptr[2] = (unsigned char)((value >> 16) & 0xFF);
+   ptr[3] = (unsigned char)((value >> 24) & 0xFF);
+d796 1
+a796 1
+vchi_readbuf_uint16( const void *_ptr )
+d798 2
+a799 2
+   const unsigned char *ptr = _ptr;
+   return ptr[0] | (ptr[1] << 8);
+d807 1
+a807 1
+vchi_writebuf_uint16( void *_ptr, uint16_t value )
+d809 3
+a811 3
+   unsigned char *ptr = _ptr;
+   ptr[0] = (value >> 0)  & 0xFF;
+   ptr[1] = (value >> 8)  & 0xFF;
+d824 1
+a824 1
+int32_t vchi_service_use( const VCHI_SERVICE_HANDLE_T handle )
+d826 5
+a830 7
+   int32_t ret = -1;
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   if(service)
+   {
+      ret = vchiq_status_to_vchi(vchiq_use_service(service->handle));
+   }
+   return ret;
+d832 1
+d844 1
+a844 1
+int32_t vchi_service_release( const VCHI_SERVICE_HANDLE_T handle )
+d846 6
+a851 7
+   int32_t ret = -1;
+   SHIM_SERVICE_T *service = (SHIM_SERVICE_T *)handle;
+   if(service)
+   {
+      ret = vchiq_status_to_vchi(vchiq_release_service(service->handle));
+   }
+   return ret;
+a852 15
+
+#if defined(__KERNEL__)
+EXPORT_SYMBOL(vchi_initialise);
+EXPORT_SYMBOL(vchi_connect);
+EXPORT_SYMBOL(vchi_bulk_queue_transmit);
+EXPORT_SYMBOL(vchi_msg_dequeue);
+EXPORT_SYMBOL(vchi_msg_queue);
+EXPORT_SYMBOL(vchi_msg_queuev);
+EXPORT_SYMBOL(vchi_msg_peek);
+EXPORT_SYMBOL(vchi_msg_remove);
+EXPORT_SYMBOL(vchi_service_close);
+EXPORT_SYMBOL(vchi_service_open);
+EXPORT_SYMBOL(vchi_service_create);
+EXPORT_SYMBOL(vchi_service_destroy);
+EXPORT_SYMBOL(vchi_service_use);
+a853 1
+#endif
+@
+

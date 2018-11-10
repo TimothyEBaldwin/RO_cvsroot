@@ -1,0 +1,327 @@
+head	1.3;
+access;
+symbols
+	SyncLib-0_05:1.3
+	SyncLib-0_04:1.3
+	SyncLib-0_03:1.3
+	SyncLib-0_02:1.2
+	SyncLib-0_01:1.1.1.1
+	initial:1.1.1.1
+	vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2016.05.08.16.35.48;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	zvjgRdIcLTMNlH5z;
+
+1.2
+date	2016.02.29.10.32.55;	author bavison;	state Exp;
+branches;
+next	1.1;
+commitid	GfO1CPVxSn8KyNWy;
+
+1.1
+date	2012.05.29.14.01.55;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	8LPhbDgGhYV0HC6w;
+
+1.1.1.1
+date	2012.05.29.14.01.55;	author bavison;	state Exp;
+branches;
+next	;
+commitid	8LPhbDgGhYV0HC6w;
+
+
+desc
+@@
+
+
+1.3
+log
+@Update atomic_process_smp to cope with the possibility of the process function altering the state of the exclusive monitor. Prefer CPS over MSR when performing PSR manipulation.
+Detail:
+  s/atomic - Since the exclusive monitor can have its state affected by almost anything, atomic_process_smp can't assume that the state remains stable across the call to the user's process function. Instead we must perform our LDREX-STREX sequence after the callback, manually checking that the value being updated hasn't been altered by anyone else while the process function was executing.
+  s/spin, s/spinrw - When disabling interrupts prefer CPS over MSR. Apart from making the sequences one instruction shorter, CPS generally delivers better performance than the equivalent MSR.
+Admin:
+  Tested on Cortex-A15
+
+
+Version 0.03. Tagged as 'SyncLib-0_03'
+@
+text
+@;
+; Copyright (c) 2012, Ben Avison
+; All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met:
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of the copyright holder nor the names of their
+;       contributors may be used to endorse or promote products derived from
+;       this software without specific prior written permission.
+;
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+; ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+; DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+; (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+; ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+; (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+;
+
+        GET     ListOpts
+        GET     Macros
+        GET     System
+        GET     CPU/Arch
+        GET     APCS/$APCS
+        GET     hdr/init
+        GET     hdr/vars
+
+Strex_Succeeded *       0
+Strex_Failed    *       1
+
+        AREA    |Asm$$Code|, CODE, READONLY
+
+        IF (SupportARMv6 :LAND: NoARMv6) :LOR: (SupportARMK :LAND: NoARMK) ; i.e. run-time detection is required
+        EXPORT  atomic_init
+atomic_init ROUT
+      [ zM
+        StaticBaseFromSL a4
+      ]
+      [ SupportARMv6 :LAND: NoARMv6
+        ADR     a2, atomic_update_uniproc
+        ADR     a3, atomic_process_uniproc
+        TST     a1, #CPU_Exclusive
+        ADRNE   a2, atomic_update_smp
+        ADRNE   a3, atomic_process_smp
+        Store   a2, a4, update_fn, ip
+        Store   a3, a4, process_fn, ip
+      ]
+      [ SupportARMK :LAND: NoARMK
+        ADR     a2, atomic_update_byte_uniproc
+        TST     a1, #CPU_ExclusiveB
+        ADRNE   a2, atomic_update_byte_smp
+        Store   a2, a4, update_byte_fn, ip
+      ]
+        Return  , LinkNotStacked
+        ENDIF
+
+
+        IF :LNOT: SupportARMv6
+atomic_update * atomic_update_uniproc
+atomic_process * atomic_process_uniproc
+        ELIF :LNOT: NoARMv6
+atomic_update * atomic_update_smp
+atomic_process * atomic_process_smp
+        ELSE
+atomic_update ROUT
+      [ zM
+        StaticBaseFromSL a4
+      ]
+        Load    pc, a4, update_fn, ip
+atomic_process ROUT
+      [ zM
+        StaticBaseFromSL a4
+      ]
+        Load    pc, a4, process_fn, ip
+        ENDIF
+
+        IF :LNOT: SupportARMK
+atomic_update_byte * atomic_update_byte_uniproc
+        ELIF :LNOT: NoARMv6
+atomic_update_byte * atomic_update_byte_smp
+        ELSE
+atomic_update_byte ROUT
+      [ zM
+        StaticBaseFromSL a4
+      ]
+        Load    pc, a4, update_byte_fn, ip
+        ENDIF
+
+
+        IF NoARMv6
+
+atomic_update_uniproc ROUT
+        ; Let's not worry about ARM2 support
+        SWP     a1, a1, [a2]
+        Return  , LinkNotStacked
+
+atomic_process_uniproc ROUT
+        FunctionEntry "v1-v3"
+        MOV     ip, a1
+        MOV     v1, a3
+        MRS     v2, CPSR
+        ORR     a4, v2, #I32_bit
+        MSR     CPSR_c, a4 ; IRQs now disabled
+        LDR     a1, [a3]
+        MOV     v3, a1
+        MOV     lr, pc
+        MOV     pc, ip
+        STR     a1, [v1]
+        MSR     CPSR_c, v2
+        MOV     a1, v3
+        Return  "v1-v3"
+
+        ENDIF
+
+        IF NoARMK
+
+atomic_update_byte_uniproc ROUT
+        ; Let's not worry about ARM2 support
+        SWPB    a1, a1, [a2]
+        Return  , LinkNotStacked
+
+        ENDIF
+
+
+        IF SupportARMv6
+
+atomic_update_smp ROUT
+        MOV     a3, a1
+01      LDREX   a1, [a2]
+        STREX   a4, a3, [a2]
+        TEQ     a4, #Strex_Failed
+        BEQ     %B01 ; another exclusive access happened between LDREX and STREX
+        Return  , LinkNotStacked
+
+atomic_process_smp ROUT
+        FunctionEntry "v1-v4"
+        MOV     v3, a3
+        MOV     v2, a2
+        MOV     v1, a1
+        ; The process function may affect the state of the exclusive monitor,
+        ; so we must perform the LDREX-STREX in one go afterwards (manually
+        ; checking [v3] for any changes that happened during the function call)
+01      LDR     a1, [v3]
+        MOV     a2, v2
+        MOV     v4, a1
+        BLX     v1 ; any CPU that has LDREX will have BLX too
+        LDREX   a2, [v3]
+        TEQ     a2, v4
+        STREXEQ ip, a1, [v3]
+        TEQEQ   ip, #Strex_Succeeded
+        BNE     %B01 ; another exclusive access happened between LDR and STREX
+        MOV     a1, v4
+        Return  "v1-v4"
+
+        ENDIF
+
+        IF SupportARMK
+
+atomic_update_byte_smp ROUT
+        MOV     a3, a1
+01      LDREXB  a1, [a2]
+        STREXB  a4, a3, [a2]
+        TEQ     a4, #Strex_Failed
+        BEQ     %B01 ; another exclusive access happened between LDREXB and STREXB
+        Return  , LinkNotStacked
+
+        ENDIF
+
+
+        IF (SupportARMv6 :LAND: NoARMv6) :LOR: (SupportARMK :LAND: NoARMK)
+
+        AREA    |Asm$$Data|, DATA
+
+      [ SupportARMv6 :LAND: NoARMv6
+update_fn
+        DCD     0
+process_fn
+        DCD     0
+      ]
+      [ SupportARMK :LAND: NoARMK
+update_byte_fn
+        DCD     0
+      ]
+
+        ENDIF
+
+
+        EXPORT  atomic_update
+        EXPORT  atomic_update_byte
+        EXPORT  atomic_process
+
+
+        END
+@
+
+
+1.2
+log
+@  Extra function to assist with ARMv8 compatibility
+Detail:
+  atomic_update_byte() is the equivalent of atomic_update() but deals with
+  byte-wide rather than word-wide data fields. It operates using either
+  SWPB or LDREXB/STREXB instructions, depending upon the architecture, and
+  is therefore suitable for updating any modules which currently use SWPB
+  explicitly in order to make them compatible with ARMv8 where the SWPB
+  instruction has been removed.
+Admin:
+  Tested on Raspberry Pi 3.
+
+Version 0.02. Tagged as 'SyncLib-0_02'
+@
+text
+@d148 4
+a151 1
+01      LDREX   a1, [v3]
+d155 5
+a159 3
+        STREX   ip, a1, [v3]
+        TEQ     ip, #Strex_Failed
+        BEQ     %B01 ; another exclusive access happened between LDREX and STREX
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d41 1
+a41 1
+        IF SupportARMv6 :LAND: NoARMv6 ; i.e. run-time detection is required
+d47 1
+d55 7
+d85 12
+d123 9
+d160 12
+d173 1
+a173 1
+        IF SupportARMv6 :LAND: NoARMv6
+d177 1
+d182 5
+d192 1
+@
+
+
+1.1.1.1
+log
+@  Initial import of SyncLib
+Detail:
+  SyncLib is a library containing architecture-independent synchronisation
+  primitives. It supports uniprocessor and SMP systems, even though RISC OS
+  itself does not (yet) support SMP - but it allows individual modules to
+  start to be modified in preparation for any such future support. The
+  library adjusts itself according to the architecture targeted by your
+  chosen build, so in particular when used in ROM builds, only supported for
+  the appropriate CPU(s) will be included.
+Admin:
+  SyncLib is used heavily by SDIODriver and SDFS - they have acted as a test
+  bed for the library and also as a proof of concept for SMP-ready modules.
+@
+text
+@@

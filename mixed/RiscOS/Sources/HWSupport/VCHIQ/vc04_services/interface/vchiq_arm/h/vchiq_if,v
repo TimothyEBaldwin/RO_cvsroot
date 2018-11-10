@@ -1,0 +1,424 @@
+head	1.2;
+access;
+symbols
+	VCHIQ-0_10:1.2
+	VCHIQ-0_09:1.2
+	VCHIQ-0_08:1.2
+	VCHIQ-0_07:1.2
+	VCHIQ-0_06:1.2
+	VCHIQ-0_05:1.2
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2013.03.03.20.23.34;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	uNS7q3oyxvlpXnGw;
+
+1.1
+date	2012.08.19.23.33.35;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.2
+log
+@Update to latest version of VCHIQ sources
+Detail:
+  This updates our VCHIQ sources to rev 95009dbb77 of the official sources from the Raspberry Pi Linux github repo.
+  From our perspective, the important changes are:
+  * Provides compatbility with the latest firmware
+  * Not compatible with older firmware (older than around Nov 2012?), including the firmware we've typically been using until now
+  * Clients of the module now need to specify the version number of the service they're communicating with
+  * Source is dual BSD/GPL licenced, with us opting to use the BSD license in order to allow the module to be included in ROM instead of as a softload on disc
+  * Ability to build softload version has been removed from the makefile, as it's now a redundant option
+  File changes:
+  - !MkRom - enable throwback
+  - Makefile - Update for building latest sources. Remove special softload rules. Enable ability to build ROM version.
+  - c/vchiq_riscos, s/asm - Update RISC OS compatbility layer to directly emulate the corresponding Linux calls now that the VCOS abstraction layer has been removed from the VCHIQ sources
+  - h/VCHIQ, h/VCHIQWrap, hdr/VCHIQ - Add the service version number entries to the vchiq_service_t/SERVICE_CREATION_T structs
+  - vc04_services/* - Updated to latest official sources, with relevant changes to allow compilation for RISC OS
+Admin:
+  Tested on Raspberry Pi
+  Updated GPU firmware will likely be required!
+
+
+Version 0.05. Tagged as 'VCHIQ-0_05'
+@
+text
+@/**
+ * Copyright (c) 2010-2012 Broadcom. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. The names of the above-listed copyright holders may not be used
+ *    to endorse or promote products derived from this software without
+ *    specific prior written permission.
+ *
+ * ALTERNATIVELY, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2, as published by the Free
+ * Software Foundation.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#ifndef VCHIQ_IF_H
+#define VCHIQ_IF_H
+
+#include "interface/vchi/vchi_mh.h"
+
+#define VCHIQ_SERVICE_HANDLE_INVALID 0
+
+#define VCHIQ_SLOT_SIZE     4096
+#define VCHIQ_MAX_MSG_SIZE  (VCHIQ_SLOT_SIZE - sizeof(VCHIQ_HEADER_T))
+#define VCHIQ_CHANNEL_SIZE  VCHIQ_MAX_MSG_SIZE /* For backwards compatibility */
+
+#define VCHIQ_MAKE_FOURCC(x0, x1, x2, x3) \
+			(((x0) << 24) | ((x1) << 16) | ((x2) << 8) | (x3))
+#define VCHIQ_GET_SERVICE_USERDATA(service) vchiq_get_service_userdata(service)
+#define VCHIQ_GET_SERVICE_FOURCC(service)   vchiq_get_service_fourcc(service)
+
+typedef enum {
+	VCHIQ_SERVICE_OPENED,         /* service, -, -             */
+	VCHIQ_SERVICE_CLOSED,         /* service, -, -             */
+	VCHIQ_MESSAGE_AVAILABLE,      /* service, header, -        */
+	VCHIQ_BULK_TRANSMIT_DONE,     /* service, -, bulk_userdata */
+	VCHIQ_BULK_RECEIVE_DONE,      /* service, -, bulk_userdata */
+	VCHIQ_BULK_TRANSMIT_ABORTED,  /* service, -, bulk_userdata */
+	VCHIQ_BULK_RECEIVE_ABORTED    /* service, -, bulk_userdata */
+} VCHIQ_REASON_T;
+
+typedef enum {
+	VCHIQ_ERROR   = -1,
+	VCHIQ_SUCCESS = 0,
+	VCHIQ_RETRY   = 1
+} VCHIQ_STATUS_T;
+
+typedef enum {
+	VCHIQ_BULK_MODE_CALLBACK,
+	VCHIQ_BULK_MODE_BLOCKING,
+	VCHIQ_BULK_MODE_NOCALLBACK,
+	VCHIQ_BULK_MODE_WAITING		/* Reserved for internal use */
+} VCHIQ_BULK_MODE_T;
+
+typedef enum {
+	VCHIQ_SERVICE_OPTION_AUTOCLOSE,
+	VCHIQ_SERVICE_OPTION_SLOT_QUOTA,
+	VCHIQ_SERVICE_OPTION_MESSAGE_QUOTA,
+	VCHIQ_SERVICE_OPTION_SYNCHRONOUS
+} VCHIQ_SERVICE_OPTION_T;
+
+typedef struct vchiq_header_struct {
+	/* The message identifier - opaque to applications. */
+	int msgid;
+
+	/* Size of message data. */
+	unsigned int size;
+
+#ifndef __riscos
+	char data[0];           /* message */
+#endif
+} VCHIQ_HEADER_T;
+
+typedef struct {
+	const void *data;
+	int size;
+} VCHIQ_ELEMENT_T;
+
+typedef unsigned int VCHIQ_SERVICE_HANDLE_T;
+
+typedef VCHIQ_STATUS_T (*VCHIQ_CALLBACK_T)(VCHIQ_REASON_T, VCHIQ_HEADER_T *,
+	VCHIQ_SERVICE_HANDLE_T, void *);
+
+typedef struct vchiq_service_base_struct {
+	int fourcc;
+	VCHIQ_CALLBACK_T callback;
+	void *userdata;
+} VCHIQ_SERVICE_BASE_T;
+
+typedef struct vchiq_service_params_struct {
+	int fourcc;
+	VCHIQ_CALLBACK_T callback;
+	void *userdata;
+	short version;       /* Increment for non-trivial changes */
+	short version_min;   /* Update for incompatible changes */
+} VCHIQ_SERVICE_PARAMS_T;
+
+typedef struct vchiq_config_struct {
+	int max_msg_size;
+	int bulk_threshold; /* The message size aboce which it is better to use
+				a bulk transfer (<= max_msg_size) */
+	int max_outstanding_bulks;
+	int max_services;
+	short version;      /* The version of VCHIQ */
+	short version_min;  /* The minimum compatible version of VCHIQ */
+} VCHIQ_CONFIG_T;
+
+typedef struct vchiq_instance_struct *VCHIQ_INSTANCE_T;
+typedef void (*VCHIQ_REMOTE_USE_CALLBACK_T)(void *cb_arg);
+
+#ifdef __riscos
+extern VCHIQ_STATUS_T vchiq_initialise(VCHIQ_INSTANCE_T *pinstance, void *private_word);
+extern void *vchiq_get_private_word(VCHIQ_INSTANCE_T instance);
+#else
+extern VCHIQ_STATUS_T vchiq_initialise(VCHIQ_INSTANCE_T *pinstance);
+#endif
+extern VCHIQ_STATUS_T vchiq_shutdown(VCHIQ_INSTANCE_T instance);
+extern VCHIQ_STATUS_T vchiq_connect(VCHIQ_INSTANCE_T instance);
+extern VCHIQ_STATUS_T vchiq_add_service(VCHIQ_INSTANCE_T instance,
+	const VCHIQ_SERVICE_PARAMS_T *params,
+	VCHIQ_SERVICE_HANDLE_T *pservice);
+extern VCHIQ_STATUS_T vchiq_open_service(VCHIQ_INSTANCE_T instance,
+	const VCHIQ_SERVICE_PARAMS_T *params,
+	VCHIQ_SERVICE_HANDLE_T *pservice);
+extern VCHIQ_STATUS_T vchiq_close_service(VCHIQ_SERVICE_HANDLE_T service);
+extern VCHIQ_STATUS_T vchiq_remove_service(VCHIQ_SERVICE_HANDLE_T service);
+extern VCHIQ_STATUS_T vchiq_use_service(VCHIQ_SERVICE_HANDLE_T service);
+extern VCHIQ_STATUS_T vchiq_use_service_no_resume(
+	VCHIQ_SERVICE_HANDLE_T service);
+extern VCHIQ_STATUS_T vchiq_release_service(VCHIQ_SERVICE_HANDLE_T service);
+
+extern VCHIQ_STATUS_T vchiq_queue_message(VCHIQ_SERVICE_HANDLE_T service,
+	const VCHIQ_ELEMENT_T *elements, int count);
+extern void           vchiq_release_message(VCHIQ_SERVICE_HANDLE_T service,
+	VCHIQ_HEADER_T *header);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_transmit(VCHIQ_SERVICE_HANDLE_T service,
+	const void *data, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_receive(VCHIQ_SERVICE_HANDLE_T service,
+	void *data, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_transmit_handle(
+	VCHIQ_SERVICE_HANDLE_T service, VCHI_MEM_HANDLE_T handle,
+	const void *offset, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_receive_handle(
+	VCHIQ_SERVICE_HANDLE_T service, VCHI_MEM_HANDLE_T handle,
+	void *offset, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_bulk_transmit(VCHIQ_SERVICE_HANDLE_T service,
+	const void *data, int size, void *userdata, VCHIQ_BULK_MODE_T mode);
+extern VCHIQ_STATUS_T vchiq_bulk_receive(VCHIQ_SERVICE_HANDLE_T service,
+	void *data, int size, void *userdata, VCHIQ_BULK_MODE_T mode);
+extern VCHIQ_STATUS_T vchiq_bulk_transmit_handle(VCHIQ_SERVICE_HANDLE_T service,
+	VCHI_MEM_HANDLE_T handle, const void *offset, int size, void *userdata,
+	VCHIQ_BULK_MODE_T mode);
+extern VCHIQ_STATUS_T vchiq_bulk_receive_handle(VCHIQ_SERVICE_HANDLE_T service,
+	VCHI_MEM_HANDLE_T handle, void *offset, int size, void *userdata,
+	VCHIQ_BULK_MODE_T mode);
+extern int   vchiq_get_client_id(VCHIQ_SERVICE_HANDLE_T service);
+extern void *vchiq_get_service_userdata(VCHIQ_SERVICE_HANDLE_T service);
+extern int   vchiq_get_service_fourcc(VCHIQ_SERVICE_HANDLE_T service);
+extern VCHIQ_STATUS_T vchiq_get_config(VCHIQ_INSTANCE_T instance,
+	int config_size, VCHIQ_CONFIG_T *pconfig);
+extern VCHIQ_STATUS_T vchiq_set_service_option(VCHIQ_SERVICE_HANDLE_T service,
+	VCHIQ_SERVICE_OPTION_T option, int value);
+
+extern VCHIQ_STATUS_T vchiq_remote_use(VCHIQ_INSTANCE_T instance,
+	VCHIQ_REMOTE_USE_CALLBACK_T callback, void *cb_arg);
+extern VCHIQ_STATUS_T vchiq_remote_release(VCHIQ_INSTANCE_T instance);
+
+extern VCHIQ_STATUS_T vchiq_dump_phys_mem(VCHIQ_SERVICE_HANDLE_T service,
+	void *ptr, size_t num_bytes);
+
+extern VCHIQ_STATUS_T vchiq_get_peer_version(VCHIQ_SERVICE_HANDLE_T handle,
+      short *peer_version);
+
+#endif /* VCHIQ_IF_H */
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@d1 2
+a2 2
+/*
+ * Copyright (c) 2010-2011 Broadcom Corporation. All rights reserved.
+d4 12
+a15 4
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+d17 3
+a19 4
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+d21 11
+a31 3
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+d39 10
+a48 7
+#define VCHIQ_SLOT_SIZE          4096
+#define VCHIQ_MAX_MSG_SIZE       (VCHIQ_SLOT_SIZE - sizeof(VCHIQ_HEADER_T))
+#define VCHIQ_CHANNEL_SIZE       VCHIQ_MAX_MSG_SIZE /* For backwards compatibility */
+
+#define VCHIQ_MAKE_FOURCC(x0, x1, x2, x3)     (((x0) << 24) | ((x1) << 16) | ((x2) << 8) | (x3))
+#define VCHIQ_GET_SERVICE_USERDATA(service)   (service->userdata)
+#define VCHIQ_GET_SERVICE_FOURCC(service)     (service->fourcc)
+d51 7
+a57 7
+   VCHIQ_SERVICE_OPENED,         // service, -, -
+   VCHIQ_SERVICE_CLOSED,         // service, -, -
+   VCHIQ_MESSAGE_AVAILABLE,      // service, header, -
+   VCHIQ_BULK_TRANSMIT_DONE,     // service, -, bulk_userdata
+   VCHIQ_BULK_RECEIVE_DONE,      // service, -, bulk_userdata
+   VCHIQ_BULK_TRANSMIT_ABORTED,  // service, -, bulk_userdata
+   VCHIQ_BULK_RECEIVE_ABORTED    // service, -, bulk_userdata
+d60 4
+a63 5
+typedef enum
+{
+   VCHIQ_ERROR   = -1,
+   VCHIQ_SUCCESS = 0,
+   VCHIQ_RETRY   = 1
+d66 5
+a70 5
+typedef enum
+{
+   VCHIQ_BULK_MODE_CALLBACK,
+   VCHIQ_BULK_MODE_BLOCKING,
+   VCHIQ_BULK_MODE_NOCALLBACK
+d73 5
+a77 5
+typedef enum
+{
+   VCHIQ_SERVICE_OPTION_AUTOCLOSE,
+   VCHIQ_SERVICE_OPTION_SLOT_QUOTA,
+   VCHIQ_SERVICE_OPTION_MESSAGE_QUOTA
+a79 6
+#ifdef __HIGHC__
+/* Allow zero-sized arrays without warnings */
+#pragma warning (push)
+#pragma warning (disable : 4200)
+#endif
+
+d81 2
+a82 2
+   /* The message identifier - opaque to applications. */
+   int msgid;
+d84 2
+a85 2
+   /* Size of message data. */
+   unsigned int size;      
+d88 1
+a88 1
+   char data[0];           /* message */
+a91 4
+#ifdef __HIGHC__
+#pragma warning (pop)
+#endif
+
+d93 2
+a94 2
+   const void *data;
+   int size;
+d97 1
+a97 1
+typedef const struct vchiq_service_base_struct *VCHIQ_SERVICE_HANDLE_T;
+d99 2
+a100 1
+typedef VCHIQ_STATUS_T (*VCHIQ_CALLBACK_T)(VCHIQ_REASON_T, VCHIQ_HEADER_T *, VCHIQ_SERVICE_HANDLE_T, void *);
+d103 3
+a105 3
+   int fourcc;
+   VCHIQ_CALLBACK_T callback;
+   void *userdata;
+d109 5
+a113 5
+   int fourcc;
+   VCHIQ_CALLBACK_T callback;
+   void *userdata;
+   short version;       /* Increment for non-trivial changes */
+   short version_min;   /* Update for incompatible changes */
+d117 7
+a123 7
+   int max_msg_size;
+   int bulk_threshold; /* The message size aboce which it is better to use
+                          a bulk transfer (<= max_msg_size) */
+   int max_outstanding_bulks;
+   int max_services;
+   short version;      /* The version of VCHIQ */
+   short version_min;  /* The minimum compatible version of VCHIQ */
+d127 1
+a127 1
+typedef void (*VCHIQ_REMOTE_USE_CALLBACK_T)(void* cb_arg);
+d130 1
+a130 1
+extern VCHIQ_STATUS_T vchiq_initialise(VCHIQ_INSTANCE_T *pinstance,void *private_word);
+d137 6
+a142 8
+extern VCHIQ_STATUS_T vchiq_add_service(VCHIQ_INSTANCE_T instance, int fourcc, VCHIQ_CALLBACK_T callback, void *userdata, VCHIQ_SERVICE_HANDLE_T *pservice);
+extern VCHIQ_STATUS_T vchiq_open_service(VCHIQ_INSTANCE_T instance, int fourcc, VCHIQ_CALLBACK_T callback, void *userdata, VCHIQ_SERVICE_HANDLE_T *pservice);
+extern VCHIQ_STATUS_T vchiq_add_service_params(VCHIQ_INSTANCE_T instance,
+   const VCHIQ_SERVICE_PARAMS_T *params,
+   VCHIQ_SERVICE_HANDLE_T *pservice);
+extern VCHIQ_STATUS_T vchiq_open_service_params(VCHIQ_INSTANCE_T instance,
+   const VCHIQ_SERVICE_PARAMS_T *params,
+   VCHIQ_SERVICE_HANDLE_T *pservice);
+d146 2
+d150 31
+a180 13
+extern VCHIQ_STATUS_T vchiq_queue_message(VCHIQ_SERVICE_HANDLE_T service, const VCHIQ_ELEMENT_T *elements, int count);
+extern void           vchiq_release_message(VCHIQ_SERVICE_HANDLE_T service, VCHIQ_HEADER_T *header);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_transmit(VCHIQ_SERVICE_HANDLE_T service, const void *data, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_receive(VCHIQ_SERVICE_HANDLE_T service, void *data, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_transmit_handle(VCHIQ_SERVICE_HANDLE_T service, VCHI_MEM_HANDLE_T handle, const void *offset, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_queue_bulk_receive_handle(VCHIQ_SERVICE_HANDLE_T service, VCHI_MEM_HANDLE_T handle, void *offset, int size, void *userdata);
+extern VCHIQ_STATUS_T vchiq_bulk_transmit(VCHIQ_SERVICE_HANDLE_T service, const void *data, int size, void *userdata, VCHIQ_BULK_MODE_T mode);
+extern VCHIQ_STATUS_T vchiq_bulk_receive(VCHIQ_SERVICE_HANDLE_T service, void *data, int size, void *userdata, VCHIQ_BULK_MODE_T mode);
+extern VCHIQ_STATUS_T vchiq_bulk_transmit_handle(VCHIQ_SERVICE_HANDLE_T service, VCHI_MEM_HANDLE_T handle, const void *offset, int size, void *userdata, VCHIQ_BULK_MODE_T mode);
+extern VCHIQ_STATUS_T vchiq_bulk_receive_handle(VCHIQ_SERVICE_HANDLE_T service, VCHI_MEM_HANDLE_T handle, void *offset, int size, void *userdata, VCHIQ_BULK_MODE_T mode);
+extern int            vchiq_get_client_id(VCHIQ_SERVICE_HANDLE_T service);
+extern VCHIQ_STATUS_T vchiq_get_config(VCHIQ_INSTANCE_T instance, int config_size, VCHIQ_CONFIG_T *pconfig);
+extern VCHIQ_STATUS_T vchiq_set_service_option(VCHIQ_SERVICE_HANDLE_T service, VCHIQ_SERVICE_OPTION_T option, int value);
+d182 2
+a183 1
+extern VCHIQ_STATUS_T vchiq_remote_use(VCHIQ_INSTANCE_T instance, VCHIQ_REMOTE_USE_CALLBACK_T callback, void* cb_arg);
+d186 5
+a190 1
+extern VCHIQ_STATUS_T vchiq_dump_phys_mem( VCHIQ_SERVICE_HANDLE_T service, void *ptr, size_t num_bytes );
+@
+

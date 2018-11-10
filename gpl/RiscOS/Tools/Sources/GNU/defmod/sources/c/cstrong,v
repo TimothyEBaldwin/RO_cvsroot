@@ -1,0 +1,2746 @@
+head	1.4;
+access;
+symbols
+	defmod-6_23:1.4
+	defmod-6_22:1.4
+	defmod-6_21:1.3
+	defmod-6_01:1.2
+	defmod-5_50_prerelease:1.1.1.1
+	oslib-5_5_prerelease:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2001.06.07.12.24.26;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.06.06.12.48.09;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.04.18.11.52.29;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.11.18.11.10.49;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.11.18.11.10.49;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Changes to cstrong.c for UNIX compatibility.
+  Switching macros inverted.
+Detail:
+  Tested.
+Admin:
+  Still works.
+
+
+Version 6.22. Tagged as 'defmod-6_22'
+@
+text
+@/*cstrong.c - output an help file given a module defn*/
+
+/*OSLib---efficient, type-safe, transparent, extensible,\n"
+   register-safe A P I coverage of RISC O S*/
+/*Copyright © 1994 Jonathan Coxhead*/
+
+/*
+      OSLib is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 1, or (at your option)
+   any later version.
+
+      OSLib is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+      You should have received a copy of the GNU General Public License
+   along with this programme; if not, write to the Free Software
+   Foundation, Inc, 675 Mass Ave, Cambridge, MA 02139, U S A.
+*/
+
+/*
+   20001120 TV Major re-work to emit StrongHelp2 format files,
+               sub-divided into consts, types, and SWIs, and
+               alphabetically sorted
+   20010130 TV fixes calls to *printf with null arguments (Timothy Baldwin)
+*/
+
+//#define TRACE 1
+
+/*From CLib*/
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <kernel.h>     /* TV 990127 */
+#include <stddef.h>
+
+/*From OSLib*/
+#include "macros.h"
+#include "os.h"
+#include "osfile.h"
+#include "territory.h"
+
+/*From Support*/
+#include "x.h"
+#include "lookup.h"
+#include "trace.h"
+
+/*local*/
+#include "def.h"
+#include "cstrong.h"
+
+#define INDEX_MAX 1000        /* max number of items in each index */
+#define INDEX_COLUMNS 1       /* number of columns on index pages */
+#define DESCRIPTION_MAX 256   /* max no of chars in description line */
+
+// sub-manual names
+#define CONSTS _consts
+#define TYPES _types
+#define SWIS _swis
+#define SEP "_"
+
+#ifdef EXECUTE_ON_UNIX
+#  define DIRSEP "/"
+#else
+#  define DIRSEP "."
+#endif
+
+/* type definitions */
+
+/* global variables */
+static int            Entry_Count;             /* number of items in index */
+static char          *Strings[ INDEX_MAX ];    /* object names for the index */
+
+
+/**************************************************************************/
+/* return a pointer to a static string containing |level| tab chars
+*/
+static char* indent( int level )
+{
+   static char string[32];
+
+   if( level < 0 ) level = 0;
+   level %= 16;
+
+   *string = '\0';
+   while( level -- > 0 )
+      strcat( string, " \t" );
+
+   return string;
+}
+
+
+/****************************************************************/
+/* case insensitive strcmp
+** ignoring underscores
+*/
+static int ustricmp( const char *String1, const char *String2 )
+{
+  int iStatus;
+
+  do
+  {
+      while( *String1 && *String1 == '_' )
+         String1++;
+      while( *String2 && *String2 == '_' )
+         String2++;
+
+      iStatus = toupper( *String1 ) - toupper( *String2 );
+  }
+  while( iStatus == 0 && *String1++ != '\0' && *String2++ != '\0' );
+
+  return iStatus;
+}
+
+
+/****************************************************************/
+/* compare two strings */
+static int Cmp( void const *v0, void const *v1 )
+{
+   int cmp = 0;
+
+   #define s0 (*(const char**)v0)
+   #define s1 (*(const char**)v1)
+
+   cmp = ustricmp( s0, s1 );
+
+//   tracef( "cmp (\"%s\" \"%s\") = %i\n" _ s0 _ s1 _ SGN(cmp) );
+   return cmp;
+}
+
+
+/****************************************************************/
+/* create and open a data file <path_name>.<prefix>_.<suffix>
+** returns file handle
+** throws exception on error
+*/
+static FILE *open_file( const char *path_name,
+                        const char *name,
+                        osbool searchable
+                      )
+{
+   char prefix[ FILENAME_MAX + 1 ];
+   char data_name[ FILENAME_MAX + 1 ];
+   FILE *help_data = NULL;
+   char *suffix;
+
+   /* extract the module name prefix */
+   suffix = strchr( name, '_' );
+   prefix[ 0 ] = '\0';
+   if( suffix )
+   {
+      strncat( prefix, name, suffix-name );
+   }
+
+   /* ensure the directory exists */
+   sprintf( data_name, "%s" DIRSEP "%s" SEP, path_name, prefix );
+   tracef( "open_file - creating %s\n" _ data_name );
+   osfile_create_dir( data_name, 0 );
+
+   /* create the file */
+   sprintf( data_name,
+            "%s" DIRSEP "%s" SEP DIRSEP "%s",
+            path_name,
+            prefix,
+            suffix? suffix + 1 : name
+          );
+   tracef( "open_file - opening %s\n" _ data_name );
+   if( ( help_data = fopen( data_name, searchable?"w":"wb" ) ) == NULL )
+      x_THROW_LAST_ERROR();
+
+   return help_data;
+}
+
+/****************************************************************/
+/* write non-index page header
+** returns number of characters written
+** throws exception on error
+*/
+static int header( FILE* file, const char* name, const char* title )
+{
+   int i;
+   if ( ( i =  fprintf( file,
+                        "%s\n"
+                        "#Parent %s_\n"
+                        "#Wrap Off\n"
+                        "#FH3:OSLib: %s\n"
+                        "#Line\n"
+                        "#Tab ,fcode ,fcode ,fcode ,fcode ,fcode\n"
+                        "Defined in:%soslib/<%s=>%s_>.h\n",
+                        name,
+                        title,
+                        name,
+                        indent(1),
+                        title,
+                        title
+                      )
+        ) < 0
+      )
+      x_THROW_LAST_ERROR();
+   return i;
+}
+
+/****************************************************************/
+/* create and open a new non-index page, and write its header
+** returns file handle
+** throws exception on error
+*/
+static FILE *open_page( const char *path_name,
+                        const char *page_name,
+                        const char *title
+                      )
+{
+   FILE* file;
+
+   /* Open the file */
+   file = open_file( path_name, page_name, TRUE );
+
+   /* write page header */
+   header( file, page_name, title );
+
+   return file;
+}
+
+
+/****************************************************************/
+/* clear the index */
+static void index_clear()
+{
+   for( ; Entry_Count > 0; Entry_Count-- )
+   {
+      tracef( "free %i %x\n" _ Entry_Count - 1 _ Strings[Entry_Count - 1] );
+      free( Strings [Entry_Count - 1] );
+   }
+}
+
+
+/****************************************************************/
+/* Create a new record in the array of index entries,
+**   preparatory to writing the index file.
+**    handles the special case of an object name not containing an underscore
+** throws exception on error
+*/
+static void index_entry( const char *entry )
+{
+   x_LOCAL_ERROR( Error_overflow, 0x101, "Index Overflow" );
+
+   tracef ("entry %i -> \"%s\"\n" _ Entry_Count _ entry);
+   if( Entry_Count < INDEX_MAX )
+   {
+      if( strchr( entry, '_' ) )
+         Strings[ Entry_Count ] = qstrdup (entry);
+      else
+      {
+         /* need special redirection if the name contains no underscore */
+         char temp[def_ID_LIMIT];
+         sprintf( temp, "%s=>" SEP "%s", entry, entry );
+         Strings[ Entry_Count ] = qstrdup (temp);
+      }
+      Entry_Count++;
+   }
+   else
+     x_THROW( Error_overflow );
+}
+
+
+/****************************************************************/
+/* Create an index file
+** if type == NULL, then write !root
+** returns 0
+** throws exception on error
+*/
+static int index_file(  const char* path_name,
+                        const char* title,
+                        const char* type
+                     )
+{
+   int rc = 0;
+   int i;
+   FILE *index;
+   char temp_name[ FILENAME_MAX + 1 ];
+   x_exception x0;
+
+   tracef ("index_file type \"%s\"\n" _ type ? type : "!Root");
+
+   // create the directory/file
+   sprintf( temp_name,
+            "%s" SEP "%s",
+            title,
+            type==NULL ?
+               "!Root":
+               type
+          );
+   if ( ( index = open_file( path_name, temp_name, FALSE ) ) == NULL )
+   {
+      x_THROW_LAST_ERROR();
+   }
+   else
+   {
+      x_TRY( &x0 )
+      {
+         // sort the index
+         qsort ( Strings, Entry_Count, sizeof Strings[0], &Cmp);
+
+         // write the header
+         if ( fprintf( index,
+                        "%s%s\n"
+                        "#Parent OSLib:!Root\n"
+                        "#Wrap Off\n"
+                        "#fH2:OSLib: %s.h%s%s\n"
+                        "#Line\n"
+                        "#Table Columns %d\n",
+                        title,
+                        type ? type : "",
+                        title,
+                        (type && *type) ? " - " : "",
+                        (type && *type) ?
+                           (*type == '_') ? type+1 : type
+                           :  "",
+                        (type && *type) ? INDEX_COLUMNS : 3
+                     ) < 0
+            ) x_THROW_LAST_ERROR();
+
+         // write the index
+         for( i = 0; i < Entry_Count; i++ )
+         {
+            if ( fprintf( index,
+                          "<%s>\n", Strings[i]
+                        ) < 0
+               ) x_THROW_LAST_ERROR();
+         }
+
+         // write the tailer
+         if ( rc >= 0 &&
+               fprintf( index,
+                         "#EndTable\n"
+                      ) < 0
+            ) x_THROW_LAST_ERROR();
+
+         fclose( index );
+         index_clear();
+
+      }
+      x_CATCH( &x0 )
+      {
+         fclose( index );
+         x_RETHROW( &x0 );
+      }
+   }
+
+   return rc;
+}
+
+
+/**************************************************************************/
+/*Prints a declaration of |v| as an object of type |t|, using |tag| as the
+**      structure tag.
+**  throws exception on error
+*/
+
+static void Print_Decl
+(
+   const char  *title,  /* module title */
+   FILE  *file,   /* output file */
+   const def_t  t,      /* structure definition */
+   const char  *tag,    /* structure tag */
+   const char  *v,      /* structure name */
+   osbool var,    /* */
+   int    nest    /* format nesting level */
+)
+{
+   int rc = 0;
+
+   switch (t->tag)
+   {
+      case def_TYPE_INT:
+         if ((rc = fprintf (file, v == NULL? "int": "int %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_SHORT:
+         if ((rc = fprintf (file, v == NULL? "short": "short %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_BYTE:
+         if ((rc = fprintf (file, v == NULL? "byte": "byte %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_CHAR:
+         if ((rc = fprintf (file, v == NULL? "char": "char %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_BITS:
+         if ((rc = fprintf (file, v == NULL? "bits": "bits %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_BYTES:
+         if ((rc = fprintf (file, v == NULL? "bytes": "bytes %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_BOOL:
+         if ((rc = fprintf (file, v == NULL? "osbool": "osbool %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_REF:
+      {
+         char v1 [def_ID_LIMIT + 1];
+
+         if (v == NULL || v [0] == '/')
+         {
+            if (v != NULL)
+            {
+               if ((rc = sprintf (v1, "*%s", v)) < 0)
+                  goto finish;
+            }
+            else
+            {
+               if ((rc = sprintf (v1, "*")) < 0)
+                  goto finish;
+            }
+         }
+         else
+         {
+            if ((rc = sprintf (v1, "*%s", v)) < 0)
+               goto finish;
+         }
+
+         Print_Decl( title,
+                     file,
+                     t->data AS ref,
+                     NULL,
+                     v1,
+                     FALSE,
+                     nest + 1
+                   );
+      }
+      break;
+
+      case def_TYPE_STRING:
+         if ((rc = fprintf (file, "char %s", v)) < 0)
+            goto finish; /*v != NULL*/
+      break;
+
+      case def_TYPE_ASM:
+         if ((rc = fprintf (file, "void %s", v)) < 0)
+            goto finish; /*v != NULL*/
+      break;
+
+      case def_TYPE_DATA:
+         if ((rc = fprintf (file, "byte %s", v)) < 0)
+            goto finish; /*v != NULL*/
+      break;
+
+      case def_TYPE_STRUCT:
+      case def_TYPE_UNION:
+      {
+         int i;
+
+         if( var ) nest += 1;
+
+         if
+         (
+            (
+               rc = (tag != NULL)?
+                     fprintf
+                     (
+                        file,
+                        "%s %s%s\n%s\\{\t",
+                        t->tag == def_TYPE_STRUCT? "struct":
+                           t->tag == def_TYPE_UNION?  "union": "list",
+                        tag,
+                        var? " \\\\" : "",
+                        indent( nest+1 )
+                     ):
+                     fprintf
+                     (
+                        file,
+                        "%s%s\n%s\\{\t",
+                        t->tag == def_TYPE_STRUCT? "struct":
+                           t->tag == def_TYPE_UNION?  "union": "list",
+                        var? " \\\\" : "",
+                        indent( nest+1 )
+                     )
+            ) < 0
+         )  goto finish;
+
+         /* Print any base name if available */
+         if (t->tag == def_TYPE_STRUCT && t->data AS list.base)
+         {
+            /* structure with base definition; emit its name */
+            char base [def_ID_LIMIT + 1];
+            char prefix [def_ID_LIMIT + 1];
+
+            def_as_macro (base, t->data AS list.base->data AS id);
+            def_as_prefix( prefix, t->data AS list.base->data AS id);
+
+            if (  (  rc = fprintf(  file,
+                                    "<%s_MEMBERS>\n%s",
+                                    base,
+                                    indent( nest+2 )
+                                 )
+                  ) < 0
+               )
+               goto finish;
+         }
+
+         /* emit the structure member definitions */
+         for (i = 0; i < t->data AS list.count; i++)
+         {
+            if (i == t->data AS list.count - 1 &&
+                  t->tag == def_TYPE_STRUCT &&
+                  t->data AS list.ellipsis)
+            {
+               /* repeated member of a structure containing ellipsis */
+               char v1 [def_ID_LIMIT + 1];
+
+               if ( ( rc = sprintf( v1,
+                                    ( t->data AS list.members [i]->name [0] == '*' )?
+                                          "(%s) [%s]" : "%s [%s]",
+                                    t->data AS list.members [i]->name,
+                                    !var? "...": "N"
+                                  )
+                     ) < 0
+                  )
+                  goto finish;
+
+               Print_Decl(  title,
+                            file,
+                            t->data AS list.members [i],
+                            NULL,
+                            v1,
+                            var,
+                            nest+1
+                         );
+            }
+            else
+               /* normal member */
+               Print_Decl( title,
+                           file,
+                           t->data AS list.members [i],
+                           NULL,
+                           t->data AS list.members [i]->name,
+                           var,
+                           nest+1
+                         );
+
+            if ( ( rc = fprintf( file,
+                                 ";%s\n%s",
+                                 var? " \\\\" : "",
+                                 indent( (i == t->data AS list.count - 1)? nest + 1 : nest + 2 )
+                               )
+                 ) < 0
+               ) goto finish;
+         }
+
+         /* closing brace & struct name */
+         if ( ( rc = fprintf( file,
+#if 1 /* puts struct name on next line after brace */
+                              "}%s\n%s%s",
+                              var? " \\\\" : "",
+                              indent(nest+1),
+                              v
+#else
+                              "}\t%s",
+                              v
+#endif
+                            )
+              ) < 0
+            ) goto finish;
+      }
+      break;  /* end case data structure/union */
+
+      case def_TYPE_ROW:
+      {
+         char v1 [def_ID_LIMIT + 1];
+
+         if (v == NULL || v [0] == '/')
+            if (v != NULL)
+            {
+               if ((rc = sprintf (v1, "%s [%d]", v,
+                     t->data AS row.count)) < 0)
+                  goto finish;
+            }
+            else
+            {
+               if ((rc = sprintf (v1, "[%d]", t->data AS row.count)) < 0)
+                  goto finish;
+            }
+         else
+            if ((rc = sprintf (v1, v [0] == '*' ? "(%s) [%d]": "%s [%d]", v,
+                  t->data AS row.count)) < 0)
+               goto finish;
+
+         Print_Decl( title,
+                     file,
+                     t->data AS row.base,
+                     NULL,
+                     v1,
+                     FALSE,
+                     nest + 1
+                   );
+      }
+      break;
+
+      case def_TYPE_VOID:
+         if ((rc = fprintf (file, v == NULL? "void": "void %s", v)) < 0)
+            goto finish;
+      break;
+
+      case def_TYPE_ID:
+      {
+         char c_name [def_ID_LIMIT + 1], *ul;
+
+         def_as_extern (c_name, t->data AS id);
+
+         if (strncmp (c_name, title, strlen (title)) == 0)
+         {
+            /*Type name is of the form <title><other stuff>, so this will
+               definitely work. Note that we don't require an underscore -
+               this means that type names of the form <title><prefix>_<name>
+               are assumed to be defined locally.*/
+            if ((rc = fprintf (file, v == NULL? "<%s>": "<%s> %s", c_name, v)) < 0)
+               goto finish;
+         }
+         else if ((ul = strchr (c_name, '_')) != NULL)
+         {
+            /*Type name is not one of ours, but it has an underscore in it:
+               assume it comes from a module called whatever its prefix is.*/
+            if ( ( rc = fprintf( file,
+                                 ( v == NULL )?
+                                    "<%s=>%s>" :
+                                    "<%s=>%s> %s",
+                                 c_name,
+                                 c_name,
+                                 v
+                               )
+                  ) < 0
+               ) goto finish;
+         }
+         else
+         {
+            /*We have no idea. It's probably 'void'.*/
+            if ((rc = fprintf (file, v == NULL? "%s": "%s %s", c_name, v)) <
+                  0)
+               goto finish;
+         }
+      }
+      break;
+   }
+
+finish:
+   if( rc < 0 )
+      x_THROW_LAST_ERROR();
+}
+
+
+/****************************************************************/
+/* emit the description of a structure to file help_data
+**    returns 0
+**    throws exception on error
+*/
+static int print_struct_desc( FILE* help_data, def_t t )
+{
+   int rc = 0;
+
+   if (t != NULL)
+   {
+      if (t->description != NULL)
+      {
+         char temp[ DESCRIPTION_MAX ];
+         char *p1, *p2;
+
+         for ( p1 = t->description, p2 = temp;
+               *p1 != '\0' && p2 - temp < DESCRIPTION_MAX - 2;
+               p1++
+             )
+         {
+            switch( *p1 )
+            {
+            case '{':
+               /* escape this char */
+               *p2++ = '\\';
+               *p2++ = *p1;
+               break;
+
+            default:
+               *p2++ = *p1;
+               break;
+            }
+         }
+         *p2 = '\0';
+
+         if ( fprintf( help_data,
+                       "\n#Wrap On\n"
+                       "Description:\t%s\n"
+                       "#Wrap Off",
+                       temp
+                     ) < 0
+            ) x_THROW_LAST_ERROR();
+      }
+
+      if (t->tag == def_TYPE_STRUCT || t->tag == def_TYPE_UNION)
+      {
+         osbool first = TRUE;
+         int i;
+
+         /* print the field descriptions */
+         for ( i = 0; i < t->data AS list.count; i++ )
+            if ( t->data AS list.members [i]->description != NULL )
+            {
+               if ( fprintf(  help_data,
+                              "\n%s%s - %s",
+                              first? "Fields:\t": " \t",
+                              t->data AS list.members [i]->name,
+                              t->data AS list.members [i]->description
+                           ) < 0
+                  ) x_THROW_LAST_ERROR();
+
+               first = FALSE;
+            }
+      }
+   }
+
+    return rc;
+}
+
+
+/****************************************************************/
+/* Emit the list of constants associated with a type
+**
+** Throws exception on error
+*/
+static void print_const_list( FILE* help_data,
+                              const lookup_t consts,
+                              const def_t t,
+                              const char* type
+                            )
+{
+   void *context;
+   osbool first = TRUE;
+   char* cnst;
+   def_c c;
+   os_error* error;
+
+   context = NULL;
+   while (TRUE)
+   {
+      if ( ( error = lookup_enumerate( consts, &cnst, (void **) &c, &context ))
+            != NULL)
+         x_THROW( error );
+
+      if (context == 0) break;
+
+      /*loop invariant: we are at the end of the previous line*/
+
+      if (  c->type->tag == def_TYPE_ID &&
+            strcmp( c->type->data AS id, type ) == 0
+         )
+      {
+         char c_name [def_ID_LIMIT + 1];
+
+         if ( fprintf(  help_data,
+                        first ?  "\nValues:\t":
+                                 "\n\t"
+                     ) <0
+            ) x_THROW_LAST_ERROR();
+            first = FALSE;
+
+         def_as_macro( c_name, cnst );
+         if ( fprintf( help_data, "<%s>", c_name ) < 0 )
+            x_THROW_LAST_ERROR();
+      }
+   }
+
+}
+
+
+/****************************************************************/
+/* emit a a type declaration
+** throws exception on error
+*/
+static void emit_type(  const char* path,
+                        const char* c_title,
+                        const char* type,
+                        const lookup_t consts,
+                        const def_t t
+                     )
+{
+   FILE* help_data;
+   x_exception x0, x1;
+   int i;
+   char c_name[def_ID_LIMIT + 1];   /* C-style name of object */
+
+   /* format the type name as ModuleName_foo_bar */
+   def_as_extern (c_name, type);
+   tracef( "found %s\n" _ c_name );
+
+   /* test for abstract structure */
+   if (t == NULL || t->tag == def_TYPE_ABSTRACT)
+   {
+      /* create/open the page */
+      help_data = open_page( path, c_name, c_title );
+
+      x_TRY( &x0 )
+      {
+         if ( fprintf(  help_data,
+                        "Declaration:%stypedef struct \\{...} *%s;",
+                        indent(1),
+                        c_name
+                     ) < 0
+            ) x_THROW_LAST_ERROR();
+
+         /* print structure description, if available */
+         print_struct_desc( help_data, t );
+
+         /*Additionally supply a list of constants with values of that type.*/
+         print_const_list( help_data, consts, t, type );
+
+         fclose( help_data );
+         help_data = NULL;
+
+         /* add this entry to the index */
+         index_entry( c_name );
+      }
+         x_CATCH( &x0 )
+      {
+         fclose( help_data );
+         help_data = NULL;
+         x_RETHROW( &x0 );
+      }
+   } /* end abstract structure */
+
+   else
+   {
+      /* structure definition */
+      char base [def_ID_LIMIT + 1];
+
+      if (  t->tag == def_TYPE_STRUCT &&
+            t->data AS list.ellipsis &&
+            t->data AS list.count > 1
+         )
+      {
+         /* we have a variable-size structure, which is defined using a macro */
+         def_t def;
+
+         /* emit the macro */
+         def_as_macro( base,  type );
+         strcat( base, "_MEMBERS" );
+
+         /* create/open the page */
+         help_data = open_page( path, base, c_title );
+
+         x_TRY( &x0 )
+         {
+            if ( fprintf(  help_data,
+                           "Declaration:%s#define\t%s",
+                           indent(1), base
+                        ) < 0
+               )  x_THROW_LAST_ERROR();
+
+            if ( t->data AS list.base )
+            {
+               /* the structure is based upon another; print the base name */
+               char base [def_ID_LIMIT + 1];
+
+               def_as_macro( base,  t->data AS list.base->data AS id );
+               if ( fprintf( help_data,
+                             " \\\\\n%s%s_MEMBERS",
+                             indent(2),
+                             base
+                           ) < 0
+                  ) x_THROW_LAST_ERROR();
+            }
+
+            /* emit each structure member */
+            for ( i = 0; i < t->data AS list.count - 1; i++ )
+            {
+               if ( fprintf( help_data,
+                             " \\\\\n%s",
+                             indent(2)
+                           ) < 0
+                  ) x_THROW_LAST_ERROR();
+
+               Print_Decl( c_title,
+                           help_data,
+                           t->data AS list.members [i],
+                           NULL,
+                           t->data AS list.members [i]->name,
+                           TRUE,
+                           0
+                         );
+
+               if ( fprintf( help_data, ";" ) < 0 )
+                  x_THROW_LAST_ERROR();
+            }
+
+            fclose( help_data );
+            help_data = NULL;
+
+            /* add this entry to the index */
+            index_entry( base );
+         }
+         x_CATCH( &x0 )
+         {
+            fclose( help_data );
+            help_data = NULL;
+            x_RETHROW( &x0 );
+         }
+
+         /* Make up a new structure consisting of just the base */
+         def = x_ALLOC( def_sizeof_TYPE( def_TYPE_STRUCT ) );
+         memcpy( def, t, def_sizeof_TYPE( def_TYPE_STRUCT ) );
+
+         def -> data AS list.count -= 1;
+         def -> data AS list.ellipsis = FALSE;
+         strcpy( base, type );
+         strcat( base, "Base" );
+         def_as_extern( c_name, base );
+
+         x_TRY( &x0 )
+         {
+            help_data = open_page( path, c_name, c_title );
+
+            x_TRY( &x1 )
+            {
+               if ( fprintf(  help_data,
+                              "Declaration:%stypedef ",
+                              indent(1)
+                           ) < 0
+                  ) x_THROW_LAST_ERROR();
+
+               /* print the declaration */
+               Print_Decl( c_title, help_data, def, NULL, c_name, FALSE, 0 );
+
+               /* final semi-colon */
+               if ( fprintf (help_data, ";") < 0 )
+                  x_THROW_LAST_ERROR();
+
+               /* print structure description, if available */
+               print_struct_desc(  help_data, def );
+
+               /*Additionally supply a list of constants with values of that type.*/
+               print_const_list( help_data, consts, def, type );
+
+               fclose( help_data );
+               help_data = NULL;
+
+               /* add this entry to the index */
+               index_entry ( c_name);
+
+               free( def );
+            }
+            x_CATCH( &x1 )
+            {
+               fclose( help_data );
+               help_data = NULL;
+               x_RETHROW( &x1 );
+            }
+         }
+         x_CATCH( &x0 )
+         {
+            free( def );
+            x_RETHROW( &x0 );
+         }
+      }
+
+      /* finally emit the declared type definition */
+      def_as_extern( c_name, type );
+
+      /* open the page */
+      help_data = open_page( path, c_name, c_title );
+
+      x_TRY( &x0 )
+      {
+         if ( fprintf(  help_data,
+                        "Declaration:%stypedef ",
+                        indent(1)
+                     ) < 0
+            ) x_THROW_LAST_ERROR();
+
+         /* print the declaration */
+         Print_Decl( c_title, help_data, t, NULL, c_name, FALSE, 0);
+
+         /* final semi-colon */
+         if ( fprintf (help_data, ";") < 0)
+             x_THROW_LAST_ERROR();
+
+         /* print structure description, if available */
+         print_struct_desc(  help_data, t );
+
+         /*Additionally supply a list of constants with values of that type.*/
+         print_const_list( help_data, consts, t, type );
+
+         fclose( help_data );
+         help_data = NULL;
+
+         /* add this entry to the index */
+         index_entry ( c_name);
+      }
+      x_CATCH( &x0 )
+      {
+         fclose( help_data );
+         help_data = NULL;
+         x_RETHROW( &x0 );
+      }
+   }
+}
+
+/****************************************************************/
+/* main entry */
+os_error *cstrong_output
+(
+   char     *output,    /* path name to contain output */
+   char     *title,     /* module title */
+   char     *author,    /* unused */
+   lookup_t  needses,   /* unused */
+   lookup_t  consts,
+   lookup_t  types,
+   lookup_t  swis
+)
+{
+   os_error *error = NULL;
+   char     *cnst,
+            *type,
+            *swi;
+   def_c     c;
+   def_t     t;
+   def_s     s;
+   char      c_name [def_ID_LIMIT + 1],   /* C-style name of current object */
+             c_title [def_ID_LIMIT + 1],  /* C-style name of module title */
+/*             data_name [FILENAME_MAX + 1], */
+/*             index_name [FILENAME_MAX + 1], */
+             path[ FILENAME_MAX + 1 ],    /* path name for destination */
+             temp_name [FILENAME_MAX + 1 ];  /* temp workspace */
+   void     *context;
+   int       rc = 0, i;
+   FILE     /* *index = NULL, */
+            *help_data = NULL;
+   x_exception x0;
+
+   NOT_USED (author)
+   NOT_USED (needses)
+
+   x_TRY( &x0 )
+   {
+      /* get the destination path name */
+      path[0] = '\0';
+   //   strncat( path, output, strrchr( output, '.' ) - output );
+      strcpy( path, output );
+
+      def_as_extern (c_title, title);
+
+      /*Emit the TYPE declarations.*/
+      context = 0;
+
+      while (TRUE)
+      {
+         /* step through the TYPES table */
+         if ((error = lookup_enumerate (types, &type, (void **) &t, &context))
+               != NULL)
+            goto finish;
+         if (context == 0) break;  /* end of table */
+
+         emit_type( path, c_title, type, consts, t );
+      }  /* end type declarations */
+
+      /* Emit the types index page.*/
+      if ( ( rc = index_file( path, title, STR( TYPES ) ) ) < 0 )
+         goto finish;
+
+
+      /*Emit the CONST declarations.*/
+      context = 0;
+
+      while (TRUE)
+      {
+         if ((error = lookup_enumerate (consts, &cnst, (void **) &c, &context))
+               != NULL)
+            goto finish;
+         if (context == 0) break;
+
+         def_as_macro (c_name, cnst);
+
+         /* open/create the page */
+         help_data = open_page( path, c_name, c_title );
+
+         /* write the page */
+         if ( ( rc = fprintf( help_data,
+                              "Declaration:%s#define\t%s\t",
+                              indent(1),
+                              c_name
+                            )
+               ) < 0
+            ) goto finish;
+
+         switch (c->type->tag)
+         {
+            case def_TYPE_INT:
+               if ( ( rc = fprintf( help_data,
+                                    "%s%d%s",
+                                    c->value < 0? "(": "",
+                                    c->value,
+                                    c->value < 0? ")": ""
+                                  )
+                    ) < 0
+                  ) goto finish;
+            break;
+
+            case def_TYPE_SHORT:
+               if ((rc = fprintf (help_data, "((short) %d)", c->value)) < 0)
+                  goto finish;
+            break;
+
+            case def_TYPE_BYTE:
+               if ((rc = fprintf (help_data, "((byte) %d)", c->value)) < 0)
+                  goto finish;
+            break;
+
+            case def_TYPE_CHAR:
+               if (isprint (c->value))
+               {
+                  if ((rc = fprintf (help_data, "((char) '%c')", c->value)) < 0)
+                     goto finish;
+               }
+               else
+               {
+                  if ((rc = fprintf (help_data, "((char) '\\\\x%.2X')", c->value))
+                        < 0)
+                     goto finish;
+               }
+            break;
+
+            case def_TYPE_BITS:
+               if ((rc = fprintf (help_data, "0x%Xu", c->value)) < 0)
+                  goto finish;
+            break;
+
+            case def_TYPE_BYTES:
+               if ((rc = fprintf (help_data, "((bytes) 0x%Xu)", c->value)) < 0)
+                  goto finish;
+            break;
+
+            case def_TYPE_BOOL:
+               if ((rc = fprintf (help_data, "%s", WHETHER (c->value))) < 0)
+                  goto finish;
+            break;
+
+            default:
+               if ((rc = fprintf (help_data, "((")) < 0)
+                  goto finish;
+
+               Print_Decl(c_title, help_data, c->type, NULL, NULL, FALSE, 0);
+
+               if ((rc = fprintf (help_data, ") 0x%Xu)", c->value)) < 0)
+                     /*was %d 19th Apr 1995*/
+                  goto finish;
+            break;
+         }
+
+         if (c->description != NULL)
+            if ( ( rc = fprintf( help_data,
+                                 "\n#Tab ,fstd"
+                                 "\n#Wrap On"
+                                 "\nDescription:%s%s"
+                                 "\n#Wrap Off"
+                                 "\n#Tab ,fcode ,fcode ,fcode ,fcode",
+                                 indent(1),
+                                 c->description
+                               )
+                 ) < 0
+               ) goto finish;
+
+         index_entry ( c_name);
+
+         fclose( help_data );
+         help_data = NULL;
+      }  // end of const list
+
+      /* Emit the const index page.*/
+      if ( ( rc = index_file( path, title, STR( CONSTS ) ) ) < 0 )
+         goto finish;
+
+
+
+      /*Emit the SWI declarations.*/
+      context = 0;
+
+      while (TRUE)
+      {
+         osbool nonx, first;
+
+         if ((error = lookup_enumerate (swis, &swi, (void **) &s, &context)) !=
+               NULL)
+            goto finish;
+         if (context == 0) break;
+
+         if ( s->absent )
+         {
+            /* SWI declared absent */
+            for (nonx = FALSE; nonx <= TRUE; nonx++)
+            {
+               def_as_extern( c_name + ( ( !nonx )? 1: 0 ), swi );
+               if (!nonx) c_name [0] = 'x';
+               tracef ("SWI Absent starting %s ...\n" _ c_name);
+
+               /* create/open the output file */
+               help_data = open_page( path, c_name, c_title );
+
+               if ( s->description != NULL )
+               {
+                  /* print description of absent SWI */
+                  if ( ( rc = fprintf( help_data,
+                                       "#Tab ,fstd"
+                                       "\n#Wrap On"
+                                       "\nDescription:\t%s"
+                                       "\n#Wrap Off"
+                                       "\n#Tab ,fcode ,fcode ,fcode ,fcode",
+                                       s->description
+                                     )
+                        ) < 0
+                     ) goto finish;
+               }
+               else
+               {
+                  /* no description for absent SWI */
+                  if ( ( rc = fprintf( help_data,
+                                       "\n#Tab ,fcode ,fstd"
+                                       "\nDescription:\tSWI 0x%X\t- not directly callable"
+                                       "\n#Tab ,fcode ,fcode ,fcode ,fcode",
+                                       s->swi
+                                     )
+                       ) < 0
+                     ) goto finish;
+               }
+
+               fclose( help_data );
+               help_data = NULL;
+
+               index_entry( c_name);
+            }
+         }
+         else
+         {
+            int result = s->value != NONE? def_bit_index (s->value, 0): -1;
+               /*number of register returned as result*/
+
+            for (nonx = FALSE; nonx <= TRUE; nonx++)
+            {
+               def_as_extern (c_name + (!nonx? 1: 0), swi);
+               if (!nonx) c_name [0] = 'x';
+               tracef ("SWI starting %s ...\n" _ c_name);
+
+               /* create/open the output file */
+               help_data = open_page( path, c_name, c_title );
+
+               first = TRUE;
+
+               if ( ( rc = fprintf( help_data,
+                                    "Declaration:%sextern ",
+                                    indent(1)
+                                  )
+                    ) < 0
+                  ) goto finish;
+
+               /* emit return value */
+               if (!nonx)
+               {
+                  /* x-SWI - print return value */
+                  if ( ( rc = fprintf( help_data,
+                                       "<os_error=>os_error>\t*%s\n",
+                                       c_name
+                                     )
+                       ) < 0
+                     ) goto finish;
+               }
+               else
+               {
+                  /* non-x - print return value */
+                  if (s->value == NONE)
+                  {
+                     /*No return value.*/
+                     if ( ( rc = fprintf( help_data,
+                                          "void%s%s\n",
+                                          indent(1),
+                                          c_name
+                                        )
+                          ) < 0
+                        ) goto finish;
+                  }
+                  else if (s->value == 1 << def_FLAGS)
+                  {
+                     /*Return value is |bits|.*/
+                     if ( ( rc = fprintf( help_data,
+                                          "bits\t%s\n",
+                                          c_name
+                                        )
+                          ) < 0
+                        ) goto finish;
+                  }
+                  else
+                  {
+                     /*Return value of type |s->outputs [r]|.*/
+                     char decl_name [def_ID_LIMIT + 1];
+
+                     /*Prepend a star if the return value is a REFERENCES.*/
+                     sprintf( decl_name,
+                              (s->ro & s->value) != NONE? "\t*%s": "\t%s",
+                              c_name
+                            );
+
+                     Print_Decl( c_title,
+                                 help_data,
+                                 s->outputs [result],
+                                 NULL,
+                                 decl_name,
+                                 FALSE,
+                                 0
+                               );
+
+                     if ( ( rc = fprintf( help_data,
+                                          "\n"
+                                        )
+                          ) < 0
+                        ) goto finish;
+                  }
+               }
+
+               /* emit the parameter list */
+               if (!def_using_block (s))
+               {
+                  for (i = 0; i < 10; i++)
+                     if ((s->i & 1 << i) != 0)
+                     {
+                        char arg_name [def_ID_LIMIT + 1];
+
+                        if ( ( rc = fprintf( help_data,
+                                             "%s%s",
+                                             first ? "" : ",\n",
+                                             first ? " \t \t(\t" : indent(3)
+                                           )
+                             ) < 0
+                           ) goto finish;
+                        first = FALSE;
+
+                        if ((s->ri & 1 << i) == 0)
+                        {
+                           if ( ( rc = sprintf( arg_name,
+                                                "%s",
+                                                s->inputs [i]->name
+                                              )
+                                ) < 0
+                              ) goto finish;
+                        }
+                        else
+                        {
+                           if ((rc = sprintf (arg_name, "const *%s",
+                                 s->inputs [i]->name)) < 0)
+                              goto finish;
+                        }
+
+                        Print_Decl( c_title,
+                                    help_data,
+                                    s->inputs [i],
+                                    NULL,
+                                    arg_name,
+                                    FALSE,
+                                    0
+                                  );
+                     }
+
+                  for (i = 0; i < 10; i++)
+                     if ((s->o & 1 << i) != 0 && (!nonx || i != result))
+                     {
+                        char arg_name [def_ID_LIMIT + 1];
+
+                        if ( ( rc = fprintf( help_data,
+                                             "%s%s",
+                                             first ? "" : ",\n",
+                                             first ? " \t \t(\t" : indent(3)
+                                           )
+                             ) < 0
+                           ) goto finish;
+                        first = FALSE;
+
+                        if ((s->ro & 1 << i) == 0)
+                        {
+                           if ((rc = sprintf (arg_name, "*%s",
+                                 s->outputs [i]->name)) < 0)
+                              goto finish;
+                        }
+                        else
+                        {
+                           if ((rc = sprintf (arg_name, "**%s",
+                                 s->outputs [i]->name)) < 0)
+                              goto finish;
+                        }
+
+                        Print_Decl( c_title,
+                                    help_data,
+                                    s->outputs [i],
+                                    NULL,
+                                    arg_name,
+                                    FALSE,
+                                    0
+                                  );
+                     }
+
+                  if (s->f_out && (!nonx || def_FLAGS != result))
+                  {
+                     struct def_t t;
+
+                     if ( ( rc = fprintf( help_data,
+                                          "%s%s",
+                                          first ? "" : ",\n",
+                                          first ? " \t \t(\t " : indent(3)
+                                        )
+                          ) < 0
+                        ) goto finish;
+                     first = FALSE;
+
+                     t.tag = def_TYPE_BITS;
+                     Print_Decl( c_title,
+                                 help_data,
+                                 &t,
+                                 NULL,
+                                 "*psr",
+                                 FALSE,
+                                 0
+                               );
+                  }
+               }
+               else
+               {
+                  /*First locate the register pointing to the block.*/
+                  for (i = 0; i < 10; i++)
+                     if ((s->i & 1 << i) != 0)
+                     {
+                        int cpt;
+
+                        for (cpt = 0; cpt < s->inputs [i]->data AS list.count; cpt++)
+                        {
+                           if ( ( rc = fprintf( help_data,
+                                                "%s%s%s%s",
+                                                first ? "" : ",\n",
+                                                indent(2),
+                                                first ? "(" : "",
+                                                indent(1)
+                                              )
+                                ) < 0
+                              ) goto finish;
+                           first = FALSE;
+
+                           Print_Decl( c_title,
+                                       help_data,
+                                       s->inputs [i]->data AS list.members [cpt],
+                                       NULL,
+                                       s->inputs [i]->data AS list.members [cpt]->name,
+                                       FALSE,
+                                       0
+                                     );
+                        }
+
+                        break;
+                     }
+               }
+
+               /* closing brace and semi-colon */
+               if ( ( rc = fprintf( help_data,
+                                    "%s%s%s%s",
+                                    indent(2),
+                                    first ? "(\tvoid\n" : "\n",
+                                    indent(2),
+                                    ");"
+                                  )
+                    ) < 0
+                  ) goto finish;
+
+               tracef ("describing %s ...\n" _  c_name);
+               if (s->description != NULL)
+                  if ( ( rc = fprintf( help_data,
+                                       "\n#Tab ,fstd"
+                                       "\n#Wrap On"
+                                       "\nDescription:\t%s"
+                                       "\n#Wrap Off"
+                                       "\n#Tab ,fcode ,fcode ,fcode ,fcode",
+                                       s->description
+                                     )
+                       ) < 0
+                     ) goto finish;
+
+               if (!def_using_block (s))
+               {
+                  osbool first;
+                  int  i;
+
+                  tracef ("inputs ...\n");
+                  first = TRUE;
+                  /* print the entry conditions */
+                  for (i = 0; i < 10; i++)
+                     if ((s->i & 1 << i) != NONE)
+                     {
+                        if ( ( rc = fprintf( help_data,
+                                             "\n%s%s",
+                                             first ? /*"#Tab ,fcode ,fcode ,fcode ,fcode"*/
+                                                     "\nEntry:"
+                                                   : "",
+                                             indent(1)
+                                           )
+                             ) < 0
+                           ) goto finish;
+
+                        if ( ( rc = fprintf( help_data,
+                                             "%s",
+                                             s->inputs [i]->name
+                                           )
+                             ) < 0
+                           ) goto finish;
+
+                        if (s->inputs [i]->description != NULL)
+                           if ((rc = fprintf (help_data, " - %s",
+                                 s->inputs [i]->description)) < 0)
+                              goto finish;
+
+                        if ((rc = fprintf (help_data, "\t(R%d)", i)) < 0)
+                           goto finish;
+
+                        first = FALSE;
+                     }
+
+                  tracef ("outputs ...\n");
+                  first = TRUE;
+                  for (i = 0; i < 10; i++)
+                     if ((s->o & 1 << i) != NONE && (i != result || !nonx))
+                     {
+                        if ( ( rc = fprintf( help_data,
+                                             "\n%s%s",
+                                             first ?  /*"#Tab ,fcode ,fcode ,fcode ,fcode\n"*/
+                                                      "Exit:"
+                                                   :  "",
+                                             indent(1)
+                                           )
+                             ) < 0
+                           )
+                           goto finish;
+
+                        if ((rc = fprintf (help_data, "%s",
+                              s->outputs [i]->name)) < 0)
+                           goto finish;
+
+                        if (s->outputs [i]->description != NULL)
+                           if ((rc = fprintf (help_data, " - %s",
+                                 s->outputs [i]->description)) < 0)
+                              goto finish;
+
+                        if ((rc = fprintf (help_data, "\t(R%d)", i)) < 0)
+                           goto finish;
+
+                        first = FALSE;
+                     }
+
+                  tracef ("returns ...\n");
+                  if (nonx && result != -1)
+                  {
+                     if (result == def_FLAGS)
+                     {
+                        if ( ( rc = fprintf( help_data,
+                                             /*"\n#Tab ,fcode ,fcode ,fcode ,fcode"*/
+                                             "\n%s\t%s",
+                                             "Returns:",
+                                             "processor status register"
+                                           )
+                             ) < 0
+                           ) goto finish;
+                     }
+                     else
+                     {
+                        if ( ( rc = fprintf( help_data,
+                                             /*"\n#Tab ,fcode ,fcode ,fcode ,fcode"*/
+                                             "\n%s\t%s\t(R%d)",
+                                             "Returns:",
+                                             ( s->outputs [result]->description != NULL )?
+                                                   s->outputs [result]->description:
+                                                   s->outputs [result]->name,
+                                             result
+                                           )
+                             ) < 0
+                           ) goto finish;
+                     }
+                  }
+               }
+               fclose( help_data );
+               help_data = NULL;
+
+               index_entry (c_name);
+            }
+         }
+      }
+
+      /* write the SWI index to file */
+      if ( ( rc = index_file( path, title, STR( SWIS ) ) ) < 0 )
+         goto finish;
+
+
+      /* create the root index.*/
+      sprintf( temp_name, "Constants=>%s" SEP STR(CONSTS), title );
+      index_entry( temp_name );
+      sprintf( temp_name, "Types=>%s" SEP STR(TYPES), title );
+      index_entry( temp_name );
+      sprintf( temp_name, "SWIs=>%s" SEP STR(SWIS), title );
+      index_entry( temp_name );
+
+      /* write the index to file */
+      if ( ( rc = index_file( path, title, NULL ) ) < 0 )
+         goto finish;
+   }
+   x_CATCH( &x0 )
+   {
+      rc = 0;
+      error = x0.error;
+   }
+
+
+finish:
+   if (help_data != NULL)
+      fclose (help_data);
+
+//   if (index != NULL)
+//      fclose (index);
+
+   if (rc < 0)
+      error = (os_error*)_kernel_last_oserror ();
+
+   if( error )
+      fprintf( stderr, "DefMod CStrong: %d %s", error -> errnum, error -> errmess );
+
+   return error;
+}
+
+
+
+@
+
+
+1.3
+log
+@  Update of defmod to the one that accompanies public version 6.21
+  UNIX version.
+Detail:
+  This source set represents that distributed with OSLib 6.21.  I've
+    fixed some faults and passed them back to the maintainers (notably
+    an uncaught NULL pointer dereference in the chelp_output function).
+  This application now builds on Solaris, Linux & FreeBSD.
+  The bootstrap code moves to directory 'oslib' instead of 'bs' to avoid
+    needing to change lots of includes between RISC OS and non-RISC OS
+    variants.
+Notes:
+  -cstrong seems to produce empty files (on all variants) - I guess it's
+    not supported any more (we don't need it either).
+Admin:
+  Tested on Solaris, Linux, FreeBSD and RISC OS.
+  Sources re-released to maintainers as required under GPL licence.
+
+
+Version 6.21. Tagged as 'defmod-6_21'
+@
+text
+@d65 6
+d159 1
+a159 1
+   sprintf( data_name, "%s.%s" SEP, path_name, prefix );
+d165 1
+a165 1
+            "%s.%s" SEP ".%s",
+@
+
+
+1.2
+log
+@  Import of changes for defmod 6.01 from OSLib.
+Admin:
+  Tested against ToolAction.
+
+Version 6.01. Tagged as 'defmod-6_01'
+@
+text
+@d23 9
+d38 1
+d47 1
+d55 66
+a120 1
+#define TRUNCATION_LIMIT 19
+d122 28
+a149 6
+typedef
+   struct cstrong_entry
+   {  int name;
+      int page;
+      int size;
+      bits flags;
+a150 1
+   cstrong_entry;
+d152 15
+a166 3
+static int            Entry_Count, String_Offset, Data_Offset;
+static cstrong_entry  Entries [3000];
+static char          *Strings [3000];
+d168 2
+a169 2
+/*Creates a new record in the array of index entries, preparatory to writing the
+   index file.*/
+d171 38
+a208 5
+static void index_entry
+(
+   FILE *help_data,
+   char *entry
+)
+d210 1
+a210 1
+   int file_offset;
+d212 2
+a213 3
+   tracef ("index_entry (0x%X)\n" _ entry);
+   tracef ("entry -> \"%s\"\n" _ entry);
+   file_offset = (int) ftell (help_data);
+d215 5
+a219 1
+   Strings [Entry_Count] = qstrdup (entry);
+a220 4
+   Entries [Entry_Count].name  = String_Offset;
+   Entries [Entry_Count].page  = Data_Offset;
+   Entries [Entry_Count].size  = file_offset - Data_Offset;
+   Entries [Entry_Count].flags = 0;
+d222 9
+a230 3
+   Data_Offset = file_offset;
+   String_Offset += strlen (Strings [Entry_Count]) + 1;
+   Entry_Count++;
+d233 40
+a272 5
+static int Cmp
+(
+   void const *v0,
+   void const *v1
+)
+d274 54
+a327 17
+   cstrong_entry *e0 = (cstrong_entry *) v0, *e1 = (cstrong_entry *) v1;
+   int            i0, i1, len, cmp;
+   char          *cc, *s0, *s1;
+
+   /*This is silly, but what we do is count along the strings until we get to the
+      one whose offset is the one we have. It would be faster to build an
+      indirection table, but ...*/
+   for (i0 = 0, len = 0; len != e0->name; len += strlen (Strings [i0++]) + 1)
+      ;
+   for (i1 = 0, len = 0; len != e1->name; len += strlen (Strings [i1++]) + 1)
+      ;
+
+   /*Before comparison, convert the string to lower case.*/
+   for (cc = s0 = qstrdup (Strings [i0]); *cc != '\0'; cc++)
+      *cc = tolower (*cc);
+   for (cc = s1 = qstrdup (Strings [i1]); *cc != '\0'; cc++)
+      *cc = tolower (*cc);
+d329 6
+a334 1
+   cmp = strcmp (s0, s1);
+d336 2
+a337 2
+   free (s0);
+   free (s1);
+d339 9
+a347 1
+   return cmp;
+d350 2
+d353 3
+a355 1
+      structure tag.*/
+d357 1
+a357 1
+static int Print_Decl
+d359 7
+a365 7
+   char  *title,
+   FILE  *file,
+   def_t  t,
+   char  *tag,
+   char  *v,
+   bool   var,
+   int    nest
+d403 1
+a403 1
+         if ((rc = fprintf (file, v == NULL? "bool": "bool %s", v)) < 0)
+d430 8
+a437 3
+         if ((rc = Print_Decl (title, file, t->data AS ref, NULL, v1,
+               FALSE, nest + 1)) < 0)
+            goto finish;
+d461 2
+d466 1
+a466 1
+               rc = tag != NULL?
+d470 1
+a470 1
+                        "%s %s\n%*s{  ",
+d472 1
+a472 1
+                        t->tag == def_TYPE_UNION?  "union": "list",
+d474 2
+a475 1
+                        21 + 3*nest, " "
+d480 1
+a480 1
+                        "%s\n%*s{  ",
+d482 3
+a484 2
+                        t->tag == def_TYPE_UNION?  "union": "list",
+                        21 + 3*nest, " "
+d486 2
+a487 4
+            )
+            < 0
+         )
+            goto finish;
+d489 1
+d492 1
+d494 1
+d497 1
+d499 7
+a505 2
+            if ((rc = fprintf (file, "%s_MEMBERS\n%*s   ",
+                  base, 21 + 3*nest, " ")) < 0)
+d509 1
+d516 1
+d519 8
+a526 4
+               if ((rc = sprintf (v1, t->data AS list.members [i]->name [0]
+                     == '*'? "(%s) [%s]": "%s [%s]",
+                     t->data AS list.members [i]->name,
+                     !var? "...": "N")) < 0)
+d529 8
+a536 4
+               if ((rc = Print_Decl (title, file,
+                     t->data AS list.members [i], NULL, v1, FALSE, nest + 1))
+                     < 0)
+                  goto finish;
+d539 17
+a555 12
+               if ((rc = Print_Decl (title, file,
+                     t->data AS list.members [i], NULL,
+                     t->data AS list.members [i]->name, FALSE,
+                     nest + 1)) < 0)
+                  goto finish;
+
+            if ((rc = fprintf (file, ";\n%*s", 21 + 3*nest, " ")) < 0)
+               goto finish;
+
+            if (i != t->data AS list.count - 1)
+               if ((rc = fprintf (file, "   ")) < 0)
+                  goto finish;
+d558 14
+a571 2
+         if ((rc = fprintf (file, "}\n%*s%s", 21 + 3*nest, " ", v)) < 0)
+            goto finish;
+d573 1
+a573 1
+      break;
+d592 1
+a592 1
+            if ((rc = sprintf (v1, v [0] == '*'? "(%s) [%d]": "%s [%d]", v,
+d596 8
+a603 3
+         if ((rc = Print_Decl (title, file, t->data AS row.base, NULL, v1,
+               FALSE, nest + 1)) < 0)
+            goto finish;
+d631 10
+a640 4
+            if ((rc = fprintf (file, v == NULL? "<%s=>%.*s.%s>":
+                  "<%s=>%.*s.%s> %s", c_name, MIN (ul - c_name, 10), c_name,
+                  c_name, v)) < 0)
+               goto finish;
+d654 2
+a655 1
+   return rc;
+d658 7
+a664 10
+os_error *cstrong_output
+(
+   char     *output,
+   char     *title,
+   char     *author,
+   lookup_t  needses,
+   lookup_t  consts,
+   lookup_t  types,
+   lookup_t  swis
+)
+d666 8
+a673 10
+   os_error *error = NULL;
+   char     *cnst, *type, *swi;
+   def_c     c;
+   def_t     t;
+   def_s     s;
+   char      c_name [def_ID_LIMIT + 1], c_title [def_ID_LIMIT + 1],
+                   data_name [FILENAME_MAX + 1], index_name [FILENAME_MAX + 1];
+   void     *context;
+   int       rc = 0, i;
+   FILE     *index = NULL, *help_data = NULL;
+d675 19
+a693 2
+   NOT_USED (author)
+   NOT_USED (needses)
+d695 8
+a702 1
+   def_as_extern (c_title, title);
+d704 4
+a707 3
+   /*Ensure the directory exists.*/
+   if ((error = xosfile_create_dir (output, 0)) != NULL)
+      goto finish;
+d709 11
+a719 2
+   if ((rc = sprintf (data_name, "%s.%s", output, "HelpData")) < 0)
+      goto finish;
+d721 3
+a723 4
+   if ((help_data = fopen (data_name, "wb")) == NULL)
+   {
+      rc = -1;
+      goto finish;
+d726 20
+a745 3
+   Entry_Count   = 0;
+   Data_Offset   = 0;
+   String_Offset = 0;
+d747 1
+a747 2
+   /*Emit the TYPE declarations.*/
+   context = 0;
+d750 1
+a750 1
+      if ((error = lookup_enumerate (types, &type, (void **) &t, &context))
+d752 2
+a753 1
+         goto finish;
+d756 1
+a756 1
+      def_as_extern (c_name, type);
+d758 3
+a760 1
+      if (t == NULL || t->tag == def_TYPE_ABSTRACT)
+d762 12
+a773 6
+         if ((rc = fprintf (help_data,
+               "%s\n"
+               "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s.$>.h\n"
+               "Declaration:      typedef struct {...} *%s;",
+               c_name, c_title, c_title, c_name)) < 0)
+            goto finish;
+d775 4
+a778 11
+      else
+      {
+         if ((rc = fprintf (help_data,
+               "%s\n"
+               "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s.$>.h\n"
+               "Declaration:      typedef%s",
+               c_name,
+               c_title, c_title,
+               t->tag == def_TYPE_STRUCT || t->tag == def_TYPE_UNION?
+                     "\n                     ": " ")) < 0)
+            goto finish;
+d780 19
+a798 3
+         if ((rc = Print_Decl (c_title, help_data, t, NULL, c_name, FALSE,
+               0)) < 0)
+            goto finish;
+d800 5
+a804 3
+         if ((rc = fprintf (help_data, ";")) < 0)
+            goto finish;
+      }
+d806 1
+a806 1
+      if (t != NULL)
+d808 9
+a816 4
+         if (t->description != NULL)
+            if ((rc = fprintf (help_data, "\nDescription:      %s",
+                  t->description)) < 0)
+               goto finish;
+d818 2
+a819 4
+         if (t->tag == def_TYPE_STRUCT || t->tag == def_TYPE_UNION)
+         {
+            bool first = TRUE;
+            int i;
+d821 2
+a822 8
+            for (i = 0; i < t->data AS list.count; i++)
+               if (t->data AS list.members [i]->description != NULL)
+               {
+                  if ((rc = fprintf (help_data, "\n%-17s %s - %s",
+                        first? "Fields:": "",
+                        t->data AS list.members [i]->name,
+                        t->data AS list.members [i]->description)) < 0)
+                     goto finish;
+d824 8
+a831 3
+                  first = FALSE;
+               }
+         }
+d833 1
+d835 9
+d845 2
+a846 4
+         /*Additionally supply a list of constants with values of that
+            type.*/
+         void *context;
+         bool first = TRUE;
+d848 8
+a855 2
+         context = NULL;
+         while (TRUE)
+d857 10
+a866 4
+            if ((error = lookup_enumerate (consts, &cnst, (void **) &c, &context))
+                  != NULL)
+               goto finish;
+            if (context == 0) break;
+d868 8
+a875 1
+            /*loop invariant: we are at the end of the previous line*/
+d877 2
+a878 2
+            if (c->type->tag == def_TYPE_ID &&
+                  strcmp (c->type->data AS id, type) == 0)
+d880 14
+a893 1
+               char c_name [def_ID_LIMIT + 1];
+d895 6
+a900 7
+               if (first)
+               {
+                  fprintf (help_data, "\nValues:           ");
+                  first = FALSE;
+               }
+               else
+                  fprintf (help_data, "\n                  ");
+d902 8
+a909 3
+               def_as_macro (c_name, cnst);
+               fprintf (help_data, "<%s>", c_name);
+            }
+a910 1
+      }
+d912 21
+a932 2
+      index_entry (help_data, c_name);
+   }
+d934 2
+a935 8
+   /*Emit the CONST declarations.*/
+   context = 0;
+   while (TRUE)
+   {
+      if ((error = lookup_enumerate (consts, &cnst, (void **) &c, &context))
+            != NULL)
+         goto finish;
+      if (context == 0) break;
+d937 3
+a939 1
+      def_as_macro (c_name, cnst);
+d941 2
+a942 8
+      if ((rc = fprintf
+            (  help_data,
+               "%s\n"
+               "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s.$>.h\n"
+               "Declaration:      #define %s ",
+               c_name, c_title, c_title, c_name
+            )) < 0)
+         goto finish;
+d944 2
+a945 7
+      switch (c->type->tag)
+      {
+         case def_TYPE_INT:
+            if ((rc = fprintf (help_data, "%s%d%s", c->value < 0? "(": "",
+                  c->value, c->value < 0? ")": "")) < 0)
+               goto finish;
+         break;
+d947 2
+a948 4
+         case def_TYPE_SHORT:
+            if ((rc = fprintf (help_data, "((short) %d)", c->value)) < 0)
+               goto finish;
+         break;
+d950 2
+a951 4
+         case def_TYPE_BYTE:
+            if ((rc = fprintf (help_data, "((byte) %d)", c->value)) < 0)
+               goto finish;
+         break;
+d953 1
+a953 5
+         case def_TYPE_CHAR:
+            if (isprint (c->value))
+            {
+               if ((rc = fprintf (help_data, "((char) '%c')", c->value)) < 0)
+                  goto finish;
+d955 1
+a955 1
+            else
+d957 3
+a959 3
+               if ((rc = fprintf (help_data, "((char) '\\\\x%.2X')", c->value))
+                     < 0)
+                  goto finish;
+d961 7
+a967 1
+         break;
+d969 2
+a970 4
+         case def_TYPE_BITS:
+            if ((rc = fprintf (help_data, "0x%Xu", c->value)) < 0)
+               goto finish;
+         break;
+d972 2
+a973 4
+         case def_TYPE_BYTES:
+            if ((rc = fprintf (help_data, "((bytes) 0x%Xu)", c->value)) < 0)
+               goto finish;
+         break;
+d975 17
+a991 4
+         case def_TYPE_BOOL:
+            if ((rc = fprintf (help_data, "%s", WHETHER (c->value))) < 0)
+               goto finish;
+         break;
+d993 2
+a994 3
+         default:
+            if ((rc = fprintf (help_data, "((")) < 0)
+               goto finish;
+d996 2
+a997 3
+            if ((rc = Print_Decl (c_title, help_data, c->type, NULL, NULL,
+                  FALSE, 0)) < 0)
+               goto finish;
+d999 8
+a1006 4
+            if ((rc = fprintf (help_data, ") 0x%Xu)", c->value)) < 0)
+                  /*was %d 19th Apr 1995*/
+               goto finish;
+         break;
+d1008 2
+d1011 31
+a1041 4
+      if (c->description != NULL)
+         if ((rc = fprintf (help_data, "\nDescription:      %s",
+               c->description)) < 0)
+            goto finish;
+d1043 2
+a1044 2
+      index_entry (help_data, c_name);
+   }
+d1046 1
+a1046 3
+   /*Emit the SWI declarations.*/
+   context = 0;
+   while (TRUE)
+d1048 20
+a1067 1
+      bool nonx, first;
+d1069 2
+a1070 2
+      if ((error = lookup_enumerate (swis, &swi, (void **) &s, &context)) !=
+            NULL)
+a1071 1
+      if (context == 0) break;
+a1072 5
+      if (s->absent)
+         for (nonx = FALSE; nonx <= TRUE; nonx++)
+         {
+            def_as_extern (c_name + (!nonx? 1: 0), swi);
+            if (!nonx) c_name [0] = 'x';
+d1074 2
+a1075 12
+            if (s->description != NULL)
+            {
+               if ((rc = fprintf (help_data, "%s\n%s",
+                     c_name, s->description)) < 0)
+                  goto finish;
+            }
+            else
+            {
+               if ((rc = fprintf (help_data, "%s\nSWI 0x%X - not "
+                     "directly callable", c_name, s->swi)) < 0)
+                  goto finish;
+            }
+d1077 1
+a1077 3
+            index_entry (help_data, c_name);
+         }
+      else
+d1079 6
+a1084 2
+         int result = s->value != NONE? def_bit_index (s->value, 0): -1;
+            /*number of register returned as result*/
+d1086 13
+a1098 1
+         for (nonx = FALSE; nonx <= TRUE; nonx++)
+d1100 15
+a1114 12
+            def_as_extern (c_name + (!nonx? 1: 0), swi);
+            if (!nonx) c_name [0] = 'x';
+            tracef ("starting %s ...\n" _ c_name);
+
+            first = TRUE;
+
+            if ((rc = fprintf (help_data,
+                  "%s\n"
+                  "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s.$>.h\n"
+                  "Declaration:      extern ",
+                  c_name, c_title, c_title)) < 0)
+               goto finish;
+d1116 2
+a1117 5
+            if (!nonx)
+            {
+               if ((rc = fprintf (help_data,
+                     "<os_error=>os.os_error> *%s (",
+                     c_name)) < 0)
+d1119 4
+a1122 4
+            }
+            else
+            {
+               if (s->value == NONE)
+d1124 1
+a1124 3
+                  /*No return value.*/
+                  if ((rc = fprintf (help_data, "void %s (",
+                        c_name)) < 0)
+d1127 1
+a1127 1
+               else if (s->value == 1 << def_FLAGS)
+d1129 2
+a1130 3
+                  /*Return value is |bits|.*/
+                  if ((rc = fprintf (help_data, "bits %s (",
+                        c_name)) < 0)
+d1133 92
+d1227 10
+a1236 2
+                  /*Return value of type |s->outputs [r]|.*/
+                  char decl_name [def_ID_LIMIT + 1];
+d1238 2
+a1239 3
+                  /*Prepend a star if the return value is a REFERENCES.*/
+                  sprintf (decl_name, (s->ro & s->value) != NONE? "*%s": "%s",
+                        c_name);
+d1241 1
+a1241 7
+                  if ((rc = Print_Decl (c_title, help_data,
+                        s->outputs [result], NULL, decl_name, FALSE, 0)) < 0)
+                     goto finish;
+
+                  if ((rc = fprintf (help_data, " (")) < 0)
+                     goto finish;
+               }
+d1243 5
+d1249 1
+a1249 1
+            if (!def_using_block (s))
+d1251 6
+a1256 4
+               for (i = 0; i < 10; i++)
+                  if ((s->i & 1 << i) != 0)
+                  {
+                     char arg_name [def_ID_LIMIT + 1];
+d1258 1
+a1258 8
+                     if (!first)
+                     {
+                        if ((rc = fprintf (help_data, ",\n"
+                              "                     ")) < 0)
+                           goto finish;
+                     }
+                     else
+                        first = FALSE;
+d1260 6
+a1265 12
+                     if ((s->ri & 1 << i) == 0)
+                     {
+                        if ((rc = sprintf (arg_name, "%s",
+                              s->inputs [i]->name)) < 0)
+                           goto finish;
+                     }
+                     else
+                     {
+                        if ((rc = sprintf (arg_name, "const *%s",
+                              s->inputs [i]->name)) < 0)
+                           goto finish;
+                     }
+d1267 34
+a1300 3
+                     if ((rc = Print_Decl (c_title, help_data,
+                           s->inputs [i], NULL, arg_name, FALSE, 0)) < 0)
+                        goto finish;
+d1302 4
+d1307 22
+a1328 4
+               for (i = 0; i < 10; i++)
+                  if ((s->o & 1 << i) != 0 && (!nonx || i != result))
+                  {
+                     char arg_name [def_ID_LIMIT + 1];
+d1330 5
+a1334 1
+                     if (!first)
+d1336 9
+a1344 5
+                        if ((rc = fprintf (help_data, ",\n"
+                              "                     ")) < 0)
+                           goto finish;
+                     }
+                     else
+d1347 24
+a1370 5
+                     if ((s->ro & 1 << i) == 0)
+                     {
+                        if ((rc = sprintf (arg_name, "*%s",
+                              s->outputs [i]->name)) < 0)
+                           goto finish;
+d1372 3
+a1374 1
+                     else
+d1376 10
+a1385 4
+                        if ((rc = sprintf (arg_name, "**%s",
+                              s->outputs [i]->name)) < 0)
+                           goto finish;
+                     }
+d1387 12
+a1398 4
+                     if ((rc = Print_Decl (c_title, help_data,
+                           s->outputs [i], NULL, arg_name, FALSE, 0)) < 0)
+                        goto finish;
+                  }
+d1400 9
+a1408 3
+               if (s->f_out && (!nonx || def_FLAGS != result))
+               {
+                  struct def_t t;
+d1410 1
+a1410 1
+                  if (!first)
+d1412 9
+a1420 5
+                     if ((rc = fprintf (help_data, ",\n"
+                           "                     ")) < 0)
+                        goto finish;
+                  }
+                  else
+d1423 10
+a1432 4
+                  t.tag = def_TYPE_BITS;
+                  if ((rc = Print_Decl (c_title, help_data, &t, NULL, "*psr",
+                        FALSE, 0)) < 0)
+                     goto finish;
+d1434 7
+a1440 8
+            }
+            else
+            {
+               /*First locate the register pointing to the block.*/
+               for (i = 0; i < 10; i++)
+                  if ((s->i & 1 << i) != 0)
+                  {
+                     int cpt;
+d1442 1
+a1442 3
+                     for (cpt = 0; cpt < s->inputs [i]->data AS list.count; cpt++)
+                     {
+                        if (!first)
+d1444 19
+a1462 3
+                           if ((rc = fprintf (help_data, ",\n"
+                                 "                     ")) < 0)
+                              goto finish;
+a1463 2
+                        else
+                           first = FALSE;
+d1465 1
+a1465 5
+                        if ((rc = Print_Decl (c_title, help_data,
+                              s->inputs [i]->data AS list.members [cpt], NULL,
+                              s->inputs [i]->data AS list.members [cpt]->name,
+                              FALSE, 0)) < 0)
+                           goto finish;
+d1467 1
+d1469 28
+a1496 3
+                     break;
+                  }
+            }
+d1498 27
+a1524 2
+            if ((rc = fprintf (help_data, first? "void);": ");")) < 0)
+                  goto finish;
+d1526 2
+a1527 5
+            tracef ("describing %s ...\n" _  c_name);
+            if (s->description != NULL)
+               if ((rc = fprintf (help_data, "\nDescription:      %s",
+                     s->description)) < 0)
+                  goto finish;
+d1529 2
+a1530 4
+            if (!def_using_block (s))
+            {
+               bool first;
+               int  i;
+d1532 14
+a1545 16
+               tracef ("inputs ...\n");
+               first = TRUE;
+               for (i = 0; i < 10; i++)
+                  if ((s->i & 1 << i) != NONE)
+                  {
+                     if ((rc = fprintf (help_data, "\n%-18s",
+                           first? "Entry:": "")) < 0)
+                        goto finish;
+
+                     if ((rc = fprintf (help_data, "%s",
+                           s->inputs [i]->name)) < 0)
+                        goto finish;
+
+                     if (s->inputs [i]->description != NULL)
+                        if ((rc = fprintf (help_data, " - %s",
+                              s->inputs [i]->description)) < 0)
+d1548 3
+a1550 2
+                     if ((rc = fprintf (help_data, " (R%d)", i)) < 0)
+                        goto finish;
+d1552 4
+a1555 2
+                     first = FALSE;
+                  }
+d1557 1
+a1557 16
+               tracef ("outputs ...\n");
+               first = TRUE;
+               for (i = 0; i < 10; i++)
+                  if ((s->o & 1 << i) != NONE && (i != result || !nonx))
+                  {
+                     if ((rc = fprintf (help_data, "\n%-18s",
+                           first? "Exit:": "")) < 0)
+                        goto finish;
+
+                     if ((rc = fprintf (help_data, "%s",
+                           s->outputs [i]->name)) < 0)
+                        goto finish;
+
+                     if (s->outputs [i]->description != NULL)
+                        if ((rc = fprintf (help_data, " - %s",
+                              s->outputs [i]->description)) < 0)
+d1560 2
+a1561 5
+                     if ((rc = fprintf (help_data, " (R%d)", i)) < 0)
+                        goto finish;
+
+                     first = FALSE;
+                  }
+d1563 2
+a1564 4
+               tracef ("returns ...\n");
+               if (nonx && result != -1)
+               {
+                  if (result == def_FLAGS)
+d1566 25
+a1590 13
+                     if ((rc = fprintf (help_data, "\n%-18s%s",
+                           "Returns:", "processor status register")) < 0)
+                        goto finish;
+                  }
+                  else
+                  {
+                     if ((rc = fprintf (help_data, "\n%-18s%s (R%d)",
+                           "Returns:",
+                           s->outputs [result]->description != NULL?
+                                 s->outputs [result]->description:
+                                 s->outputs [result]->name,
+                           result)) < 0)
+                        goto finish;
+d1593 4
+a1597 2
+
+            index_entry (help_data, c_name);
+a1599 1
+   }
+d1601 2
+a1602 5
+   /*Emit the index page.*/
+   if ((rc = fprintf (help_data, "%s", title)) < 0)
+      goto finish;
+   for (i = 0; i < Entry_Count; i++)
+      if ((rc = fprintf (help_data, "\n<%s>", Strings [i])) < 0)
+a1604 1
+   index_entry (help_data, "$");
+d1606 7
+a1612 2
+   /*Now we have to sort the index.*/
+   qsort (Entries, Entry_Count, sizeof Entries [0], &Cmp);
+d1614 5
+a1618 4
+   if ((rc = sprintf (index_name, "%s.%s", output, "Index")) < 0)
+      goto finish;
+
+   if ((index = fopen (index_name, "wb")) == NULL)
+d1620 2
+a1621 2
+      rc = -1;
+      goto finish;
+a1623 13
+   /*Relocate name offsets.*/
+   for (i = 0; i < Entry_Count; i++)
+      Entries [i].name += sizeof Entry_Count + sizeof Entries [0]*Entry_Count;
+
+   if ((rc = fwrite (&Entry_Count, sizeof Entry_Count, 1, index)) < 0)
+      goto finish;
+
+   if ((rc = fwrite (Entries, sizeof Entries [0], Entry_Count, index)) < 0)
+      goto finish;
+
+   for (i = 0; i < Entry_Count; i++)
+      if ((rc = fwrite (Strings [i], 1, strlen (Strings [i]) + 1, index)) < 0)
+         goto finish;
+d1629 5
+a1633 2
+   if (index != NULL)
+      fclose (index);
+d1635 2
+a1636 2
+   for (i = 0; i < Entry_Count; i++)
+      free (Strings [i]);
+a1637 1
+   if (rc < 0) error = (os_error*)_kernel_last_oserror ();    /* TV 990127 */
+d1640 3
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d3 1
+a3 1
+/*OSLib---efficient, type-safe, transparent, extensible,
+d28 1
+a43 1
+/*
+a44 1
+*/
+d246 11
+a423 1
+#ifdef TRUNCATION_LIMIT
+d426 1
+a426 1
+               "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s>.h\n"
+a428 9
+
+            goto finish;
+#else
+         if ((rc = fprintf (help_data,
+               "%s\n"
+               "Defined in:       <%s>.h\n"
+               "Declaration:      typedef struct {...} *%s;",
+               c_name, c_title, c_name)) < 0)
+
+a429 1
+#endif
+a432 1
+#ifdef TRUNCATION_LIMIT
+d435 1
+a435 1
+               "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s>.h\n"
+a441 11
+#else
+         if ((rc = fprintf (help_data,
+               "%s\n"
+               "Defined in:       <%s>.h\n"
+               "Declaration:      typedef%s",
+               c_name,
+               c_title,
+               t->tag == def_TYPE_STRUCT || t->tag == def_TYPE_UNION?
+                     "\n                     ": " ")) < 0)
+            goto finish;
+#endif
+a525 1
+#ifdef TRUNCATION_LIMIT
+d529 1
+a529 1
+               "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s>.h\n"
+a533 10
+#else
+      if ((rc = fprintf
+            (  help_data,
+               "%s\n"
+               "Defined in:       <%s>.h\n"
+               "Declaration:      #define %s ",
+               c_name, c_title, c_name
+            )) < 0)
+         goto finish;
+#endif
+a648 2
+
+#ifdef TRUNCATION_LIMIT
+d651 1
+a651 1
+                  "Defined in:       <%s=>%." STR (TRUNCATION_LIMIT) "s>.h\n"
+a654 8
+#else
+            if ((rc = fprintf (help_data,
+                  "%s\n"
+                  "Defined in:       <%s>.h\n"
+                  "Declaration:      extern ",
+                  c_name, c_title)) < 0)
+               goto finish;
+#endif
+d937 2
+a938 1
+   if (help_data != NULL && fclose (help_data) != 0) rc = -1;
+d940 2
+a941 1
+   if (index != NULL && fclose (index) != 0) rc = -1;
+d946 1
+a946 1
+   if (rc < 0) error = _kernel_last_oserror ();
+@
+
+
+1.1.1.1
+log
+@  Initial import of the sources of the "defmod" tool, used to build OSLib.
+  These sources represent the GPLed version of defmod available with OSLib
+  5.5, with modifications to support -26bit and -32bit options to choose the
+  APCS variant being used.
+   
+Detail:
+  The code has been reorganised to remove dependencies on path variables
+  which are not appropriate for our build structure.  The sources directory
+  contains the main code sources; the bs directory contains bootstrap headers
+  to enable defmod to be build without OSLib headers being available; the
+  support directory contains derivatives of JCoxhead's support library.
+  
+  Code changes are a switch in support.s.riscosa to support 32-bit builds of
+  defmod itself; sources.y.defmod includes VersionNum and uses Module_Date
+  and Module_FullVersion in the -help output; sources.c.objasm has a new
+  apcs32 flag which controls MOV vs. MOVS and LDM vs. LDM^ for veneer exits.
+   
+  The Makefile is a complete rewrite.
+  
+  Do not define __GNUC__ as zero even if the compiler wants you to - it
+    breaks other things (due to inconsistent use of #ifdef and #if)
+ 
+Admin:
+  Checked output is correct by inspecting AOF files generated by ToolAction.
+  This tool sits in the GNU sources directory as it is released the GPL.
+  This tool exports its binary to the Library.Build directory because that
+    is where it lives in the library at the moment.
+
+
+Tagged as defmod-5_50_prerelease
+  
+@
+text
+@@

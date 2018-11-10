@@ -1,0 +1,1866 @@
+head	1.5;
+access;
+symbols
+	OMAP3-0_55:1.4
+	OMAP3-0_54:1.4
+	OMAP3-0_53:1.3
+	OMAP3-0_52:1.2
+	OMAP3-0_51:1.2
+	OMAP3-0_50:1.2
+	OMAP3-0_49:1.1
+	OMAP3-0_48:1.1
+	OMAP3-0_47:1.1
+	OMAP3-0_46:1.1
+	OMAP3-0_45:1.1
+	OMAP3-0_44:1.1
+	OMAP3-0_43:1.1
+	OMAP3-0_42:1.1
+	OMAP3-0_41:1.1
+	OMAP3-0_40:1.1
+	OMAP3-0_39:1.1
+	OMAP3-0_38:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2012.01.07.21.22.15;	author rsprowson;	state dead;
+branches;
+next	1.4;
+commitid	ZJYg3muaiybPOhOv;
+
+1.4
+date	2011.12.11.20.05.45;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	qwIOyJsuN21ngOKv;
+
+1.3
+date	2011.12.06.00.53.07;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	GOsa7uJEOvnW24Kv;
+
+1.2
+date	2011.11.06.13.51.25;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	xDHSfy5FwWIFjhGv;
+
+1.1
+date	2011.01.23.22.48.10;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Prep for SDFS and support for hardware CMOS adapter board.
+To avoid conflicting use of the SDIO controller by higher level filing system (and the need for a HAL to somehow ask for a disc to be reinserted) this HAL onwards supports hardware CMOS attached via the JTAG connector.
+On power up the presence and size of EEPROM is detected (sizes from 256 to 2048 bytes are understood corresponding to 24AA02 to 24AA16 family of parts).
+If no EEPROM is found the HAL falls back to permitting a CMOS file to be loaded off the SD card, but crucially this is done by uboot before FileCore starts.
+If no EEPROM is found, or the CMOS file looks suspicious, some fake CMOS is made and the kernel defaults used.
+The "ProbeEESize" switch enables size probing, otherwise 256 bytes is assumed.
+The "TryLoadedCMOS" switch enables use of a CMOS file from the SD card, if that's off and nothing is found the HAL declares that there is no CMOS at all!
+The respective boot script needs the line
+  fatload mmc 0:1 0x4020F000 cmos
+adding to it, though the filename 'cmos' is arbitrary and only used as a suggestion.
+
+Version 0.56. Tagged as 'OMAP3-0_56'
+@
+text
+@/* Copyright 2011 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "common.h"
+#include "NVMem.h"
+#include "fat.h"
+
+extern int stricmp (const char* s1, const char* s2);
+
+#define ATTR_READ_ONLY 0x01
+#define ATTR_HIDDEN    0x02
+#define ATTR_SYSTEM    0x04
+#define ATTR_VOLUME_ID 0x08
+#define ATTR_DIRECTORY 0x10
+#define ATTR_ARCHIVE   0x20
+#define ATTR_LONG_NAME (ATTR_READ_ONLY | ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME_ID)
+// Define the mask of non-reserved bits as being the OR of all the above
+#define ATTR_NON_RESERVED (ATTR_LONG_NAME | ATTR_DIRECTORY | ATTR_ARCHIVE)
+#define LAST_LONG_ENTRY 0x40
+
+/******************************************************************
+*          FindDirectoryEntry
+*   Finds a matching short or long directory entry in the root directory.
+*   In:     wsptr       - pointer to the workspace structure.
+*   In:     Filename    - the filename to be matched.
+*   In:     da          - pointer to a data_area union to hold
+*                         the block's data.
+*   In:     Cluster     - pointer to return value of cluster.
+*   In:     Block       - pointer to retrn value of block.
+*   In:     FATbc       - pointer to struct block_cache.
+*   Out:    da          - will have been updated with the last block read.
+*   Out:    Cluster     - will have been updated with the last cluster read.
+*   Out:    Block       - the block where the entry was found or the
+*                         search ended at the last root directory block.
+*   Return: int         - the entry (0..15) within the block where the
+*                         matching entry was found, or -1 if none found.
+******************************************************************/
+int FindDirectoryEntry (ws* wsptr, char FileName[], union data_area* da, uint* Cluster, int* Block,
+                        struct block_cache* FATbc)
+{
+  uint i = 0;
+  bool bDone = false;
+  uchar uc = 0;
+  char short_name[16] = "";
+  char long_name[256] = "";
+  char long_name_2[256] = "";
+  bool bRetVal = false;
+  uint ci = 0; // Character index
+  bool bFuncRetVal = false;
+  uchar LongNameChecksum = 0;
+  uchar ShortNameChecksum = 0;
+  uint pFcbName = 0;
+  int SavedBlock;
+  uint SavedCluster;
+
+  *Cluster = wsptr->BPB_RootClus;
+
+  *Block = 0; // MUST be set to 0 for first call!
+  SavedCluster = *Cluster;
+  SavedBlock = *Block;
+  ReadRootDirectoryBlock (wsptr, Block, Cluster, da, FATbc);
+#ifdef PRINT_DIRECTORY_BLOCK_DATA
+  print_block_data (da);
+#endif
+
+  for (bDone = false; !bDone;)
+  {
+    for (i = 0; (i < 16) && !bDone; i++)
+    {
+      uc = da->byte[i * 32];
+      switch (uc)
+      {
+        case 0:
+        dprintf ("%02X: Finished\n", uc);
+        bDone = true;
+        break;
+
+        case 0xE5:
+        dprintf ("%02X: Empty\n", uc);
+        break;
+
+        default:
+        dprintf ("%02X: valid, i = %d\n", uc, i);
+        // Having found out that it is valid, we need to look
+        // at the attributes to decide how to interpret it
+        uc = da->byte[(i * 32) + 11];
+        dprintf ("Attributes: %02X\n", uc);
+        short_name[0] = '\0';
+        long_name[0] = '\0';
+        long_name_2[0] = '\0';
+        if ((uc & ATTR_NON_RESERVED) == ATTR_LONG_NAME)
+        {
+          // This is a fragment of a long name.
+          // If we have found it at this point, it should be the last
+          // fragment (working backwards) of the long name, so it
+          // should have the LAST_LONG_ENTRY bit set.
+          uc = da->byte[i * 32]; // Get byte 0 again
+          if ((uc & LAST_LONG_ENTRY) == 0)
+          {
+            dprintf ("This should have been the last fragment of a long entry\n");
+            bDone = true;
+            break;
+          }
+          // So far, so good.  Get the long name into long_name.
+          bFuncRetVal = GetLongName (wsptr, long_name, da, &i, Block, Cluster, FATbc);
+          //dprintf ("FindDirectoryEntry (3): Block = %d, Cluster = %d\n", Block, Cluster);
+          dprintf ("Long name: %s\n", long_name);
+          dprintf ("i = %d\n", i);
+          if (bFuncRetVal)
+          {
+            // The long name was read without apparent errors,
+            // so let's try comparing it with the given name.
+            bFuncRetVal = (stricmp (FileName, long_name) == 0);
+            if (bFuncRetVal)
+            {
+              // We have a match.  We must return the short file name entry
+              // that this long entry corresponds to, having checked that it
+              // really does correspond.  The match is determined by the
+              // checksums.
+              LongNameChecksum = da->byte[(i * 32) + 13];
+              dprintf ("Matched long name; checksum = %d, index = %d\n", LongNameChecksum, i);
+              ++i;
+              if (i >= 16)
+              {
+                i = 0;
+                SavedCluster = *Cluster;
+                SavedBlock = *Block;
+                ReadRootDirectoryBlock (wsptr, Block, Cluster, da, FATbc);
+              }
+              // Now i should be pointing to the short directory entry.
+              // Calculate its checksum.
+              for (ci = 11, pFcbName = i * 32, ShortNameChecksum = 0; ci != 0; ci--)
+              {
+                ShortNameChecksum = ((ShortNameChecksum & 1) ? 0x80 : 0)
+                                  + (ShortNameChecksum >> 1)
+                                  + da->byte[pFcbName++];
+              }
+              dprintf ("Short name checksum = %d\n", ShortNameChecksum);
+              if (ShortNameChecksum == LongNameChecksum)
+              {
+                *Cluster = SavedCluster;
+                *Block = SavedBlock;
+                return i;
+              }
+            }
+          }
+        }
+        else
+        {
+          // This is a short name.
+          char *c = (char*) &da->byte[i*32];
+          ci = 0;
+          /* Copy root */
+          while(ci<8 && c[ci] && (c[ci] != ' '))
+          {
+            short_name[ci] = c[ci];
+            ci++;
+          }
+          /* Copy extension */
+          c += 8;
+          if(*c && (*c != ' '))
+          {
+            short_name[ci++] = '.';
+            int j=0;
+            do {
+              short_name[ci++] = *c++;
+              j++;
+            } while((j<3) && *c && (*c != ' '));
+          }
+          /* Terminate */
+          short_name[ci] = 0;
+          dprintf ("Short name: %s\n", short_name);
+          if (stricmp (FileName, short_name) == 0)
+          {
+            *Cluster = SavedCluster;
+            *Block = SavedBlock;
+            return i;
+          }
+        }
+
+        break;
+      }
+    }
+    if (!bDone)
+    {
+      // We must have worked through a block without getting a true comparison.
+      // If there's another block to read, get it and loop back,
+      // else we've finished so set bDone.
+      if (*Block < 0)
+      {
+        dprintf ("We've finished\n");
+        bDone = true;
+      }
+      else
+      {
+        SavedCluster = *Cluster;
+        SavedBlock = *Block;
+        ReadRootDirectoryBlock (wsptr, Block, Cluster, da, FATbc);
+      }
+    }
+  }
+
+  if (bRetVal)
+  {
+    // Return the cluster and block in which the entry was found
+    *Cluster = SavedCluster;
+    *Block = SavedBlock;
+    return i; // Return the index (0..15) to the entry
+  }
+  else
+  {
+    return -1; // No match
+  }
+}
+
+/******************************************************************
+*          FindEmptyDirectoryEntry
+*   Finds an empty directory entry in the root directory.
+*   In:     wsptr       - pointer to the workspace structure.
+*   In:     Filename    - the filename to be matched.
+*   In:     da          - pointer to a data_area union to hold
+*                         the block's data.
+*   In:     Cluster     - pointer to return value of cluster.
+*   In:     Block       - pointer to retrn value of block.
+*   In:     FATbc       - pointer to struct block_cache.
+*   Out:    da          - will have been updated with the last block read.
+*   Out:    Cluster     - will have been updated with the last cluster read.
+*   Out:    Block       - the block where the entry was found or the
+*                         search ended at the last root directory block.
+*   Return: int         - the entry (0..15) within the block where the
+*                         matching entry was found, or -1 if none found.
+******************************************************************/
+int FindEmptyDirectoryEntry (ws* wsptr, union data_area* da, uint* Cluster, int* Block,
+                             struct block_cache* FATbc)
+{
+  uint i = 0;
+  bool bDone = false;
+  uchar uc = 0;
+  int SavedBlock;
+  uint SavedCluster;
+
+  *Cluster = wsptr->BPB_RootClus;
+  *Block = 0; // MUST be set to 0 for first call!
+  SavedCluster = *Cluster;
+  SavedBlock = *Block;
+  ReadRootDirectoryBlock (wsptr, Block, Cluster, da, FATbc);
+#ifdef PRINT_DIRECTORY_BLOCK_DATA
+  print_block_data (*da);
+#endif
+
+  for (bDone = false; !bDone;)
+  {
+    for (i = 0; (i < 16) && !bDone; i++)
+    {
+      uc = da->byte[i * 32];
+      switch (uc)
+      {
+        case 0:
+#ifdef PRINT_DIAGNOSTICS
+        printf ("%02X: Empty at %d\n", uc, i);
+#endif
+        bDone = true;
+        break;
+
+        case 0xE5:
+#ifdef PRINT_DIAGNOSTICS
+        printf ("%02X: Empty (previously used) at %d\n", uc, i);
+#endif
+        bDone = true;
+        break;
+      }
+      if (bDone)
+      {
+        *Cluster = SavedCluster;
+        *Block = SavedBlock;
+        return i; // Normal return when an empty entry is found
+      }
+    }
+    // We must have worked through a block without finding an empty entry.
+    // If there's another block to read, get it and loop back,
+    // else we've finished so set bDone.
+    if (*Block < 0)
+    {
+#ifdef PRINT_DIAGNOSTICS
+      printf ("We've finished\n");
+#endif
+      bDone = true;
+    }
+    else
+    {
+      SavedCluster = *Cluster;
+      SavedBlock = *Block;
+      ReadRootDirectoryBlock (wsptr, Block, Cluster, da, FATbc);
+    }
+  }
+  return -1; // No empty entries remain
+}
+
+/******************************************************************
+*          GetLongName
+*   Gets a long file name from the root directory.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     long_name[] - character array to hold the name.
+*   in:     da          - pointer to a data_area union which holds
+*                         the block's data.  This must have been
+*                         filled in.
+*   In:     entry       - pointer to the directory entry (0..15) within
+*                         the block.
+*   In:     Block       - pointer to the directory block number.  This
+*                         has to be compatible with ReadRootDirectoryBlock().
+*   In:     Cluster     - pointer to the clutsre if necessary.  This
+*                         has to be compatible with ReadRootDirectoryBlock().
+*   In:     FATbc       - pointer to struct block_cache.
+*   Out:    long_name   - filled in with the name.
+*   Out:    da          - will have been updated if block has been updated.
+*   Out:    Block       - if the long name extended into another block,
+*                         block will have been incremented.
+*   Out:    Cluster     - this may have been updated.
+*   Out:    entry       - will certainly have been updated.
+*   Return: bool        - true if success, else false.
+******************************************************************/
+bool GetLongName (ws* wsptr, char long_name[], union data_area* da, uint* entry,
+                  int* Block, uint* Cluster, struct block_cache* FATbc)
+{
+  char long_name_2[256] = "";
+  uchar uc = 0;
+  bool bError = false;
+  uchar checksum = 0;
+
+  checksum = da->byte[((*entry) * 32) + 13]; // Get checksum of first fragment
+  uc = da->byte[(*entry) * 32]; // Get byte 0 of the entry
+  uc &= ~LAST_LONG_ENTRY; // Clear the bit so it looks like the number of the entry
+  for (; (uc >= 1) && !bError; uc--)
+  {
+    // The fragments are in reverse order, so we need to add later ones
+    // in front of the name so far, so we need to shuffle the strings around
+    strcpy (long_name_2, long_name);
+    long_name[0] = '\0'; // Clear it to receive the leftmost known fragment
+    GetLongNameFragment (long_name, da, ((*entry) * 32) + 1, 5);
+    GetLongNameFragment (long_name, da, ((*entry) * 32) + 14, 6);
+    GetLongNameFragment (long_name, da, ((*entry) * 32) + 28, 2);
+    if (checksum != da->byte[((*entry) * 32) + 13])
+    {
+      bError = true;
+      dprintf ("Checksum error\n");
+    }
+    // Concatenate the previous stuff
+    strcat (long_name, long_name_2);
+    // Increment the directory entry number
+    if (uc > 1)
+    {
+      (*entry)++;
+    }
+    // If the entry number is now 16, reset it to 0
+    // and read the next block
+    if ((*entry) >= 16)
+    {
+      *entry = 0;
+      //ReadBlockOfPartition (offset_to_root_dir + (*block), da);
+      bError |= !ReadRootDirectoryBlock (wsptr, Block, Cluster, da, FATbc);
+    }
+  }
+  return !bError;
+}
+
+/******************************************************************
+*          GetLongNameFragment
+*   Gets a fragment of a long file name from the root directory.
+*   In:     frag_name[] - character array to hold the name.
+*   in:     da          - pointer to a data_area union which holds
+*                         the block's data.  This must have been
+*                         filled in.
+*   In:     offset      - the byte offset within the directory entry
+*   In:     num_chars   - the number of characters to get.
+*   Out:    frag_name   - filled in with the name fragment.
+*   Return: void
+******************************************************************/
+void GetLongNameFragment (char frag_name[], union data_area* da, uint offset, uint num_chars)
+{
+  uint j = 0;
+  uint frag_name_len = 0;
+  uint c = 0;
+
+  frag_name_len = strlen (frag_name);
+  for (j = 0; j < num_chars; j++)
+  {
+    c = GetUShort (da, offset + (j * 2));
+    if ((c < 32) || (c == 0xFFFF)) // It seems that words following a NUL can be 0xFFFF
+    {
+      c = 0; // Replace any control character with NUL
+    }
+    else if (c == 127)
+    {
+      c = '.'; // Replace rubout with dot
+    }
+    frag_name[frag_name_len++] = (char) c;
+    frag_name[frag_name_len] = '\0';
+  }
+}
+
+/******************************************************************
+*          ReadBlockClustered
+*   Reads a block pointed to by the cluster and the offset.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     cluster     - pointer to a cluster number.
+*   In:     offset      - pointer to the block offset in the cluster.
+*   In:     da          - pointer to data_area union
+*   In:     FATbc       - pointer to struct block_cache.
+*   Out:    cluster     - will have been updated to point to the next
+*                         cluster if the block read was the last of
+*                         the cluster.
+*   Out:    offset      - will have been updated to point to the
+*                         next block in this cluster, or to 0 if
+*                         the block read was the last of the cluster.
+*   Out:    da          - filled with block's contents.
+*   Return: bool        - true if read was successful, else false.
+******************************************************************/
+bool ReadBlockClustered (ws* wsptr, uint* cluster, uint* offset, union data_area* da,
+                         struct block_cache* FATbc)
+{
+  bool bRetVal = false;
+  uint BlockAddress = 0;
+
+  dprintf ("ReadBlockClustered (%u, %u)\n", *cluster, *offset);
+  BlockAddress = FirstSectorOfCluster (wsptr, *cluster) + (*offset);
+  (*offset)++; // Increment offset
+  // If the offset is now beyond the cluster, we must get the next linked
+  // cluster.
+  if ((*offset) >= wsptr->BPB_SecPerClus)
+  {
+    *offset = 0;
+    *cluster = NextCluster (wsptr, *cluster, FATbc);
+    dprintf ("Next cluster will be %u\n", *cluster);
+  }
+  dprintf ("ReadBlockClustered is about to read block 0x%X\n", BlockAddress);
+  ReadBlockOfPartition (wsptr, BlockAddress, da);
+
+  return bRetVal;
+}
+
+/******************************************************************
+*          WriteBlockClustered
+*   Writes a block pointed to by the cluster and the offset.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     cluster     - pointer to a cluster number.
+*   In:     offset      - pointer to the block offset in the cluster.
+*   In:     da          - pointer to data_area union
+*   Out:    cluster     - will have been updated to point to the next
+*                         cluster if the block read was the last of
+*                         the cluster.
+*   Out:    offset      - will have been updated to point to the
+*                         next block in this cluster, or to 0 if
+*                         the block read was the last of the cluster.
+*   Out:    da          - filled with block's contents.
+*   Return: bool        - true if write was successful, else false.
+******************************************************************/
+bool WriteBlockClustered (ws* wsptr, uint* cluster, uint* offset, union data_area* da,
+                          struct block_cache* FATbc)
+{
+  bool bRetVal = false;
+  uint BlockAddress = 0;
+
+  (void)FATbc;
+
+  BlockAddress = FirstSectorOfCluster (wsptr, *cluster) + (*offset);
+#ifdef PRINT_DIAGNOSTICS
+  printf ("WriteBlockClustered is about to write block 0x%X\n", BlockAddress);
+#else
+  dprintf ("."); // Progress dot
+#endif
+  bRetVal = WriteBlockOfPartition (wsptr, BlockAddress, da);
+  (*offset)++; // Increment offset
+
+  return bRetVal;
+}
+
+/******************************************************************
+*          FirstSectorOfCluster
+*   Returns the block number of the first data block in a cluster.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     cluster     - a cluster number (2...)
+*   Return: uint        - the block number (relative to the base
+*                         of the partition) of the cluster.
+*                         If called with cluster == 0 or 1,
+*                         returns 0xFFFFFFFF.
+******************************************************************/
+uint FirstSectorOfCluster (ws* wsptr, uint cluster)
+{
+  if (cluster < 2)
+  {
+    return 0xFFFFFFFF;
+  }
+  else
+  {
+    return ((cluster - 2) * wsptr->BPB_SecPerClus) + wsptr->FirstDataSector;
+  }
+}
+
+/******************************************************************
+*          ThisFATSecNum
+*   Returns the block number of the cluster.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     cluster     - a cluster number.
+*   Return: uint        - the block number (relative to the base
+*                         of the FAT) of the cluster.
+******************************************************************/
+uint ThisFATSecNum (ws* wsptr, uint cluster)
+{
+  uint FATOffset = 0;
+
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT16:
+      FATOffset = cluster * 2;
+      break;
+    case FATTYPE_FAT32:
+      FATOffset = cluster * 4;
+      break;
+    case FATTYPE_FAT12:
+      FATOffset = cluster + (cluster / 2);
+      break;
+    default:
+      dprintf ("ThisFATSecNum (%u) called with illegal FATType: %u\n", cluster, wsptr->FATType);
+  }
+  return wsptr->BPB_RsvdSecCnt + (FATOffset / wsptr->BPB_BytsPerSec);
+}
+
+/******************************************************************
+*          ThisFATEntOffset
+*   Returns the cluster's byte offset within a block.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     cluster     - a cluster number.
+*   Return: uint        - the byte offset (relative to the base
+*                         of the block) of the cluster.
+******************************************************************/
+uint ThisFATEntOffset (ws* wsptr, uint cluster)
+{
+  uint FATOffset = 0;
+
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT32:
+      FATOffset = cluster * 4;
+      break;
+    case FATTYPE_FAT16:
+      FATOffset = cluster * 2;
+      break;
+    case FATTYPE_FAT12:
+      FATOffset = cluster + (cluster / 2);
+      break;
+    default:
+      dprintf ("ThisFATEntOffset(%u) called with illegal FATType: %u\n", cluster, wsptr->FATType);
+  }
+  return FATOffset % wsptr->BPB_BytsPerSec;
+}
+
+/******************************************************************
+*          NextCluster
+*   Returns the cluster pointed to by this cluster, i.e. the next
+*       cluster in the chain.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     cluster     - a cluster number.
+*           FATbc       - the block_cache used as the FAT cache
+*   Return: uint        - the next cluster number, ANDed with the
+*                         cluster entry size, or 0xFFFFFFFF if
+*                         this is the last cluster in the chain.
+******************************************************************/
+uint NextCluster (ws* wsptr, uint cluster, struct block_cache* FATbc)
+{
+  uint ThisBlockNumber = 0;
+  uint ThisEntryOffset = 0;
+  uint NextClus = 0;
+
+  ThisBlockNumber = ThisFATSecNum (wsptr, cluster);
+  ThisEntryOffset = ThisFATEntOffset (wsptr, cluster);
+  if (ThisBlockNumber != FATbc->blocknum)
+  {
+    FATbc->blocknum = ThisBlockNumber;
+    ReadBlockOfPartition (wsptr, ThisBlockNumber, &(FATbc->da));
+    //dprintf ("NextCluster (%d) has read block 0x%X\n", cluster, ThisBlockNumber);
+  }
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT16:
+    NextClus = GetUShort (&FATbc->da, ThisEntryOffset);
+    if (NextClus >= 65525) // End of chain
+    {
+      NextClus = 0xFFFFFFFF;
+    }
+    break;
+    case FATTYPE_FAT32:
+    NextClus = GetUInt (&FATbc->da, ThisEntryOffset) & 0x0FFFFFFF; // 28 bits only!
+    if (NextClus >= 0x0FFFFFF7)
+    {
+      NextClus = 0xFFFFFFFF;
+    }
+    break;
+    case FATTYPE_FAT12:
+    // If ThisEntryOffset points at the last byte of the block,
+    // the entry spans two blocks, so needs special treatment
+    if (ThisEntryOffset == wsptr->BPB_BytsPerSec - 1)
+    {
+      // Get the low byte from here
+      NextClus = (FATbc->da).byte[ThisEntryOffset];
+      // Read the next block
+      FATbc->blocknum = ThisBlockNumber + 1;
+      ReadBlockOfPartition(wsptr, ThisBlockNumber + 1, &(FATbc->da));
+      // Add the high byte
+      NextClus += ((FATbc->da).byte[0] << 8);
+    }
+    else
+    {
+      NextClus = GetUShort (&FATbc->da, ThisEntryOffset);
+    }
+    // if the cluster number is EVEN, we want the low 12 bits;
+    // if the cluster number is ODD, we want the top 12 bits, shifted down 4 bits.
+    if (cluster & 1)
+    {
+      // Cluster is ODD
+      NextClus = NextClus >> 4;
+    }
+    else
+    {
+      // Cluster is EVEN
+      NextClus &= 0xFFF;
+    }
+    break;
+    default:
+    NextClus = 0xFFFFFFFF;
+    dprintf ("NextCluster () has been called when FATType has an unexpected value: %d\n", wsptr->FATType);
+  }
+  //printf ("NextCluster (%d) returns 0x%X\n", cluster, NextClus);
+  return NextClus;
+}
+
+/******************************************************************
+*          NextFreeCluster
+*   Returns the next free cluster.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     cluster     - a cluster number; 0 if the first free
+*                         cluster is wanted.
+*           FATda       - the data_area used as the FAT cache
+*   Return: uint        - the next free cluster number, ANDed with the
+*                         cluster entry size, or 0xFFFFFFFF if
+*                         there are no more free clusters.  The search
+*                         returns the lowest numbered free cluster
+*                         greater than the argument supplied.
+******************************************************************/
+uint NextFreeCluster (ws* wsptr, uint cluster, struct block_cache* FATbc)
+{
+  uint ThisBlockNumber = 0;
+  uint ThisEntryOffset = 0;
+  uint NextClus = 0;
+
+  // Given a cluster, we want the NEXT cluster, so increment it first
+  cluster += 1;
+  // Clusters 0 and 1 are unused
+  if (cluster < 2)
+  {
+    cluster = 2;
+  }
+  while (cluster < wsptr->CountOfClusters)
+  {
+    ThisBlockNumber = ThisFATSecNum (wsptr, cluster);
+    ThisEntryOffset = ThisFATEntOffset (wsptr, cluster);
+    if (ThisBlockNumber != FATbc->blocknum)
+    {
+#ifdef PRINT_DIAGNOSTICS
+      printf ("NextFreeCluster (%d) is about to read block 0x%X\n", cluster, ThisBlockNumber);
+      printf ("ThisEntryOffset = %u\n", ThisEntryOffset);
+#endif
+      FATbc->blocknum = ThisBlockNumber;
+      ReadBlockOfPartition (wsptr, ThisBlockNumber, &(FATbc->da));
+#ifdef PRINT_FAT_BLOCK_DATA
+      print_block_data (FATbc->da);
+#endif
+    }
+    switch (wsptr->FATType)
+    {
+      case FATTYPE_FAT16:
+      NextClus = GetUShort (&FATbc->da, ThisEntryOffset);
+      if (NextClus == 0) // Free
+      {
+        return cluster;
+      }
+      break;
+      case FATTYPE_FAT32:
+      NextClus = GetUInt (&FATbc->da, ThisEntryOffset) & 0x0FFFFFFF; // 28 bits only!
+      if (NextClus == 0) // Free
+      {
+        return cluster;
+      }
+      break;
+      case FATTYPE_FAT12:
+      // If ThisEntryOffset points at the last byte of the block,
+      // the entry spans two blocks, so needs special treatment
+      if (ThisEntryOffset == wsptr->BPB_BytsPerSec - 1)
+      {
+        // Get the low byte from here
+        NextClus = (FATbc->da).byte[ThisEntryOffset];
+        // Read the next block
+        FATbc->blocknum = ThisBlockNumber + 1;
+        ReadBlockOfPartition(wsptr, ThisBlockNumber + 1, &(FATbc->da));
+        // Add the high byte
+        NextClus += ((FATbc->da).byte[0] << 8);
+      }
+      else
+      {
+        NextClus = GetUShort (&FATbc->da, ThisEntryOffset);
+      }
+      // if the cluster number is EVEN, we want the low 12 bits;
+      // if the cluster number is ODD, we want the top 12 bits, shifted down 4 bits.
+      if (cluster & 1)
+      {
+        // Cluster is ODD
+        NextClus = NextClus >> 4;
+      }
+      else
+      {
+        // Cluster is EVEN
+        NextClus &= 0xFFF;
+      }
+      if (NextClus == 0) // Free
+      {
+        return cluster;
+      }
+      break;
+      default:
+#ifdef PRINT_DIAGNOSTICS
+      printf ("NextFreeCluster () has been called when FATType has an unexpected value: %d\n", FATType);
+#endif
+      return 0xFFFFFFFF;
+    }
+    cluster += 1;
+  }
+  return 0xFFFFFFFF;
+}
+
+/******************************************************************
+*          PutFATEntry
+*   Puts a value into a FAT entry
+*   In:     wsptr       - pointer to workspace.
+*   In:     cluster     - the FAT entry that is going to receive
+*                         the new value.
+*   In:     link        - the value that will be put there (the link
+*                         to the next FAT entry, or end of chain, etc.)
+*   Return: void
+******************************************************************/
+void PutFATEntry (ws* wsptr, uint cluster, uint link, struct block_cache* FATbc)
+{
+  uint ThisBlockNumber = 0;
+  uint ThisEntryOffset = 0;
+
+  ThisBlockNumber = ThisFATSecNum (wsptr, cluster);
+  ThisEntryOffset = ThisFATEntOffset (wsptr, cluster);
+  if (ThisBlockNumber != FATbc->blocknum)
+  {
+#ifdef PRINT_DIAGNOSTICS
+    dprintf ("PutFATEntry (%d) is about to read block 0x%X\n", cluster, ThisBlockNumber);
+    dprintf ("ThisEntryOffset = %u\n", ThisEntryOffset);
+#endif
+    FATbc->blocknum = ThisBlockNumber;
+    ReadBlockOfPartition (wsptr, ThisBlockNumber, &(FATbc->da));
+#ifdef PRINT_FAT_BLOCK_DATA
+    print_block_data (FATbc->da);
+#endif
+  }
+
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT16:
+    PutUShort (link, &(FATbc->da), ThisEntryOffset);
+    break;
+
+    case FATTYPE_FAT32:
+    PutUInt (link, &(FATbc->da), ThisEntryOffset);
+    break;
+
+    case FATTYPE_FAT12:
+      link &= 0xFFF; // Clip off any excess bits
+      // If ThisEntryOffset points at the last byte of the block,
+      // the entry spans two blocks, so needs special treatment
+      if (ThisEntryOffset == wsptr->BPB_BytsPerSec - 1)
+      {
+        if (cluster & 1)
+        {
+          // Cluster is ODD
+          (FATbc->da).byte[ThisEntryOffset] =
+            ((FATbc->da).byte[ThisEntryOffset] & 0x0F) | (link << 4);
+          // Write this block to all FATs
+          WriteAllFATs (wsptr, FATbc);
+          // Read the next block
+          FATbc->blocknum = ThisBlockNumber + 1;
+          ReadBlockOfPartition(wsptr, ThisBlockNumber + 1, &(FATbc->da));
+          (FATbc->da).byte[0] = link >> 4;
+        }
+        else
+        {
+          // Cluster is EVEN
+          (FATbc->da).byte[ThisEntryOffset] = link; // 8 LSBs of link become lower byte
+          // Write this block to all FATs
+          WriteAllFATs (wsptr, FATbc);
+          // Read the next block
+          FATbc->blocknum = ThisBlockNumber + 1;
+          ReadBlockOfPartition(wsptr, ThisBlockNumber + 1, &(FATbc->da));
+          (FATbc->da).byte[0] =
+            ((FATbc->da).byte[0] & 0xF0) | (link >> 8);
+        }
+      }
+      else
+      {
+        // if the cluster number is EVEN, we want the low 12 bits;
+        // if the cluster number is ODD, we want the top 12 bits, shifted down 4 bits.
+        if (cluster & 1)
+        {
+          // Cluster is ODD
+          (FATbc->da).byte[ThisEntryOffset] =
+            ((FATbc->da).byte[ThisEntryOffset] & 0x0F) | (link << 4);
+          (FATbc->da).byte[ThisEntryOffset + 1] = link >> 4;
+        }
+        else
+        {
+          // Cluster is EVEN
+          (FATbc->da).byte[ThisEntryOffset] = link; // 8 LSBs of link become lower byte
+          (FATbc->da).byte[ThisEntryOffset + 1] =
+            ((FATbc->da).byte[ThisEntryOffset + 1] & 0xF0) | (link >> 8);
+        }
+      }
+    break;
+  }
+}
+
+/******************************************************************
+*          ReadRootDirectoryBlock
+*   Reads a block
+*       cluster in the chain.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     Block       - pointer to a block number (int).  Set the
+*                         target to 0 for the first call, then leave
+*                         it alone - this funcion will update it as
+*                         necessary.
+*   In:     Cluster     - pointer to a cluster number.  Set the
+*                         target to BPB_SecsPerClus for the first
+*                         call, then leave it alone - this function
+*                         will update it as necessary.
+*   in:     da          - pointer to a data_area union.
+*   Out:                - Block updated to the next block if there
+*                         is one, or -1 if the root directory has
+*                         all been read.
+*   Out:                - Cluster updated if the card is FAT32 formatted.
+*   Return: bool        - true if read was successful, else false.
+*                         cluster entry size, or 0xFFFFFFFF if
+*                         this is the last cluster in the chain.
+******************************************************************/
+bool ReadRootDirectoryBlock (ws* wsptr, int* Block, uint* Cluster, union data_area* da,
+                             struct block_cache* FATbc)
+{
+  bool bRetVal = false;
+
+  // Check that Block is positive, else return failure
+  if (*Block < 0)
+  {
+    return false;
+  }
+
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT16:
+    case FATTYPE_FAT12:
+    dprintf ("ReadRootDirectoryBlock (%d, %d): ReadBlockOfPartition is about to read block %X\n",
+      (*Block), (*Cluster), (uint) (*Block) + wsptr->offset_to_root_dir);
+    bRetVal = ReadBlockOfPartition (wsptr, (uint) *(Block) + wsptr->offset_to_root_dir, da);
+    //print_block_data (da);
+    (*Block)++;
+    if (*Block > wsptr->RootDirSectors)
+    {
+      *Block = -1;
+    }
+    break;
+
+    case FATTYPE_FAT32:
+    bRetVal = ReadBlockOfPartition (wsptr, (uint) (*Block)
+                                    + FirstSectorOfCluster (wsptr, *Cluster), da);
+    //print_block_data (da);
+    (*Block)++;
+    //dprintf ("*Block is now %d, *Cluster is now %d\n", *Block, *Cluster);
+    if (*Block >= wsptr->BPB_SecPerClus)
+    {
+      // The next block is going to be in the cluster linked to by this one, so read
+      // the relevant part of the FAT and get the next entry
+      (*Block) = 0; // Next block will be block 0 of the next cluster
+      (*Cluster) = NextCluster (wsptr, *Cluster, FATbc);
+      //dprintf ("*Block is now %d, *Cluster is now %d\n", *Block, *Cluster);
+    }
+    break;
+
+    default:
+    dprintf ("ReadRootDirectoryBlock called when FATType has illegal value: %d\n", wsptr->FATType);
+    bRetVal = false;
+  }
+
+  return bRetVal;
+}
+
+/******************************************************************
+*          WriteRootDirectoryBlock
+*   Writes a block cluster in the chain.
+*   In:     wsptr       - pointer to workspace.
+*   In:     Block       - pointer to a block number (int).  Set the
+*                         target to 0 for the first call, then leave
+*                         it alone - this funcion will update it as
+*                         necessary.
+*   In:     Cluster     - pointer to a cluster number.  Set the
+*                         target to 0 for the first call, then leave
+*                         it alone - this function will update it as
+*                         necessary.
+*   in:     da          - pointer to a data_area union.
+*   Out:                - Block updated to the next block if there
+*                         is one, or -1 if the root directory has
+*                         all been read.
+*   Out:                - Cluster updated if the card is FAT32 formatted.
+*   Return: bool        - true if write was successful, else false.
+*                         cluster entry size, or 0xFFFFFFFF if
+*                         this is the last cluster in the chain.
+******************************************************************/
+bool WriteRootDirectoryBlock (ws* wsptr, int* Block, uint* Cluster, union data_area* da,
+                              struct block_cache* FATbc) // union data_area* daFAT)
+{
+  bool bRetVal = false;
+
+  // Check that Block is positive, else return failure
+  if (*Block < 0)
+  {
+    return false;
+  }
+
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT16:
+    case FATTYPE_FAT12:
+#ifdef PRINT_DIAGNOSTICS
+    dprintf ("WriteRootDirectoryBlock: WriteBlockOfPartition is about to write block %X\n",
+      (uint) (*Block) + wsptr->offset_to_root_dir);
+#endif
+    bRetVal = WriteBlockOfPartition (wsptr, (uint) *(Block) + wsptr->offset_to_root_dir, da);
+    (*Block)++;
+    if (*Block > wsptr->RootDirSectors)
+    {
+      *Block = -1;
+    }
+    break;
+
+    case FATTYPE_FAT32:
+    bRetVal = WriteBlockOfPartition (wsptr, (uint) (*Block)
+                                    + FirstSectorOfCluster (wsptr, *Cluster), da);
+    (*Block)++;
+    if (*Block >= wsptr->BPB_SecPerClus)
+    {
+      // The next block is going to be in the cluster linked to by this one, so read
+      // the relevant part of the FAT and get the next entry
+      (*Block) = 0; // Next block will be block 0 of the next cluster
+      (*Cluster) = NextCluster (wsptr, *Cluster, FATbc);
+    }
+    break;
+
+    default:
+    dprintf ("WriteRootDirectoryBlock called when FATType has illegal value: %d\n", wsptr->FATType);
+    bRetVal = false;
+  }
+
+  return bRetVal;
+}
+
+/******************************************************************
+*          IsFATDifferentFromFAT0
+*   Tests whether a FAT is different from FAT 0
+*   In:     wsptr       - pointer to workspace
+*   In:     fatnum      - the number (1..) of the FAT to be compared
+*   In:     FATbc       - pointer to a struct block_cache to be used
+*                         for FAT0
+*   In:     da          - pointer to a union data_area to be used
+*                         for the other FAT
+*   Return: bool        - true if the FATs differ, else false.
+******************************************************************/
+bool IsFATDifferentFromFAT0 (ws* wsptr, uint fatnum, struct block_cache* FATbc, union data_area* da)
+{
+  uint offset = 0;
+  uint uiIndex = 0;
+  uint uiBP = 0;
+
+  offset = fatnum * wsptr->FATSz;
+  for (uiIndex = 0; uiIndex < wsptr->FATSz; uiIndex++)
+  {
+    // Read FAT0 into FATbc
+    FATbc->blocknum = wsptr->offset_to_FAT1 + uiIndex;
+    ReadBlockOfPartition (wsptr, FATbc->blocknum, &(FATbc->da));
+    // Read FATn into da
+    ReadBlockOfPartition (wsptr, (FATbc->blocknum) + offset, da);
+    for (uiBP = 0; uiBP < 512; uiBP++)
+    {
+      if (FATbc->da.byte[uiBP] != da->byte[uiBP])
+      {
+        dprintf ("IsFATDifferentFromFAT0: FATs differ at block %u\n", uiIndex);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/******************************************************************
+*          CopyBlockCache
+*   Copies the contents of one struct block_cache to another
+*   In:     src         - pointer to the source struct
+*   In:     dst         - pointer to the destination struct
+*   Return: void
+******************************************************************/
+void CopyBlockCache (struct block_cache* src, struct block_cache* dst)
+{
+  dst->blocknum = src->blocknum;
+  for (int i = 0; i < 128; i++)
+  {
+    dst->da.word[i] = src->da.word[i];
+  }
+}
+
+/******************************************************************
+*          WriteToFile
+*   Writes the data from memory to a FAT file
+*   In:     wsptr       - pointer to workspace.
+*   In:     data        - pointer to the data to be written
+*   In:     data_length - number of bytes of data to be written
+*   In:     cluster     - pointer to the starting cluster.  This can be
+*                         the first cluster of an existing file (if the
+*                         file is to be overwritten), or 0 to use the
+*                         free chain.
+*   In:     da          - pointer to a union data_area for data transfer
+*   In:     FATbc       - pointer to a struct block_cache for the required
+*                         FAT operations
+*   Return: bool        - true if success, else false.
+******************************************************************/
+bool WriteToFile (ws* wsptr, uchar* data, uint data_length, uint* cluster, union data_area* da,
+                  struct block_cache* FATbc)
+{
+  uint OriginalCluster = 0;
+  bool bSuccess = false;
+  uint NumClusters = 0;
+  bool bInFreeChain = false;
+  int Index = 0;
+  uint Block = 0;
+  struct block_cache bc2;
+  struct block_cache* FATbc2 = &bc2;
+  uint ThisEntryOffset = 0;
+  uint CurrentCluster = 0;
+
+  OriginalCluster = *cluster;
+  bSuccess = WriteToChain (wsptr, data, data_length, cluster, da, FATbc);
+  // Early return if writing the file data failed:
+  if (!bSuccess)
+  {
+    return bSuccess;
+  }
+  // Compute the number of clusters required
+  NumClusters = (data_length + wsptr->bytespercluster - 1) / wsptr->bytespercluster;
+#ifdef PRINT_DIAGNOSTICS
+  dprintf ("WriteToFile: we need %u clusters\n", NumClusters);
+#endif
+  // Now follow the chain again, this time writing the FATs (however many there are!)
+  *cluster = OriginalCluster;
+  if (*cluster == 0)
+  {
+    *cluster = NextFreeCluster (wsptr, 0, FATbc);
+    OriginalCluster = *cluster; // Keep for return
+    bInFreeChain = true;
+  }
+  else
+  {
+    // Must get the block containing the starting cluster into FATbc
+    bInFreeChain = false;
+    Block = ThisFATSecNum (wsptr, *cluster);
+    ThisEntryOffset = ThisFATEntOffset (wsptr, *cluster);
+    if (Block != FATbc->blocknum)
+    {
+      FATbc->blocknum = Block;
+      ReadBlockOfPartition (wsptr, Block, &(FATbc->da));
+#ifdef PRINT_FAT_BLOCK_DATA
+      print_block_data (FATbc->da);
+#endif
+    }
+  }
+#ifdef PRINT_DIAGNOSTICS
+  dprintf ("Starting WriteToFile at cluster %u, bInFreeChain = %d\n", *cluster, bInFreeChain);
+#endif
+  CopyBlockCache (FATbc, FATbc2);
+  for (Index = 0; Index < NumClusters; Index++)
+  {
+    Block = ThisFATSecNum (wsptr, *cluster);
+    ThisEntryOffset = ThisFATEntOffset (wsptr, *cluster);
+#ifdef PRINT_DIAGNOSTICS
+    printf ("WriteFile: cluster %u, block %u, bInFreeChain = %d\n", *cluster, Block, bInFreeChain);
+    if (Block != FATbc->blocknum)
+    {
+      dprintf ("Must use new block: %u, %u\n", Block, FATbc->blocknum);
+    }
+#endif
+    CurrentCluster = *cluster;
+    // If this is the end of the chain, we must write an end marker
+    // in the FAT entry
+    if (Index == NumClusters - 1)
+    {
+      if (!bInFreeChain)
+      {
+        // Check the forward link; if it isn't the end marker, it will
+        // be necessary to return some clusters to the free pool.
+        *cluster = NextCluster (wsptr, CurrentCluster, FATbc);
+      }
+      PutFATEntry (wsptr, CurrentCluster, 0x0FFFFFFF, FATbc2);
+      WriteAllFATs (wsptr, FATbc2);
+#ifdef PRINT_DIAGNOSTICS
+      dprintf ("Finished writing FAT chain\n");
+#endif
+#ifdef PRINT_DIRECTORY_BLOCK_DATA
+      print_block_data (FATbc2->da);
+#endif
+    }
+    else
+    {
+      if (bInFreeChain)
+      {
+        *cluster = NextFreeCluster (wsptr, *cluster, FATbc);
+        PutFATEntry (wsptr, CurrentCluster, *cluster, FATbc2);
+        if (FATbc->blocknum != FATbc2->blocknum)
+        {
+#ifdef PRINT_DIAGNOSTICS
+          dprintf ("About to write a FAT block; %u, %u\n", CurrentCluster, *cluster);
+#endif
+          WriteAllFATs (wsptr, FATbc2);
+#ifdef PRINT_FAT_BLOCK_DATA
+          print_block_data (FATbc2->da);
+#endif
+          CopyBlockCache (FATbc, FATbc2);
+        }
+      }
+      else
+      {
+        *cluster = NextCluster (wsptr, *cluster, FATbc);
+        if (ClusterIsEndOfChain (wsptr, *cluster))
+        {
+          // The new file must be longer than the original.
+          // Overwrite the end of chain marker with the next cluster,
+          // which is taken from the free pool.
+          CopyBlockCache (FATbc, FATbc2);
+          *cluster = NextFreeCluster (wsptr, 0, FATbc);
+#ifdef PRINT_DIAGNOSTICS
+          dprintf ("Linking cluster %u to %u\n", CurrentCluster, *cluster);
+#endif
+          PutFATEntry (wsptr, CurrentCluster, *cluster, FATbc2);
+          bInFreeChain = true;
+        }
+      }
+    }
+  }
+  // If some clusters must be returned to the free pool, now is the time
+  if (!bInFreeChain && !ClusterIsEndOfChain(wsptr, *cluster))
+  {
+#ifdef PRINT_DIAGNOSTICS
+    dprintf ("Returning some clusters to the free pool\n");
+#endif
+    CopyBlockCache (FATbc, FATbc2);
+    // At this point, both FATbc and FATbc2 contain the FAT block
+    // that contains *cluster, which is the first cluster beyond
+    //the end of the used part of the chain.
+    do
+    {
+      CurrentCluster = *cluster;
+#ifdef PRINT_DIAGNOSTICS
+      dprintf ("Clearing cluster %u\n", CurrentCluster);
+#endif
+      PutFATEntry (wsptr, CurrentCluster, 0, FATbc2);
+      *cluster = NextCluster (wsptr, CurrentCluster, FATbc);
+      if (FATbc->blocknum != FATbc2->blocknum)
+      {
+#ifdef PRINT_DIAGNOSTICS
+        dprintf ("Writing this block\n");
+#endif
+#ifdef PRINT_DIRECTORY_BLOCK_DATA
+        print_block_data (FATbc2->da);
+#endif
+        WriteAllFATs (wsptr, FATbc2);
+        CopyBlockCache (FATbc, FATbc2);
+      }
+    }
+    while ((*cluster != 0) && !ClusterIsEndOfChain(wsptr, *cluster));
+#ifdef PRINT_DIAGNOSTICS
+    dprintf ("Finishing by writing block %u\n", FATbc2->blocknum);
+#endif
+#ifdef PRINT_DIRECTORY_BLOCK_DATA
+    print_block_data (FATbc2->da);
+#endif
+    WriteAllFATs (wsptr, FATbc2);
+  }
+  *cluster = OriginalCluster;
+  return bSuccess;
+}
+
+/******************************************************************
+*          WriteAllFATs
+*   Writes a single FAT block to all copies of the FAT
+*   In:     wsptr       - pointer to workspace
+*   In:     FATbc       - pointer to a struct block_cache for the required
+*                         FAT operations
+*   Return: bool        - true if success, else false.
+******************************************************************/
+bool WriteAllFATs (ws* wsptr, struct block_cache* FATbc)
+{
+  bool bSuccess = true;
+  int fatnum = 0;
+
+  for (fatnum = 0, bSuccess = true; (fatnum < wsptr->BPB_NumFATs) && bSuccess; fatnum++)
+  {
+      bSuccess = WriteBlockOfPartition (wsptr, (FATbc->blocknum) + (fatnum * wsptr->FATSz), &(FATbc->da));
+  }
+  return bSuccess;
+}
+
+/******************************************************************
+*          WriteToChain
+*   Writes the data from memory to a FAT chain
+*   In:     wsptr       - pointer to workspace.
+*   In:     data        - pointer to the data to be written
+*   In:     data_length - number of bytes of data to be written
+*   In:     cluster     - pointer to the starting cluster.  This can be
+*                         the first cluster of an existing file (if the
+*                         file is to be overwritten), or 0 to use the
+*                         free chain.
+*   In:     da          - pointer to a union data_area for data transfer
+*   In:     FATbc       - pointer to a struct block_cache for the required
+*                         FAT operations
+*   Return: bool        - true if success, else false.
+******************************************************************/
+bool WriteToChain (ws* wsptr, uchar* data, uint data_length, uint* cluster, union data_area* da,
+                  struct block_cache* FATbc)
+{
+  bool bSuccess = true;
+  uint offset = 0;
+  uint transfer_length = 0;
+  uint inner_transfer_length = 0;
+  bool bInFreeChain = false;
+
+  (void)da;
+
+#ifdef PRINT_DIAGNOSTICS
+  dprintf ("WriteToChain called with cluster = %u\n", *cluster);
+#endif
+  // If called with cluster 0, substitute the start of the free chain.
+  if (*cluster == 0)
+  {
+    *cluster = NextFreeCluster (wsptr, 0, FATbc);
+    bInFreeChain = true;
+  }
+#ifdef PRINT_DIAGNOSTICS
+  dprintf ("Starting WriteToChain at cluster %u, bInFreeChain = %d\n", *cluster, bInFreeChain);
+#endif
+
+  while (data_length > 0)
+  {
+    offset = 0;
+    inner_transfer_length = uintMin (data_length, wsptr->bytespercluster);
+    while (inner_transfer_length > 0)
+    {
+      transfer_length = uintMin(data_length, 512);
+#ifdef PRINT_DIAGNOSTICS
+      dprintf ("Transferring %u bytes\n", transfer_length);
+#endif
+      bSuccess = WriteBlockClustered (wsptr, cluster, &offset, (union data_area*) data, FATbc);
+      data += transfer_length;
+      inner_transfer_length -= transfer_length;
+      data_length -= transfer_length;
+      if (!bSuccess)
+      {
+#ifdef PRINT_DIAGNOSTICS
+        dprintf ("WriteToChain exits on error\n");
+#endif
+        return bSuccess;
+      }
+      if (data_length == 0)
+      {
+#ifdef PRINT_DIAGNOSTICS
+        dprintf ("WriteToChain exits on completion\n");
+#endif
+        return true;
+      }
+    }
+    // OK, we've written a cluster, and there are more to go.
+    // Find the next cluster.
+    if (bInFreeChain)
+    {
+      *cluster = NextFreeCluster (wsptr, *cluster, FATbc);
+#ifdef PRINT_DIAGNOSTICS
+      dprintf ("WriteToChain in free chain; next cluster = %u\n", *cluster);
+#endif
+    }
+    else
+    {
+      *cluster = NextCluster (wsptr, *cluster, FATbc);
+#ifdef PRINT_DIAGNOSTICS
+      dprintf ("WriteToChain NOT in free chain; next cluster = %u\n", *cluster);
+#endif
+    }
+    if (ClusterIsEndOfChain (wsptr, *cluster))
+    {
+#ifdef PRINT_DIAGNOSTICS
+      dprintf ("WriteToChain: EOC reached\n");
+#endif
+      if (bInFreeChain)
+      {
+        // This can only mean that the medium is empty
+#ifdef PRINT_DIAGNOSTICS
+        dprintf ("Medium is full\n");
+#endif
+        return false;
+      }
+      else
+      {
+        // Move to the free chain
+        bInFreeChain = true;
+        *cluster = NextFreeCluster (wsptr, 0, FATbc);
+#ifdef PRINT_DIAGNOSTICS
+        dprintf ("Moved to the free chain; cluster = %u\n", *cluster);
+#endif
+      }
+    }
+  }
+
+  return bSuccess;
+}
+
+/******************************************************************
+*          ClusterIsEndOfChain
+*   Returns a bool according to whether the given cluster is an EOC value
+*   In:     wsptr       - pointer to workspace.
+*   In:     cluster     - cluster number.
+*   Return: bool        - true if EOC or any other non-in-chain value, else false.
+******************************************************************/
+bool ClusterIsEndOfChain (ws* wsptr, uint cluster)
+{
+  bool bIsEnd = false;
+
+  switch (wsptr->FATType)
+  {
+    case FATTYPE_FAT12:
+      bIsEnd = (cluster >= 0xFF7);
+      break;
+    case FATTYPE_FAT16:
+      bIsEnd = (cluster >= 0xFFF7);
+      break;
+    case FATTYPE_FAT32:
+      bIsEnd = (cluster >= 0x0FFFFFF7);
+      break;
+    default:
+      dprintf ("ClusterIsEndOfChain called when FATType has an illegal value: %u\n", wsptr->FATType);
+      bIsEnd = true;
+      break;
+  }
+  return bIsEnd;
+}
+
+/******************************************************************
+*          UpdateShortDirectoryEntry
+*   Updates an existing short directory entry.
+*   Calls UpdateShortDirectoryEntry2 after reading the block into da.
+*   In:     wsptr       - pointer to workspace.
+*   In:     Date        - file write date in DOS form
+*   In:     Time        - file write time in DOS form
+*   In:     Size        - file size in bytes
+*   In:     Entry       - directory entry number
+*   In:     DirEntryCluster - pointer to cluster containing directory entry
+*   In:     DirEntryBlock - pointer to block within the cluster
+*   In:     da          - pointer to struct data_area for write operation
+*   Return: bool        - true if succeeded, else false
+******************************************************************/
+bool UpdateShortDirectoryEntry (ws* wsptr, ushort Date, ushort Time, uint Size, int Entry,
+     uint* DirEntryCluster, int* DirEntryBlock, union data_area* da,
+     struct block_cache* FATbc)
+{
+  uint Cluster;
+  int Block;
+
+  // Make sure the data area contains the correct block's data.
+  // Make sure the data area contains the correct block's data.
+  // The block and cluster need saving round the call because the call
+  // will increment to the next block.
+  Cluster = *DirEntryCluster;
+  Block = *DirEntryBlock;
+  ReadRootDirectoryBlock (wsptr, &Block, &Cluster, da, FATbc);
+  // Do the update
+  return UpdateShortDirectoryEntry2 (wsptr, Date, Time, Size, Entry, DirEntryCluster,
+    DirEntryBlock, da, FATbc);
+}
+
+/******************************************************************
+*          UpdateShortDirectoryEntry2
+*   Updates an existing short directory entry without first reading
+*   the block.
+*   In:     wsptr       - pointer to workspace.
+*   In:     Date        - file write date in DOS form
+*   In:     Time        - file write time in DOS form
+*   In:     Size        - file size in bytes
+*   In:     Entry       - directory entry number
+*   In:     DirEntryCluster - pointer to cluster containing directory entry
+*   In:     DirEntryBlock - pointer to block within the cluster
+*   In:     da          - pointer to struct data_area for write operation
+*   Return: bool        - true if succeeded, else false
+******************************************************************/
+bool UpdateShortDirectoryEntry2 (ws* wsptr, ushort Date, ushort Time, uint Size, int Entry,
+     uint* DirEntryCluster, int* DirEntryBlock, union data_area* da,
+     struct block_cache* FATbc)
+{
+  bool bSuccess = false;
+
+  // Update the write date
+  PutUShort (Date, da, (Entry * 32) + 24);
+  // Update the last accessed date
+  PutUShort (Date, da, (Entry * 32) + 18);
+  // Update the write time
+  PutUShort (Time, da, (Entry * 32) + 22);
+  // Update the directory attribute to say needs archiving
+  da->byte[(Entry * 32) + 11] = 0x20;
+  // Update the size
+  PutUInt (Size, da, (Entry * 32) + 28);
+  // Write the block back
+  bSuccess = WriteRootDirectoryBlock (wsptr, DirEntryBlock, DirEntryCluster, da, FATbc);
+
+  return bSuccess;
+}
+
+/******************************************************************
+*          CreateShortDirectoryEntry
+*   Creates a new short directory entry
+*   In:     Name        - file name, 8 or 8.3 form
+*   In:     Date        - file write date, i.e. today, in DOS form
+*   In:     Time        - file write time, i.e. now, in DOS form
+*   In:     Size        - file size in bytes
+*   In:     Entry       - directory entry number
+*   In:     FirstCluster - first cluster of file
+*   In:     DirEntryCluster - pointer to cluster containing directory entry
+*   In:     DirEntryBlock - pointer to block within the cluster
+*   In:     da          - pointer to struct data_area for write operation
+*   Return: bool        - true if succeeded, else false
+******************************************************************/
+bool CreateShortDirectoryEntry (ws* wsptr, char* Name, ushort Date, ushort Time, uint Size,
+     int Entry, uint FirstCluster, uint* DirEntryCluster, int* DirEntryBlock, union data_area* da,
+     struct block_cache* FATbc)
+{
+  int i = 0;
+  int j = 0;
+  char c = '\0';
+  bool bDone = false;
+  uint Cluster;
+  int Block;
+
+#ifdef PRINT_DIAGNOSTICS
+  dprintf ("CreateShortDirectoryEntry called with Entry = %d\n", Entry);
+#endif
+  // Make sure the data area contains the correct block's data.
+  // The block and cluster need saving round the call because the call
+  // will increment to the next block.
+  Cluster = *DirEntryCluster;
+  Block = *DirEntryBlock;
+  ReadRootDirectoryBlock (wsptr, &Block, &Cluster, da, FATbc);
+  // Set all the name to 0x20 (space) - NB This also sets DIR_Attr,
+  // which just happens to be the value we want but will get overwritten
+  // later anyway
+  PutUInt (0x20202020, da, (Entry * 32) + 0);
+  PutUInt (0x20202020, da, (Entry * 32) + 4);
+  PutUInt (0x20202020, da, (Entry * 32) + 8);
+  // Process the name
+  for (i = 0, bDone = false; bDone == false;)
+  {
+    c = *(Name + i);
+    if ((c >= ' ') && (c != '.'))
+    {
+      // This is a printable character and not a dot.  Put it into the root name.
+      da->byte[(Entry * 32) + i++] = c;
+    }
+    else
+    {
+      bDone = true;
+    }
+    if (i >= 8)
+    {
+      bDone = true;
+    }
+  }
+  // If c is a control character, we've finished, else look for an extension
+  if (c >= ' ')
+  {
+    // If it isn't a dot, skip any excess root name characters
+    if (c != '.')
+    {
+      for (bDone = false; bDone == false;)
+      {
+        c = *(Name + i++);
+        bDone = (c < ' ') || (c == '.');
+      }
+    }
+    if (c == '.')
+    {
+      // There is an extension
+      for (j = 8, bDone = false; (j <= 10) && (bDone == false);)
+      {
+        c = *(Name + ++i); // Pre-increment because i was left pointing AT the dot
+        if (c > ' ')
+        {
+          da->byte[(Entry * 32) + j++] = c;
+        }
+        else
+        {
+          bDone = true;
+        }
+      }
+    }
+  }
+  // One last check: is the name null?  Return false (i.e. error) if so.
+  if (da->byte[Entry * 32] == 0x20)
+  {
+    return false;
+  }
+  // Set NTRes to 0
+  da->byte[(Entry * 32) + 12] = 0;
+  // Set creation time tenths to 0
+  da->byte[(Entry * 32) + 13] = 0;
+  // Set the creation date
+  PutUShort (Date, da, (Entry * 32) + 16);
+  // Set the creation time
+  PutUShort (Time, da, (Entry * 32) + 14);
+  // Set the first cluster's high half, if applicable
+  if (wsptr->FATType == FATTYPE_FAT32)
+  {
+    PutUShort (FirstCluster >> 16, da, (Entry * 32) + 20);
+  }
+  // Set the first cluster's low half
+  PutUShort (FirstCluster, da, (Entry * 32) + 26);
+  // Use UpdateShortDirectoryEntry2 to do the remaining work
+  return UpdateShortDirectoryEntry2 (wsptr, Date, Time, Size, Entry, DirEntryCluster,
+                                    DirEntryBlock, da, FATbc);
+}
+@
+
+
+1.4
+log
+@NVMem fixes
+Detail:
+  c/NVMem - Fixed NVMem_C_write() to skip creating a CMOS file if the directory is full
+  c/fat - Fixed FindDirectoryEntry() to ensure short_name[] is always terminated properly
+  s/NVMemory - Only update the CMOS file if bytes have changed
+  s/Boot - Fixed beagleboard revision detection GPIOs not being configured correctly
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.54. Tagged as 'OMAP3-0_54'
+@
+text
+@@
+
+
+1.3
+log
+@NVMem tweaks and fixes
+Detail:
+  c/fat - Fixed ReadRootDirectoryBlock and WriteRootDirectoryBlock when dealing with FAT32 cards
+  c/NVMem - Ensure FATbc.blocknum is initialised to an invalid value inside NVMem_C_write
+  c/NVMem, c/far, h/NVMem - Change GetUInt() and GetUShort() to take data_area pointers instead of passing by reference, to reduce stack thrashing
+Admin:
+  Tested on rev A2 BB-xM
+  Fixes supplied by Willi Theiss
+
+
+Version 0.53. Tagged as 'OMAP3-0_53'
+@
+text
+@d162 4
+a165 4
+          strncpy (short_name, (char*) &da->byte[i * 32], 8);
+          // It's possible that the root is padded with spaces, so remove them
+          ci = 7;
+          while ((ci > 0) && (short_name[ci] == ' '))
+d167 2
+a168 1
+            short_name[ci--] = '\0';
+d170 3
+a172 6
+          short_name[++ci] = '.'; // Add the dot
+          short_name[++ci] = '\0'; // Null terminate
+          strncat (short_name, (char*) &da->byte[(i * 32) + 8], 3);
+          // The extension may also be padded with spaces, so remove them
+          ci = strlen (short_name) - 1;
+          while ((ci > 0) && ((short_name[ci] == ' ') || (short_name[ci] == '.')))
+d174 6
+a179 1
+            short_name[ci--] = '\0';
+d181 2
+@
+
+
+1.2
+log
+@Add Dave Higton's CMOS save code
+Detail:
+  Makefile - fixed warning about StdRules being included twice (via CModule)
+  c/NVMem, c/fat, h/NVMem, h/common, h/fat, hdr/StaticWS, s/NVMemory, s/RTC - Added Dave Higton's code to create/update the 'CMOS' file on NVRAM writes
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.50. Tagged as 'OMAP3-0_50'
+@
+text
+@d393 1
+a393 1
+    c = GetUShort (*da, offset + (j * 2));
+d591 1
+a591 1
+    NextClus = GetUShort (FATbc->da, ThisEntryOffset);
+d598 1
+a598 1
+    NextClus = GetUInt (FATbc->da, ThisEntryOffset) & 0x0FFFFFFF; // 28 bits only!
+d619 1
+a619 1
+      NextClus = GetUShort (FATbc->da, ThisEntryOffset);
+d687 1
+a687 1
+      NextClus = GetUShort (FATbc->da, ThisEntryOffset);
+d694 1
+a694 1
+      NextClus = GetUInt (FATbc->da, ThisEntryOffset) & 0x0FFFFFFF; // 28 bits only!
+d715 1
+a715 1
+        NextClus = GetUShort (FATbc->da, ThisEntryOffset);
+d889 1
+a889 2
+                                    + FirstSectorOfCluster (wsptr, *Cluster)
+                                    + (wsptr->BPB_NumFATs * wsptr->FATSz), da);
+d961 1
+a961 2
+                                    + FirstSectorOfCluster (wsptr, *Cluster)
+                                    + (wsptr->BPB_NumFATs * wsptr->FATSz), da);
+@
+
+
+1.1
+log
+@Add Dave Higton's SD/MMC & CMOS code
+Detail:
+  c/NVMem, c/fat, h/NVMem, h/common, h/fat - C code for reading a 'CMOS' file off the SD card on boot, for use as a CMOS RAM image
+  c/CLib - Added extra functions needed by the SD/MMC driver
+  s/NVMemory - Implementation of the HAL NVRAM API, for reading/writing the loaded CMOS file. The read/write functions handle RISC OS's CMOS address mangling, so that CMOS files saved by *SaveCMOS can be used as-is.
+  hdr/StaticWS - Updated with workspace needed by the new code
+  s/Boot - Initialise the CMOS cache on boot
+  s/Stubs - Removed the stub NVRAM function
+  Makefile - Added the new files
+Admin:
+  Tested on rev A2 BB-xM.
+
+
+Version 0.38. Tagged as 'OMAP3-0_38'
+@
+text
+@d34 14
+a47 6
+*   Reads a block pointed to by the cluster and the offset.
+*   In:     wsptr       - pointer to ws struct.
+*   In:     FileName    - file name to be matched.
+*   In:     da          - pointer to data_area struct.
+*   Out:    da          - contains block containing the directory entry.
+*   Return: int         - index of the directory entry in da.
+d49 2
+a50 1
+int FindDirectoryEntry (ws* wsptr, char FileName[], union data_area* da)
+a59 2
+  int Block = 0; // MUST be set to 0 for first call
+  uint Cluster = wsptr->BPB_RootClus;
+d64 4
+d69 5
+a73 1
+  ReadRootDirectoryBlock (wsptr, &Block, &Cluster, da);
+d75 1
+d116 1
+a116 2
+          //GetLongName (long_name, da, DirBlockOffset, &i);
+          bFuncRetVal = GetLongName (wsptr, long_name, da, &i, &Block, &Cluster);
+d137 3
+a139 1
+                ReadRootDirectoryBlock (wsptr, &Block, &Cluster, da);
+d152 2
+d174 1
+a174 1
+          while ((ci > 0) && (short_name[ci] == ' '))
+d181 2
+d195 1
+a195 1
+      if (Block < 0)
+d202 3
+a204 1
+        ReadRootDirectoryBlock (wsptr, &Block, &Cluster, da);
+d211 4
+a214 1
+    return i; // Return the undex (0..15) to the entry
+d223 83
+d319 1
+d329 1
+a329 1
+                  int* Block, uint* Cluster)
+d366 1
+a366 1
+      bError |= !ReadRootDirectoryBlock (wsptr, Block, Cluster, da);
+d414 1
+d424 2
+a425 1
+bool ReadBlockClustered (ws* wsptr, uint* cluster, uint* offset, union data_area* da)
+d438 2
+a439 2
+    *cluster = NextCluster (wsptr, *cluster);
+    //dprintf ("Next cluster will be %u\n", *cluster);
+d441 1
+a441 1
+  //dprintf ("ReadBlockClustered is about to read sector 0x%X\n", BlockAddress);
+d448 36
+d569 1
+d574 1
+a574 1
+uint NextCluster (ws* wsptr, uint cluster)
+a577 1
+  union data_area da;
+d582 6
+a587 2
+  ReadBlockOfPartition (wsptr, ThisBlockNumber, &da);
+  //dprintf ("NextCluster (%d) has read block 0x%X\n", cluster, ThisBlockNumber);
+d591 1
+a591 1
+    NextClus = GetUShort (da, ThisEntryOffset);
+d598 1
+a598 1
+    NextClus = GetUInt (da, ThisEntryOffset) & 0x0FFFFFFF; // 28 bits only!
+d610 1
+a610 1
+      NextClus = da.byte[ThisEntryOffset];
+d612 2
+a613 1
+      ReadBlockOfPartition(wsptr, ThisBlockNumber + 1, &da);
+d615 1
+a615 1
+      NextClus += (da.byte[0] << 8);
+d619 1
+a619 1
+      NextClus = GetUShort (da, ThisEntryOffset);
+d643 197
+d861 2
+a862 1
+bool ReadRootDirectoryBlock (ws* wsptr, int* Block, uint* Cluster, union data_area* da)
+a864 1
+  uint BN;
+d876 1
+a876 1
+    dprintf ("ReadRootDirectoryBlock (%d, %d): ReadBlockOfPartition is about to read block %X\n", \
+d888 3
+a890 5
+    // Calculate block number
+    BN = FirstSectorOfCluster (wsptr, *Cluster) + (uint) (*Block);
+    dprintf ("ReadRootDirectoryBlock (%d, %d): ReadBlockOfPartition is about to read block %X\n", \
+            (*Block), (*Cluster), BN);
+    bRetVal = ReadBlockOfPartition (wsptr, BN, da);
+d899 1
+a899 1
+      (*Cluster) = NextCluster (wsptr, *Cluster);
+d911 645
+@
+

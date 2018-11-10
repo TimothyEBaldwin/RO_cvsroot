@@ -1,0 +1,1000 @@
+head	1.5;
+access;
+symbols
+	SharedSnd-0_49:1.4
+	bavison_SharedSnd-0_48:1.3
+	SharedSnd-0_48:1.2
+	Spin_merge:1.1.2.2
+	afrost_NC2_Generic:1.1.2.2
+	afrost_Funai01-33:1.1.2.2
+	smiddle_0_43:1.1.2.1
+	Spinner:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2001.06.28.18.11.57;	author bavison;	state dead;
+branches;
+next	1.4;
+
+1.4
+date	2001.01.16.15.28.02;	author bavison;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.01.15.14.04.16;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.11.02.16.36.13;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.11.06.14.18.08;	author smiddle;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	97.11.06.14.18.08;	author smiddle;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	97.11.06.14.44.08;	author smiddle;	state Exp;
+branches;
+next	;
+
+
+desc
+@Files for new SharedSound build
+@
+
+
+1.5
+log
+@  Import of version 1.00 of SharedSound from WSS - this is a merge of
+  RISC OS Ltd, ESP and Pace sources. I've added the Makefile, Mk* and
+  VersionNum files.
+
+Detail (courtesy of WSS):
+  * Incorporates fixes made to 0.58c to fix the callbacks on sound
+    rate changes.
+
+  * Incorporates RISC OS Ltd changes to response to
+    TaskManager_Acknowledgements service.
+
+  * Includes 8 bit Log and PowerWave drivers.
+
+  * Now built with Objasm, not BASIC assembler.
+
+  * SharedSound_HandlerInfo SWI fixed to conform to spec. Also
+    extended to accept r0 = 0 on entry, in which case r0 = number of
+    first registered handler (or 0 for none) on exit; R1-R5 corrupted.
+
+    Therefore the following code enumerates handlers:
+
+    REM Get first handler number.
+    SYS "SharedSound_HandlerInfo",0 TO next% ; flags%
+    REM While no errors, and not finished
+    WHILE (next% <> 0) AND ((flags% AND 1) = 0)
+     SYS"SharedSound_HandlerInfo",next% TO next%,a%,b%,c%,d%,e%
+    ENDWHILE
+
+  * Sends Service_Sound (&54) with reason code 6 (SharedSound Starting)
+    on (callback after) initialisation.
+
+  * Sends Service_Sound (&54) with reason code 7 (SharedSound Dying)
+    on finalisation.
+
+  * Some small optimisations
+
+  * Version bumped to 1.00 (to allow RISC OS Ltd space to make changes
+    to their versions).
+
+  * Table of helpful fill code routines now passed to handlers in R8.
+
+  * SharedSound reinitialises correctly on lower layers reinitialising.
+
+  * More care taken to remove outstanding callbacks on finalise.
+
+  * Dual 26/32 bit version.
+
+Admin:
+  * Not tested by us.
+
+  * 8-bit sound system code is known not to be ROM safe. However, it is
+    currently switched out (see the doLog option in s.Gets).
+
+  * This version *will not work* on a 32-bit system. There are at least two
+    issues with it that I've spotted with a quick glance through the code -
+    the lack of the module flags word, and an unconditional TEQP instruction.
+    This version has been checked in nevertheless as a record of what WSS
+    delivered to us.
+
+Version 1.00. Tagged as 'SharedSnd-1_00'
+@
+text
+@/* Copyright (c) 1995, Expressive Software Projects
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Expressive Software Projects nor the names of its
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+DEFPROCModule
+LOCAL er$
+er$="Module"
+PRINT "PROCModule"
+[OPT I%
+
+.module%     \ Module header
+
+   EQUD  0  \ Not an application
+   EQUD  initCode%-module%
+   EQUD  finalCode%-module%
+   EQUD  0  \  No service calls
+   EQUD  title%-module%
+   EQUD  help%-module%
+   EQUD  commandTable%-module%
+.swiBaseNum%
+   EQUD  swiBase% \ SWI Base number
+   EQUD  swiHandler%-module%
+   EQUD  swiTable%-module%  \ SWI Decode table
+   EQUD  0  \ SWI Decode code
+   EQUD  0  \ No messages file
+   EQUD  flagsword%-module%
+
+.copyr% EQUS copyRight$
+.title% EQUS title$+CHR$(0):ALIGN
+.help%  EQUS "Shared Sound"+CHR$(9)+FNget_srccommit_version+CHR$(0):ALIGN
+.flagsword% EQUD 1               \ 32-bit compatible
+
+\
+.initCode%
+
+   STMDB R13!,{R0-R12,R14}
+
+   BL    startMem%               \ Get memory
+   BVS   initMemError%
+
+   \ R10 = private word
+   \ R12 = memory pointer [R10]
+
+   BL    initWorkspace%          \ Initialise workspace
+
+]
+IF doCBAI% THEN
+[OPT I%
+
+   BL    InstallCBAI%
+
+]
+ENDIF
+[OPT I%
+
+   BL    installDefaultDriver%   \ Preferably Sound_LinearHandler or ChannelHandler
+
+   CMP   R0,#0                   \ Clear V
+   LDMIA R13!,{R0-R12,PC}
+\
+
+.initMemError%
+   LDMIA R13!,{R0-R12,R14}
+   ADR   R0,initMemErrMesg%
+   CMP   R0,#&80000000
+   CMNVC R0,#&80000000           \ Set V
+   MOV   PC,R14
+\
+.initMemErrMesg%
+    EQUD  &1E6
+    EQUS  "Not enough memory for "+title$
+    EQUB  0
+    ALIGN
+\
+
+\ -------------------------------------------------
+
+.finalCode%
+
+   STMDB R13!,{R0-R12,R14}
+
+   LDR   R12,[R12]          \ Get work area
+
+]
+IF doCBAI% THEN
+[OPT I%
+
+   BL    RemoveCBAI%
+
+]
+ENDIF
+[OPT I%
+
+   BL    releaseDriver%
+
+   CMP   R0,#0              \ Clear V
+   LDMIA R13!,{R0-R12,PC}
+\
+\ -------------------------------------------------
+
+.serviceCode%      \ Not used
+
+   MOV   PC,R14
+
+
+\ -----------------  * Comands
+
+.commandTable%
+   EQUD 0   \ No more commands
+
+\ -----------------  SWI'S
+
+.swiTable%
+    EQUS swiName$
+    EQUB 0
+    EQUS "InstallHandler"
+    EQUB 0
+    EQUS "RemoveHandler"
+    EQUB 0
+    EQUS "HandlerInfo"
+    EQUB 0
+    EQUS "HandlerVolume"
+    EQUB 0
+    EQUS "HandlerSampleType"
+    EQUB 0
+    EQUS "HandlerPause"
+    EQUB 0
+    EQUS "SampleRate"
+    EQUB 0
+    EQUS "InstallDriver"
+    EQUB 0
+    EQUS "RemoveDriver"
+    EQUB 0
+    EQUS "DriverInfo"
+    EQUB 0
+    EQUS "DriverVolume"
+    EQUB 0
+    EQUS "DriverMixer"
+    EQUB 0
+    EQUS "CheckDriver"
+    EQUB 0
+    EQUS "ControlWord"
+    EQUB 0
+    EQUS "HandlerType"
+    EQUB 0
+
+]
+IF debug1% THEN
+[OPT I%
+
+    EQUS "Test"
+    EQUB 0
+    EQUS "Info"
+    EQUB 0
+]
+ENDIF
+[OPT I%
+
+    EQUB 0
+    ALIGN
+
+\
+.swiHandler%
+
+    MOV   R10,R12
+    LDR   R12,[R12]    \ R12 = pointer to RMA data block
+    CMP   R11,#(EndOfJumpTable% - jumpTable%)/4
+    ADDCC PC,PC,R11,LSL #2
+    B     UnknownSWIerror%
+
+.jumpTable%
+
+    B     swiInstallHandler%          ;  OK
+    B     swiRemoveHandler%           ;  OK
+
+    B     swiHandlerInfo%             ;  OK
+    B     swiHandlerVolume%           ;  OK
+
+    B     swiHandlerSampleType%       ;  not in this version
+    B     swiHandlerPause%            ;  not in this version
+
+    B     swiSampleRate%              ;  OK
+
+    B     swiInstallDriver%           ;  OK
+    B     swiRemoveDriver%            ;  OK
+    B     swiDriverInfo%              ;  OK
+    B     swiDriverVolume%            ;  OK
+    B     swiDriverMixer%             ;  OK
+    B     driverCheck%                ;
+    B     swiControlWord%             ;
+
+    B     swiHandlerType%             ;
+
+]
+IF debug1% THEN
+[OPT I%
+
+    B     swiTest%                    ;  For debugging only
+    B     swiInfo%                    ;  For debugging only
+
+]
+ENDIF
+[OPT I%
+
+.EndOfJumpTable%
+.UnknownSWIerror%
+    ADR   R0,errMesg%
+    CMP   R0,#&80000000
+    CMNVC R0,#&80000000       \ Set V
+    MOV   PC,R14
+.errMesg%
+    EQUD  &1E6
+    EQUS  "Unknown module operation"
+    EQUB  0
+    ALIGN
+
+]
+ENDPROC
+
+@
+
+
+1.4
+log
+@  See Detail.
+Detail:
+  * 32-bit compatible
+  * srccommitted (and gets version number from VersionNum, even though it's
+    written in BASIC)
+  * added install rule and MkInstall file to install module in correct place
+    within an ARMovie installation
+Admin:
+  Not tested.
+
+Version 0.49. Tagged as 'SharedSnd-0_49'
+@
+text
+@@
+
+
+1.3
+log
+@Changed things so that the detokenised BASIC source (in the c directory) has
+no line numbers present (LISTO 8). The detokenised source's raison d'etre is
+to allow easier CVS diffs, but line numbers would defeat this purpose whenever
+the change involves inserting more than a handful of line numbers.
+
+No other changes - this version is committed and tagged purely as a reference
+point for future updates. Tag used is 'bavison_SharedSnd-0_48'.
+@
+text
+@d46 2
+d51 2
+a52 1
+.help%  EQUS "Shared Sound"+CHR$(9)+version$+date$+CHR$(0):ALIGN
+d79 2
+a80 1
+   LDMIA R13!,{R0-R12,PC}^
+d86 3
+a88 1
+   ORRS  PC,R14,#Overflow_Flag
+d117 2
+a118 1
+   LDMIA R13!,{R0-R12,PC}^
+d229 3
+a231 1
+    ORRS  PC,R14,#Overflow_Flag
+@
+
+
+1.2
+log
+@Spinner branch merged
+@
+text
+@d26 206
+a231 206
+   10DEFPROCModule
+   20LOCAL er$
+   30er$="Module"
+   40PRINT "PROCModule"
+   50[OPT I%
+   60
+   70.module%     \ Module header
+   80
+   90   EQUD  0  \ Not an application
+  100   EQUD  initCode%-module%
+  110   EQUD  finalCode%-module%
+  120   EQUD  0  \  No service calls
+  130   EQUD  title%-module%
+  140   EQUD  help%-module%
+  150   EQUD  commandTable%-module%
+  160.swiBaseNum%
+  170   EQUD  swiBase% \ SWI Base number
+  180   EQUD  swiHandler%-module%
+  190   EQUD  swiTable%-module%  \ SWI Decode table
+  200   EQUD  0  \ SWI Decode code
+  210
+  220.copyr% EQUS copyRight$
+  230.title% EQUS title$+CHR$(0):ALIGN
+  240.help%  EQUS "Shared Sound"+CHR$(9)+version$+date$+CHR$(0):ALIGN
+  250
+  260\
+  270.initCode%
+  280
+  290   STMDB R13!,{R0-R12,R14}
+  300
+  310   BL    startMem%               \ Get memory
+  320   BVS   initMemError%
+  330
+  340   \ R10 = private word
+  350   \ R12 = memory pointer [R10]
+  360
+  370   BL    initWorkspace%          \ Initialise workspace
+  380
+  390]
+  400IF doCBAI% THEN
+  410[OPT I%
+  420
+  430   BL    InstallCBAI%
+  440
+  450]
+  460ENDIF
+  470[OPT I%
+  480
+  490   BL    installDefaultDriver%   \ Preferably Sound_LinearHandler or ChannelHandler
+  500
+  510   LDMIA R13!,{R0-R12,PC}^
+  520\
+  530
+  540.initMemError%
+  550   LDMIA R13!,{R0-R12,R14}
+  560   ADR   R0,initMemErrMesg%
+  570   ORRS  PC,R14,#Overflow_Flag
+  580\
+  590.initMemErrMesg%
+  600    EQUD  &1E6
+  610    EQUS  "Not enough memory for "+title$
+  620    EQUB  0
+  630    ALIGN
+  640\
+  650
+  660\ -------------------------------------------------
+  670
+  680.finalCode%
+  690
+  700   STMDB R13!,{R0-R12,R14}
+  710
+  720   LDR   R12,[R12]          \ Get work area
+  730
+  740]
+  750IF doCBAI% THEN
+  760[OPT I%
+  770
+  780   BL    RemoveCBAI%
+  790
+  800]
+  810ENDIF
+  820[OPT I%
+  830
+  840   BL    releaseDriver%
+  850
+  860   LDMIA R13!,{R0-R12,PC}^
+  870\
+  880\ -------------------------------------------------
+  890
+  900.serviceCode%      \ Not used
+  910
+  920   MOV   PC,R14
+  930
+  940
+  950\ -----------------  * Comands
+  960
+  970.commandTable%
+  980   EQUD 0   \ No more commands
+  990
+ 1000\ -----------------  SWI'S
+ 1010
+ 1020.swiTable%
+ 1030    EQUS swiName$
+ 1040    EQUB 0
+ 1050    EQUS "InstallHandler"
+ 1060    EQUB 0
+ 1070    EQUS "RemoveHandler"
+ 1080    EQUB 0
+ 1090    EQUS "HandlerInfo"
+ 1100    EQUB 0
+ 1110    EQUS "HandlerVolume"
+ 1120    EQUB 0
+ 1130    EQUS "HandlerSampleType"
+ 1140    EQUB 0
+ 1150    EQUS "HandlerPause"
+ 1160    EQUB 0
+ 1170    EQUS "SampleRate"
+ 1180    EQUB 0
+ 1190    EQUS "InstallDriver"
+ 1200    EQUB 0
+ 1210    EQUS "RemoveDriver"
+ 1220    EQUB 0
+ 1230    EQUS "DriverInfo"
+ 1240    EQUB 0
+ 1250    EQUS "DriverVolume"
+ 1260    EQUB 0
+ 1270    EQUS "DriverMixer"
+ 1280    EQUB 0
+ 1290    EQUS "CheckDriver"
+ 1300    EQUB 0
+ 1310    EQUS "ControlWord"
+ 1320    EQUB 0
+ 1330    EQUS "HandlerType"
+ 1340    EQUB 0
+ 1350
+ 1360]
+ 1370IF debug1% THEN
+ 1380[OPT I%
+ 1390
+ 1400    EQUS "Test"
+ 1410    EQUB 0
+ 1420    EQUS "Info"
+ 1430    EQUB 0
+ 1440]
+ 1450ENDIF
+ 1460[OPT I%
+ 1470
+ 1480    EQUB 0
+ 1490    ALIGN
+ 1500
+ 1510\
+ 1520.swiHandler%
+ 1530
+ 1540    MOV   R10,R12
+ 1550    LDR   R12,[R12]    \ R12 = pointer to RMA data block
+ 1560    CMP   R11,#(EndOfJumpTable% - jumpTable%)/4
+ 1570    ADDCC PC,PC,R11,LSL #2
+ 1580    B     UnknownSWIerror%
+ 1590
+ 1600.jumpTable%
+ 1610
+ 1620    B     swiInstallHandler%          ;  OK
+ 1630    B     swiRemoveHandler%           ;  OK
+ 1640
+ 1650    B     swiHandlerInfo%             ;  OK
+ 1660    B     swiHandlerVolume%           ;  OK
+ 1670
+ 1680    B     swiHandlerSampleType%       ;  not in this version
+ 1690    B     swiHandlerPause%            ;  not in this version
+ 1700
+ 1710    B     swiSampleRate%              ;  OK
+ 1720
+ 1730    B     swiInstallDriver%           ;  OK
+ 1740    B     swiRemoveDriver%            ;  OK
+ 1750    B     swiDriverInfo%              ;  OK
+ 1760    B     swiDriverVolume%            ;  OK
+ 1770    B     swiDriverMixer%             ;  OK
+ 1780    B     driverCheck%                ;
+ 1790    B     swiControlWord%             ;
+ 1800
+ 1810    B     swiHandlerType%             ;
+ 1820
+ 1830]
+ 1840IF debug1% THEN
+ 1850[OPT I%
+ 1860
+ 1870    B     swiTest%                    ;  For debugging only
+ 1880    B     swiInfo%                    ;  For debugging only
+ 1890
+ 1900]
+ 1910ENDIF
+ 1920[OPT I%
+ 1930
+ 1940.EndOfJumpTable%
+ 1950.UnknownSWIerror%
+ 1960    ADR   R0,errMesg%
+ 1970    ORRS  PC,R14,#Overflow_Flag
+ 1980.errMesg%
+ 1990    EQUD  &1E6
+ 2000    EQUS  "Unknown module operation"
+ 2010    EQUB  0
+ 2020    ALIGN
+ 2030
+ 2040]
+ 2050ENDPROC
+ 2060
+@
+
+
+1.1
+log
+@file Module was initially added on branch Spinner.
+@
+text
+@d1 231
+@
+
+
+1.1.2.1
+log
+@New layout SharedSound with text files rather than BASIC files.
+@
+text
+@a0 151
+/* Copyright (c) 1995, Expressive Software Projects
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Expressive Software Projects nor the names of its
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+   10DEFPROCModule
+   20LOCAL er$
+   30er$="Module"
+   40PRINT "PROCModule"
+   50[OPT I%
+   70.module%     \ Module header
+   90   EQUD  0  \ Not an application
+  100   EQUD  initCode%-module%
+  110   EQUD  finalCode%-module%
+  120   EQUD  0  \  No service calls
+  130   EQUD  title%-module%
+  140   EQUD  help%-module%
+  150   EQUD  commandTable%-module%
+  160.swiBaseNum%
+  170   EQUD  swiBase% \ SWI Base number
+  180   EQUD  swiHandler%-module%
+  190   EQUD  swiTable%-module%  \ SWI Decode table
+  200   EQUD  0  \ SWI Decode code
+  220.copyr% EQUS copyRight$
+  230.title% EQUS title$+CHR$(0):ALIGN
+  240.help%  EQUS "Additional 16 Bit Sound Support"+CHR$(9)+version$+date$+CHR$(0):ALIGN
+  270\
+  280.initCode%
+  300   STMDB R13!,{R0-R12,R14}
+  320   BL    startMem%               \ Get memory
+  330   BVS   initMemError%
+  350   \ R10 = private word
+  360   \ R12 = memory pointer [R10]
+  380   BL    initWorkspace%          \ Initialise workspace
+  400   BL    installDefaultDriver%   \ Preferably Sound_LinearHandler or ChannelHandler
+  420   LDMIA R13!,{R0-R12,PC}^
+  430\
+  450.initMemError%
+  460   LDMIA R13!,{R0-R12,R14}
+  470   ADR   R0,initMemErrMesg%
+  480   ORRS  PC,R14,#Overflow_Flag
+  490\
+  500.initMemErrMesg%
+  510    EQUD  &1E6
+  520    EQUS  "Not enough memory for "+title$
+  530    EQUB  0
+  540    ALIGN
+  550\
+  570\ -------------------------------------------------
+  590.finalCode%
+  610   STMDB R13!,{R0-R12,R14}
+  630   LDR   R12,[R12]          \ Get work area
+  650   BL    releaseDriver%
+  670   LDMIA R13!,{R0-R12,PC}^
+  680\
+  690\ -------------------------------------------------
+  710.serviceCode%      \ Not used
+  730   MOV   PC,R14
+  760\ -----------------  * Comands
+  780.commandTable%
+  790   EQUD 0   \ No more commands
+  810\ -----------------  SWI'S
+  830.swiTable%
+  840    EQUS swiName$
+  850    EQUB 0
+  860    EQUS "InstallHandler"
+  870    EQUB 0
+  880    EQUS "RemoveHandler"
+  890    EQUB 0
+  900    EQUS "HandlerInfo"
+  910    EQUB 0
+  920    EQUS "HandlerVolume"
+  930    EQUB 0
+  940    EQUS "HandlerSampleType"
+  950    EQUB 0
+  960    EQUS "HandlerPause"
+  970    EQUB 0
+  980    EQUS "SampleRate"
+  990    EQUB 0
+ 1000    EQUS "InstallDriver"
+ 1010    EQUB 0
+ 1020    EQUS "RemoveDriver"
+ 1030    EQUB 0
+ 1040    EQUS "DriverInfo"
+ 1050    EQUB 0
+ 1060    EQUS "DriverVolume"
+ 1070    EQUB 0
+ 1080    EQUS "DriverMixer"
+ 1090    EQUB 0
+ 1100    EQUS "CheckDriver"
+ 1110    EQUB 0
+ 1120    EQUS "ControlWord"
+ 1130    EQUB 0
+ 1140    EQUS "HandlerType"
+ 1150    EQUB 0
+ 1170    EQUB 0
+ 1180    ALIGN
+ 1200\
+ 1210.swiHandler%
+ 1230    MOV   R10,R12
+ 1240    LDR   R12,[R12]    \ R12 = pointer to RMA data block
+ 1250    CMP   R11,#(EndOfJumpTable% - jumpTable%)/4
+ 1260    ADDCC PC,PC,R11,LSL #2
+ 1270    B     UnknownSWIerror%
+ 1290.jumpTable%
+ 1310    B     swiInstallHandler%          ;  OK
+ 1320    B     swiRemoveHandler%           ;  OK
+ 1340    B     swiHandlerInfo%             ;  OK
+ 1350    B     swiHandlerVolume%           ;  OK
+ 1370    B     swiHandlerSampleType%       ;  not in this version
+ 1380    B     swiHandlerPause%            ;  not in this version
+ 1400    B     swiSampleRate%              ;  OK
+ 1420    B     swiInstallDriver%           ;  OK
+ 1430    B     swiRemoveDriver%            ;  OK
+ 1440    B     swiDriverInfo%              ;  OK
+ 1450    B     swiDriverVolume%            ;  OK
+ 1460    B     swiDriverMixer%             ;  OK
+ 1470    B     driverCheck%                ;
+ 1480    B     swiControlWord%             ;
+ 1500    B     swiHandlerType%             ;
+ 1530.EndOfJumpTable%
+ 1540.UnknownSWIerror%
+ 1550    ADR   R0,errMesg%
+ 1560    ORRS  PC,R14,#Overflow_Flag
+ 1570.errMesg%
+ 1580    EQUD  &1E6
+ 1590    EQUS  "Unknown module operation"
+ 1600    EQUB  0
+ 1610    ALIGN
+ 1630]
+ 1640ENDPROC
+@
+
+
+1.1.2.2
+log
+@New version: useful changes are bug fixed in removing callback
+handlers (affects turning off the MIDI synth), and maintains number of
+channels configured when callback buffers not supplied (stops volume
+of RealAudio playback from fluctuating when MIDI Synth can't make its
+mind up whether to created buffers or not.
+Other changes adds CBAI and 8bit log output support (disabled) and
+debugging code.
+@
+text
+@a30 1
+   60
+a31 1
+   80
+a43 1
+  210
+d46 106
+a151 183
+  240.help%  EQUS "Shared Sound"+CHR$(9)+version$+date$+CHR$(0):ALIGN
+  250
+  260\
+  270.initCode%
+  280
+  290   STMDB R13!,{R0-R12,R14}
+  300
+  310   BL    startMem%               \ Get memory
+  320   BVS   initMemError%
+  330
+  340   \ R10 = private word
+  350   \ R12 = memory pointer [R10]
+  360
+  370   BL    initWorkspace%          \ Initialise workspace
+  380
+  390]
+  400IF doCBAI% THEN
+  410[OPT I%
+  420
+  430   BL    InstallCBAI%
+  440
+  450]
+  460ENDIF
+  470[OPT I%
+  480
+  490   BL    installDefaultDriver%   \ Preferably Sound_LinearHandler or ChannelHandler
+  500
+  510   LDMIA R13!,{R0-R12,PC}^
+  520\
+  530
+  540.initMemError%
+  550   LDMIA R13!,{R0-R12,R14}
+  560   ADR   R0,initMemErrMesg%
+  570   ORRS  PC,R14,#Overflow_Flag
+  580\
+  590.initMemErrMesg%
+  600    EQUD  &1E6
+  610    EQUS  "Not enough memory for "+title$
+  620    EQUB  0
+  630    ALIGN
+  640\
+  650
+  660\ -------------------------------------------------
+  670
+  680.finalCode%
+  690
+  700   STMDB R13!,{R0-R12,R14}
+  710
+  720   LDR   R12,[R12]          \ Get work area
+  730
+  740]
+  750IF doCBAI% THEN
+  760[OPT I%
+  770
+  780   BL    RemoveCBAI%
+  790
+  800]
+  810ENDIF
+  820[OPT I%
+  830
+  840   BL    releaseDriver%
+  850
+  860   LDMIA R13!,{R0-R12,PC}^
+  870\
+  880\ -------------------------------------------------
+  890
+  900.serviceCode%      \ Not used
+  910
+  920   MOV   PC,R14
+  930
+  940
+  950\ -----------------  * Comands
+  960
+  970.commandTable%
+  980   EQUD 0   \ No more commands
+  990
+ 1000\ -----------------  SWI'S
+ 1010
+ 1020.swiTable%
+ 1030    EQUS swiName$
+ 1040    EQUB 0
+ 1050    EQUS "InstallHandler"
+ 1060    EQUB 0
+ 1070    EQUS "RemoveHandler"
+ 1080    EQUB 0
+ 1090    EQUS "HandlerInfo"
+ 1100    EQUB 0
+ 1110    EQUS "HandlerVolume"
+ 1120    EQUB 0
+ 1130    EQUS "HandlerSampleType"
+ 1140    EQUB 0
+ 1150    EQUS "HandlerPause"
+ 1160    EQUB 0
+ 1170    EQUS "SampleRate"
+ 1180    EQUB 0
+ 1190    EQUS "InstallDriver"
+ 1200    EQUB 0
+ 1210    EQUS "RemoveDriver"
+ 1220    EQUB 0
+ 1230    EQUS "DriverInfo"
+ 1240    EQUB 0
+ 1250    EQUS "DriverVolume"
+ 1260    EQUB 0
+ 1270    EQUS "DriverMixer"
+ 1280    EQUB 0
+ 1290    EQUS "CheckDriver"
+ 1300    EQUB 0
+ 1310    EQUS "ControlWord"
+ 1320    EQUB 0
+ 1330    EQUS "HandlerType"
+ 1340    EQUB 0
+ 1350
+ 1360]
+ 1370IF debug1% THEN
+ 1380[OPT I%
+ 1390
+ 1400    EQUS "Test"
+ 1410    EQUB 0
+ 1420    EQUS "Info"
+ 1430    EQUB 0
+ 1440]
+ 1450ENDIF
+ 1460[OPT I%
+ 1470
+ 1480    EQUB 0
+ 1490    ALIGN
+ 1500
+ 1510\
+ 1520.swiHandler%
+ 1530
+ 1540    MOV   R10,R12
+ 1550    LDR   R12,[R12]    \ R12 = pointer to RMA data block
+ 1560    CMP   R11,#(EndOfJumpTable% - jumpTable%)/4
+ 1570    ADDCC PC,PC,R11,LSL #2
+ 1580    B     UnknownSWIerror%
+ 1590
+ 1600.jumpTable%
+ 1610
+ 1620    B     swiInstallHandler%          ;  OK
+ 1630    B     swiRemoveHandler%           ;  OK
+ 1640
+ 1650    B     swiHandlerInfo%             ;  OK
+ 1660    B     swiHandlerVolume%           ;  OK
+ 1670
+ 1680    B     swiHandlerSampleType%       ;  not in this version
+ 1690    B     swiHandlerPause%            ;  not in this version
+ 1700
+ 1710    B     swiSampleRate%              ;  OK
+ 1720
+ 1730    B     swiInstallDriver%           ;  OK
+ 1740    B     swiRemoveDriver%            ;  OK
+ 1750    B     swiDriverInfo%              ;  OK
+ 1760    B     swiDriverVolume%            ;  OK
+ 1770    B     swiDriverMixer%             ;  OK
+ 1780    B     driverCheck%                ;
+ 1790    B     swiControlWord%             ;
+ 1800
+ 1810    B     swiHandlerType%             ;
+ 1820
+ 1830]
+ 1840IF debug1% THEN
+ 1850[OPT I%
+ 1860
+ 1870    B     swiTest%                    ;  For debugging only
+ 1880    B     swiInfo%                    ;  For debugging only
+ 1890
+ 1900]
+ 1910ENDIF
+ 1920[OPT I%
+ 1930
+ 1940.EndOfJumpTable%
+ 1950.UnknownSWIerror%
+ 1960    ADR   R0,errMesg%
+ 1970    ORRS  PC,R14,#Overflow_Flag
+ 1980.errMesg%
+ 1990    EQUD  &1E6
+ 2000    EQUS  "Unknown module operation"
+ 2010    EQUB  0
+ 2020    ALIGN
+ 2030
+ 2040]
+ 2050ENDPROC
+ 2060
+@

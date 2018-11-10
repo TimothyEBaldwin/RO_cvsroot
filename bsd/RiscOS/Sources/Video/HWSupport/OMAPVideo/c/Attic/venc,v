@@ -1,0 +1,803 @@
+head	1.10;
+access;
+symbols
+	OMAPVideo-0_33:1.9
+	OMAPVideo-0_32:1.9
+	OMAPVideo-0_31:1.9
+	OMAPVideo-0_30:1.9
+	OMAPVideo-0_29:1.9
+	OMAPVideo-0_28:1.8
+	OMAPVideo-0_27:1.7
+	OMAPVideo-0_26:1.7
+	OMAPVideo-0_25:1.7
+	OMAPVideo-0_24:1.7
+	OMAPVideo-0_23:1.7
+	OMAPVideo-0_22:1.6
+	OMAPVideo-0_21:1.5
+	OMAPVideo-0_20:1.5
+	OMAPVideo-0_19:1.4
+	OMAPVideo-0_18:1.3
+	OMAPVideo-0_17:1.3
+	OMAPVideo-0_16:1.3
+	OMAPVideo-0_15:1.3
+	OMAPVideo-0_14:1.3
+	OMAPVideo-0_13:1.3
+	OMAPVideo-0_12:1.2
+	OMAPVideo-0_11:1.2
+	OMAPVideo-0_10:1.2
+	OMAPVideo-0_09:1.2
+	OMAPVideo-0_08:1.2
+	OMAPVideo-0_07:1.2
+	OMAPVideo-0_06:1.2
+	OMAPVideo-0_05:1.2
+	OMAPVideo-0_04:1.2
+	OMAPVideo-0_03:1.2
+	OMAPVideo-0_02:1.1
+	OMAPVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.10
+date	2015.05.17.17.50.10;	author jlee;	state dead;
+branches;
+next	1.9;
+commitid	J3i0xRSaySaJePly;
+
+1.9
+date	2013.12.17.23.44.57;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	QW2ELjKp66EPMxhx;
+
+1.8
+date	2013.12.15.22.56.06;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	4M7nRqPE9VC3Ahhx;
+
+1.7
+date	2012.06.09.19.40.02;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	UoigCKwU4VEQi48w;
+
+1.6
+date	2012.06.04.23.54.21;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	FoeSemiFbzb4Sr7w;
+
+1.5
+date	2012.05.06.09.20.43;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	Dmkx2IqcO2G8YD3w;
+
+1.4
+date	2012.05.06.09.16.44;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	imAmvVvRmuLKWD3w;
+
+1.3
+date	2011.10.23.21.01.51;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	0rwNv0ztfd3f9wEv;
+
+1.2
+date	2010.04.22.20.42.58;	author jlee;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2010.02.28.19.01.15;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.10
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include <stddef.h>
+
+#include "Global/RISCOS.h"
+#include "Global/HALEntries.h"
+#include "swis.h"
+
+#include "venc.h"
+#include "regs.h"
+#include "globals.h"
+#include "dispc.h"
+
+#include "DebugLib/DebugLib.h"
+
+static const venc_regs_t template_ntsc_601 =
+{
+	.f_control				= 0,
+	.vidout_ctrl				= 1,
+	.sync_ctrl				= 0x8040,
+	.llen					= 0x359,
+	.flens					= 0x20C,
+	.hfltr_ctrl				= 0,
+	.cc_carr_wss_carr			= 0x043F2631,
+	.c_phase				= 0,
+	.gain_u					= 0x102,
+	.gain_v					= 0x16C,
+	.gain_y					= 0x12F,
+	.black_level				= 0x43,
+	.blank_level				= 0x38,
+	.x_color				= 0x7,
+	.m_control				= 0x1,
+	.bstamp_wss_data			= 0x38,
+	.s_carr					= 0x21F07C1F,
+	.line21					= 0,
+	.ln_sel					= 0x01310011,
+	.l21_wc_ctl				= 0x0000F003,
+	.htrigger_vtrigger			= 0,
+
+	.savid_eavid				= 0x069300F4,
+	.flen_fal				= 0x0016020C,
+	.lal_phase_reset			= 0x00060107,
+	.hs_int_start_stop_x			= 0x008E0350,
+	.hs_ext_start_stop_x			= 0x000F0359,
+	.vs_int_start_x				= 0x01A00000,
+	.vs_int_stop_x_vs_int_start_y		= 0x020701A0,
+	.vs_int_stop_y_vs_ext_start_x		= 0x01AC0024,
+	.vs_ext_stop_x_vs_ext_start_y		= 0x020D01AC,
+	.vs_ext_stop_y				= 0x00000006,
+	.avid_start_stop_x			= 0x03480078,
+	.avid_start_stop_y			= 0x02060024,
+	.fid_int_start_x_fid_int_start_y	= 0x0001008A,
+	.fid_int_offset_y_fid_ext_start_x	= 0x01AC0106,
+	.fid_ext_start_y_fid_ext_offset_y	= 0x01060006,
+	.tvdetgp_int_start_stop_x		= 0x00140001,
+	.tvdetgp_int_start_stop_y		= 0x00010001,
+	.gen_ctrl				= 0x00F90000,
+};
+
+static const venc_regs_t template_pal_601 =
+{
+	.f_control				= 0,
+	.vidout_ctrl				= 1,
+	/* sync_ctrl - NOTE - FREE isn't set in the TRM listing, but it gets the
+	 * testcard to work for me. But for some reason FREE isn't needed when
+	 * the testcard is off (and the same seems to be true of NTSC output - the
+	 * testcard only works with it on, but actual video output works regardless
+	 */
+	.sync_ctrl				= 0x8040,
+	.llen					= 0x35F,
+	.flens					= 0x270,
+	.hfltr_ctrl				= 0,
+	.cc_carr_wss_carr			= 0x2F7225ED,
+	.c_phase				= 0,
+	.gain_u					= 0x111,
+	.gain_v					= 0x181,
+	.gain_y					= 0x140,
+	.black_level				= 0x3B,
+	.blank_level				= 0x3B,
+	.x_color				= 0x7,
+	.m_control				= 0x2,
+	.bstamp_wss_data			= 0x3F,
+	.s_carr					= 0x2A098ACB,
+	.line21					= 0,
+	.ln_sel					= 0x01290015,
+	.l21_wc_ctl				= 0x0000F603,
+	.htrigger_vtrigger			= 0,
+
+	.savid_eavid				= 0x06A70108,
+	.flen_fal				= 0x00180270,
+	.lal_phase_reset			= 0x00040135,
+	.hs_int_start_stop_x			= 0x00880358,
+	.hs_ext_start_stop_x			= 0x000F035F,
+	.vs_int_start_x				= 0x01A70000,
+	.vs_int_stop_x_vs_int_start_y		= 0x000001A7,
+	.vs_int_stop_y_vs_ext_start_x		= 0x01AF0000,
+	.vs_ext_stop_x_vs_ext_start_y		= 0x000101AF,
+	.vs_ext_stop_y				= 0x00000025,
+	.avid_start_stop_x			= 0x03530083,
+	.avid_start_stop_y			= 0x026C002E,
+	.fid_int_start_x_fid_int_start_y	= 0x0001008A,
+	.fid_int_offset_y_fid_ext_start_x	= 0x002E0138,
+	.fid_ext_start_y_fid_ext_offset_y	= 0x01380001,
+	.tvdetgp_int_start_stop_x		= 0x00140001,
+	.tvdetgp_int_start_stop_y		= 0x00010001,
+	.gen_ctrl				= 0x00FF0000,
+};
+
+static const venc_regs_t *venc_templates[TVMODE_MAX] = {
+	&template_ntsc_601, /* As per TRM */
+	&template_pal_601, /* As per TRM. Broken? */
+};
+
+static void adjust_desktop(VIDCList3 *params)
+{
+	/* Use the supplied VIDC list to position the desktop within the TV image
+	   We take the border+porch timing values into account, to allow *TV to be used to fine-tune the position */
+	const venc_regs_t *template = venc_templates[current_tvmode];
+	int w = (REG_EXTRACT(template->avid_start_stop_x,VENC_AVID_START_STOP_X_AVID_STOP_X)-REG_EXTRACT(template->avid_start_stop_x,VENC_AVID_START_STOP_X_AVID_START_X))-1; 
+	int h = (REG_EXTRACT(template->avid_start_stop_y,VENC_AVID_START_STOP_Y_AVID_STOP_Y)-REG_EXTRACT(template->avid_start_stop_y,VENC_AVID_START_STOP_Y_AVID_START_Y))/2-1;
+	h *= 2;
+	overlay_t *o = &overlays[overlay_desktop];
+	int mode_w = params->HorizBackPorch+params->HorizLeftBorder+params->HorizDisplaySize+params->HorizRightBorder+params->HorizFrontPorch;
+	int mode_h = params->VertiBackPorch+params->VertiTopBorder+params->VertiDisplaySize+params->VertiBottomBorder+params->VertiFrontPorch;
+	o->x = (w-mode_w)/2 + params->HorizBackPorch+params->HorizLeftBorder;
+	o->y = (h-mode_h)/2 + params->VertiBackPorch+params->VertiTopBorder;
+}
+
+static bool tv_power_is_on = false;
+
+void venc_set_tvmode(tvmode mode,tvouttype type,bool showtestcard,VIDCList3 *params)
+{
+	/* Avoid pointless updates */
+	if((mode == current_tvmode) && (type == current_tvtype) && (showtestcard == testcard))
+	{
+		/* But at the least we do want to update the overlays */
+		if(type != TVOUT_NONE)
+		{
+			int irqs;
+			if(!begin_quick_hardware_update(&irqs))
+			{
+				/* TODO - Mark as pending! */
+				return;
+			}
+			if(params)
+			{
+				adjust_desktop(params);
+			}
+			/* Flush any pending overlay updates */
+			for(int i=0;i<OVERLAY_MAX;i++)
+				dispc_update_overlay((overlayidx)i);
+			/* Update transparency settings*/
+			dispc_flush_transparency_cfg(true);
+			end_quick_hardware_update(irqs);
+		}
+		return;
+	}
+	dprintf(("","venc_set_tvmode: Mode %d type %d testcard %d\n",mode,type,showtestcard));
+	current_tvmode = mode;
+	current_tvtype = type;
+	testcard = showtestcard;
+	if(type == TVOUT_NONE)
+	{
+		/* Disable */
+		int irqs;
+		if(!begin_quick_hardware_update(&irqs))
+		{
+			/* TODO - Mark as pending! */
+			return;
+		}
+		/* Make sure we disable the SYNCLOSTDIGITAL interrupt else it'll keep firing and we'll die horribly */
+		dispc->irqenable &= ~DISPC_IRQ_SYNCLOSTDIGITAL;
+		/* Now disable the digital output */
+		dispc->control1 &= ~DISPC_CONTROL_DIGITALENABLE;
+		/* Looks like we can get away with just disabling the clocks */
+		dss->control &= ~(DSS_CONTROL_VENC_CLOCK_4X_ENABLE | DSS_CONTROL_DAC_DEMEN | DSS_CONTROL_DAC_POWERDN_BGZ);
+		end_quick_hardware_update(irqs);
+		/* Disable power completely if supported */
+		if((hwconfig->mysize > offsetof(boardconfig_t,tvpower_func)) && (hwconfig->tvpower_func))
+		{
+			(hwconfig->tvpower_func)(dev,false);
+			tv_power_is_on = false;
+		}
+		return;
+	}
+	/* Enable, as per flow in spruf98d 15.5.8.3 (p2336) */
+	int irqs;
+	if(!begin_slow_hardware_update(&irqs))
+	{
+		/* TODO - Mark as pending! */
+		return;
+	}
+	/* Enable TV-out power if necessary */
+	if(!tv_power_is_on && (hwconfig->mysize > offsetof(boardconfig_t,tvpower_func)) && (hwconfig->tvpower_func))
+	{
+		(hwconfig->tvpower_func)(dev,true);
+		tv_power_is_on = true;
+	}
+	/* 1. Initialise the video encoder and the display controller configuration registers */
+	/* TODO - Need to set DISPC_CONTROL_HT, DISPC_DIVISOR? */
+	/* 0. Disable digital output! */
+	/* TODO - Do any other stuff to disable it properly */
+	dispc->control1 &= ~DISPC_CONTROL_DIGITALENABLE;
+	/* X. Enable clocks first */
+	dss->control |= DSS_CONTROL_VENC_CLOCK_4X_ENABLE | DSS_CONTROL_DAC_DEMEN | DSS_CONTROL_DAC_POWERDN_BGZ;
+	/* 1. Soft reset */
+	venc->f_control = VENC_F_CONTROL_RESET;
+	int timeout=1000000;
+	while((venc->f_control & VENC_F_CONTROL_RESET) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","venc_set_tvmode: Timeout waiting for VENC_F_CONTROL_RESET clear\n"));
+	}
+	/* 2. Save IRQ state */
+	uint32_t irqenable = dispc->irqenable;
+	dispc->irqenable = 0;
+	/* 15.5.8.2 SVideo/Composite selection in DSS_CONTROL */
+	if(type == TVOUT_COMPOSITE)
+		dss->control &= ~DSS_CONTROL_VENC_OUT_SEL;
+	else
+		dss->control |= DSS_CONTROL_VENC_OUT_SEL;
+	/* 3. Program registers as per table 15-69 */
+	const venc_regs_t *template = venc_templates[mode];
+	const uint32_t *temp = (const uint32_t *) template;
+	uint32_t *dest = (uint32_t *) venc;
+	for(uint32_t offset=0;offset<sizeof(venc_regs_t);offset+=4)
+	{
+		/* Skip padding, revision ID, status register, VENC_F_CONTROL, VENC_SYNC_CTRL, VENC_OUTPUT_CONTROL */
+		if((offset != offsetof(venc_regs_t,_pad1))
+		&& (offset != offsetof(venc_regs_t,_pad2))
+		&& (offset != offsetof(venc_regs_t,_pad3))
+		&& (offset != offsetof(venc_regs_t,_pad4))
+		&& (offset != offsetof(venc_regs_t,_pad5))
+		&& (offset != offsetof(venc_regs_t,_pad6))
+		&& (offset != offsetof(venc_regs_t,_pad7))
+		&& (offset != offsetof(venc_regs_t,_pad8))
+		&& (offset != offsetof(venc_regs_t,rev_id))
+		&& (offset != offsetof(venc_regs_t,status))
+		&& (offset != offsetof(venc_regs_t,f_control))
+		&& (offset != offsetof(venc_regs_t,sync_ctrl))
+		&& (offset != offsetof(venc_regs_t,output_control)))
+		{
+			dest[offset>>2] = temp[offset>>2];
+		}
+	}
+	/* Program VENC_OUTPUT_CONTROL with correct value for SVideo/composite */
+	if(type == TVOUT_COMPOSITE)
+		venc->output_control = 0xA;
+	else
+		venc->output_control = 0xD;
+	/* Program VENC_F_CONTROL and VENC_SYNC_CTRL last */
+	venc->f_control = (template->f_control&~VENC_F_CONTROL_SVDS_MASK) | (showtestcard?VENC_F_CONTROL_SVDS_TESTCARD:VENC_F_CONTROL_SVDS_EXTERNAL);
+	venc->sync_ctrl = template->sync_ctrl;
+	/* Program DISPC_SIZE_DIG appropriately */
+	int w = (REG_EXTRACT(template->avid_start_stop_x,VENC_AVID_START_STOP_X_AVID_STOP_X)-REG_EXTRACT(template->avid_start_stop_x,VENC_AVID_START_STOP_X_AVID_START_X))-1; 
+	int h = (REG_EXTRACT(template->avid_start_stop_y,VENC_AVID_START_STOP_Y_AVID_STOP_Y)-REG_EXTRACT(template->avid_start_stop_y,VENC_AVID_START_STOP_Y_AVID_START_Y))/2-1;
+	dispc->size_dig = (w<<DISPC_SIZE_DIG_PPL_SHIFT) | (h<<DISPC_SIZE_DIG_LPP_SHIFT);
+	if(params)
+	{
+		adjust_desktop(params);
+	}
+	/* Flush any pending overlay updates */
+	for(int i=0;i<OVERLAY_MAX;i++)
+		dispc_update_overlay((overlayidx)i);
+	/* Update transparency settings*/
+	dispc_flush_transparency_cfg(false);
+	/* 4. Set the DISPC_CONTROL[6] GODIGITAL bit and DISPC_CONTROL[1] DIGITALENABLE bit to 1 */
+	/* Also, make sure EVSYNC_EVEN/EVSYNC_ODD are clear */
+	dispc->irqstatus = DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD;
+	dispc->control1 |= DISPC_CONTROL_GODIGITAL | DISPC_CONTROL_DIGITALENABLE;
+	/* EXPERIMENTATION - Failed first time round, so let's wait a bit */
+	_swix(OS_Hardware,_IN(0)|_INR(8,9),100000,0,EntryNo_HAL_CounterDelay);
+	/* 5. Wait for the first VSYNC pulse signal */
+	timeout=10000000;
+	while(!(dispc->irqstatus & (DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","venc_set_tvmode: Timeout waiting for EVSYNC\n"));
+	}
+	/* 6. Clear the SYNCLOSTDIGITAL interrupt */
+	dispc->irqstatus = DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD | DISPC_IRQ_SYNCLOSTDIGITAL;
+	/* 7. Enable the SYNCLOSTDIGITAL interrupt & restore earlier context */
+	/* Except if we're in test card mode - SYNCLOSTDIGITAL seems to occur all the time and should be ignored! */
+	irqenable |= DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD;
+	if(showtestcard)
+		irqenable &= ~DISPC_IRQ_SYNCLOSTDIGITAL;
+	else
+		irqenable |= DISPC_IRQ_SYNCLOSTDIGITAL;
+	dispc->irqenable = irqenable;
+	end_slow_hardware_update(irqs);
+	dprintf(("","venc_set_tvmode: Done\n"));
+}
+
+@
+
+
+1.9
+log
+@Add support for controlling TV-out power
+Detail:
+  h/globals - Add new tvpower_func entry to board config struct to allow for board-specific TV-out power controls
+  c/venc - Enable/disable TV-out power when enabling/disabling TV-out
+Admin:
+  Tested on Pandora and BB-xM
+
+
+Version 0.29. Tagged as 'OMAPVideo-0_29'
+@
+text
+@@
+
+
+1.8
+log
+@Update for new GraphicsV registration process. Remove VIDC20 16bpp gamma demangle code. Advertise red/blue swapped 16bpp & 32bpp modes when using TV-out.
+Detail:
+  c/cmodule - Updated to use new GraphicsV registration process and OS_Hardware reason code #defines
+  c/dispc, c/venc, h/graphicsv, h/venc - Use Hdr:VIDCList instead of local VIDC list definition
+  c/graphicsv - Implement GraphicsV_PixelFormats, and return an appropriate list based on whether TV-out is in use. Call through to the HAL for GraphicsV_IICOp instead of relying on the OS to call the HAL for us.
+  c/palette - Remove VIDC20 16bpp gamma demangle code, the OS now supplies the data in a sensible format. Dont use mouse palette function intended for 555 mode emulation if CPR isn't in use (i.e. we're on TV-out, i.e. gamma won't be available either)
+Admin:
+  Tested in OMAP3 ROM on BB-xM
+  OMAP4 version builds but is unstested
+  Requires HdrSrc-2_38 and Kernel-5_35-4_79_2_203
+
+
+Version 0.28. Tagged as 'OMAPVideo-0_28'
+@
+text
+@d154 2
+d203 6
+d218 6
+@
+
+
+1.7
+log
+@Improve TV-Out support. Fix pointer transparency after DSS reset. Other tweaks.
+Detail:
+  c/venc - Fixed corruption when PAL output was in use and the display reached the bottom two rows of the screen; the screen height was being calculated incorrectly from the VENC register settings. This was also causing the constant SYNCLOSTDIGITAL interrupts.
+  c/dss - Mark the mouse pointer image as dirty inside dss_reset(), to ensure the transparency colour gets set to hardware the next time the pointer is updated
+  Makefile, cmhg/modhead - Make module help string reflect which OMAP version the module is for
+  c/venc, h/regs3 - Added revision ID registers to OMAP3 register blocks, to reduce the number of differences between the OMAP3 & OMAP4 versions. The revision ID registers do exist on OMAP3, they just weren't listed in the early TRM version the module was first created from. Also fixed layout of DSI registers on OMAP3.
+Admin:
+  OMAP3 version tested on rev A2 BB-xM
+  OMAP4 version builds but untested
+
+
+Version 0.23. Tagged as 'OMAPVideo-0_23'
+@
+text
+@d139 1
+a139 1
+static void adjust_desktop(vidclist3_t *params)
+d154 1
+a154 1
+void venc_set_tvmode(tvmode mode,tvouttype type,bool showtestcard,vidclist3_t *params)
+@
+
+
+1.6
+log
+@Improve TV-out support
+Detail:
+  c/cmodule, c/dispc, c/graphicsv, c/venc, h/venc - Updated TV-out code to center the desktop within the display, while also taking into account the border/porch timings in order to allow vertical shifting using *TV.
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.22. Tagged as 'OMAPVideo-0_22'
+@
+text
+@d145 1
+a145 1
+	int h = (REG_EXTRACT(template->flen_fal,VENC_FLEN_FAL_FLEN)/2)-REG_EXTRACT(template->flen_fal,VENC_FLEN_FAL_FAL);
+d239 1
+a239 1
+		/* Skip padding, status register, VENC_F_CONTROL, VENC_SYNC_CTRL, VENC_OUTPUT_CONTROL */
+a247 4
+#if OMAP==3
+		&& (offset != offsetof(venc_regs_t,_pad9))
+#endif
+#if OMAP==4
+a248 1
+#endif
+a265 1
+	/* TODO - Check that this code is correct  for all modes and not just my two test modes! */
+d267 1
+a267 1
+	int h = (REG_EXTRACT(template->flen_fal,VENC_FLEN_FAL_FLEN)/2)-REG_EXTRACT(template->flen_fal,VENC_FLEN_FAL_FAL);
+d296 1
+a296 1
+	if(showtestcard || (mode == TVMODE_PAL_601)) /* EXPERIMENTATION - don't enable SYNCLOSTDIGITAL for PAL (video output seems fine even though the IRQ keeps firing) */
+@
+
+
+1.5
+log
+@Merge of OMAP3 and OMAP4 video driver sources.
+With 85%+ shared code, tracking changes between these two modules was getting complicated, so now this single module will serve both OMAP3 targets and OMAP4.
+At present, the differences are simply selected at compile time with a switch. This may make sense to further rationalise either with tidier macros or run time detection (since the HAL knows which controller is running).
+Tested on OMAP3 in all 8 colour depths,
+Tested by Willi Theiss on OMAP4.
+
+Version 0.20. Tagged as 'OMAPVideo-0_20'
+@
+text
+@d139 16
+a154 1
+void venc_set_tvmode(tvmode mode,tvouttype type,bool showtestcard)
+d168 4
+d275 4
+@
+
+
+1.4
+log
+@Merge of headers with OMAP4Video
+For the most part, this is just adding "_t" suffixes to all the typedefs.
+The OMAP4 controller registers are in "regs4.h" and OMAP3 in "regs3.h", they are selected between with a compile time switch - hence !MkROM becomes !Ms !MkRom3 and !MkRom4.
+OMAP3 version tested & still works, OMAP4 will not work.
+
+Version 0.19. Tagged as 'OMAPVideo-0_19'
+@
+text
+@d41 42
+a82 52
+static const venc_regs_t template_ntsc_601 = {
+0x00000000, // _pad                            
+0x00000000, // status                          
+0x00000000, // f_control
+0x00000000, // _pad2
+0x00000001, // vidout_ctrl
+0x00008040, // sync_ctrl
+0x00000000, // _pad3                       
+0x00000359, // llen                            
+0x0000020c, // flens                           
+0x00000000, // hfltr_ctrl                      
+0x043f2631, // cc_carr_wss_carr                
+0x00000000, // c_phase
+0x00000102, // gain_u
+0x0000016c, // gain_v
+0x0000012f, // gain_y
+0x00000043, // black_level
+0x00000038, // blank_level
+0x00000007, // x_color                      
+0x00000001, // m_control                       
+0x00000038, // bstamp_wss_data
+0x21f07c1f, // s_carr                          
+0x00000000, // line21                          
+0x01310011, // ln_sel
+0x0000f003, // l21_wc_ctl
+0x00000000, // htrigger_vtrigger               
+0x069300f4, // savid_eavid                     
+0x0016020c, // flen_fal                        
+0x00060107, // lal_phase_reset                 
+0x008e0350, // hs_int_start_stop_x
+0x000f0359, // hs_ext_start_stop_x             
+0x01a00000, // vs_int_start_x                  
+0x020701a0, // vs_int_stop_x_vs_int_start_y
+0x01ac0024, // vs_int_stop_y_vs_ext_start_x    
+0x020d01ac, // vs_ext_stop_x_vs_ext_start_y    
+0x00000006, // vs_ext_stop_y
+0x00000000, // _pad4
+0x03480078, // avid_start_stop_x
+0x02060024, // avid_start_stop_y
+0x00000000, // _pad5
+0x00000000, // _pad6
+0x0001008a, // fid_int_start_x_fid_int_start_y 
+0x01ac0106, // fid_int_offset_y_fid_ext_start_x
+0x01060006, // fid_ext_start_y_fid_ext_offset_y
+0x00000000, // _pad7
+0x00140001, // tvdetgp_int_start_stop_x        
+0x00010001, // tvdetgp_int_start_stop_y        
+0x00f90000, // gen_ctrl                     
+0x00000000, // _pad8                           
+0x00000000, // _pad9                             
+0x00000000, // output_control                  
+0x00000000, // output_test                     
+d85 47
+a131 52
+static const venc_regs_t template_pal_601 = {
+0x00000000, // _pad                            
+0x00000000, // status                          
+0x00000000, // f_control                       
+0x00000000, // _pad2
+0x00000001, // vidout_ctrl                     
+0x00008040, // sync_ctrl - NOTE - FREE isn't set in the TRM listing, but it gets the testcard to work for me. But for some reason FREE isn't needed when the testcard is off (and the same seems to be true of NTSC output - the testcard only works with it on, but actual video output works regardless
+0x00000000, // _pad3                       
+0x0000035f, // llen
+0x00000270, // flens
+0x00000000, // hfltr_ctrl                      
+0x2f7225ed, // cc_carr_wss_carr
+0x00000000, // c_phase
+0x00000111, // gain_u
+0x00000181, // gain_v
+0x00000140, // gain_y
+0x0000003b, // black_level
+0x0000003b, // blank_level
+0x00000007, // x_color                         
+0x00000002, // m_control
+0x0000003f, // bstamp_wss_data
+0x2a098acb, // s_carr
+0x00000000, // line21                          
+0x01290015, // ln_sel
+0x0000f603, // l21_wc_ctl
+0x00000000, // htrigger_vtrigger               
+0x06a70108, // savid_eavid
+0x00180270, // flen_fal
+0x00040135, // lal_phase_reset
+0x00880358, // hs_int_start_stop_x
+0x000f035f, // hs_ext_start_stop_x
+0x01a70000, // vs_int_start_x
+0x000001a7, // vs_int_stop_x_vs_int_start_y
+0x01af0000, // vs_int_stop_y_vs_ext_start_x
+0x000101af, // vs_ext_stop_x_vs_ext_start_y
+0x00000025, // vs_ext_stop_y
+0x00000000, // _pad4
+0x03530083, // avid_start_stop_x
+0x026c002e, // avid_start_stop_y
+0x00000000, // _pad5
+0x00000000, // _pad6
+0x0001008a, // fid_int_start_x_fid_int_start_y 
+0x002e0138, // fid_int_offset_y_fid_ext_start_x
+0x01380001, // fid_ext_start_y_fid_ext_offset_y
+0x00000000, // _pad7
+0x00140001, // tvdetgp_int_start_stop_x        
+0x00010001, // tvdetgp_int_start_stop_y        
+0x00ff0000, // gen_ctrl
+0x00000000, // _pad8                           
+0x00000000, // _pad9                             
+0x00000000, // output_control                  
+0x00000000, // output_test                     
+d178 1
+a178 1
+		dispc->control &= ~DISPC_CONTROL_DIGITALENABLE;
+d195 1
+a195 1
+	dispc->control &= ~DISPC_CONTROL_DIGITALENABLE;
+d221 1
+a221 1
+		if((offset != offsetof(venc_regs_t,_pad))
+d229 1
+d231 4
+a255 4
+//	if(mode == TVMODE_NTSC_601)
+//		dispc->size_dig = 0x00F002CF;
+//	else
+//		dispc->size_dig = 0x012002CF;
+d264 1
+a264 1
+	dispc->control |= DISPC_CONTROL_GODIGITAL | DISPC_CONTROL_DIGITALENABLE;
+@
+
+
+1.3
+log
+@Fix black screen on boot issue. Use C99 number types.
+Detail:
+  c/dss - Fixed the cause of the black screens on boot on OMAP3 machines (DM37xx seems fine). It looks like the cause was due to skipping the step where you disable the LCD output before triggering the DSS reset.
+  c/cmodule, c/dispc, c/dss, c/graphicsv, h/globals - Removed code relating to previous attempts to fix the black screen issue
+  c/cmodule, c/dispc, c/dsi, c/dss, c/graphicsv, c/palette, c/regs, c/sdma, c/venc, h/dsi, h/dss, h/globals, h/graphicsv, h/palette, h/regs - Use the C99 number types instead of u32, u16, etc.
+Admin:
+  Tested on rev C2 BB, rev A2 BB-xM
+
+
+Version 0.13. Tagged as 'OMAPVideo-0_13'
+@
+text
+@d41 1
+a41 1
+static const venc_regs template_ntsc_601 = {
+d95 1
+a95 1
+static const venc_regs template_pal_601 = {
+d149 1
+a149 1
+static const venc_regs *venc_templates[TVMODE_MAX] = {
+d230 1
+a230 1
+	const venc_regs *template = venc_templates[mode];
+d233 1
+a233 1
+	for(uint32_t offset=0;offset<sizeof(venc_regs);offset+=4)
+d236 13
+a248 13
+		if((offset != offsetof(venc_regs,_pad))
+		&& (offset != offsetof(venc_regs,_pad2))
+		&& (offset != offsetof(venc_regs,_pad3))
+		&& (offset != offsetof(venc_regs,_pad4))
+		&& (offset != offsetof(venc_regs,_pad5))
+		&& (offset != offsetof(venc_regs,_pad6))
+		&& (offset != offsetof(venc_regs,_pad7))
+		&& (offset != offsetof(venc_regs,_pad8))
+		&& (offset != offsetof(venc_regs,_pad9))
+		&& (offset != offsetof(venc_regs,status))
+		&& (offset != offsetof(venc_regs,f_control))
+		&& (offset != offsetof(venc_regs,sync_ctrl))
+		&& (offset != offsetof(venc_regs,output_control)))
+@
+
+
+1.2
+log
+@Assorted OMAPVideo tweaks and fixes
+Detail:
+  c/dispc - Added some WIP code for programming scaling coefficients
+  c/dispc, c/graphicsv - Fixed code to not allow the graphics overlay to be enabled before its DMA address had been set (as was happening on boot)
+  c/dispc - Enable reporting of FIFO underflow & OCPERROR interrupts in debug builds, to help track down bugs
+  c/dispc - Check in some disabled code that was an attempt to fix the IGEP display problems. Code was to force FIFO preload values to 0x100, and to force DISPC_POL_FREQ to 0.
+  c/dsi - Keep the DSI complex I/O clock off
+  c/dsi, c/dss, h/dss, h/regs - rewrote calculate_dss_clock_divider to remove data lane frequency restriction, and to increase speed/accuracy when calculating rates for tricky values like 25.175MHz. Also in another attempt to fix the IGEP issues, it mimics the Linux driver by trying to generate a 48MHz DSI clock.
+  c/dss, c/venc - Tweaked DSS reset & VENC code to make sure VENC clcoks are enabled & disabled at the appropriate times.
+  c/graphicsv - Fix GraphicsV_SetDMAAddress so it works properly no matter what overlay the desktop is on
+  c/venc - A fix to get the PAL test card working, and a fudge to get PAL output working.
+Admin:
+  Tested on rev C2 beagleboard & IGEP.
+  IGEP reported as showing no concrete improvement in display stability :(
+
+
+Version 0.03. Tagged as 'OMAPVideo-0_03'
+@
+text
+@d222 1
+a222 1
+	u32 irqenable = dispc->irqenable;
+d231 3
+a233 3
+	const u32 *temp = (const u32 *) template;
+	u32 *dest = (u32 *) venc;
+	for(u32 offset=0;offset<sizeof(venc_regs);offset+=4)
+@
+
+
+1.1
+log
+@Add initial version of OMAP video driver module
+Detail:
+  All-new OMAP video driver, written as a module in C.
+  Functionality-wise it's basically the same as the original HAL-based driver, except it provides support for GraphicsV_Render via use of the OMAP SDMA controller, and there's currently no support for GraphicsV_IICOp.
+  However under the hood the module is significantly different, to ensure it can be expanded to expose the full feature set of the video controller once the new GraphicsV API is ready.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.01. Tagged as 'OMAPVideo-0_01'
+@
+text
+@d101 1
+a101 1
+0x00000040, // sync_ctrl
+d190 3
+a192 1
+		/* TODO - check that this is the correct shutdown sequence */
+d194 2
+d211 2
+d293 1
+a293 1
+	if(showtestcard)
+@
+

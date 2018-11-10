@@ -1,0 +1,1880 @@
+head	1.4;
+access;
+symbols
+	callx-0_09:1.4
+	callx-0_08:1.4
+	RO_5_07:1.3
+	callx-0_07:1.3
+	callx-0_06:1.2
+	callx-0_05:1.2
+	dellis_autobuild_BaseSW:1.2
+	dcotton_autobuild_BaseSW:1.3
+	callx-0_04:1.2
+	sforrest_daytona_appflash-0_31:1.1.1.3
+	callx-0_03:1.1.1.3
+	blaughto_daytona_appflash-0_30:1.1.1.3
+	blaughto_daytona_appflash-0_29:1.1.1.3
+	blaughto_daytona_appflash-0_28:1.1.1.3
+	blaughto_daytona_appflash-0_27:1.1.1.3
+	blaughto_daytona_appflash-0_26:1.1.1.3
+	blaughto_daytona_appflash-0_25:1.1.1.3
+	blaughto_daytona_appflash-0_24:1.1.1.2
+	callx-0_02-1_1_2_3:1.1.1.3
+	blaughto_daytona_appflash-0_23:1.1.1.2
+	blaughto_daytona_appflash-0_21:1.1.1.2
+	blaughto_daytona_appflash-0_20:1.1.1.2
+	blaughto_daytona_appflash-0_19:1.1.1.2
+	callx-0_02-1_1_2_2:1.1.1.2
+	blaughto_daytona_appflash-0_18:1.1.1.1
+	blaughto_callx-0_01:1.1.1.1
+	initial:1.1.1.1
+	Daytona:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2011.04.11.23.10.27;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	Q8QM9HiGxWw18tfv;
+
+1.3
+date	2001.03.07.11.39.44;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.23.17.33.59;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.02.27.16.45.19;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.02.27.16.45.19;	author blaughto;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.03.18.11.47.19;	author blaughto;	state Exp;
+branches;
+next	1.1.1.3;
+
+1.1.1.3
+date	98.05.11.15.57.31;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Add the ability for a callback to be run with interrupts disabled
+Detail:
+  c/callx, h/callx, s/veneer - Added new callx_add_callback_irqsoff function.
+  This is identical to callx_add_callback, except the callback function will be entered with IRQs disabled.
+  Using this function makes it safe to cancel callbacks from interrupts, as there's no longer the chance of a callback firing after it's been deleted.
+Admin:
+  Tested on rev A2 BB-xM.
+
+
+Version 0.08. Tagged as 'callx-0_08'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* File:    callx.c
+ * Purpose: Callback, callafter and callevery library
+ * Author:  Ben Laughton
+ * History:
+ *
+ * 1997-07-17: BAL
+ * Created.
+ *
+ * 1997-08-26: RDW
+ * Fixed bug where data structure accessed after being freed.
+ * Functions changed are:
+ *   callx_remove_callback, callx_remove_all_callbacks,
+ *   callx_remove_callafter, callx_remove_all_callafters,
+ *   callx_remove_callevery, callx_remove_all_calleverys
+ *
+ * 1998-05-11: BAL
+ * Fixed brain-dead mistake in all add calls.  They weren't disabling interrupts
+ * - what was I thinking?
+ */
+
+
+
+
+/* =============================================================================
+ * Include header files
+ */
+
+/* CLib */
+#include <kernel.h>
+#include <stdlib.h>
+#include <swis.h>
+
+/* Misc libraries */
+#include <AsmUtils/irqs.h>
+#include <DebugLib/DebugLib.h>
+
+/* Local */
+#include "callx.h"
+
+
+
+
+/* =============================================================================
+ * Define contants
+ */
+
+#define F_CalledOnce (0x00000001)
+#define F_Deleted    (0x00000002)
+#define F_IsCallback (0x00000004)
+#define F_IRQsOff    (0x00000008)
+
+enum
+{
+    E_CallX_CantAdd
+};
+
+enum
+{
+    NumStaticCalls = 4
+};
+
+
+
+
+/* =============================================================================
+ * Define macros
+ */
+
+#define M_e_check_return(e) \
+if ((e) != NULL) \
+{ \
+    return e; \
+}
+
+
+
+
+/* =============================================================================
+ * Define types
+ */
+
+typedef struct list_t list_t;
+
+typedef struct callx_t
+{
+    struct callx_t *prev;
+    struct callx_t *next;
+
+    unsigned int flags;
+    void *pw;
+    list_t *list;
+
+    int time;    /* not used for callbacks */
+    callx_handler_fn handler;
+    void *data;
+
+} callx_t;
+
+struct list_t
+{
+    callx_t *first;
+    callx_t *last;
+};
+
+
+
+
+/* =============================================================================
+ * Declare global variables
+ */
+
+static void *   workspace_ptr;
+static list_t   callback_list;
+static list_t   callafter_list;
+static list_t   callevery_list;
+static list_t   free_static_call_list;
+static list_t   deleted_callback_list;
+
+static callx_t  static_call[NumStaticCalls];
+static callx_t *  deletion_callback;
+
+static _kernel_oserror callx_error[] =
+{
+    {0, "Unable to add call"}
+};
+
+
+
+
+/* =============================================================================
+ * Declare function prototypes
+ */
+
+extern void  _callx__veneer (void);
+
+static callx_t *  add_call (list_t *            list,
+                            const unsigned int  flags,
+                            const int           time,
+                            callx_handler_fn    handler,
+                            void *              data);
+
+extern void  _callx_remove_call_internal (list_t *   list,
+                                          callx_t *  call);
+
+static void  _callx_remove_call_external (list_t *   list,
+                                          callx_t *  call);
+
+static void  delete_call (callx_t *  call);
+
+static void  delink_call (list_t *   list,
+                          callx_t *  call);
+
+
+
+
+/* =============================================================================
+ * Define functions
+ */
+
+/* -----------------------------------------------------------------------------
+   callx_init
+
+   Initialise the callx library.
+
+   Inputs
+   pw: module's private word pointer
+ */
+
+extern void  callx_init (void *const  pw)
+{
+    int         i;
+    callx_t  *  next = NULL;
+
+    /* Initialise free static call list (i.e. pre-allocated calls).  Don't need
+     * to bother with previous pointers as we always just take/insert from/to
+     * the head of the list.
+     */
+    free_static_call_list.first = &static_call[0];
+
+    for (i = NumStaticCalls - 1; i >= 0; i--)
+    {
+        static_call[i].next = next;
+        next                = &static_call[i];
+    }
+
+
+    /* Store client module's private workspace pointer */
+    workspace_ptr = pw;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_add_callback
+
+   Add a transient callback.
+
+   Inputs
+   handler: pointer to callback handler function
+   data:    data pointer for handler function
+
+   Returns:
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_add_callback (callx_handler_fn  handler,
+                                              void *            data)
+{
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          new_call;
+
+    irqs = ensure_irqs_off ();
+    new_call = add_call (&callback_list,
+                         F_CalledOnce | F_IsCallback,
+                         0,
+                         handler,
+                         data);
+    if (new_call != NULL)
+    {
+        e = _swix (OS_AddCallBack, _INR (0, 1), _callx__veneer, new_call);
+        if (e)
+        {
+            _callx_remove_call_internal (&callback_list, new_call);
+        }
+    }
+
+    restore_irqs (irqs);
+
+    if (new_call == NULL)
+    {
+        return &callx_error[E_CallX_CantAdd];
+    }
+
+    return e;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_add_callback_irqsoff
+
+   Add a transient callback which will be called with interrupts disabled.
+
+   Inputs
+   handler: pointer to callback handler function
+   data:    data pointer for handler function
+
+   Returns:
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_add_callback_irqsoff (callx_handler_fn  handler,
+                                              void *            data)
+{
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          new_call;
+
+    irqs = ensure_irqs_off ();
+    new_call = add_call (&callback_list,
+                         F_CalledOnce | F_IsCallback | F_IRQsOff,
+                         0,
+                         handler,
+                         data);
+    if (new_call != NULL)
+    {
+        e = _swix (OS_AddCallBack, _INR (0, 1), _callx__veneer, new_call);
+        if (e)
+        {
+            _callx_remove_call_internal (&callback_list, new_call);
+        }
+    }
+
+    restore_irqs (irqs);
+
+    if (new_call == NULL)
+    {
+        return &callx_error[E_CallX_CantAdd];
+    }
+
+    return e;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_remove_callback
+
+   Remove a pending callback.
+
+   Inputs
+   handler: pointer to callback handler function
+   data:    data pointer for handler function
+
+   Returns
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *callx_remove_callback (callx_handler_fn handler,
+                                               void *data)
+{
+    unsigned int  irqs;
+    callx_t *     call;
+    callx_t *     next;
+
+    irqs = ensure_irqs_off ();
+    call = callback_list.first;
+    while (call)
+    {
+        next = call->next;
+        if (call->handler == handler && call->data == data)
+        {
+            _kernel_oserror *  e = NULL;
+
+            /* If there isn't already a callback scheduled to process the
+             * deleted callbacks list then assign that task to this callback.
+             */
+            if (deletion_callback == NULL)
+            {
+                deletion_callback = call;
+            }
+            else
+            {
+                e = _swix (OS_RemoveCallBack,
+                           _INR (0, 1),
+                           _callx__veneer,
+                           call);
+            }
+            _callx_remove_call_external (&callback_list, call);
+            restore_irqs (irqs);
+            return e;
+        }
+
+        call = next;
+    }
+    restore_irqs (irqs);
+
+    return NULL;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_remove_all_callbacks
+
+   Remove all pending callbacks.
+
+   Returns
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *callx_remove_all_callbacks (void)
+{
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          call;
+    callx_t *          next;
+
+    irqs = ensure_irqs_off ();
+    call = callback_list.first;
+    while (call)
+    {
+        next = call->next;
+
+        e = _swix (OS_RemoveCallBack, _INR (0, 1), _callx__veneer, call);
+        /* previous errors will be squashed */
+
+        _callx_remove_call_external (&callback_list, call);
+        call = next;
+    }
+    restore_irqs (irqs);
+
+    return e;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_add_callafter
+
+   Add a callafter.
+
+   Inputs
+   handler: pointer to callafter handler function
+   data:    data pointer for handler function
+
+   Returns:
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_add_callafter (const unsigned int  time,
+                                               callx_handler_fn    handler,
+                                               void *              data)
+{
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          new_call;
+
+    irqs = ensure_irqs_off ();
+    new_call = add_call (&callafter_list,  F_CalledOnce, time, handler, data);
+    if (new_call != NULL)
+    {
+        e = _swix (OS_CallAfter, _INR (0, 2), time, _callx__veneer, new_call);
+        if (e)
+        {
+            _callx_remove_call_internal (&callafter_list, new_call);
+        }
+    }
+
+    restore_irqs (irqs);
+
+    if (new_call == NULL)
+    {
+        return &callx_error[E_CallX_CantAdd];
+    }
+
+    return e;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_remove_callafter
+
+   Remove a pending callafter.  Interrupts must be temporarily switch off so
+   that the callafter being removed cannot trigger while we are looking for
+   it in the list.
+
+   Inputs
+   handler: pointer to callafter handler function
+   data:    data pointer for handler function
+
+   Returns
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_remove_callafter (callx_handler_fn  handler,
+                                                  void *            data)
+{
+    unsigned int  irqs;
+    callx_t *     call;
+    callx_t *     next;
+
+    irqs = ensure_irqs_off ();
+    call = callafter_list.first;
+    while (call)
+    {
+        next = call->next;
+        if (call->handler == handler && call->data == data)
+        {
+            _kernel_oserror *  e;
+
+            e = _swix (OS_RemoveTickerEvent, _INR (0, 1), _callx__veneer, call);
+            _callx_remove_call_external (&callafter_list, call);
+            restore_irqs (irqs);
+            return e;
+        }
+
+         call = next;
+    }
+
+    restore_irqs (irqs);
+    return NULL;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_remove_all_callafters
+
+   Remove all pending callafters.  Interrupts must be switched off so that none
+   of the callafters can be triggered while we are removing them.
+
+   Returns
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_remove_all_callafters (void)
+{
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          call;
+    callx_t *          next;
+
+    irqs = ensure_irqs_off ();
+    call = callafter_list.first;
+    while (call)
+    {
+        next = call->next;
+        e = _swix (OS_RemoveTickerEvent, _INR (0, 1), _callx__veneer, call);
+        /* any previous error will be squashed */
+
+        _callx_remove_call_external (&callafter_list, call);
+        call = next;
+    }
+    restore_irqs (irqs);
+
+    return e;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_add_callevery
+
+   Add a callevery.
+
+   Inputs
+   handler: pointer to callafter handler function
+   data:    data pointer for handler function
+
+   Returns:
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_add_callevery (const unsigned int  time,
+                                               callx_handler_fn    handler,
+                                               void *              data)
+{
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          new_call;
+
+
+    irqs = ensure_irqs_off ();
+    new_call = add_call (&callevery_list, 0, time, handler, data);
+    if (new_call != NULL)
+    {
+        e = _swix (OS_CallEvery, _INR (0, 2), time, _callx__veneer, new_call);
+        if (e)
+        {
+            _callx_remove_call_internal (&callevery_list, new_call);
+        }
+    }
+
+    restore_irqs (irqs);
+
+    if (new_call == NULL)
+    {
+        return &callx_error[E_CallX_CantAdd];
+    }
+
+    return e;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_remove_callevery
+
+   Remove a pending callevery.
+
+   Inputs
+   handler: pointer to callevery handler function
+   data:    data pointer for handler function
+
+   Returns
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_remove_callevery (callx_handler_fn  handler,
+                                                  void *            data)
+{
+    unsigned int  irqs;
+    callx_t *     call;
+    callx_t *     next;
+
+    irqs = ensure_irqs_off ();
+    call = callevery_list.first;
+    while (call)
+    {
+        next = call->next;
+        if (call->handler == handler && call->data == data)
+        {
+            _kernel_oserror *  e;
+
+            e = _swix (OS_RemoveTickerEvent, _INR (0, 1), _callx__veneer, call);
+            _callx_remove_call_external (&callevery_list, call);
+            restore_irqs (irqs);
+            return e;
+        }
+
+        call = next;
+    }
+
+    restore_irqs (irqs);
+    return NULL;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   callx_remove_all_calleverys
+
+   Remove all pending calleverys.
+
+   Returns
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+extern _kernel_oserror *  callx_remove_all_calleverys (void)
+{
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          call;
+    callx_t *          next;
+
+    irqs = ensure_irqs_off ();
+    call = callevery_list.first;
+    while (call)
+    {
+        next = call->next;
+        e = _swix (OS_RemoveTickerEvent, _INR (0, 1), _callx__veneer, call);
+        /* previous errors will be squashed */
+
+        _callx_remove_call_external (&callevery_list, call);
+        call = next;
+    }
+    restore_irqs (irqs);
+
+    return e;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   add_call
+
+   Add a call to one of the call lists.
+
+   Interrupts *must* be disabled to call this.
+
+   Inputs
+   list:    list to add item to
+   flags:   internal callx flags for this call
+   time:    callafter / callevery time (not used for callbacks)
+   handler: pointer to handler function
+   data:    data pointer for handler function
+
+   Returns
+   success: NULL
+   failure: pointer to standard error block
+ */
+
+static callx_t *  add_call (list_t *            list,
+                            const unsigned int  flags,
+                            const int           time,
+                            callx_handler_fn    handler,
+                            void *              data)
+{
+    callx_t *  new_call = NULL;
+
+    if (free_static_call_list.first != NULL)
+    {
+        /* Can use pre-allocated structure */
+        new_call = free_static_call_list.first;
+        free_static_call_list.first = new_call->next;
+    }
+    else
+    {
+        /* Allocate memory for new list element */
+        new_call = malloc (sizeof (callx_t));
+    }
+
+    if (new_call != NULL)
+    {
+        /* Fill in new call data */
+        new_call->flags = flags;
+        new_call->pw = workspace_ptr;
+        new_call->list = list;
+
+        new_call->time = time;
+        new_call->handler = handler;
+        new_call->data = data;
+
+        /* Add new item to end of list */
+        new_call->prev = list->last;
+        new_call->next = NULL;
+
+        if (list->first == NULL)
+        {
+            list->first = new_call;
+        }
+
+        if (list->last != NULL)
+        {
+            list->last->next = new_call;
+        }
+
+        list->last = new_call;
+    }
+
+    return new_call;
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   _callx_remove_call_internal
+
+   Remove an item from a list.  For internal use only.
+
+   Interrupts *must* be disabled to call this.
+
+   Inputs
+   list: pointer to list to remove item from
+   item: pointer to list item to remove
+ */
+
+extern void  _callx_remove_call_internal (list_t *   list,
+                                          callx_t *  call)
+{
+    /* For callbacks only, call could have already been moved to pending
+     * delete queue, in which case we delete it there.
+     */
+    if ((call->flags & F_Deleted) == 0)
+    {
+        delink_call (list, call);
+        dprintf (("", "deleting self %p\n", call));
+        delete_call (call);
+    }
+
+    if (call->flags & F_IsCallback)
+    {
+        /* Delete any callbacks in the pending delete queue */
+        callx_t *  next;
+
+        /* If there was a callback being retained to do pending callback
+         * deletions, and it was not this callback, then remove it.
+         */
+        if (deletion_callback != NULL && call != deletion_callback)
+        {
+            (void) _swix (OS_RemoveCallBack,
+                          _INR (0, 1),
+                          _callx__veneer,
+                          deletion_callback);
+        }
+        deletion_callback = NULL;
+
+        dprintf (("", "processing deleted callback queue\n"));
+
+        call = deleted_callback_list.first;
+
+        while (call)
+        {
+            dprintf (("", " deleting %p\n", call));
+
+            next = call->next;
+            delete_call (call);
+            call = next;
+        }
+        deleted_callback_list.first = 0;
+    }
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   _callx_remove_call_external
+
+   Remove an item from a list.  For use from calls which originate from clients
+   of the library only.
+
+   Interrupts *must* be disabled to call this.
+
+   Inputs
+   list: pointer to list to remove item from
+   item: pointer to list item to remove
+ */
+
+static void  _callx_remove_call_external (list_t *   list,
+                                          callx_t *  call)
+{
+    delink_call (list, call);
+
+    /* Have to be careful here: if a call is removed by an interrupt routine
+     * then that particular call may be currently invoked.  In this case we
+     * don't want to remove the call here - it will be done automatically by
+     * the veneer when the call finishes.
+     */
+    if (call->flags & F_IsCallback)
+    {
+        /* Can't just call free because of the small window at the start of
+         * the assembler veneer where a callafter/callevery could interrupt a
+         * callback.  Instead, mark the callback as deleted and move it to a
+         * list of callbacks pending deletion.  When the callback does trigger
+         * (this one, or an earlier one that hasn't been deleted), this list
+         * is processed and callbacks are deleted for real.
+         */
+        call->flags |= F_Deleted;
+
+        call->next = deleted_callback_list.first;
+        deleted_callback_list.first = call;
+    }
+    else
+    {
+        delete_call (call);
+    }
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   delete_call
+
+   Frees a callx structure.
+
+   Interrupts *must* be disabled to call this.
+
+   Inputs
+   call: pointer to call to delete
+ */
+
+static void  delete_call (callx_t *  call)
+{
+    if (call >= static_call && call <= &static_call[NumStaticCalls - 1])
+    {
+        /* Pre-allocated call, so return it to the list of free static calls */
+        call->next = free_static_call_list.first;
+        free_static_call_list.first = call;
+    }
+    else
+    {
+        /* Not a pre-allocated call, so we need to free it */
+        free (call);
+    }
+}
+
+
+
+
+/* -----------------------------------------------------------------------------
+   delink
+
+   Delink an item from a list.
+
+   Interrupts *must* be disabled to call this.
+
+   Inputs
+   list: pointer to list to remove item from
+   item: pointer to list item to remove
+ */
+
+static void  delink_call (list_t *   list,
+                          callx_t *  call)
+{
+    callx_t *prev, *next;
+
+    if (list != NULL)
+    {
+        prev = call->prev;
+        next = call->next;
+
+        /* Update previous item's next pointer */
+        if (prev == NULL)    /* item to be removed is at start of list */
+        {
+            list->first = next;
+        }
+        else
+        {
+            prev->next = next;
+        }
+
+        /* Update next item's prev pointer */
+        if (next == NULL)    /* item to be removed is at end of list */
+        {
+            list->last = prev;
+        }
+        else
+        {
+            next->prev = prev;
+        }
+    }
+
+    call->list = NULL;    /* indicate that item is already de-linked */
+}
+@
+
+
+1.3
+log
+@  * Fixed potential problem with removing an executing callback from within a
+    callafter or callevery handler.
+  * Performance improvements.
+
+Detail:
+  * There was a small opportunity at the start of the assembler veneer for a
+    callafter or callevery to interrupt a callback that had just gone off (this
+    window was only about one or two instructions).  If the callafter/callevery
+    handler deleted the executing callback then once the callback resumed
+    processing it would have tried to access data from the free'd callback data
+    structure, and then would have tried to free this structure again.
+
+  * Each call to add a handler used to result in malloc being called to
+    allocate an internal data structure.  A few of these data structures are
+    now preallocated on initialisation, hopefully avoiding the need for calls
+    to malloc/free in most circumstances.
+
+Admin:
+  Tested (last summer!) using a little test-harness module, and tested today
+  using AcornPOP3 test harness to fetch all the headers from my INBOX.  Seems
+  to work.
+
+  Apologies to Dan - I'd already done the 32 bit stuff but hadn't got around
+  to checking this in because I wanted to do more testing.  However, I'd missed
+  the fact that 32 bit PHPSEI wants a scratch register, so it wasn't in vain.
+
+Version 0.07. Tagged as 'callx-0_07'
+@
+text
+@d64 1
+d258 49
+@
+
+
+1.2
+log
+@Summary
+  * Uses AsmUtils for control of interrupts.
+  * Miniscule performance improvement.
+Detail
+  * The code in the veneer that sets up the return address before calling
+    the client's handler had a redundant instruction, which has now been
+    removed.  This instruction was effectively compensating for its own
+    presence :).
+Admin
+  * Compiled and tested on a Risc PC using AcornPOP3, which uses this library.
+  * Modules which use this library must now also link against AsmUtils.
+
+Version 0.04. Tagged as 'callx-0_04'
+@
+text
+@a46 1
+
+d49 1
+a52 1
+#include "error.h"
+d62 2
+a63 1
+#define F_Processing (0x00000002)
+d70 18
+d125 9
+a133 4
+static void *workspace_ptr;
+static list_t callback_list;
+static list_t callafter_list;
+static list_t callevery_list;
+d142 1
+d147 1
+a147 1
+extern void  callx_veneer (void);
+d155 9
+a163 1
+extern void  remove_call (list_t *   list,
+d184 17
+d229 5
+a233 1
+    new_call = add_call (&callback_list, F_CalledOnce, 0, handler, data);
+d236 1
+a236 1
+        e = _swix (OS_AddCallBack, _INR (0, 1), callx_veneer, new_call);
+d239 1
+a239 1
+            remove_call (&callback_list, new_call);
+d275 1
+a275 1
+    callx_t *     next;    /* added by RDW 26/10/97 */
+d281 1
+a281 1
+        next = call->next;    /* added by RDW 26/10/97 */
+d284 1
+a284 1
+            _kernel_oserror *  e;
+d286 15
+a300 2
+            e = _swix (OS_RemoveCallBack, _INR (0, 1), callx_veneer, call);
+            remove_call (&callback_list, call);
+d305 1
+a305 2
+/*        call = call->next; */ /* removed by RDW 26/10/97 */
+        call = next;    /* added by RDW 26/10/97 */
+d330 1
+a330 1
+    callx_t *          next;    /* added by RDW 26/10/97 */
+d336 1
+a336 1
+        next = call->next;    /* added by RDW 26/10/97 */
+d338 1
+a338 1
+        e = _swix (OS_RemoveCallBack, _INR (0, 1), callx_veneer, call);
+d341 2
+a342 3
+        remove_call (&callback_list, call);
+ /*       call = call->next; */ /* removed by RDW 26/10/97 */
+        call = next;    /* added by RDW 26/10/97 */
+d378 1
+a378 1
+        e = _swix (OS_CallAfter, _INR (0, 2), time, callx_veneer, new_call);
+d381 1
+a381 1
+            remove_call (&callafter_list, new_call);
+d419 1
+a419 1
+    callx_t *     next;    /* added by RDW 26/10/97 */
+d425 1
+a425 1
+        next = call->next;    /* added by RDW 26/10/97 */
+d430 2
+a431 2
+            e = _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+            remove_call (&callafter_list, call);
+d436 1
+a436 2
+ /*       call = call->next;*/ /* removed by RDW 26/10/97 */
+         call = next;    /* added by RDW 26/10/97 */
+d462 1
+a462 1
+    callx_t *          next;    /* added by RDW 26/10/97 */
+d468 2
+a469 2
+        next = call->next;    /* added by RDW 26/10/97 */
+        e = _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+d472 2
+a473 3
+        remove_call (&callafter_list, call);
+/*        call = call->next;*/ /* removed by RDW 26/10/97 */
+        call = next;    /* added by RDW 26/10/97 */
+d510 1
+a510 1
+        e = _swix (OS_CallEvery, _INR (0, 2), time, callx_veneer, new_call);
+d513 1
+a513 1
+            remove_call (&callevery_list, new_call);
+d549 1
+a549 1
+    callx_t *     next;    /* added by RDW 26/10/97 */
+d555 1
+a555 1
+        next = call->next;    /* added by RDW 26/10/97 */
+d560 2
+a561 2
+            e = _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+            remove_call (&callevery_list, call);
+d566 1
+a566 2
+/*        call = call->next;*/ /* removed by RDW 26/10/97 */
+        call = next;    /* added by RDW 26/10/97 */
+d591 1
+a591 1
+    callx_t *          next;    /* added by RDW 26/10/97 */
+d597 2
+a598 2
+        next = call->next;    /* added by RDW 26/10/97 */
+        e = _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+d601 2
+a602 3
+        remove_call (&callevery_list, call);
+/*        call = call->next;*/ /* removed by RDW 26/10/97 */
+        call = next;    /* added by RDW 26/10/97 */
+d637 13
+a649 1
+    callx_t *new_call;
+a650 2
+    /* Allocate memory for new list element */
+    new_call = malloc (sizeof (callx_t));
+d686 62
+a747 1
+   list_remove_item
+d749 2
+a750 1
+   Remove an item from a list list.
+d759 2
+a760 2
+extern void  remove_call (list_t *   list,
+                          callx_t *  call)
+d762 1
+a762 1
+    callx_t *prev, *next;
+d769 70
+a838 1
+    if ((call->flags & F_Processing) == 0)
+d862 1
+d864 1
+a864 2
+        free (call);
+    }
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d29 4
+d43 1
+a43 1
+#include "kernel.h"
+d45 1
+a45 1
+#include "swis.h"
+d47 5
+a51 1
+/* DaytonaHW */
+a53 1
+#include "interrupts.h"
+d63 1
+d123 1
+a123 1
+extern void callx_veneer (void);
+d125 5
+a129 5
+static callx_t *add_call (list_t             *list,
+                          const unsigned int  flags,
+                          const int           time,
+                          callx_handler_fn    handler,
+                          void               *data);
+d131 2
+a132 1
+extern void remove_call (list_t *list, callx_t *call);
+a141 1
++
+a147 1
+-
+d150 1
+a150 1
+extern void callx_init (void *const pw)
+a158 1
++
+a169 1
+-
+d172 2
+a173 2
+extern _kernel_oserror *callx_add_callback (callx_handler_fn handler,
+                                            void *data)
+d175 3
+a177 2
+    _kernel_oserror *e = NULL;
+    callx_t *new_call;
+d179 1
+d185 1
+d187 1
+d189 5
+a193 1
+    else
+d195 1
+a203 1
++
+a214 1
+-
+d220 3
+a222 3
+    _kernel_oserror *e;
+    callx_t *call;
+    callx_t *next;		/* added by RDW 26/10/97 */
+d224 1
+d228 1
+a228 1
+        next = call->next;	/* added by RDW 26/10/97 */
+d231 2
+d235 1
+a235 1
+
+d240 1
+a240 1
+        call = next;		/* added by RDW 26/10/97 */
+d242 1
+a250 1
++
+a257 1
+-
+d262 4
+a265 3
+    _kernel_oserror *e;
+    callx_t *call;
+    callx_t *next;		/* added by RDW 26/10/97 */
+d267 1
+d271 2
+a272 1
+        next = call->next;	/* added by RDW 26/10/97 */
+d274 1
+a274 1
+        M_e_check_return (e);
+d278 1
+a278 1
+        call = next;		/* added by RDW 26/10/97 */
+d280 1
+d282 1
+a282 1
+    return NULL;
+a288 1
++
+a299 1
+-
+d302 7
+a308 6
+extern _kernel_oserror *callx_add_callafter (const unsigned int time,
+                                             callx_handler_fn handler,
+                                             void *data)
+{
+    _kernel_oserror *e = NULL;
+    callx_t *new_call;
+d310 1
+d316 1
+d318 1
+d320 5
+a324 1
+    else
+d326 1
+a334 1
++
+a347 1
+-
+d350 2
+a351 2
+extern _kernel_oserror *callx_remove_callafter (callx_handler_fn handler,
+                                                void *data)
+d353 3
+a355 4
+    unsigned int irqs;
+    _kernel_oserror *e;
+    callx_t *call;
+    callx_t *next;		/* added by RDW 26/10/97 */
+d357 1
+a357 1
+    irqs = irqs_off ();
+d361 1
+a361 1
+        next = call->next;	/* added by RDW 26/10/97 */
+d364 2
+a366 1
+            irqs_restore (irqs);
+d368 2
+d373 2
+a374 2
+         call = next;		/* added by RDW 26/10/97 */
+   }
+d376 1
+a376 1
+    irqs_restore (irqs);
+a383 1
++
+a391 1
+-
+d394 1
+a394 1
+extern _kernel_oserror *callx_remove_all_callafters (void)
+d396 4
+a399 3
+    unsigned int irqs;
+    callx_t *call;
+    callx_t *next;		/* added by RDW 26/10/97 */
+d401 1
+a401 1
+    irqs = irqs_off ();
+d405 3
+a407 5
+        next = call->next;	/* added by RDW 26/10/97 */
+        _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+        /* ignore any error from this SWI and carry on trying to remove
+         * subsequent callafters
+         */
+d411 1
+a411 1
+        call = next;		/* added by RDW 26/10/97 */
+d413 1
+d415 1
+a415 2
+    irqs_restore (irqs);
+    return NULL;
+a421 1
++
+a432 1
+-
+d435 3
+a437 3
+extern _kernel_oserror *callx_add_callevery (const unsigned int time,
+                                             callx_handler_fn handler,
+                                             void *data)
+d439 4
+a442 2
+    _kernel_oserror *e = NULL;
+    callx_t *new_call;
+d444 1
+d450 1
+d452 1
+d454 5
+a458 1
+    else
+d460 1
+a468 1
++
+a479 1
+-
+d482 2
+a483 2
+extern _kernel_oserror *callx_remove_callevery (callx_handler_fn handler,
+                                                void *data)
+d485 3
+a487 4
+    unsigned int irqs;
+    _kernel_oserror *e;
+    callx_t *call;
+    callx_t *next;		/* added by RDW 26/10/97 */
+d489 1
+a489 1
+    irqs = irqs_off ();
+d493 1
+a493 1
+        next = call->next;	/* added by RDW 26/10/97 */
+d496 2
+a498 1
+            irqs_restore (irqs);
+d500 2
+d505 1
+a505 1
+        call = next;		/* added by RDW 26/10/97 */
+d508 1
+a508 1
+    irqs_restore (irqs);
+a515 1
++
+a522 1
+-
+d525 1
+a525 1
+extern _kernel_oserror *callx_remove_all_calleverys (void)
+d527 4
+a530 3
+    unsigned int irqs;
+    callx_t *call;
+    callx_t *next;		/* added by RDW 26/10/97 */
+d532 1
+a532 1
+    irqs = irqs_off ();
+d536 3
+a538 5
+        next = call->next;	/* added by RDW 26/10/97 */
+        _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+        /* ignore any error from this SWI and carry on trying to remove
+         * subsequent callafters
+         */
+d542 1
+a542 1
+        call = next;		/* added by RDW 26/10/97 */
+d544 1
+d546 1
+a546 2
+    irqs_restore (irqs);
+    return NULL;
+a552 1
++
+d555 3
+a557 1
+   Add a call to one of the call lists
+a568 1
+-
+d571 5
+a575 5
+static callx_t *add_call (list_t             *list,
+                          const unsigned int  flags,
+                          const int           time,
+                          callx_handler_fn    handler,
+                          void               *data)
+d597 1
+d599 1
+d602 1
+d604 1
+a615 1
++
+d620 2
+a624 1
+-
+d627 2
+a628 1
+extern void remove_call (list_t *list, callx_t *call)
+d632 19
+a650 2
+    prev = call->prev;
+    next = call->next;
+d652 9
+a660 11
+    /* Update previous item's next pointer */
+    if (prev == NULL)    /* item to be removed is at start of list */
+        list->first = next;
+    else
+        prev->next = next;
+
+    /* Update next item's prev pointer */
+    if (next == NULL)    /* item to be removed is at end of list */
+        list->last = prev;
+    else
+        next->prev = prev;
+d662 2
+a663 1
+    free (call);
+@
+
+
+1.1.1.1
+log
+@First checkin to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Uses srccommit.  Fixed potential re-entrancy problems.
+
+Version 0.02, 1.1.2.2. Tagged as 'callx-0_02-1_1_2_2'
+@
+text
+@a55 1
+#define F_Processing (0x00000002)
+d115 1
+a115 1
+extern void  callx_veneer (void);
+d117 5
+a121 5
+static callx_t *  add_call (list_t *            list,
+                            const unsigned int  flags,
+                            const int           time,
+                            callx_handler_fn    handler,
+                            void *              data);
+d123 1
+a123 2
+extern void  remove_call (list_t *   list,
+                          callx_t *  call);
+d143 1
+a143 1
+extern void  callx_init (void *const  pw)
+d167 2
+a168 2
+extern _kernel_oserror *  callx_add_callback (callx_handler_fn  handler,
+                                              void *            data)
+d170 2
+a171 2
+    _kernel_oserror *  e = NULL;
+    callx_t *          new_call;
+a177 1
+        {
+a178 1
+        }
+a180 1
+    {
+a181 1
+    }
+d208 3
+a210 3
+    unsigned int  irqs;
+    callx_t *     call;
+    callx_t *     next;    /* added by RDW 26/10/97 */
+a211 1
+    irqs = irqs_off ();
+d215 1
+a215 1
+        next = call->next;    /* added by RDW 26/10/97 */
+a217 2
+            _kernel_oserror *  e;
+
+d220 1
+a220 1
+            irqs_restore (irqs);
+d225 1
+a225 1
+        call = next;    /* added by RDW 26/10/97 */
+a226 1
+    irqs_restore (irqs);
+d248 3
+a250 4
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          call;
+    callx_t *          next;    /* added by RDW 26/10/97 */
+a251 1
+    irqs = irqs_off ();
+d255 1
+a255 2
+        next = call->next;    /* added by RDW 26/10/97 */
+
+d257 1
+a257 1
+        /* previous errors will be squashed */
+d261 1
+a261 1
+        call = next;    /* added by RDW 26/10/97 */
+a262 1
+    irqs_restore (irqs);
+d264 1
+a264 1
+    return e;
+d286 3
+a288 3
+extern _kernel_oserror *  callx_add_callafter (const unsigned int  time,
+                                               callx_handler_fn    handler,
+                                               void *              data)
+a297 1
+        {
+a298 1
+        }
+a300 1
+    {
+a301 1
+    }
+d327 2
+a328 2
+extern _kernel_oserror *  callx_remove_callafter (callx_handler_fn  handler,
+                                                  void *            data)
+d330 4
+a333 3
+    unsigned int  irqs;
+    callx_t *     call;
+    callx_t *     next;    /* added by RDW 26/10/97 */
+d339 1
+a339 1
+        next = call->next;    /* added by RDW 26/10/97 */
+a341 2
+            _kernel_oserror *  e;
+
+d343 1
+a344 2
+            irqs_restore (irqs);
+            return e;
+d348 2
+a349 2
+         call = next;    /* added by RDW 26/10/97 */
+    }
+d371 1
+a371 1
+extern _kernel_oserror *  callx_remove_all_callafters (void)
+d373 3
+a375 4
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          call;
+    callx_t *          next;    /* added by RDW 26/10/97 */
+d381 5
+a385 3
+        next = call->next;    /* added by RDW 26/10/97 */
+        e = _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+        /* any previous error will be squashed */
+d389 1
+a389 1
+        call = next;    /* added by RDW 26/10/97 */
+d391 1
+d393 1
+a393 2
+
+    return e;
+d415 3
+a417 3
+extern _kernel_oserror *  callx_add_callevery (const unsigned int  time,
+                                               callx_handler_fn    handler,
+                                               void *              data)
+d419 2
+a420 2
+    _kernel_oserror *  e = NULL;
+    callx_t *          new_call;
+a426 1
+        {
+a427 1
+        }
+a429 1
+    {
+a430 1
+    }
+d454 2
+a455 2
+extern _kernel_oserror *  callx_remove_callevery (callx_handler_fn  handler,
+                                                  void *            data)
+d457 4
+a460 3
+    unsigned int  irqs;
+    callx_t *     call;
+    callx_t *     next;    /* added by RDW 26/10/97 */
+d466 1
+a466 1
+        next = call->next;    /* added by RDW 26/10/97 */
+a468 2
+            _kernel_oserror *  e;
+
+d470 1
+a471 2
+            irqs_restore (irqs);
+            return e;
+d475 1
+a475 1
+        call = next;    /* added by RDW 26/10/97 */
+d497 1
+a497 1
+extern _kernel_oserror *  callx_remove_all_calleverys (void)
+d499 3
+a501 4
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          call;
+    callx_t *          next;    /* added by RDW 26/10/97 */
+d507 5
+a511 3
+        next = call->next;    /* added by RDW 26/10/97 */
+        e = _swix (OS_RemoveTickerEvent, _INR (0, 1), callx_veneer, call);
+        /* previous errors will be squashed */
+d515 1
+a515 1
+        call = next;    /* added by RDW 26/10/97 */
+d517 1
+d519 1
+a519 2
+
+    return e;
+d544 5
+a548 5
+static callx_t *  add_call (list_t *            list,
+                            const unsigned int  flags,
+                            const int           time,
+                            callx_handler_fn    handler,
+                            void *              data)
+a569 1
+        {
+a570 1
+        }
+a572 1
+        {
+a573 1
+        }
+d596 1
+a596 2
+extern void  remove_call (list_t *   list,
+                          callx_t *  call)
+d600 2
+a601 9
+    /* Have to be careful here: if a call is removed by an interrupt routine
+     * then that particular call may be currently invoked.  In this case we
+     * don't want to remove the call here - it will be done automatically by
+     * the veneer when the call finishes.
+     */
+    if ((call->flags & F_Processing) == 0)
+    {
+        prev = call->prev;
+        next = call->next;
+d603 5
+a607 9
+        /* Update previous item's next pointer */
+        if (prev == NULL)    /* item to be removed is at start of list */
+        {
+            list->first = next;
+        }
+        else
+        {
+            prev->next = next;
+        }
+d609 5
+a613 9
+        /* Update next item's prev pointer */
+        if (next == NULL)    /* item to be removed is at end of list */
+        {
+            list->last = prev;
+        }
+        else
+        {
+            next->prev = prev;
+        }
+d615 1
+a615 2
+        free (call);
+    }
+@
+
+
+1.1.1.3
+log
+@Fixed interrupt hole in add calls.
+
+Version 0.02, 1.1.2.3. Tagged as 'callx-0_02-1_1_2_3'
+@
+text
+@a28 4
+ *
+ * 1998-05-11: BAL
+ * Fixed brain-dead mistake in all add calls.  They weren't disabling interrupts
+ * - what was I thinking?
+d135 1
+d142 1
+d154 1
+d166 1
+a171 1
+    unsigned int       irqs;
+a174 1
+    irqs = irqs_off ();
+d184 1
+a184 4
+
+    irqs_restore (irqs);
+
+    if (new_call == NULL)
+d196 1
+d208 1
+d245 1
+d253 1
+d285 1
+d297 1
+d304 2
+a305 3
+    unsigned int       irqs;
+    _kernel_oserror *  e = NULL;
+    callx_t *          new_call;
+a306 1
+    irqs = irqs_off ();
+d316 1
+a316 4
+
+    irqs_restore (irqs);
+
+    if (new_call == NULL)
+d328 1
+d342 1
+d379 1
+d388 1
+d419 1
+d431 1
+a437 1
+    unsigned int       irqs;
+a440 2
+
+    irqs = irqs_off ();
+d450 1
+a450 4
+
+    irqs_restore (irqs);
+
+    if (new_call == NULL)
+d462 1
+d474 1
+d511 1
+d519 1
+d550 1
+d553 1
+a553 3
+   Add a call to one of the call lists.
+
+   Interrupts *must* be disabled to call this.
+d565 1
+d613 1
+a617 2
+   Interrupts *must* be disabled to call this.
+
+d621 1
+@

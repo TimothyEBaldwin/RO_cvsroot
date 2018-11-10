@@ -1,0 +1,671 @@
+head	1.4;
+access;
+symbols
+	Browse-2_16:1.4
+	Browse-2_15:1.4
+	Browse-2_14:1.4
+	Browse-2_13:1.4
+	Browse-2_12:1.4
+	Browse-2_11:1.4
+	Browse-2_10:1.4
+	Browse-2_09:1.4
+	ahodgkin_208_i4_2:1.4
+	ahodgkin_208_i4:1.2
+	ahodgkin_208_i3:1.2
+	ahodgkin_208_i2:1.2
+	ahodgkin_208_i1:1.2
+	ahodgkin_207release:1.2
+	ahodgkin_206release:1.2
+	ahodgkin_205release:1.2
+	ahodgkin_204release:1.2
+	ahodgkin_202release:1.2
+	ahodgkin_201release:1.2
+	ahodgkin_200release:1.2
+	ahodgkin_133beta:1.2
+	ahodgkin_132beta:1.2
+	ahodgkin_131beta:1.2
+	ahodgkin_130beta:1.2
+	ahodgkin_129:1.2
+	ahodgkin_128beta:1.1
+	ahodgkin_128alpha:1.1
+	ahodgkin_127beta2:1.1
+	ahodgkin_127beta:1.1
+	ahodgkin_126beta:1.1
+	ahodgkin_AW97patch:1.1
+	ahodgkin_AW97:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2000.11.14.08.45.05;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.05.31.15.58.30;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.12.12.11.17.44;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.08.28.16.07.50;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    DragBox.c                                         */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Plot user drag boxes for such things as non-solid */
+/*          frame resizes (where the 'box' shape could be     */
+/*          very irregular).                                  */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 26-Aug-1997 (ADH): Created, based on the ResEd    */
+/*                             'Common.c.wimp' code.          */
+/*          25-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include "Global.h"
+#include "FromROSLib.h"
+#include "Utils.h"
+
+#include "DragBox.h"
+
+/* Local statics */
+
+/* These are the possible patterns used to plot the drag boxes.      */
+/* The first patterns are used when plotting and erasing a drag box. */
+/* The second patterns are used when rotating a stationary drag box. */
+
+static char patterns1[] = { 0xfc, 0xf9, 0xf3, 0xe7, 0xcf, 0x9f, 0x3f, 0x7e };
+static char patterns2[] = { 0x82, 0x05, 0x0a, 0x14, 0x28, 0x50, 0xa0, 0x41 };
+
+/* Contain the current patterns */
+
+static int  patternid   = 7; /* Chooses the pattern */
+static char pattern1[]  = { 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e, 0x7e };
+static char pattern2[]  = { 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41 };
+
+/* This points to the pattern used by dragbox_plot_eor_box; it addresses */
+/* pattern1 whilst removing an existing drag box, or plotting a new one, */
+/* and addresses pattern2 when rotating a stationary drag box.           */
+
+static char * pattern = pattern1;
+
+/**************************************************************/
+/* dragbox_set_dotdash()                                      */
+/*                                                            */
+/* Sets the dot-dash pattern according to the given eight     */
+/* bytes, or a default one.                                   */
+/*                                                            */
+/* Parameters: Pointer to an 8 char long array chars, or NULL */
+/*             for a default pattern.                         */
+/**************************************************************/
+
+_kernel_oserror * dragbox_set_dotdash(char * eight)
+{
+  if (!eight) eight = "\360\360\360\360\360\360\360\360";
+
+  /* Output char 23, then 6 (misc VDU; set dot-dash) */
+
+  RetError(_swix(OS_WriteI + 23, 0));
+  RetError(_swix(OS_WriteI + 6,  0));
+
+  /* Now output the 8 bytes describing the pattern */
+
+  return _swix(OS_WriteN,
+               _INR(0,1),
+
+               eight,
+               8);
+}
+
+/**************************************************************/
+/* dragbox_cycle_pattern()                                    */
+/*                                                            */
+/* Cycle the dot-dash pattern for a 'rotating' drag box.      */
+/**************************************************************/
+
+void dragbox_cycle_pattern(void)
+{
+  int i;
+
+  patternid --;
+
+  if (patternid < 0) patternid = 7;
+
+  /* Cycle the pattern */
+
+  for (i = 0; i < 8; i++)
+  {
+    pattern1[i] = patterns1[patternid];
+    pattern2[i] = patterns2[patternid];
+  }
+
+  return;
+}
+
+/**************************************************************/
+/* dragbox_plot_eor_box()                                     */
+/*                                                            */
+/* Plot a dotted rubber box using EOR. Should only be used    */
+/* during a redraw loop.                                      */
+/*                                                            */
+/* Parameters: A WimpRedrawWindowBlock pointer relevant to    */
+/*             the redraw session;                            */
+/*                                                            */
+/*             Pointer to a BBox holding the min and max      */
+/*             coords of the BBox (window work area coords,   */
+/*             min values inclusive, max values exclusive).   */
+/**************************************************************/
+
+void dragbox_plot_eor_box(WimpRedrawWindowBlock * r, BBox * rect)
+{
+  BBox box = *rect;
+
+  /* Convert the given rectangle work-area coords to screen coords */
+
+  coords_box_toscreen(&box, r);
+
+  /* Make xmax and ymax inclusive coords */
+
+  box.xmax -= wimpt_dx();
+  box.ymax -= wimpt_dy();
+
+  /* Set the dash pattern */
+
+  dprintf(("Drag", "Set dotdash\n"));
+
+  dragbox_set_dotdash(pattern);
+
+  /* Set the colour and plot the box */
+
+  dprintf(("Drag", "Set colour\n"));
+
+  _swix(Wimp_SetColour, _IN(0), 0x3f);
+
+  dprintf(("Drag", "Draw over %d, %d, %d, %d\n",box.xmin,box.ymin,box.xmax,box.ymax));
+
+  _swix(OS_Plot, _INR(0,2), 4,      box.xmin, box.ymin);
+  _swix(OS_Plot, _INR(0,2), 5 | 24, box.xmax, box.ymin);
+  _swix(OS_Plot, _INR(0,2), 5 | 48, box.xmax, box.ymax);
+  _swix(OS_Plot, _INR(0,2), 5 | 48, box.xmin, box.ymax);
+  _swix(OS_Plot, _INR(0,2), 5 | 48, box.xmin, box.ymin);
+
+  return;
+}
+
+/**************************************************************/
+/* dragbox_update_eor_box()                                   */
+/*                                                            */
+/* Plot a dotted rubber box using EOR. Does its own update    */
+/* redraw loop for the plot.                                  */
+/*                                                            */
+/* Parameters: Window handle that the box is to lie within;   */
+/*                                                            */
+/*             Pointer to a BBox holding the min and max      */
+/*             coords of the BBox (window work area coords,   */
+/*             min values inclusive, max values exclusive).   */
+/**************************************************************/
+
+void dragbox_update_eor_box(int handle, BBox * rect)
+{
+  WimpGetWindowStateBlock s;
+  WimpRedrawWindowBlock   r;
+  int                     more = 0;
+
+  s.window_handle = handle;
+  if (wimp_get_window_state(&s)) return;
+
+  /* Convert the given work area rectangle to screen coords */
+  /* for redrawing                                          */
+
+  r.window_handle = s.window_handle;
+  r.visible_area  = *rect;
+  r.xscroll       = s.xscroll;
+  r.yscroll       = s.yscroll;
+
+//  coords_box_toworkarea(&r.visible_area, (WimpRedrawWindowBlock *) &s);
+
+  /* Start the update */
+
+  wimp_update_window(&r, &more);
+
+  /* Do the redraw */
+
+  while (more)
+  {
+    dprintf(("Drag", "Plot EOR\n"));
+
+    dragbox_plot_eor_box(&r, rect);
+
+    wimp_get_rectangle(&r, &more);
+  }
+
+  return;
+}
+
+/**************************************************************/
+/* dragbox_start_rotate_box()                                 */
+/*                                                            */
+/* Call before starting a 'rotate' drag box plot.             */
+/**************************************************************/
+
+void dragbox_start_rotate_box(void)
+{
+  pattern = pattern2;
+
+  return;
+}
+
+/**************************************************************/
+/* dragbox_end_rotate_box()                                   */
+/*                                                            */
+/* Call after completing a 'rotate' drag box plot.            */
+/**************************************************************/
+
+void dragbox_end_rotate_box(void)
+{
+  pattern = pattern1;
+
+  dragbox_cycle_pattern();
+
+  return;
+}
+
+
+
+void dragbox_draw_box(void)
+{
+  dprintf(("Drag", "Draw\n"));
+}
+
+void dragbox_remove_box(void)
+{
+  dprintf(("Drag", "Remove\n"));
+}
+
+void dragbox_move_box(void)
+{
+  dprintf(("Drag", "Move\n"));
+}
+@
+
+
+1.3
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a40 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+d150 1
+a150 3
+  #ifdef TRACE
+    if (tl & (1u<<27)) Printf("Set dotdash\n");
+  #endif
+d156 1
+a156 3
+  #ifdef TRACE
+    if (tl & (1u<<27)) Printf("Set colour\n");
+  #endif
+d160 1
+a160 3
+  #ifdef TRACE
+    if (tl & (1u<<27)) Printf("Draw over %d, %d, %d, %d\n",box.xmin,box.ymin,box.xmax,box.ymax);
+  #endif
+d211 1
+a211 3
+    #ifdef TRACE
+      if (tl & (1u<<27)) Printf("Plot EOR\n");
+    #endif
+d253 1
+a253 3
+  #ifdef TRACE
+    if (tl & (1u<<27)) Printf("Draw\n");
+  #endif
+d258 1
+a258 3
+  #ifdef TRACE
+    if (tl & (1u<<27)) Printf("Remove\n");
+  #endif
+d263 1
+a263 3
+  #ifdef TRACE
+    if (tl & (1u<<27)) Printf("Move\n");
+  #endif
+@
+
+
+1.2
+log
+@There are a few known significant problems with this code but it's being
+checked in so the Choices can be worked on. Note that Res files etc. are
+not up to date across all builds. Progress is as follows...
+
+Bug report prompted me to do this - now ignore <p> tags straight after
+<li> tags, so '<ul><li><p>Some text' works as the author (or automatic
+generator, more commonly) intended.
+
+A <p> tag before a table will be acted upon now (it was ignored before).
+Something like <li><p><table...> will give a line break and paragraph
+space after the <li> despite the changes mentioned above, as in other browsers.
+Both browsers differ from Navigator, where the table appears alongside
+the <li> tag.
+
+Multiple BR tags work as in MSIE / Navigator (they don't collapse to
+zero height anymore).
+
+For the above, line height (and so, <br><br> or <p> spacing) is now
+calculated inside reformat_text_line_height, and is used with either
+a token to get the text height at a given size (e.g. for general line
+spacing or multiple BR tags) or NULL for normal size text (e.g. for
+P spacing, though this value is in practice later scaled by 7/8ths in
+reformat_check_height). Note this behaviour is exhibited by MSIE 4;
+v3 gave two BRs the same spacing as one P (i.e. not font size
+dependent).
+
+Save dialogues can have an option button or couple of radios to
+switch between various formats (e.g. URI or URL, sprite or original
+format). See 'Docs.Notes' for more. The back-end to this is now
+implemented (i.e. at the moment, save as URI or URL, save as original
+image format). Note that when saving background images, a leafname
+based on the original fetch URL is now offered rather than a generic
+'Background'.
+
+Internal URL scheme changed to be all lower case, so relativisation
+through URL_Fetcher still makes sense... :-/
+
+Holding down 'shift' when clicking on stop reverses the interpretation
+of the Controls file 'StopWebServe' entry.
+
+Fixed row / column count for exporting tables as text; fixed a few
+bits and pieces of internal URL scheme stuff which got broken when
+HTMLLib started using URL_Fetcher's relativisation.
+@
+text
+@d15 15
+a29 12
+/***************************************************/
+/* File   : DragBox.c                              */
+/*                                                 */
+/* Purpose: Plot user drag boxes for such things   */
+/*          as non-solid frame resizes (where the  */
+/*          'box' shape could be very irregular).  */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 26-Aug-97: Created, based on the ResEd */
+/*                     'Common.c.wimp' code.       */
+/***************************************************/
+d34 2
+a35 1
+#include "swis.h"
+d37 8
+a44 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a45 1
+#include "svcprint.h"
+d73 9
+a81 10
+/*************************************************/
+/* dragbox_set_dotdash()                         */
+/*                                               */
+/* Sets the dot-dash pattern according to the    */
+/* given eight bytes, or a default one.          */
+/*                                               */
+/* Parameters: Pointer to an 8 char long array   */
+/*             chars, or NULL for a default      */
+/*             pattern.                          */
+/*************************************************/
+d101 5
+a105 6
+/*************************************************/
+/* dragbox_cycle_pattern()                       */
+/*                                               */
+/* Cycle the dot-dash pattern for a 'rotating'   */
+/* drag box.                                     */
+/*************************************************/
+d126 13
+a138 15
+/*************************************************/
+/* dragbox_plot_eor_box()                        */
+/*                                               */
+/* Plot a dotted rubber box using EOR. Should    */
+/* only be used during a redraw loop.            */
+/*                                               */
+/* Parameters: A WimpRedrawWindowBlock pointer   */
+/*             relevant to the redraw session;   */
+/*                                               */
+/*             Pointer to a BBox holding the     */
+/*             min and max coords of the BBox    */
+/*             (window work area coords, min     */
+/*             values inclusive, max values      */
+/*             exclusive).                       */
+/*************************************************/
+d182 12
+a193 15
+/*************************************************/
+/* dragbox_update_eor_box()                      */
+/*                                               */
+/* Plot a dotted rubber box using EOR. Does its  */
+/* own update redraw loop for the plot.          */
+/*                                               */
+/* Parameters: Window handle that the box is to  */
+/*             lie within;                       */
+/*                                               */
+/*             Pointer to a BBox holding the     */
+/*             min and max coords of the BBox    */
+/*             (window work area coords, min     */
+/*             values inclusive, max values      */
+/*             exclusive).                       */
+/*************************************************/
+d234 5
+a238 6
+/*************************************************/
+/* dragbox_start_rotate_box()                    */
+/*                                               */
+/* Call before starting a 'rotate' drag box      */
+/* plot.                                         */
+/*************************************************/
+d247 5
+a251 6
+/*************************************************/
+/* dragbox_end_rotate_box()                      */
+/*                                               */
+/* Call after completing a 'rotate' drag box     */
+/* plot.                                         */
+/*************************************************/
+@
+
+
+1.1
+log
+@Very long log entry alert - but hey, beats 'Bug fixed' (sorry, Richard) ;-)
+
+Open URL implementation more or less complete, though may undergo UI
+revision at a later date to allow named frames to be targetted. Hope to use
+the ideas in this code as the foundation for other general dialogues.
+
+In token stream dump for TRACE builds, table head items were not indented
+as far as they should have been - this is fixed; and manual toolbar redraw
+routines have been removed. They never worked, were commented out, and
+would never be used in that form anyway.
+
+DragBox source added, but it isn't at all complete and won't work - this is
+an 'in spare time' thing. We need custom drag boxes constrained to windows
+for the hotlist, and unconstrained for frame border resizing... Hey ho.
+
+Ancestor window extents match visible areas if there are frames (no more
+scrolling framesets...!). Frame resizing works whilst new documents fetch
+without pulling the extent down now. However, frame horizontal extents
+never shrink until a reload which is nasty, and this is all due for a
+rewrite. Frames border redrawing routine moved out of Redraw.c and into
+Frames.c. Bug regarding the mouse rectangle and frame border widths
+(rectangle was too large, so you could squash the edges) for edge-drag
+frame resizes fixed.
+
+Window width change reformat tolerance fixed; you could creep the window
+width down or up forever without any reformat, and centred objects would
+move but not be redrawn (thereby giving rise to subsequent redraw errors).
+
+Filetype on objects saved through Shift+Click correct. Save Source dialogue
+recognises if that source is plain text, rather than assuming HTML. A
+browser that fetches a file remembers the old store size it had before the
+save, so even though the data is now ditched, it reports the same amount of
+data fetched afterwards (looked awful when this could, for example,
+suddenly say '0' after a file save). Progress indicator is now fully aware
+of one or many file saves inside a frameset and reports the number of
+saves, a colon, and the cumulative saved data count, instead of reporting
+the sum total of fetched data in all frames, including non-file save stuff
+(note that for just 1 save, '1:' is not shown as a special case for the
+most common condition). A bug related to this, where you could in fact only
+do one fetch per frame*set*, has been corrected (only one fetch allowed per
+frame still, this is unlikely to ever change).
+
+Hotlist support added (D.Brown's source), with various bits of integration
+and modification still in progress there. Note additions to the Messages
+files. On the subject of Messages, the whole mucky business about what
+goes in Messages or Choices (and a few bugs where lookup_choice was used
+instead of lookup_token or vice versa) has been sorted out. Messages
+contains, more or less, just that. Choices contains user configurable
+stuff which generally can't mess things up too badly. A new file, Controls,
+is a Messages file holding the non-user configurable choices, which can
+generally make things go badly wrong if misused. A lot of these are tied
+to the Res file. StrongED users can get these to automatically fold out
+the various sections (EMail me for details). Sorry, but at the time of
+writing, Zap doesn't do folding... =8*P
+
+Two bugs with images. Asking for images to be shown in browser B when
+browser A uses the same ones and was loaded first didn't work correctly,
+and now does (a bit weird - browser A does the fetch and browser B does the
+display...). Second one occurred when the background image was also used on
+the page as a foreground image. This has been fixed by flagging background
+images in the image_info structure, and checking this before cross
+referencing. This bit also allowed the image_restart_fetches API to be
+extended, so that just background or foreground images may be fetched if
+they weren't already and the user asked the browser to show them. Before,
+the whole lot had to be fetched together (so turning on 'display
+backgrounds' will now kick off an image fetch if required, you don't
+need to reload the page anymore).
+
+Makefile copy options tweaked to be 'newer' (so if you're testing with some
+temporary Choices file or something, it won't write over it at the end of
+every export), and REMOTE_HOTLIST flag added for Customer builds - means
+the Hotlist.c functions aren't needed; the old, hotlist-by-file method is
+used. Added support for Customer build (see later), though there were very
+few additions needed in practice.
+
+Table printing fixed - in many ways it wasn't broken, it was image printing
+causing the oddities ever since the global image pool was introduced (this
+is, again, fixed). The 'reformat to fit page' option didn't work as coded
+any more; tables store cell addresses in the HStreams, so you can't then do
+a background reformat in a different browser. Hence, it now has to reformat
+to the page width, print, then put the page back again, all in the actual
+displayed browser. This doesn't feel as slow in use as it perhaps should,
+considering what is going on... Note that a line of a defined fraction (see
+Print.h) of page height will now split over page boundaries, so tall images
+or tall tables don't cause problems now (aside from the obvious problem of
+having the line split over a page at all!). There was a bug in the routine
+to print from a given start point until 'n' pages had been filled, in that
+it always filled 'n + 1' - now fixed. Finally, as part of the printing
+tweaks, a new dialogue exists - PrintStyle - with a similarly named source
+file added to deal with it.
+
+Global history auto save / load done, but only to the Choices file path -
+the whole browser is still strictly single user at present, with all the
+extra work for a multiuser Customer environment yet to be done. This has
+shown up a global history corruption problem which I haven't fixed yet.
+
+Rationalising TBEvents.h - things are migrating out of it, and into more
+appropriate sources (e.g. definitions relating to the Open URL dialogue are
+going into OpenURL.h, etc.). Event codes were at one stage deliberately
+diverged in numberspace from the component IDs of typical gadgets raising
+the events, to avoid anyone getting confused and thinking the IDs and event
+codes must match. However, this is in fact unlikely and it is much easier
+to remember the fewer numbers that result from tying the two together where
+possible. This has resulted in changes to event codes raised in the
+following objects of all Res files: Authorise, Find, OpenURL, and
+PrintStyle.
+
+And finally - !Run[D] files for all variants updated to require the latest
+toolbox and fetcher modules. All Res files updated for hotlists etc. and
+sprites files updated appropriately. All Messages, Choices and Controls
+files brought in sync., and an Customer build has been added (based on the
+Desktop build binary with different resources).
+
+That's all for now...
+@
+text
+@a77 2
+  _kernel_oserror * e;
+
+@

@@ -1,0 +1,1302 @@
+head	1.5;
+access;
+symbols
+	Browse-2_16:1.5
+	Browse-2_15:1.5
+	Browse-2_14:1.5
+	Browse-2_13:1.5
+	Browse-2_12:1.5
+	Browse-2_11:1.5
+	Browse-2_10:1.5
+	Browse-2_09:1.5
+	ahodgkin_208_i4_2:1.5
+	ahodgkin_208_i4:1.3
+	ahodgkin_208_i3:1.3
+	ahodgkin_208_i2:1.3
+	ahodgkin_208_i1:1.3
+	ahodgkin_207release:1.3
+	ahodgkin_206release:1.3
+	ahodgkin_205release:1.2
+	ahodgkin_204release:1.2;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2000.11.14.08.45.06;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.05.31.15.58.41;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.07.09.10.27.15;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.04.16.08.14.17;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.03.26.14.26.40;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    Markers.c                                         */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Remember what's at the top of the visible area in */
+/*          a browser window and possibly jump back there     */
+/*          later on.                                         */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 24-Mar-1998 (ADH): Created.                       */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <HTMLLib/HTMLLib.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+#include <tboxlibs/gadgets.h>
+
+#include "ToolAction.h" /* Local copy that doesn't use OSLib */
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "Browser.h"
+#include "MiscEvents.h"
+#include "Toolbars.h"
+#include "Windows.h"
+
+#include "Markers.h"
+
+/* Local statics */
+
+static browser_data * mark_b [Limits_Markers];
+static HStream      * mark_t [Limits_Markers];
+static int            mark_o [Limits_Markers];
+static int            mark_y [Limits_Markers];
+
+/* Static function prototypes */
+
+static _kernel_oserror * markers_change_to_clear       (int marker);
+static _kernel_oserror * markers_change_to_jump        (ObjectId t, int marker);
+static _kernel_oserror * markers_change_to_jump_remote (ObjectId t, int marker);
+
+/**************************************************************/
+/* markers_init()                                             */
+/*                                                            */
+/* Initialise the markers system. Should be called before all */
+/* other markers functions.                                   */
+/**************************************************************/
+
+void markers_init(void)
+{
+  int i;
+
+  for (i = 0; i < Limits_Markers; i++)
+  {
+    mark_b[i] = NULL;
+    mark_t[i] = NULL;
+    mark_o[i] = 0;
+    mark_y[i] = 0;
+  }
+
+  return;
+}
+
+/**************************************************************/
+/* markers_init_front_end()                                   */
+/*                                                            */
+/* Ensures the front-end for a given browser is up to date    */
+/* initially. This is intended to be called when a new window */
+/* is created. Any marker buttons in the button bar which     */
+/* will jump to markers are affected, within the range of     */
+/* Limits_Markers (see Limits.h and Toolbars.h).              */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the marker buttons to initialise.              */
+/**************************************************************/
+
+void markers_init_front_end(browser_data * b)
+{
+  int      i;
+  ObjectId t;
+
+  t = toolbars_get_upper(b);
+
+  /* If we can find the button bar, proceed */
+
+  if (t)
+  {
+    for (
+          i = 0;
+          i < Limits_Markers && ButtonBarMarkerBase + i <= ButtonBarMarkerLimit;
+          i++
+        )
+    {
+      if (mark_b[i] && utils_ancestor(mark_b[i]) != utils_ancestor(b)) markers_change_to_jump_remote (t, i);
+      else if (mark_b[i])                                              markers_change_to_jump        (t, i);
+      else                                                             markers_change_to_clear       (i);
+    }
+  }
+
+  return;
+}
+
+/**************************************************************/
+/* markers_change_to_clear()                                  */
+/*                                                            */
+/* Change the appropriate gadget in all toolbars to indicate  */
+/* a marker is clear.                                         */
+/*                                                            */
+/* Parameters: Marker number, from 0 to Limits_Markers - 1.   */
+/**************************************************************/
+
+static _kernel_oserror * markers_change_to_clear(int marker)
+{
+  browser_data * b = last_browser;
+
+  while (b)
+  {
+    if (!b->ancestor)
+    {
+      ObjectId this_t = toolbars_get_upper(b);
+
+      if (this_t)
+      {
+        /* Set the off ident string */
+
+        _swix(Toolbox_ObjectMiscOp,
+              _INR(0,4),
+
+              toolaction_SET_IDENT_OFF,
+              this_t,
+              ToolAction_SetIdent,
+              ButtonBarMarkerBase + marker,
+              "altsetref,daltsetref");
+
+        /* Set the state to 'off' */
+
+        _swix(Toolbox_ObjectMiscOp,
+              _INR(0,4),
+
+              0,
+              this_t,
+              ToolAction_SetState,
+              ButtonBarMarkerBase + marker,
+              0);
+      }
+    }
+
+    b = b->previous;
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_change_to_jump()                                   */
+/*                                                            */
+/* Change the appropriate gadget in the given toolbar to      */
+/* indicate the gadget will jump to a marker rather than      */
+/* setting it. Set the corresponding gadgets in all other     */
+/* toolbars to show they'll jump to a different browser.      */
+/*                                                            */
+/* Parameters: Object ID the gadget lies in;                  */
+/*                                                            */
+/*             Marker number, from 0 to Limits_Markers - 1.   */
+/**************************************************************/
+
+static _kernel_oserror * markers_change_to_jump(ObjectId t, int marker)
+{
+  browser_data * b = last_browser;
+
+  t = t;
+
+  while (b)
+  {
+    if (!b->ancestor)
+    {
+      ObjectId this_t = toolbars_get_upper(b);
+
+      if (this_t == t)
+      {
+        /* Set the state to 'on' */
+
+        _swix(Toolbox_ObjectMiscOp,
+              _INR(0,4),
+
+              0,
+              this_t,
+              ToolAction_SetState,
+              ButtonBarMarkerBase + marker,
+              1);
+      }
+      else
+      {
+        markers_change_to_jump_remote(this_t, marker);
+      }
+    }
+
+    b = b->previous;
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_change_to_jump_remote()                            */
+/*                                                            */
+/* Change the appropriate gadget in the given toolbar to      */
+/* indicate the gadget will jump to a marker in a different   */
+/* browser.                                                   */
+/*                                                            */
+/* Parameters: Object ID the gadget lies in;                  */
+/*                                                            */
+/*             Marker number, from 0 to Limits_Markers - 1.   */
+/**************************************************************/
+
+static _kernel_oserror * markers_change_to_jump_remote(ObjectId t, int marker)
+{
+  /* Set the off ident string */
+
+  _swix(Toolbox_ObjectMiscOp,
+        _INR(0,4),
+
+        toolaction_SET_IDENT_OFF,
+        t,
+        ToolAction_SetIdent,
+        ButtonBarMarkerBase + marker,
+        "goremref,dgoremref");
+
+  /* Set the state to 'off' */
+
+  _swix(Toolbox_ObjectMiscOp,
+        _INR(0,4),
+
+        0,
+        t,
+        ToolAction_SetState,
+        ButtonBarMarkerBase + marker,
+        0);
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_set_marker()                                       */
+/*                                                            */
+/* Set a given marker for a given browser. If the same marker */
+/* is set twice it is cleared instead.                        */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct for which the */
+/*             marker is to be set;                           */
+/*                                                            */
+/*             Marker number, from 0 to Limits_Markers - 1.   */
+/*                                                            */
+/* Assumes:    The browser_data pointer and marker number are */
+/*             valid.                                         */
+/**************************************************************/
+
+_kernel_oserror * markers_set_marker(browser_data * b, int marker)
+{
+  int       set   = 1;
+
+  HStream * top_t = NULL;
+  int       top_o = 0;
+  int       top_y = 0;
+
+  /* Find what is at the top of the window */
+
+  {
+    WimpGetWindowStateBlock   state;
+    reformat_cell           * cell;
+    int                       line;
+
+    state.window_handle = b->window_handle;
+    RetError(wimp_get_window_state(&state));
+
+    /* Note in the call that the last parameter specifies the line must be wholly */
+    /* visible - Don't want to get, say, bits of tall images next to a paragraph  */
+    /* of text in a table.                                                        */
+
+    line = browser_top_line_offset(b,
+                                   &cell,
+                                   &top_y,
+                                   &state);
+
+    if (!cell || line < 0) top_t = NULL;
+    else
+    {
+      int chunk;
+
+      if (line > cell->nlines) top_t = NULL;
+      else
+      {
+        chunk = cell->ldata[line].chunks;
+
+        if (chunk < 0) top_t = NULL;
+        else
+        {
+          top_t = cell->cdata[chunk].t;
+          top_o = cell->cdata[chunk].o;
+        }
+      }
+    }
+  }
+
+  /* If we couldn't find anything, exit */
+
+  if (!top_t)
+  {
+    Beep; /* See Utils.h */
+
+    return NULL;
+  }
+
+  /* Is this marker already set? */
+
+  if (mark_b[marker])
+  {
+    /* Is it already set to these values? */
+
+    if (
+         mark_b[marker] == b     &&
+         mark_t[marker] == top_t &&
+         mark_o[marker] == top_o &&
+         mark_y[marker] == top_y
+       )
+    {
+      RetError(markers_clear_marker(marker));
+
+      set = 0; /* Don't set the same details again! */
+    }
+  }
+
+  /* Set the marker, if flagged to do so */
+
+  if (set)
+  {
+    ObjectId t;
+
+    mark_b[marker] = b;
+    mark_t[marker] = top_t;
+    mark_o[marker] = top_o;
+    mark_y[marker] = top_y;
+
+    t = toolbars_get_upper(utils_ancestor(b));
+    if (t) RetError(markers_change_to_jump(t, marker));
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_remember_position()                                */
+/*                                                            */
+/* Remembers the token and offset of the left hand chunk in   */
+/* the topmost line of the visible area of the given browser  */
+/* window and stores in in the browser's display_request,     */
+/* display_offset and display_vscroll fields so that if e.g.  */
+/* reformatting, the page will try and jump back to that      */
+/* position.                                                  */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct for which the */
+/*             position is to be remembered.                  */
+/*                                                            */
+/* Assumes:    The browser_data pointer is valid.             */
+/**************************************************************/
+
+_kernel_oserror * markers_remember_position(browser_data * b)
+{
+  HStream * top_t = NULL;
+  int       top_o = 0;
+  int       top_y = 0;
+
+  /* Clear the fields to start with */
+
+  b->display_request = NULL;
+  b->display_offset  = 0;
+  b->display_vscroll = 0;
+
+  /* Find what is at the top of the window */
+
+  {
+    WimpGetWindowStateBlock   state;
+    reformat_cell           * cell;
+    int                       line;
+
+    state.window_handle = b->window_handle;
+    RetError(wimp_get_window_state(&state));
+
+    /* Note in the call that the last parameter specifies the line must be wholly */
+    /* visible - Don't want to get, say, bits of tall images next to a paragraph  */
+    /* of text in a table.                                                        */
+
+    line = browser_top_line_offset(b,
+                                   &cell,
+                                   &top_y,
+                                   &state);
+
+    if (!cell || line < 0) top_t = NULL;
+    else
+    {
+      int chunk;
+
+      if (line > cell->nlines) top_t = NULL;
+      else
+      {
+        chunk = cell->ldata[line].chunks;
+
+        if (chunk < 0) top_t = NULL;
+        else
+        {
+          top_t = cell->cdata[chunk].t;
+          top_o = cell->cdata[chunk].o;
+        }
+      }
+    }
+  }
+
+  /* If we couldn't find anything, exit */
+
+  if (!top_t) return NULL;
+
+  /* Store the position */
+
+  b->display_request = top_t;
+  b->display_offset  = top_o;
+  b->display_vscroll = top_y;
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_forget_position()                                  */
+/*                                                            */
+/* Forget a position remembered using                         */
+/* markers_remembr_position().                                */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct for which the */
+/*             position is to be forgotten.                   */
+/*                                                            */
+/* Assumes:    The browser_data pointer is valid.             */
+/**************************************************************/
+
+void markers_forget_position(browser_data * b)
+{
+  b->display_request = NULL;
+  b->display_offset  = 0;
+  b->display_vscroll = 0;
+}
+
+/**************************************************************/
+/* markers_set()                                              */
+/*                                                            */
+/* Find out whether a not a marker is set.                    */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct for which the */
+/*             marker should be set, or NULL if you're not    */
+/*             interested in this;                            */
+/*                                                            */
+/*             Marker number, from 0 to Limits_Markers - 1.   */
+/*                                                            */
+/* Returns:    1 if the marker is set for the given browser   */
+/*             (or, if NULL is passed in the first parameter, */
+/*             1 if the marker is set at all). If a browser   */
+/*             is given and the marker is set but not for     */
+/*             that browser, 0 is returned. If the marker is  */
+/*             not set at all, 0 is always returned.          */
+/*                                                            */
+/* Assumes:    The marker number is valid.                    */
+/**************************************************************/
+
+int markers_set(browser_data * b, int marker)
+{
+  /* First case - NULL passed; any browser will do */
+
+  if (!b && mark_b[marker]) return 1;
+
+  /* Second case - non-NULL passed; browser must match */
+
+  if (mark_b[marker] && mark_b[marker] == b) return 1;
+
+  /* No match, return zero */
+
+  return 0;
+}
+
+/**************************************************************/
+/* markers_jump_to_marker()                                   */
+/*                                                            */
+/* If the given marker is set, the browser window it relates  */
+/* to is brought to the front, given the input focus if it    */
+/* doesn't have it already, and scrolled to the relevant      */
+/* position.                                                  */
+/*                                                            */
+/* Parameters: Pointer to a browser_data * b which is used as */
+/*             a hint only as to the window in which the      */
+/*             activated marker gadget, menu item or keyboard */
+/*             shortcut lies;                                 */
+/*                                                            */
+/*             Marker number, from 0 to Limits_Markers - 1.   */
+/*                                                            */
+/* Assumes:    The marker number is valid.                    */
+/**************************************************************/
+
+_kernel_oserror * markers_jump_to_marker(browser_data * b, int marker)
+{
+  browser_data * ancestor;
+
+  /* Is marker unset or invalid? If so, beep and exit */
+
+  if (!mark_b[marker])
+  {
+    Beep;
+
+    return NULL;
+  }
+
+  if (!is_known_browser(mark_b[marker]))
+  {
+    mark_b[marker] = NULL;
+    mark_t[marker] = NULL;
+    mark_o[marker] = 0;
+    mark_y[marker] = 0;
+
+    Beep;
+
+    return NULL;
+  }
+
+  /* If not in the same window, bring it to the front */
+
+  ancestor = utils_ancestor(mark_b[marker]);
+
+  if (utils_ancestor(b) != ancestor)
+  {
+    WimpGetWindowStateBlock state;
+    ObjectId                po;
+    ComponentId             pc;
+
+    if (!ancestor) ancestor = mark_b[marker];
+
+    /* Get information on the window */
+
+    state.window_handle = ancestor->window_handle;
+
+    RetError(wimp_get_window_state(&state));
+    RetError(toolbox_get_parent(0,
+                                ancestor->self_id,
+                                &po,
+                                &pc));
+
+    /* Bring to the front */
+
+    state.behind = -1;
+
+    RetError(toolbox_show_object(0,
+                                 ancestor->self_id,
+                                 Toolbox_ShowObject_FullSpec,
+                                 &state.visible_area,
+                                 po,
+                                 pc));
+  }
+
+  /* Regardless of whether or not we bring the window to the */
+  /* front, give it the input focus if it doesn't have it.   */
+
+  {
+    WimpGetCaretPositionBlock caret;
+
+    /* Has this browser got the input focus? */
+
+    RetError(wimp_get_caret_position(&caret));
+
+    if (caret.window_handle != ancestor->window_handle)
+    {
+      /* No, so give it the focus now */
+
+      browser_give_general_focus(ancestor);
+    }
+  }
+
+  /* Is there a problem showing the marker? If so, beep. */
+
+  if (
+       !browser_show_token(mark_b[marker],
+                           mark_t[marker],
+                           mark_o[marker],
+                           mark_y[marker])
+     )
+     Beep;
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_clear_marker_if_owned()                            */
+/*                                                            */
+/* Clear a given marker if owned by the given browser.        */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the marker;                                    */
+/*                                                            */
+/*             Marker number, from 0 to Limits_Markers - 1.   */
+/*                                                            */
+/* Assumes:    The marker number is valid.                    */
+/**************************************************************/
+
+_kernel_oserror * markers_clear_marker_if_owned(browser_data * b, int marker)
+{
+  if (b && mark_b[marker] == b)
+  {
+    if (is_known_browser(b))
+    {
+      RetError(markers_change_to_clear(marker));
+    }
+
+    mark_b[marker] = NULL;
+    mark_t[marker] = NULL;
+    mark_o[marker] = 0;
+    mark_y[marker] = 0;
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_clear_marker()                                     */
+/*                                                            */
+/* Clear a given marker.                                      */
+/*                                                            */
+/* Parameters: Marker number, from 0 to Limits_Markers - 1.   */
+/*                                                            */
+/* Assumes:    The marker number is valid.                    */
+/**************************************************************/
+
+_kernel_oserror * markers_clear_marker(int marker)
+{
+  if (mark_b[marker])
+  {
+    if (is_known_browser(mark_b[marker]))
+    {
+      RetError(markers_change_to_clear(marker));
+    }
+
+    mark_b[marker] = NULL;
+    mark_t[marker] = NULL;
+    mark_o[marker] = 0;
+    mark_y[marker] = 0;
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_clear_markers()                                    */
+/*                                                            */
+/* Clear all markers set for a given browser.                 */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct for which the */
+/*             markers are to be cleared.                     */
+/*                                                            */
+/* Assumes:    The browser_data pointer is valid.             */
+/**************************************************************/
+
+_kernel_oserror * markers_clear_markers(browser_data * b)
+{
+  int i;
+
+  for (i = 0; i < Limits_Markers; i++)
+  {
+    if (mark_b[i] && mark_b[i] == b)
+    {
+      RetError(markers_change_to_clear(i));
+
+      mark_b[i] = NULL;
+      mark_t[i] = NULL;
+      mark_o[i] = 0;
+      mark_y[i] = 0;
+    }
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* markers_clear_all()                                        */
+/*                                                            */
+/* Clear all markers.                                         */
+/**************************************************************/
+
+_kernel_oserror * markers_clear_all(void)
+{
+  int i;
+
+  for (i = 0; i < Limits_Markers; i++)
+  {
+    if (is_known_browser(mark_b[i]))
+    {
+      RetError(markers_change_to_clear(i));
+    }
+
+    mark_b[i] = NULL;
+    mark_t[i] = NULL;
+    mark_o[i] = 0;
+    mark_y[i] = 0;
+  }
+
+  return NULL;
+}
+@
+
+
+1.4
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a44 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.3
+log
+@Check-in of Browse v2.06; using very small log file to try and avoid
+CVS crashing. Some of the Resources may well be out of date due to CVS
+locks being in place after earlier server-end core dumps, which I can't
+remove myself.
+
+I'll try and check one file in at the end with the full change log so
+people know what's happened (it's reached about 16K...) - I'll make
+that the TaskObey file '!All' in the top level directory. So for the
+full log, look for the changes on this file.
+@
+text
+@d15 14
+a28 11
+/***************************************************/
+/* File   : Markers.c                              */
+/*                                                 */
+/* Purpose: Remember what's at the top of the      */
+/*          visible area in a browser window and   */
+/*          possibly jump back there later on.     */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 24-Mar-98: Created.                    */
+/***************************************************/
+d33 2
+a34 1
+#include "swis.h"
+d36 1
+a36 1
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+d38 11
+a48 4
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+#include "gadgets.h"
+a49 3
+#include "ToolAction.h" /* NOT the proper Toolbox header, as this needed OSLib... */
+
+#include "svcprint.h"
+d73 6
+a78 6
+/*************************************************/
+/* markers_init()                                */
+/*                                               */
+/* Initialise the markers system. Should be      */
+/* called before all other markers functions.    */
+/*************************************************/
+d95 12
+a106 15
+/*************************************************/
+/* markers_init_front_end()                      */
+/*                                               */
+/* Ensures the front-end for a given browser is  */
+/* up to date initially. This is intended to be  */
+/* called when a new window is created. Any      */
+/* marker buttons in the button bar which will   */
+/* jump to markers are affected, within the      */
+/* range of Limits_Markers (see Limits.h and     */
+/* Toolbars.h).                                  */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the marker buttons to */
+/*             initialise.                       */
+/*************************************************/
+d134 8
+a141 9
+/*************************************************/
+/* markers_change_to_clear()                     */
+/*                                               */
+/* Change the appropriate gadget in all toolbars */
+/* to indicate a marker is clear.                */
+/*                                               */
+/* Parameters: Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*************************************************/
+d185 12
+a196 14
+/*************************************************/
+/* markers_change_to_jump()                      */
+/*                                               */
+/* Change the appropriate gadget in the given    */
+/* toolbar to indicate the gadget will jump to   */
+/* a marker rather than setting it. Set the      */
+/* corresponding gadgets in all other toolbars   */
+/* to show they'll jump to a different browser.  */
+/*                                               */
+/* Parameters: Object ID the gadget lies in;     */
+/*                                               */
+/*             Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*************************************************/
+d235 11
+a245 12
+/*************************************************/
+/* markers_change_to_jump_remote()               */
+/*                                               */
+/* Change the appropriate gadget in the given    */
+/* toolbar to indicate the gadget will jump to   */
+/* a marker in a different browser.              */
+/*                                               */
+/* Parameters: Object ID the gadget lies in;     */
+/*                                               */
+/*             Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*************************************************/
+d274 14
+a287 17
+/*************************************************/
+/* markers_set_marker()                          */
+/*                                               */
+/* Set a given marker for a given browser. If    */
+/* the same marker is set twice it is cleared    */
+/* instead.                                      */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             for which the marker is to be     */
+/*             set;                              */
+/*                                               */
+/*             Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*                                               */
+/* Assumes:    The browser_data pointer and      */
+/*             marker number are valid.          */
+/*************************************************/
+d382 15
+a396 18
+/*************************************************/
+/* markers_remember_position()                   */
+/*                                               */
+/* Remembers the token and offset of the left    */
+/* hand chunk in the topmost line of the visible */
+/* area of the given browser window and stores   */
+/* in in the browser's display_request,          */
+/* display_offset and display_vscroll fields so  */
+/* that if e.g. reformatting, the page will try  */
+/* and jump back to that position.               */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             for which the position is to be   */
+/*             remembered.                       */
+/*                                               */
+/* Assumes:    The browser_data pointer is       */
+/*             valid.                            */
+/*************************************************/
+d462 11
+a472 13
+/*************************************************/
+/* markers_forget_position()                     */
+/*                                               */
+/* Forget a position remembered using            */
+/* markers_remembr_position().                   */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             for which the position is to be   */
+/*             forgotten.                        */
+/*                                               */
+/* Assumes:    The browser_data pointer is       */
+/*             valid.                            */
+/*************************************************/
+d481 20
+a500 25
+/*************************************************/
+/* markers_set()                                 */
+/*                                               */
+/* Find out whether a not a marker is set.       */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             for which the marker should be    */
+/*             set, or NULL if you're not        */
+/*             interested in this;               */
+/*                                               */
+/*             Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*                                               */
+/* Returns:    1 if the marker is set for the    */
+/*             given browser (or, if NULL is     */
+/*             passed in the first parameter, 1  */
+/*             if the marker is set at all). If  */
+/*             a browser is given and the marker */
+/*             is set but not for that browser,  */
+/*             0 is returned. If the marker is   */
+/*             not set at all, 0 is always       */
+/*             returned.                         */
+/*                                               */
+/* Assumes:    The marker number is valid.       */
+/*************************************************/
+d517 17
+a533 20
+/*************************************************/
+/* markers_jump_to_marker()                      */
+/*                                               */
+/* If the given marker is set, the browser       */
+/* window it relates to is brought to the front, */
+/* given the input focus if it doesn't have it   */
+/* already, and scrolled to the relevant         */
+/* position.                                     */
+/*                                               */
+/* Parameters: Pointer to a browser_data * b     */
+/*             which is used as a hint only as   */
+/*             to the window in which the        */
+/*             activated marker gadget, menu     */
+/*             item or keyboard shortcut lies;   */
+/*                                               */
+/*             Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*                                               */
+/* Assumes:    The marker number is valid.       */
+/*************************************************/
+d625 12
+a636 14
+/*************************************************/
+/* markers_clear_marker_if_owned()               */
+/*                                               */
+/* Clear a given marker if owned by the given    */
+/* browser.                                      */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the marker;           */
+/*                                               */
+/*             Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*                                               */
+/* Assumes:    The marker number is valid.       */
+/*************************************************/
+d656 9
+a664 10
+/*************************************************/
+/* markers_clear_marker()                        */
+/*                                               */
+/* Clear a given marker.                         */
+/*                                               */
+/* Parameters: Marker number, from 0 to          */
+/*             Limits_Markers - 1.               */
+/*                                               */
+/* Assumes:    The marker number is valid.       */
+/*************************************************/
+d684 10
+a693 12
+/*************************************************/
+/* markers_clear_markers()                       */
+/*                                               */
+/* Clear all markers set for a given browser.    */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             for which the markers are to be   */
+/*             cleared.                          */
+/*                                               */
+/* Assumes:    The browser_data pointer is       */
+/*             valid.                            */
+/*************************************************/
+d715 5
+a719 5
+/*************************************************/
+/* markers_clear_all()                           */
+/*                                               */
+/* Clear all markers.                            */
+/*************************************************/
+@
+
+
+1.2
+log
+@All !Run[D], Choices, Messages, Controls and Res files are up to date.
+
+RefoKeep and RefoHold options added to, respectively, try and maintain
+the line at the top of the visible area when reformatting, and not shrink
+the vertical extent at the start of a reformat to try and avoid flicker
+to the top of the page and back down again when RefoKeep is on. Choices
+front-end implemented, which also allows RefoWait and RefoTime to be set.
+Unfortunately for various reasons this doesn't help the page jumping when
+unsized images come in (but RefoHold can improve matters...) - roll on
+the image history.
+
+DragToScroll and NoScrollBars options added for frames; included new
+pointer type, Mouse_Shape_DTS, so relevant Controls file entries done
+and Sprites[22] files updated as required. Noticed some builds have
+a low-res ptr_link with a mask - mask removed.
+
+Named anchor following fixed up somewhat - anchors near the bottom of
+the page shouldn't be displayed, and then pulled down when the fetcher
+releases null polls and ensures the y extent is correct (this through
+implementing the min_height field in the browser_data structure).
+
+RefoHang was never implemented and there seems little point to it now,
+so the entry for it has been removed from the global choices structure
+and all Choices files.
+
+Markers menus should work properly now (in last check-in they would not
+update correctly if Adjust was used on the entries).
+
+URI handler usage now a lot more sensible, with configuration of how the
+browser uses the module from both a Utils menu submenu (sic) and the
+Choices dialogue.
+
+Slightly dodgy 'hang around waiting for user input' stuff for the Cookies
+dialogue box: All fetches are suspended; the fetcher remembers some info
+about its state at the time the cookie came in, and restores it later; it
+will only do this for one fetch at a time. It's necessary to single-thread
+the fetcher at this point anyway, since other fetches may have a
+dependency on the cookie that is hanging in mid-air at that point. As part
+of this, some of the fetcher code has been split out into separate
+functions (to try and 'black box' the code a bit). Anyway, Cookie Query
+dialogue box now implemented with appropriate Choices file entry and
+UI work in the Choices dialogue box.
+
+Phoenix build Choices rearranged. Can now choose when the image history
+is saved from the front end. Added also MSIE 4-style table option menu
+for JPEG support (OS only, OS if it can handle it, internal only).
+
+Should be a bit faster at loading the history - though 95% of the time
+is spent in SWI URL_ParseURL. URL descriptions are stored more
+efficiently as part of this - one malloc block instead of several
+small blocks. The minimum block size for malloc blocks typically leads
+to a significantly smaller startup wimpslot depending on the visit
+history size.
+
+Nasty bug in image system fixed. If an image size came in and a reformat
+was to take place, the line the image lies in is found and the reformat
+progresses from there. Unforunately, this didn't check to see if the
+token can't be found in the line list, so it'd reformat from the top
+of the page...! This would happen if, for example, an image halfway down
+the page came in whilst a reformat for an image higher up had just begun.
+
+In Choices.c, made choices_set_timetype_field, choices_set_uri_field,
+choices_set_plugin_field, choices_set_cookie_field, and
+choices_set_jpeg_field static (so they're not declared in Choices.h now).
+
+Two memory leaks plugged in URL comparison routines in URLutils.c
+(calling free() url_description instead of urlutils_free_descripton()).
+
+Client pull reload handler was setting the reload flag if reloading
+the same page, but forgetting to turn on reload_lock so
+fetchpage_postprocessed was clearing the reload state... Similarly,
+Ctrl+Shift+SELECT-Click on a link when the Controls file 'UseSmall'
+entry is 'no' would not have reloaded as it should. Both fixed.
+
+Frames shouldn't be so keen on acquiring horizontal scroll bars and never
+letting them go when their width is decreased now. Frames set up for
+'scrolling="yes"' will not start with no scroll bars and then gain them
+shortly afterwards, causing flicker and two reformats - they'll start
+with, and continue to hold, both scroll bars.
+
+Pointer shouldn't flicker when over a frame border whilst other fetches
+are progressing now.
+@
+text
+@d468 21
+@
+
+
+1.1
+log
+@One day, probably far into the future, I'll actually remember to 'cvs add'
+new source files before checking everything in.
+@
+text
+@d61 3
+a63 2
+static _kernel_oserror * markers_change_to_set  (ObjectId t, int marker);
+static _kernel_oserror * markers_change_to_jump (ObjectId t, int marker);
+d88 95
+a182 1
+/* markers_change_to_set()                       */
+d185 4
+a188 2
+/* toolbar to indicate the gadget will set a     */
+/* marker rather than jump to it.                */
+d196 1
+a196 1
+static _kernel_oserror * markers_change_to_set(ObjectId t, int marker)
+d198 16
+a213 1
+  /* Set the state to 'off' */
+d215 11
+a225 2
+  _swix(Toolbox_ObjectMiscOp,
+        _INR(0,4),
+d227 2
+a228 5
+        0,
+        t,
+        ToolAction_SetState,
+        ButtonBarMarkerBase + marker,
+        0);
+d234 1
+a234 1
+/* markers_change_to_jump()                      */
+d238 1
+a238 1
+/* a marker rather than setting it.              */
+d246 1
+a246 1
+static _kernel_oserror * markers_change_to_jump(ObjectId t, int marker)
+d248 12
+a259 1
+  /* Set the state to 'on' */
+d268 1
+a268 1
+        1);
+d307 1
+a307 1
+    ChkError(wimp_get_window_state(&state));
+d351 1
+a351 2
+    /* Yes. If the marker isn't for the same browser, */
+    /* we must clear it before resetting it.          */
+d353 6
+a358 1
+    if (mark_b[marker] != b)
+a360 4
+    }
+
+    /* Otherwise, if the token and offset are the same   */
+    /* now as the set details, clear the marker instead. */
+d362 1
+a362 12
+    else
+    {
+      if (
+           mark_t[marker] == top_t &&
+           mark_o[marker] == top_o &&
+           mark_y[marker] == top_y
+         )
+      {
+        RetError(markers_clear_marker(marker));
+
+        set = 0; /* Don't set the same details again! */
+      }
+d377 1
+a377 1
+    t = toolbars_get_upper(b);
+d385 83
+d531 2
+d556 3
+a558 1
+  if (mark_b[marker] != b)
+d560 3
+a562 5
+    WimpGetWindowStateBlock     state;
+    WimpGetCaretPositionBlock   caret;
+    browser_data              * ancestor = utils_ancestor(mark_b[marker]);
+    ObjectId                    po;
+    ComponentId                 pc;
+d586 7
+d640 1
+a640 4
+      ObjectId t;
+
+      t = toolbars_get_upper(b);
+      if (t) RetError(markers_change_to_set(t, marker));
+d669 1
+a669 4
+      ObjectId t;
+
+      t = toolbars_get_upper(mark_b[marker]);
+      if (t) RetError(markers_change_to_set(t, marker));
+d702 1
+a702 4
+      ObjectId t;
+
+      t = toolbars_get_upper(b);
+      if (t) RetError(markers_change_to_set(t, i));
+d728 1
+a728 4
+      ObjectId t;
+
+      t = toolbars_get_upper(mark_b[i]);
+      if (t) RetError(markers_change_to_set(t, i));
+@

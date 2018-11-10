@@ -1,0 +1,602 @@
+head	1.5;
+access;
+symbols
+	SharedSnd-0_49:1.4
+	bavison_SharedSnd-0_48:1.3
+	SharedSnd-0_48:1.2
+	Spin_merge:1.1.2.2
+	afrost_NC2_Generic:1.1.2.2
+	afrost_Funai01-33:1.1.2.2
+	smiddle_0_43:1.1.2.1
+	Spinner:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2001.06.28.18.11.57;	author bavison;	state dead;
+branches;
+next	1.4;
+
+1.4
+date	2001.01.16.15.28.02;	author bavison;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.01.15.14.04.16;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.11.02.16.36.17;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.11.06.14.18.12;	author smiddle;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	97.11.06.14.18.13;	author smiddle;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	97.11.06.14.44.11;	author smiddle;	state Exp;
+branches;
+next	;
+
+
+desc
+@Files for new SharedSound build
+@
+
+
+1.5
+log
+@  Import of version 1.00 of SharedSound from WSS - this is a merge of
+  RISC OS Ltd, ESP and Pace sources. I've added the Makefile, Mk* and
+  VersionNum files.
+
+Detail (courtesy of WSS):
+  * Incorporates fixes made to 0.58c to fix the callbacks on sound
+    rate changes.
+
+  * Incorporates RISC OS Ltd changes to response to
+    TaskManager_Acknowledgements service.
+
+  * Includes 8 bit Log and PowerWave drivers.
+
+  * Now built with Objasm, not BASIC assembler.
+
+  * SharedSound_HandlerInfo SWI fixed to conform to spec. Also
+    extended to accept r0 = 0 on entry, in which case r0 = number of
+    first registered handler (or 0 for none) on exit; R1-R5 corrupted.
+
+    Therefore the following code enumerates handlers:
+
+    REM Get first handler number.
+    SYS "SharedSound_HandlerInfo",0 TO next% ; flags%
+    REM While no errors, and not finished
+    WHILE (next% <> 0) AND ((flags% AND 1) = 0)
+     SYS"SharedSound_HandlerInfo",next% TO next%,a%,b%,c%,d%,e%
+    ENDWHILE
+
+  * Sends Service_Sound (&54) with reason code 6 (SharedSound Starting)
+    on (callback after) initialisation.
+
+  * Sends Service_Sound (&54) with reason code 7 (SharedSound Dying)
+    on finalisation.
+
+  * Some small optimisations
+
+  * Version bumped to 1.00 (to allow RISC OS Ltd space to make changes
+    to their versions).
+
+  * Table of helpful fill code routines now passed to handlers in R8.
+
+  * SharedSound reinitialises correctly on lower layers reinitialising.
+
+  * More care taken to remove outstanding callbacks on finalise.
+
+  * Dual 26/32 bit version.
+
+Admin:
+  * Not tested by us.
+
+  * 8-bit sound system code is known not to be ROM safe. However, it is
+    currently switched out (see the doLog option in s.Gets).
+
+  * This version *will not work* on a 32-bit system. There are at least two
+    issues with it that I've spotted with a quick glance through the code -
+    the lack of the module flags word, and an unconditional TEQP instruction.
+    This version has been checked in nevertheless as a record of what WSS
+    delivered to us.
+
+Version 1.00. Tagged as 'SharedSnd-1_00'
+@
+text
+@/* Copyright (c) 1995, Expressive Software Projects
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Expressive Software Projects nor the names of its
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+REM >SharedSnd
+REM SharedSound module
+REM
+REM To new spec from 0.12 onwards
+REM 0.46 Uses CBAI if availble
+
+er$="SSnd"
+
+ON ERROR PROCError
+
+doLog%=FALSE
+doCallBack%=TRUE
+doCBAI%=FALSE
+ROMBuild%=TRUE
+
+LIBRARY "<MakeSSnd$Dir>.o.Vars"
+LIBRARY "<MakeSSnd$Dir>.o.Debug"
+LIBRARY "<MakeSSnd$Dir>.o.Drivers"
+LIBRARY "<MakeSSnd$Dir>.o.Handler"
+LIBRARY "<MakeSSnd$Dir>.o.Linear"
+IF doLog% THEN LIBRARY "<MakeSSnd$Dir>.o.Log"
+LIBRARY "<MakeSSnd$Dir>.o.Memory"
+LIBRARY "<MakeSSnd$Dir>.o.Module"
+LIBRARY "<MakeSSnd$Dir>.o.SampleRate"
+LIBRARY "<MakeSSnd$Dir>.o.SWIS"
+LIBRARY "<MakeSSnd$Dir>.o.Volume"
+LIBRARY "<MakeSSnd$Dir>.o.GetVers"
+
+date$=" (05 Nov 1997)"
+version$="0.48"
+copyRight$="© Expressive Software Projects, Nottingham."+date$
+title$="SharedSound"
+swiName$="SharedSound"
+
+REM
+
+PRINT "      Making ";title$;" Module"''
+PRINT "      Version: "version$
+PRINT "      ";copyRight$
+
+
+DIM Code% 15000
+dir$="<MakeSSnd$Dir>."
+debug%=FALSE
+debug1%=TRUE
+
+
+IF ROMBuild% AND doLog% THEN PRINT "Cannot do log in ROM version":STOP
+
+PROCSetStart
+
+PROCAssm
+
+PRINT ''"      Code size: &"STR$~(P%-Code%)
+
+PRINT ''"      Save as: ";dir$+"SSound  (Module)"''
+
+OSCLI("Save "+dir$+"SSound "+STR$~(Code%)+" "+STR$~(P%))
+OSCLI("SETTYPE "+dir$+"SSound MODULE")
+
+
+END
+
+DEFPROCAssm
+
+FOR I%=0 TO 2 STEP 2
+P%=Code%
+
+PROCModule
+PROCSWIS
+PROCMemory
+PROCSampleRate
+PROCVolume
+PROCDrivers
+PROCLinear
+IF doLog% THEN PROCLog
+PROCHandler
+IF NOT ROMBuild% THEN PROCDebug
+
+NEXT
+
+IF doLog% THEN OSCLI("LOAD "+dir$+"LogTable "+STR$~(logTable%))
+
+ENDPROC
+
+
+DEFPROCError
+PRINT "Error from "er$
+REPORT
+PRINT " at line: "STR$(ERL)
+END
+
+@
+
+
+1.4
+log
+@  See Detail.
+Detail:
+  * 32-bit compatible
+  * srccommitted (and gets version number from VersionNum, even though it's
+    written in BASIC)
+  * added install rule and MkInstall file to install module in correct place
+    within an ARMovie installation
+Admin:
+  Not tested.
+
+Version 0.49. Tagged as 'SharedSnd-0_49'
+@
+text
+@@
+
+
+1.3
+log
+@Changed things so that the detokenised BASIC source (in the c directory) has
+no line numbers present (LISTO 8). The detokenised source's raison d'etre is
+to allow easier CVS diffs, but line numbers would defeat this purpose whenever
+the change involves inserting more than a handful of line numbers.
+
+No other changes - this version is committed and tagged purely as a reference
+point for future updates. Tag used is 'bavison_SharedSnd-0_48'.
+@
+text
+@d52 1
+@
+
+
+1.2
+log
+@Spinner branch merged
+@
+text
+@d26 91
+a116 91
+   10REM >SharedSnd
+   20REM SharedSound module
+   30REM
+   40REM To new spec from 0.12 onwards
+   50REM 0.46 Uses CBAI if availble
+   60
+   70er$="SSnd"
+   80
+   90ON ERROR PROCError
+  100
+  110doLog%=FALSE
+  120doCallBack%=TRUE
+  130doCBAI%=FALSE
+  140ROMBuild%=TRUE
+  150
+  160LIBRARY "<MakeSSnd$Dir>.o.Vars"
+  170LIBRARY "<MakeSSnd$Dir>.o.Debug"
+  180LIBRARY "<MakeSSnd$Dir>.o.Drivers"
+  190LIBRARY "<MakeSSnd$Dir>.o.Handler"
+  200LIBRARY "<MakeSSnd$Dir>.o.Linear"
+  210IF doLog% THEN LIBRARY "<MakeSSnd$Dir>.o.Log"
+  220LIBRARY "<MakeSSnd$Dir>.o.Memory"
+  230LIBRARY "<MakeSSnd$Dir>.o.Module"
+  240LIBRARY "<MakeSSnd$Dir>.o.SampleRate"
+  250LIBRARY "<MakeSSnd$Dir>.o.SWIS"
+  260LIBRARY "<MakeSSnd$Dir>.o.Volume"
+  270
+  280date$=" (05 Nov 1997)"
+  290version$="0.48"
+  300copyRight$="© Expressive Software Projects, Nottingham."+date$
+  310title$="SharedSound"
+  320swiName$="SharedSound"
+  330
+  340REM
+  350
+  360PRINT "      Making ";title$;" Module"''
+  370PRINT "      Version: "version$
+  380PRINT "      ";copyRight$
+  390
+  400
+  410DIM Code% 15000
+  420dir$="<MakeSSnd$Dir>."
+  430debug%=FALSE
+  440debug1%=TRUE
+  450
+  460
+  470IF ROMBuild% AND doLog% THEN PRINT "Cannot do log in ROM version":STOP
+  480
+  490PROCSetStart
+  500
+  510PROCAssm
+  520
+  530PRINT ''"      Code size: &"STR$~(P%-Code%)
+  540
+  550PRINT ''"      Save as: ";dir$+"SSound  (Module)"''
+  560
+  570OSCLI("Save "+dir$+"SSound "+STR$~(Code%)+" "+STR$~(P%))
+  580OSCLI("SETTYPE "+dir$+"SSound MODULE")
+  590
+  600
+  610END
+  620
+  630DEFPROCAssm
+  640
+  650FOR I%=0 TO 2 STEP 2
+  660P%=Code%
+  670
+  680PROCModule
+  690PROCSWIS
+  700PROCMemory
+  710PROCSampleRate
+  720PROCVolume
+  730PROCDrivers
+  740PROCLinear
+  750IF doLog% THEN PROCLog
+  760PROCHandler
+  770IF NOT ROMBuild% THEN PROCDebug
+  780
+  790NEXT
+  800
+  810IF doLog% THEN OSCLI("LOAD "+dir$+"LogTable "+STR$~(logTable%))
+  820
+  830ENDPROC
+  840
+  850
+  860DEFPROCError
+  870PRINT "Error from "er$
+  880REPORT
+  890PRINT " at line: "STR$(ERL)
+  900END
+  910
+@
+
+
+1.1
+log
+@file SharedSoun was initially added on branch Spinner.
+@
+text
+@d1 116
+@
+
+
+1.1.2.1
+log
+@New layout SharedSound with text files rather than BASIC files.
+@
+text
+@a0 100
+/* Copyright (c) 1995, Expressive Software Projects
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Expressive Software Projects nor the names of its
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+   10REM >SharedSnd
+   20REM SharedSound module
+   30REM
+   40
+   50er$="SSnd"
+   60
+   70ON ERROR PROCError
+   80
+   90LIBRARY "<MakeSSnd$Dir>.o.Vars"
+  100LIBRARY "<MakeSSnd$Dir>.o.Drivers"
+  110LIBRARY "<MakeSSnd$Dir>.o.Handler"
+  120LIBRARY "<MakeSSnd$Dir>.o.Linear"
+  130LIBRARY "<MakeSSnd$Dir>.o.Memory"
+  140LIBRARY "<MakeSSnd$Dir>.o.Module"
+  150LIBRARY "<MakeSSnd$Dir>.o.SampleRate"
+  160LIBRARY "<MakeSSnd$Dir>.o.SWIS"
+  170LIBRARY "<MakeSSnd$Dir>.o.Volume"
+  180
+  190date$=" (14 Apr 1997)"
+  200version$="0.43"
+  210copyRight$="© Expressive Software Projects, Nottingham."+date$
+  220title$="SharedSound"
+  230swiName$="SharedSound"
+  240
+  250REM
+  260
+  270PRINT "      Making ";title$;" Module"''
+  280PRINT "      Version: "version$
+  290PRINT "      ";copyRight$
+  300
+  310
+  320DIM Code% 15000
+  330dir$="<MakeSSnd$Dir>."
+  340
+  350REM doCallBack%=FALSE
+  360
+  370PROCSetStart
+  380
+  390PROCAssm
+  400
+  410PRINT ''"      Code size: &"STR$~(P%-Code%)
+  420
+  430PRINT ''"      Save as: ";dir$+"SSound  (Module)"''
+  440
+  450OSCLI("Save "+dir$+"Modules.SSound "+STR$~(Code%)+" "+STR$~(P%))
+  460OSCLI("SETTYPE "+dir$+"Modules.SSound MODULE")
+  470
+  480
+  490END
+  500
+  510DEFPROCAssm
+  520
+  530FOR I%=0 TO 2 STEP 2
+  540P%=Code%
+  550
+  560PROCModule
+  570PROCSWIS
+  580PROCMemory
+  590PROCSampleRate
+  600PROCVolume
+  610PROCDrivers
+  620PROCLinear
+  630PROCHandler
+  640
+  650NEXT
+  660
+  670ENDPROC
+  680
+  690
+  700DEFPROCError
+  710PRINT "Error from "er$
+  720REPORT
+  730PRINT " at line: "STR$(ERL)
+  740END
+  750
+@
+
+
+1.1.2.2
+log
+@New version: useful changes are bug fixed in removing callback
+handlers (affects turning off the MIDI synth), and maintains number of
+channels configured when callback buffers not supplied (stops volume
+of RealAudio playback from fluctuating when MIDI Synth can't make its
+mind up whether to created buffers or not.
+Other changes adds CBAI and 8bit log output support (disabled) and
+debugging code.
+@
+text
+@d29 2
+a30 2
+   40REM To new spec from 0.12 onwards
+   50REM 0.46 Uses CBAI if availble
+d32 1
+a32 1
+   70er$="SSnd"
+d34 31
+a64 31
+   90ON ERROR PROCError
+  100
+  110doLog%=FALSE
+  120doCallBack%=TRUE
+  130doCBAI%=FALSE
+  140ROMBuild%=TRUE
+  150
+  160LIBRARY "<MakeSSnd$Dir>.o.Vars"
+  170LIBRARY "<MakeSSnd$Dir>.o.Debug"
+  180LIBRARY "<MakeSSnd$Dir>.o.Drivers"
+  190LIBRARY "<MakeSSnd$Dir>.o.Handler"
+  200LIBRARY "<MakeSSnd$Dir>.o.Linear"
+  210IF doLog% THEN LIBRARY "<MakeSSnd$Dir>.o.Log"
+  220LIBRARY "<MakeSSnd$Dir>.o.Memory"
+  230LIBRARY "<MakeSSnd$Dir>.o.Module"
+  240LIBRARY "<MakeSSnd$Dir>.o.SampleRate"
+  250LIBRARY "<MakeSSnd$Dir>.o.SWIS"
+  260LIBRARY "<MakeSSnd$Dir>.o.Volume"
+  270
+  280date$=" (05 Nov 1997)"
+  290version$="0.48"
+  300copyRight$="© Expressive Software Projects, Nottingham."+date$
+  310title$="SharedSound"
+  320swiName$="SharedSound"
+  330
+  340REM
+  350
+  360PRINT "      Making ";title$;" Module"''
+  370PRINT "      Version: "version$
+  380PRINT "      ";copyRight$
+  390
+d66 7
+a72 7
+  410DIM Code% 15000
+  420dir$="<MakeSSnd$Dir>."
+  430debug%=FALSE
+  440debug1%=TRUE
+  450
+  460
+  470IF ROMBuild% AND doLog% THEN PRINT "Cannot do log in ROM version":STOP
+d74 1
+a74 1
+  490PROCSetStart
+d76 1
+a76 1
+  510PROCAssm
+d78 11
+a88 11
+  530PRINT ''"      Code size: &"STR$~(P%-Code%)
+  540
+  550PRINT ''"      Save as: ";dir$+"SSound  (Module)"''
+  560
+  570OSCLI("Save "+dir$+"SSound "+STR$~(Code%)+" "+STR$~(P%))
+  580OSCLI("SETTYPE "+dir$+"SSound MODULE")
+  590
+  600
+  610END
+  620
+  630DEFPROCAssm
+d90 11
+a100 27
+  650FOR I%=0 TO 2 STEP 2
+  660P%=Code%
+  670
+  680PROCModule
+  690PROCSWIS
+  700PROCMemory
+  710PROCSampleRate
+  720PROCVolume
+  730PROCDrivers
+  740PROCLinear
+  750IF doLog% THEN PROCLog
+  760PROCHandler
+  770IF NOT ROMBuild% THEN PROCDebug
+  780
+  790NEXT
+  800
+  810IF doLog% THEN OSCLI("LOAD "+dir$+"LogTable "+STR$~(logTable%))
+  820
+  830ENDPROC
+  840
+  850
+  860DEFPROCError
+  870PRINT "Error from "er$
+  880REPORT
+  890PRINT " at line: "STR$(ERL)
+  900END
+  910
+@

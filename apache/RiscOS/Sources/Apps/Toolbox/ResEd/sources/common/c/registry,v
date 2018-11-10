@@ -1,0 +1,237 @@
+head	1.2;
+access;
+symbols
+	ResEd-0_59:1.2
+	ResEd-0_58:1.1.1.1
+	ResEd-0_57:1.1.1.1
+	ResEd-0_56:1.1.1.1
+	ResEd-0_55:1.1.1.1
+	ResEd-0_54:1.1.1.1
+	ResEd-0_53:1.1.1.1
+	ResEd-0_52:1.1.1.1
+	ResEd-0_51:1.1.1.1
+	ResEd-0_50:1.1.1.1
+	ResEd-0_49:1.1.1.1
+	ResEd-0_48:1.1.1.1
+	ResEd-0_47:1.1.1.1
+	ResEd-0_46:1.1.1.1
+	ResEd-0_45:1.1.1.1
+	ResEd-0_44:1.1.1.1
+	ResEd-0_43:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2018.08.26.17.40.42;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	ZYpFT54x4Vf1IEPA;
+
+1.1
+date	98.06.03.15.12.14;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.06.03.15.12.14;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@Various fixes
+common/dmalloc.c: use the _ trick for debug macro arguments
+common/dragdrop.c: don't write through a potentially NULL pointer
+common/registry.c: don't leak the old memory if realloc() fails
+menu/menuedit.c: reorganise error exit to not dereference NULL palette
+misc/object.c: don't leak 'def' on error
+shell/dragdrop.c: really set the claimref to zero, not the pointer to the claimref
+shell/main.c: don't leak the old memory if realloc() fails
+window/gadget.c: don't leak 'new' on error
+window/windowedit.c: reorganise error exit to not dereference NULL palette
+Found by cppcheck static analysis.
+
+Version 0.59. Tagged as 'ResEd-0_59'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*-*-C-*-
+ *
+ * Routines for registering a mapping between window handles and
+ * application-specific data.  (Why doesn't the Wimp provide a private
+ * word for this purpose?)
+ */
+
+#include "resed.h"
+
+#include "registry.h"
+
+
+#define DELTA 10
+
+typedef struct _registryrec
+{
+    int used;
+    int handle;
+    RegistryType type;
+    void *closure;
+} RegistryRec, *RegistryPtr;
+
+static RegistryPtr list = NULL;
+static int listlen = 0;
+static int listused = 0;
+
+
+/*
+ * Register a window.  Returns NULL for success, or else
+ * an error ptr.
+ */
+
+error * registry_register_window (int handle, RegistryType type, void *closure)
+{
+    if (list)                   /* check for duplicate */
+    {
+        int i;
+        for (i = 0; i < listused; i++)
+            if (list[i].used && list[i].handle == handle)
+            {
+                list[i].type = type;
+                list[i].closure = closure;
+                return NULL;
+            }
+    }
+    if (listused >= listlen)
+    {
+        RegistryPtr listextd;
+
+        listextd = realloc (list, sizeof(RegistryRec) * (listlen += DELTA));
+        if (listextd == NULL)
+        {
+            free (list);
+            listlen = listused = 0;
+            return error_lookup ("NoMem");
+        }
+        list = listextd;
+    }
+    list[listused].used = TRUE;
+    list[listused].handle = handle;
+    list[listused].type = type;
+    list[listused].closure = closure;
+    listused++;
+    return NULL;
+}
+
+
+/*
+ * Deregister a window.  Returns NULL for success, or else
+ * an error ptr.
+ */
+
+error * registry_deregister_window (int handle)
+{
+    if (list)
+    {
+        int i;
+        for (i = 0; i < listused; i++)
+            if (list[i].used && list[i].handle == handle)
+            {
+                list[i].used = FALSE;
+                if (i == listused - 1)
+                    listused--;
+                break;
+            }
+    }
+    return NULL;
+}
+
+
+/*
+ * Lookup a window based on its handle.  Returns the type,
+ * or 0 if the window was no found.  Note: does
+ * not return error ptrs.  Can pass closure == NULL if you
+ * don't want to know it.
+ */
+
+RegistryType registry_lookup_window (int handle, void **closure)
+{
+    if (list)
+    {
+        int i;
+        for (i = 0; i < listused; i++)
+            if (list[i].used && list[i].handle == handle)
+            {
+                if (closure) *closure = list[i].closure;
+                return list[i].type;
+            }
+    }
+    return 0;
+}
+
+
+/*
+ * Enumerate.  Returns details of position'th entry, and updates position
+ * to next.  (0 -> no more).
+ */
+
+int registry_enumerate_windows (int i, RegistryType *type, int *handle, void **closure)
+{
+    if (!list || listused == 0 || i >= listused)
+        return 0;
+    if (list[i].used == FALSE)
+        return registry_enumerate_windows (i + 1, type, handle, closure);
+    if (type) *type = list[i].type;
+    if (handle) *handle = list[i].handle;
+    if (closure) *closure = list[i].closure;
+    return i + 1;
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a60 2
+        list = realloc (list, sizeof(RegistryRec) * (listlen += DELTA));
+    if (list == NULL)
+d62 10
+a71 2
+        listlen = listused = 0;
+        return error_lookup ("NoMem");
+@
+
+
+1.1.1.1
+log
+@
+Import of ResEd from SrcFiler.
+
+RISC OS Version 0.42.
+Build structure rationalised.
+
+@
+text
+@@

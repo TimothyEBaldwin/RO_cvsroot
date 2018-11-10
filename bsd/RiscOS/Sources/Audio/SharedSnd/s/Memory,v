@@ -1,0 +1,554 @@
+head	1.8;
+access;
+symbols
+	SharedSnd-1_20:1.8
+	SharedSnd-1_19:1.8
+	SharedSnd-1_18:1.8
+	SharedSnd-1_17:1.6
+	SharedSnd-1_16:1.6
+	SharedSnd-1_15:1.6
+	SharedSnd-1_14:1.5
+	SharedSnd-1_13:1.4
+	SharedSnd-1_12:1.4
+	SharedSnd-1_11:1.4
+	SharedSnd-1_10:1.3
+	SharedSnd-1_09:1.3
+	SharedSnd-1_08:1.3
+	SharedSnd-1_07:1.3
+	ESP_SharedSnd-1_06_merge:1.1.2.1
+	SharedSnd-1_06:1.2
+	ESP_SharedSnd-1_06:1.1.0.2
+	ESP_SharedSnd-1_06_bp:1.1
+	SharedSnd-1_05:1.1
+	SharedSnd-1_04:1.1
+	SharedSnd-1_03:1.1
+	SharedSnd-1_02:1.1
+	SharedSnd-1_01:1.1
+	SharedSnd-1_00:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2016.06.18.16.39.01;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	ODW0ixlFy50c3Yaz;
+
+1.7
+date	2016.06.18.16.19.19;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	L0sIVnG3vL4sWXaz;
+
+1.6
+date	2013.09.07.09.58.38;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	DDb7J4xWmm0Dsu4x;
+
+1.5
+date	2013.09.07.09.48.59;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	xd8cpTeM2vojpu4x;
+
+1.4
+date	2012.05.13.12.13.48;	author bavison;	state Exp;
+branches;
+next	1.3;
+commitid	ikRUfBzwYcXxHy4w;
+
+1.3
+date	2011.12.06.00.13.40;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	JycXv4ushgqpP3Kv;
+
+1.2
+date	2011.08.15.23.10.49;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.06.28.18.11.57;	author bavison;	state Exp;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	2011.08.15.14.11.19;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@Use Entry/EXIT, Push/Pull macros
+Detail:
+  s/* - Code updated to use Entry/EXIT and Push/Pull macros where possible instead of manual STM/LDM. Also add ROUTs for safety (although most routines use named local labels rather than numbered ones). A few obvious cases also fixed to reduce number of regs pushed onto stack.
+  A few other changes and fixes of note:
+  s/Log - Trim empty, unused installLogDriver routine when doLog is {FALSE}
+  s/Module - Add a veneer to swiHandler to deal with 26bit and 26/32bit neutral cases; avoids the need for individual SWI handlers to preserve NZC
+  s/SWIs:
+  - Remove 26/32bit neutral SWI exit code, now handled by veneers. CLRV on most SWI exits to replace the implicit CLRV from CMP pc,pc.
+  - swiHandlerVolume and swiDriverMixer were popping the wrong regs from the stack for most error cases; now fixed via the switch to Entry/EXIT
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 1.18. Tagged as 'SharedSnd-1_18'
+@
+text
+@; Copyright (c) 1995, Expressive Software Projects
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met:
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of Expressive Software Projects nor the names of its
+;       contributors may be used to endorse or promote products derived from
+;       this software without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+; ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+; DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+; (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+; ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+; (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+; 
+
+memoryStartVal
+        DCD     memoryStart
+
+ ;----
+
+startMem
+        Entry
+
+        LDR     r3,memoryStartVal
+
+        MOV     r0,#ModHandReason_Claim
+        SWI     XOS_Module
+        EXIT    VS         ;  Flag an error - and don't start module
+
+        STR     r2,[ws]
+
+        MOV     r10,ws     ; Use r10 as tempory private word pointer, for sound installation
+        MOV     ws,r2
+        STR     r3,[ws,#work_memSize]
+        STR     r10,[ws,#work_privateWord]
+
+        EXIT
+
+ ; -------------------------------- Workspace routines ------------------------
+
+initWorkspace   ROUT
+        Entry
+
+        ; Clear memory
+        ADD     r1,ws,#:INDEX:work_privateWord + 4
+        LDR     r2,memoryStartVal
+        ADD     r2,r2,ws
+        MOV     r0,#0
+
+initWorkspace_Loop
+        STR     r0,[r1],#4
+        CMP     r1,r2
+        BCC     initWorkspace_Loop
+
+        ; Specific values......
+        MOV     r0,#0
+        STR     r0,[ws,#work_currentDriver] ; No driver installed yet
+
+        STR     r0,[ws,#work_SampleFrequency]
+        STR     r0,[ws,#work_SamplePeriod]
+
+        STR     r0,[ws,#work_SoundActive]   ; No sound currently active
+
+        STR     r0,[ws,#work_ControlWord]   ; Control word for Replay
+
+        STR     r0,[ws,#work_ImmediateHandlers]
+        STR     r0,[ws,#work_CallBackHandlers]
+        STR     r0,[ws,#work_ProcessHandlers]
+
+        ; Initialise the fillcode table
+        MOV     r0,#0
+        ADRL    r1,fill_silence
+        ADRL    r2,fill_data
+        ADD     lr,ws,#work_FillcodeTable
+        STMIA   lr,{r0-r2}
+
+        ; .. Initialise handler table by setting handler_Address entries to 0
+        ADD     r0,ws,#work_handlerTable   ; Position of table
+        MOV     r1,#handlerMax              ; Number in table
+        MOV     r2,#0
+
+initWorkHandlerTableLoop
+        STR     r2,[r0,#handler_Address]    ; Store 0 in handler_Address
+        ADD     r0,r0,#handlerTableLen      ; Increment to next table entry
+        SUBS    r1,r1,#1                     ; Decrement count
+        BNE     initWorkHandlerTableLoop    ; Branch to start of loop
+
+        ; .. Initialise driver table by setting driver_Address entries to 0
+        ADD     r0,ws,#work_driverTable    ; Position of table
+        MOV     r1,#driverMax               ; Number in table
+        MOV     r2,#0
+
+initWorkDriverTableLoop
+        STR     r2,[r0,#driver_Address]     ; Store 0 in handler_Address
+        ADD     r0,r0,#driverTableLen       ; Increment to next table entry
+        SUBS    r1,r1,#1                     ; Decrement count
+        BNE     initWorkDriverTableLoop     ; Branch to start of loop
+
+        MOV     r0,#0
+        STR     r0,[ws,#work_callBack_Active]
+        STR     r0,[ws,#work_callBack_Count]
+        STR     r0,[ws,#work_CallBack_BufferFullCount]
+        STR     r0,[ws,#work_CallBack_CurrentSoundBuffer]
+        STR     r0,[ws,#work_CallBack_CurrentOutBuffer]
+
+        MOV     r0,#defaultNumCallBackBuffers
+        STR     r0,[ws,#work_CallBack_numCallBackBuffers]
+
+        EXIT
+
+        END
+@
+
+
+1.7
+log
+@Expand tabs
+Detail:
+  s/* - Expand all tabs, to avoid space/tab use inconsistencies within some files and to match general ROOL code formatting
+Admin:
+  Binary unchanged
+
+
+Version 1.17. Not tagged
+@
+text
+@d33 1
+a33 1
+        Push    "lr"
+d39 1
+a39 1
+        Pull    "pc", VS   ;  Flag an error - and don't start module
+d48 1
+a48 1
+        Pull    "pc"
+d52 2
+a53 2
+initWorkspace
+        Push    "lr"
+d120 1
+a120 1
+        Pull    "pc"
+@
+
+
+1.6
+log
+@Internationalised
+Errors are now looked up via MessageTrans.
+The driver names (registered via InstallDriver or to SoundDriver_Install) are now also looked up.
+Note, the SharedSound_DriverInfo SWI used to return r2 as the pointer to a pointer to the name, the documentation seems vague as to what the intent was, but it seems more likely that a pointer to the name was what was intended. The name string is buffered (because it needs looking up for internationalisation anyway).
+
+Tested briefly, inspecting the workspace for name lookups and sending a fake Service_SoundDriver service call. Two errors deliberatly triggered to check error text.
+
+Version 1.15. Tagged as 'SharedSnd-1_15'
+@
+text
+@d28 1
+a28 1
+	DCD	memoryStart
+d35 1
+a35 1
+	LDR	r3,memoryStartVal
+d37 10
+a46 10
+	MOV	r0,#ModHandReason_Claim
+	SWI	XOS_Module
+	Pull	"pc", VS   ;  Flag an error - and don't start module
+
+	STR	r2,[ws]
+
+	MOV	r10,ws     ; Use r10 as tempory private word pointer, for sound installation
+	MOV	ws,r2
+	STR	r3,[ws,#work_memSize]
+	STR	r10,[ws,#work_privateWord]
+d55 5
+a59 5
+	; Clear memory
+	ADD	r1,ws,#:INDEX:work_privateWord + 4
+	LDR	r2,memoryStartVal
+	ADD	r2,r2,ws
+	MOV	r0,#0
+d62 30
+a91 30
+	STR	r0,[r1],#4
+	CMP	r1,r2
+	BCC	initWorkspace_Loop
+
+	; Specific values......
+	MOV	r0,#0
+	STR	r0,[ws,#work_currentDriver] ; No driver installed yet
+
+	STR	r0,[ws,#work_SampleFrequency]
+	STR	r0,[ws,#work_SamplePeriod]
+
+	STR	r0,[ws,#work_SoundActive]   ; No sound currently active
+
+	STR	r0,[ws,#work_ControlWord]   ; Control word for Replay
+
+	STR	r0,[ws,#work_ImmediateHandlers]
+	STR	r0,[ws,#work_CallBackHandlers]
+	STR	r0,[ws,#work_ProcessHandlers]
+
+	; Initialise the fillcode table
+	MOV	r0,#0
+	ADRL	r1,fill_silence
+	ADRL	r2,fill_data
+	ADD	lr,ws,#work_FillcodeTable
+	STMIA	lr,{r0-r2}
+
+	; .. Initialise handler table by setting handler_Address entries to 0
+	ADD	r0,ws,#work_handlerTable   ; Position of table
+	MOV	r1,#handlerMax              ; Number in table
+	MOV	r2,#0
+d94 9
+a102 9
+	STR	r2,[r0,#handler_Address]    ; Store 0 in handler_Address
+	ADD	r0,r0,#handlerTableLen      ; Increment to next table entry
+	SUBS	r1,r1,#1                     ; Decrement count
+	BNE	initWorkHandlerTableLoop    ; Branch to start of loop
+
+	; .. Initialise driver table by setting driver_Address entries to 0
+	ADD	r0,ws,#work_driverTable    ; Position of table
+	MOV	r1,#driverMax               ; Number in table
+	MOV	r2,#0
+d105 11
+a115 11
+	STR	r2,[r0,#driver_Address]     ; Store 0 in handler_Address
+	ADD	r0,r0,#driverTableLen       ; Increment to next table entry
+	SUBS	r1,r1,#1                     ; Decrement count
+	BNE	initWorkDriverTableLoop     ; Branch to start of loop
+
+	MOV	r0,#0
+	STR	r0,[ws,#work_callBack_Active]
+	STR	r0,[ws,#work_callBack_Count]
+	STR	r0,[ws,#work_CallBack_BufferFullCount]
+	STR	r0,[ws,#work_CallBack_CurrentSoundBuffer]
+	STR	r0,[ws,#work_CallBack_CurrentOutBuffer]
+d117 2
+a118 2
+	MOV	r0,#defaultNumCallBackBuffers
+	STR	r0,[ws,#work_CallBack_numCallBackBuffers]
+d122 1
+a122 1
+	END
+@
+
+
+1.5
+log
+@Signed pointer comparison fix
+In SWI InstallDriver reason codes > 2 are interpreted to mean a pointer to an install driver block, but this used a signed comparison so registering blocks in the top half of memory would fail.
+SWIS.s:
+ Comparison changed to process 0/1/2 and > 2 correctly
+SoundDrv.s & Handler.s:
+ Eliminated ADR range function by just using ADRL
+Module.s:
+ Zero length command table replaced by a 0 in the command entry of the module header
+Memory.s:
+ Signed loop exit changed for unsigned one (not relevant since the workspace is < 2G)
+Drivers.s:
+ SWI name moved inside doDMI switch
+
+Version 1.14. Tagged as 'SharedSnd-1_14'
+@
+text
+@d39 1
+a42 3
+	MOVVS	r3,#0     ;  Flag an error - and dont's start module
+	BVS	startMemX
+
+a47 1
+startMemX
+d56 1
+a56 2
+	ADD	r1,ws,#work_privateWord
+	ADD	r1,r1,#4
+@
+
+
+1.4
+log
+@  No longer uses non-X SWIs in module code
+Detail:
+  A few of these were careless typos, others were already X SWIs but the
+  symbol names didn't reflect the fact, and in other cases there was no code
+  path to deal with error cases. All now fixed. Also fixed all the assembly
+  time warnings (at least for 32-bit ROM builds).
+Admin:
+  No longer prevents the Raspberry Pi ROM init from completing.
+
+Version 1.11. Tagged as 'SharedSnd-1_11'
+@
+text
+@a25 2
+; these are defined in global headers
+; XOS_Module	*	&2001E
+d37 1
+a37 1
+	MOV	r0,#6
+d68 1
+a68 1
+	BLT	initWorkspace_Loop
+@
+
+
+1.3
+log
+@Fix to work properly when built into ROM images
+Detail:
+  Makefile - Rewritten to use assembler makefile fragments instead of C ones. The component is listed as assembler in ModuleDB, so using the C fragments was causing an object file to be linked into the ROM instead of a module.
+  MkRam,fd7 - Made to work with new makefile
+  s/FillCode, s/Handler, s/Memory, s/Module, s/Vars - Removed dependency on relocation code. It looks like it was only the pointers in FILLCODE_table_start that were being relocated. The fillcode table is now stored in the workspace instead of within the module.
+Admin:
+  Tested in OMAP3 & Tungsten ROMs.
+  Some of the disabled switches may still rely on the removed relocation code.
+
+
+Version 1.07. Tagged as 'SharedSnd-1_07'
+@
+text
+@d35 1
+a35 1
+	STMDB	sp!,{lr}
+d53 1
+a53 1
+	LDMIA	sp!,{pc}
+d58 1
+a58 1
+	STMDB	sp!,{lr}
+d126 1
+a126 1
+	LDMIA	sp!,{pc}
+@
+
+
+1.2
+log
+@  Selective merge of ESP's version 1.06 (14 May 2002) of SharedSound.
+Detail:
+  Changelog not provided by ESP. I have made an additional change to use
+  the value of SoundSystemNIL from Hdr:Sound to test if SoundChannels is not
+  installed - this constant changed in RISC OS 5 for 32-bitting reasons.
+Admin:
+  Builds, and briefly tested. Coincidentally, this is also our version 1.06.
+
+Version 1.06. Tagged as 'SharedSnd-1_06'
+@
+text
+@d87 7
+@
+
+
+1.1
+log
+@  Import of version 1.00 of SharedSound from WSS - this is a merge of
+  RISC OS Ltd, ESP and Pace sources. I've added the Makefile, Mk* and
+  VersionNum files.
+
+Detail (courtesy of WSS):
+  * Incorporates fixes made to 0.58c to fix the callbacks on sound
+    rate changes.
+
+  * Incorporates RISC OS Ltd changes to response to
+    TaskManager_Acknowledgements service.
+
+  * Includes 8 bit Log and PowerWave drivers.
+
+  * Now built with Objasm, not BASIC assembler.
+
+  * SharedSound_HandlerInfo SWI fixed to conform to spec. Also
+    extended to accept r0 = 0 on entry, in which case r0 = number of
+    first registered handler (or 0 for none) on exit; R1-R5 corrupted.
+
+    Therefore the following code enumerates handlers:
+
+    REM Get first handler number.
+    SYS "SharedSound_HandlerInfo",0 TO next% ; flags%
+    REM While no errors, and not finished
+    WHILE (next% <> 0) AND ((flags% AND 1) = 0)
+     SYS"SharedSound_HandlerInfo",next% TO next%,a%,b%,c%,d%,e%
+    ENDWHILE
+
+  * Sends Service_Sound (&54) with reason code 6 (SharedSound Starting)
+    on (callback after) initialisation.
+
+  * Sends Service_Sound (&54) with reason code 7 (SharedSound Dying)
+    on finalisation.
+
+  * Some small optimisations
+
+  * Version bumped to 1.00 (to allow RISC OS Ltd space to make changes
+    to their versions).
+
+  * Table of helpful fill code routines now passed to handlers in R8.
+
+  * SharedSound reinitialises correctly on lower layers reinitialising.
+
+  * More care taken to remove outstanding callbacks on finalise.
+
+  * Dual 26/32 bit version.
+
+Admin:
+  * Not tested by us.
+
+  * 8-bit sound system code is known not to be ROM safe. However, it is
+    currently switched out (see the doLog option in s.Gets).
+
+  * This version *will not work* on a 32-bit system. There are at least two
+    issues with it that I've spotted with a quick glance through the code -
+    the lack of the module flags word, and an unconditional TEQP instruction.
+    This version has been checked in nevertheless as a record of what WSS
+    delivered to us.
+
+Version 1.00. Tagged as 'SharedSnd-1_00'
+@
+text
+@d26 2
+a27 1
+XOS_Module	*	&2001E
+@
+
+
+1.1.2.1
+log
+@Import of latest sources from ESP.
+This represents ESP's version 1.06 (14 May 2002). The files are exactly as
+received, but they are not expected to build as they are against the public
+headers.
+@
+text
+@d26 1
+a26 2
+; these are defined in global headers
+; XOS_Module	*	&2001E
+@
+

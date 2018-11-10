@@ -1,0 +1,329 @@
+head	1.4;
+access;
+symbols
+	VFPSupport-0_13:1.4
+	VFPSupport-0_12:1.3
+	VFPSupport-0_11:1.3
+	VFPSupport-0_10:1.3
+	VFPSupport-0_09:1.2
+	VFPSupport-0_08:1.2
+	VFPSupport-0_07:1.2
+	VFPSupport-0_06:1.2
+	VFPSupport-0_05:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2018.02.20.00.23.52;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	ZRXEvgsdnifZYwrA;
+
+1.3
+date	2015.02.08.22.44.44;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	1KgrX5G5wgC61g9y;
+
+1.2
+date	2014.02.08.15.27.42;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	x9VDVmUDNhCwkjox;
+
+1.1
+date	2014.02.08.14.50.47;	author jlee;	state Exp;
+branches;
+next	;
+commitid	K7Sd3I9WjpbR7jox;
+
+
+desc
+@@
+
+
+1.4
+log
+@Add support for reporting the ARMv8 MVFR2 register. Improve safety of context switches.
+Detail:
+  hdr/VFPSupport - Define VFPSupport_Features reason code 3, for reading extra feature registers
+  s/Macros - Use ELIF to shorten myVMRS & myVMSR macros. Add MVFR2 support to myVMRS.
+  s/Module - Implement VFPSupport_Features 3, for reading MVFR2 (and three other values reserved for future proofing). Since there doesn't seem to be an easy way of detecting the presence of MVFR2, we fall back on a list of known-good FPSID values, like with MVFR0/MVFR1 on pre-VFPv3 systems. Also update VFPSupport_ChangeContext to do a dummy load from the new VFP context, to help trap bad contexts before we've updated our state to indicate that that context is active.
+  Test/features,ffb - Add VFPSupport_Features 3 output
+Admin:
+  Tested on Raspberry Pi 1, 2, 3
+
+
+Version 0.13. Tagged as 'VFPSupport-0_13'
+@
+text
+@; 
+; Copyright (c) 2010, RISC OS Open Ltd
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+; 
+        SUBT Exported VFPSupport constants
+
+OldOpt  SETA    {OPT}
+        OPT     OptNoList+OptNoP1List
+
+SWIClass        SETS    VFPSupportSWI_Name
+
+        ^       VFPSupportSWI_Base
+
+        AddSWI  CheckContext
+        AddSWI  CreateContext
+        AddSWI  DestroyContext
+        AddSWI  ChangeContext
+        AddSWI  ExamineContext
+        AddSWI  FastAPI
+        AddSWI  ActiveContext
+        AddSWI  Version
+        AddSWI  Features
+        AddSWI  ExceptionDump
+
+VFPSupportSWICheckValue     *       @@
+
+; Base flags used for CheckContext, CreateContext, ExamineContext
+
+VFPSupport_Context_UserMode             * 1 :SHL: 0
+VFPSupport_Context_AppSpace             * 1 :SHL: 1
+
+; Additional flags suitable for CreateContext/CheckContext
+
+VFPSupport_CreateContext_LazyActivate   * 1 :SHL: 30
+VFPSupport_CreateContext_Activate       * 1 :SHL: 31
+
+; Additional flags returned by ExamineContext
+
+VFPSupport_Context_LazyActivation       * 1 :SHL: 29
+VFPSupport_Context_StatusRegsActive     * 1 :SHL: 30
+VFPSupport_Context_VFPMemory            * 1 :SHL: 31
+
+; Flags for ChangeContext
+
+VFPSupport_ChangeContext_Lazy           * 1 :SHL: 0
+VFPSupport_ChangeContext_AppSpace       * 1 :SHL: 1
+
+; Flags for ExamineContext
+
+VFPSupport_ExamineContext_Serialise     * 1 :SHL: 0
+
+; Field formats for ExamineContext
+
+VFPSupport_Field_FPSCR                  * 0
+VFPSupport_Field_FPEXC                  * 1
+VFPSupport_Field_FPINST                 * 2
+VFPSupport_Field_FPINST2                * 3
+VFPSupport_Field_FSTMX                  * 4
+VFPSupport_Field_RegDump                * 5
+
+; Reason codes for Features
+
+VFPSupport_Features_SystemRegs          * 0
+VFPSupport_Features_VFPExceptions       * 1
+VFPSupport_Features_Misc                * 2
+VFPSupport_Features_SystemRegs2         * 3
+
+; Misc feature flags
+VFPSupport_MiscFeature_VFPVectors_HW    * 1 :SHL: 0 ; VFP short vectors are supported by hardware
+VFPSupport_MiscFeature_VFPVectors_SW    * 1 :SHL: 1 ; VFP short vectors are supported by software
+
+; Flags for ExceptionDump
+
+VFPSupport_ExceptionDump_GetDump        * 1 :SHL: 0
+VFPSupport_ExceptionDump_GetContext     * 1 :SHL: 1
+VFPSupport_ExceptionDump_Clear          * 1 :SHL: 2
+VFPSupport_ExceptionDump_Create         * 1 :SHL: 3
+
+; VFP status register fields, as per ARMv7 ARM
+
+FPEXC_IOF                    * 1 :SHL: 0
+FPEXC_DZF                    * 1 :SHL: 1
+FPEXC_OFF                    * 1 :SHL: 2
+FPEXC_UFF                    * 1 :SHL: 3
+FPEXC_IXF                    * 1 :SHL: 4
+FPEXC_IDF                    * 1 :SHL: 7
+FPEXC_VECITR_SHIFT           * 8
+FPEXC_VECITR_MASK            * 7 :SHL: 8
+FPEXC_TFV                    * 1 :SHL: 26
+FPEXC_VV                     * 1 :SHL: 27
+FPEXC_FP2V                   * 1 :SHL: 28
+FPEXC_DEX                    * 1 :SHL: 29
+FPEXC_EN                     * 1 :SHL: 30
+FPEXC_EX                     * 1 :SHL: 31
+
+FPSCR_IOC                    * 1 :SHL: 0
+FPSCR_DZC                    * 1 :SHL: 1
+FPSCR_OFC                    * 1 :SHL: 2
+FPSCR_UFC                    * 1 :SHL: 3
+FPSCR_IXC                    * 1 :SHL: 4
+FPSCR_IDC                    * 1 :SHL: 7
+FPSCR_CUMULATIVE_FLAGS       * FPSCR_IOC+FPSCR_DZC+FPSCR_OFC+FPSCR_UFC+FPSCR_IXC+FPSCR_IDC
+FPSCR_IOE                    * 1 :SHL: 8
+FPSCR_DZE                    * 1 :SHL: 9
+FPSCR_OFE                    * 1 :SHL: 10
+FPSCR_UFE                    * 1 :SHL: 11
+FPSCR_IXE                    * 1 :SHL: 12
+FPSCR_IDE                    * 1 :SHL: 15
+FPSCR_ENABLE_FLAGS           * FPSCR_IOE+FPSCR_DZE+FPSCR_OFE+FPSCR_UFE+FPSCR_IXE+FPSCR_IDE
+FPSCR_LEN_SHIFT              * 16
+FPSCR_LEN_MASK               * 7 :SHL: 16
+FPSCR_STRIDE_SHIFT           * 20
+FPSCR_STRIDE_MASK            * 3 :SHL: 20
+FPSCR_RMODE_SHIFT            * 22
+FPSCR_RMODE_MASK             * 3 :SHL: 22
+FPSCR_RMODE_NEAREST          * 0 :SHL: 22
+FPSCR_RMODE_UP               * 1 :SHL: 22
+FPSCR_RMODE_DOWN             * 2 :SHL: 22
+FPSCR_RMODE_ZERO             * 3 :SHL: 22
+FPSCR_FZ                     * 1 :SHL: 24
+FPSCR_DN                     * 1 :SHL: 25
+FPSCR_AHP                    * 1 :SHL: 26
+FPSCR_QC                     * 1 :SHL: 27
+FPSCR_V                      * 1 :SHL: 28
+FPSCR_C                      * 1 :SHL: 29
+FPSCR_Z                      * 1 :SHL: 30
+FPSCR_N                      * 1 :SHL: 31
+
+
+; Errors
+
+        ^        ErrorBase_VFPSupport
+        AddError VFPSupport_NoHW, "No VFP/NEON hardware present"
+        AddError VFPSupport_BadHW, "Unsupported VFP/NEON version"
+        AddError VFPSupport_FeatureUnavailable, "A requested VFP/NEON feature is unavailable"
+        AddError VFPSupport_BadContext, "Bad VFP context"
+        AddError VFPSupport_BadFeature, "Bad VFPSupport_Features reason code"
+        AddError VFPSupport_NoHW2, "VFPSupport module or VFP/NEON coprocessor not found" ; Generic error for VFP/NEON dependent programs to use. Where possible programs should use custom error text to specify the exact hardware required - VFPv1, NEON, etc.
+        AddError VFPSupport_Instanced, "Only one instance of VFPSupport can be active at a time"
+        AddError VFPSupport_BadFlags, "Invalid flags passed to VFPSupport SWI"
+
+        ^        ErrorBase_VectorFloatingPoint
+        ; Floating point exception errors
+        AddError VFPSupport_IO, "Vector floating point exception: invalid operation"
+        AddError VFPSupport_DZ, "Vector floating point exception: division by zero"
+        AddError VFPSupport_OF, "Vector floating point exception: overflow"
+        AddError VFPSupport_UF, "Vector floating point exception: underflow"
+        AddError VFPSupport_IX, "Vector floating point exception: inexact operation"
+        AddError VFPSupport_ID, "Vector floating point exception: input subnormal"
+
+        ; Errors generated by the support code - numbered from top end of block down, to keep separate from the errors programmers should expect to see
+        AddError VFPSupport_SupCode_NoContext, "No VFP context active", ErrorBase_VectorFloatingPoint+&FF
+        AddError VFPSupport_SupCode_NotEN, "VFP coprocessor not enabled", ErrorBase_VectorFloatingPoint+&FE
+        AddError VFPSupport_SupCode_ENMismatch, "VFP coprocessor enable state mismatch", ErrorBase_VectorFloatingPoint+&FD
+        AddError VFPSupport_SupCode_Unexpected, "Unexpected VFP instruction", ErrorBase_VectorFloatingPoint+&FC
+        AddError VFPSupport_SupCode_SupDiv0, "Divide by zero in VFP support code", ErrorBase_VectorFloatingPoint+&FB
+        AddError VFPSupport_SupCode_UnkExcep, "Unknown VFP exception requested", ErrorBase_VectorFloatingPoint+&FA
+
+
+
+        OPT     OldOpt
+        END
+@
+
+
+1.3
+log
+@Add support for Cortex-A7 & Cortex-A15 FPUs. Add short vector mode emulation for Cortex-A7, A9, A15
+Detail:
+  Makefile - Simplify decision about whether to include support code. More hardware needs it than not, so have a list of machine types which don't need it rather than a list of machine types which do.
+  hdr/VFPSupport - Add definitions for new VFPSupport_Features reason code
+  hdr/shared - Add some comments for extra clarity
+  s/Instructions - Add support for emulating VFPv3 'VMOV immediate' instruction
+  s/Module - Update hardware detection & support handlers to deal with Cortex-A7, Cortex-A9 and Cortex-A15, all of which report different subarchitectures and differ in method of reporting exceptions despite the fact they basically all have the same requirements as far as support code is concerned (support code only required if we want short vector emulation). Implement the new VFPSupport_Features reason code, which returns information about whether short vectors are supported.
+  s/SupportCode - Extend support code to cope with Cortex-A7, A9, A15 & VMOV imm emulation.
+  Test/features,ffb - Simple test of VFPSupport_Features SWI
+  Test/test7,ffb - Test for VFPv3 'VMOV immediate' handling in scalar & vector mode (HW scalar implementation tested against SW vector implementation)
+Admin:
+  Tested on ARM1176JZF-S, Cortex-A7, Cortex-A8, Cortex-A9
+  Cortex-A15 supported tested 'in theory' by forcing appropriate support code to be installed on Cortex-A9
+
+
+Version 0.10. Tagged as 'VFPSupport-0_10'
+@
+text
+@d89 1
+@
+
+
+1.2
+log
+@Add VFPv2 support code
+Detail:
+  This update adds the support code necessary to allow the VFPv2 coprocessor in the Raspberry Pi to be used in its full IEEE-compliant mode, and to add support for the generation of errors on VFP match exceptions (division by zero, etc.)
+  SoftFloat Release 2b (http://www.jhauser.us/arithmetic/SoftFloat.html) is used to perform the floating point calculations in software, ensuring their accuracy.
+  As with FPEmulator, the support code will only be included on machines which require it; at the moment this decision is handled by the makefile, based around the target machine type.
+  Note that the current version of the support code does not implement default NaN or flush-to-zero mode, so it is not a fully accurate emulation of the hardware.
+  Also added a new SWI, VFPSupport_ExceptionDump, for creating and reading a VFP context exception dump, and a new reason code to VFPSupport_Features to query which exception enable bits are supported
+  File changes:
+  - Makefile - Rewritten to use the CModule fragment, and to add the necessary rules for (optionally) building the support code.
+  - Licences - File summarising the different licences used by different portions of the code
+  - Test/test2c,ffb, Test/test3,ffb, Test/test4,ffb, Test/test5,ffb, Test/test6src,ffb - Several test programs for validating behaviour of the support code, mainly focused around unusual causes of exceptions and validating instruction decoding and short vector support
+  - actions/ARMv7_VFP, arctions/common, c/head, cache/classify - decgen files for building the instruction decoder. This decoder is only used for synchronous exceptions, to determine whether the instruction is or isn't a valid VFP instruction. Asynchronous exceptions utilise a simpler, hand-crafted decoder in the assembler sources.
+  - h/classify - Header for the decgen decoder
+  - hdr/shared - Header with some definitions shared between the C and assembler sources (will be Hdr2H'd to generate the C header)
+  - hdr/VFPSupport - Updated with new error numbers, SWI definitions
+  - s/CSupport - Math support functions from the C library sources, required by SoftFloat
+  - s/Errors - Added new error definitions
+  - s/GetAll - Include support code if necessary. Add debug switch, plus optimisation switch for machines with 16 D registers
+  - s/Instructions - Core data processing instruction emulation code. This file is included twice, once for single precision and once for double precision. The code calls through to the SoftFloat routines to perform the calculations.
+  - s/Module - Adjust handling of undefined instruction vector to allow the support code to be installed instead of OldHandler if necessary. Initialise the support code as necessary. Add new SWIs & reason codes.
+  - s/SupportCode - Undefined instruction handler which controls the rest of the support code. Also raises RISC OS errors as necessary (division by zero, etc.)
+  - softfloat/* - The SoftFloat library sources. It's been tweaked in a few places for integration with the assembler support code, but otherwise no changes to the core logic were necessary.
+  - Resources/UK/Messages - Updated with new error text
+Admin:
+  Tested on Raspberry Pi & BB-xM
+  Support code tested using the supplied test routines and the TestFloat tool (http://www.jhauser.us/arithmetic/TestFloat.html)
+
+
+Version 0.06. Tagged as 'VFPSupport-0_06'
+@
+text
+@d88 5
+@
+
+
+1.1
+log
+@Move VFPSupport to 'mixed' folder
+Detail:
+  This is a copy of VFPSupport-0_05 from bsd/RiscOS/Sources/HWSupport
+  It's being moved to the 'mixed' folder as the next version will contain sources using several different licences
+Admin:
+  Untested
+
+
+Version 0.05. Retagged as 'VFPSupport-0_05'
+@
+text
+@d46 1
+d87 8
+d119 1
+d126 1
+d157 20
+@
+

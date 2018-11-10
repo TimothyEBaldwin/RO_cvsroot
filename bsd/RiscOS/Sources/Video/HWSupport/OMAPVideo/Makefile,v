@@ -1,0 +1,481 @@
+head	1.12;
+access;
+symbols
+	OMAPVideo-0_41:1.12
+	OMAPVideo-0_40:1.11
+	OMAPVideo-0_39:1.11
+	OMAPVideo-0_38:1.11
+	OMAPVideo-0_37:1.10
+	OMAPVideo-0_36:1.10
+	OMAPVideo-0_35:1.10
+	OMAPVideo-0_34:1.10
+	OMAPVideo-0_33:1.9
+	OMAPVideo-0_32:1.9
+	OMAPVideo-0_31:1.9
+	OMAPVideo-0_30:1.9
+	OMAPVideo-0_29:1.9
+	OMAPVideo-0_28:1.9
+	OMAPVideo-0_27:1.9
+	OMAPVideo-0_26:1.9
+	OMAPVideo-0_25:1.9
+	OMAPVideo-0_24:1.9
+	OMAPVideo-0_23:1.9
+	OMAPVideo-0_22:1.8
+	OMAPVideo-0_21:1.8
+	OMAPVideo-0_20:1.8
+	OMAPVideo-0_19:1.8
+	OMAPVideo-0_18:1.8
+	OMAPVideo-0_17:1.8
+	OMAPVideo-0_16:1.7
+	OMAPVideo-0_15:1.7
+	OMAPVideo-0_14:1.6
+	OMAPVideo-0_13:1.5
+	OMAPVideo-0_12:1.5
+	OMAPVideo-0_11:1.5
+	OMAPVideo-0_10:1.5
+	OMAPVideo-0_09:1.5
+	OMAPVideo-0_08:1.4
+	OMAPVideo-0_07:1.3
+	OMAPVideo-0_06:1.2
+	OMAPVideo-0_05:1.2
+	OMAPVideo-0_04:1.2
+	OMAPVideo-0_03:1.2
+	OMAPVideo-0_02:1.2
+	OMAPVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.12
+date	2018.05.31.21.48.49;	author jlee;	state Exp;
+branches;
+next	1.11;
+commitid	qHkabDo5zjgySuEA;
+
+1.11
+date	2015.08.03.07.16.41;	author rsprowson;	state Exp;
+branches;
+next	1.10;
+commitid	Dd9P3YOmhGH1eNvy;
+
+1.10
+date	2015.05.17.17.50.01;	author jlee;	state Exp;
+branches;
+next	1.9;
+commitid	J3i0xRSaySaJePly;
+
+1.9
+date	2012.06.09.19.39.58;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	UoigCKwU4VEQi48w;
+
+1.8
+date	2012.02.04.10.24.37;	author rsprowson;	state Exp;
+branches;
+next	1.7;
+commitid	DQUzYjplHjjrhPRv;
+
+1.7
+date	2012.01.14.18.32.38;	author srevill;	state Exp;
+branches;
+next	1.6;
+commitid	Q2Oqv6MxeAPHEaPv;
+
+1.6
+date	2011.12.12.17.54.41;	author srevill;	state Exp;
+branches;
+next	1.5;
+commitid	ND8nPkovFhmsvVKv;
+
+1.5
+date	2011.02.08.10.41.32;	author srevill;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2010.10.31.20.17.50;	author jlee;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2010.09.14.21.12.53;	author jlee;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2010.03.23.00.39.15;	author jlee;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2010.02.28.19.01.11;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.12
+log
+@Big refactor, introduce GraphicsV overlay API support
+Detail:
+  This change introduces initial support for the GraphicsV overlay API.
+  RGB & YUV overlays are supported, along with rotation and scaling.
+  Vertical flipping isn't supported yet, and there are still a number of bugs to track down, along with some potential improvements.
+  The code has also been refactored significantly, in an attempt to protect all critical state with spinlocks/mutexes (as appropriate), and to reduce the number of globals so that it's easier to see what's touching what. Previously very little locking was performed, which could lead to issues if VSyncs or synclost interrupts occurred during certain operations. Now, the data should be structured in such a way that this shouldn't cause problems.
+  Notable things:
+  * State which needs to be writable from interrupt handlers is protected by spinlocks
+  * State which needs to be readable from interrupt handlers is protected by reader-writer spinlocks
+  * State which doesn't need to be accessed from interrupt handlers is unprotected (mutexes can be introduced in the future to make the code SMP-safe)
+  * Using non-alpha screen modes for the desktop will currently result in only "basic" overlays being supported (i.e. overlays which appear ontop of the desktop). In some cases this could be improved by falling back to a software pointer, but for now the only way to get Z-Order overlays is to use a screen mode with an alpha channel.
+  * Memory allocation for overlays is abstracted via the buffer interface (h/buffer). This has three implementations: basic buffers for untransformed overlays, VRFB-transformed buffers for OMAP3, and TILER-transformed buffers for OMAP4.
+  * Ultimately all overlay memory is allocated as physically contiguous pages within a PMP - although since TILER contains its own MMU this isn't strictly necessary on OMAP4
+  * Overlay memory is mapped as write-through cacheable for CPU access; experimentation with different cache policies has yet to be performed. However a potential future optimisation would be to perform lazy unmapping of overlay buffers, reducing the map/unmap overhead in well-behaved code which only maps buffers when they're needed
+Admin:
+  Tested on BB-xM, Pandaboard
+
+
+Version 0.41. Tagged as 'OMAPVideo-0_41'
+@
+text
+@# 
+# Copyright (c) 2010, RISC OS Open Ltd
+# All rights reserved.
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met: 
+#     * Redistributions of source code must retain the above copyright
+#       notice, this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright
+#       notice, this list of conditions and the following disclaimer in the
+#       documentation and/or other materials provided with the distribution.
+#     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+#       may be used to endorse or promote products derived from this software
+#       without specific prior written permission.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+# 
+# Makefile for OMAP video driver
+#
+
+DEBUG ?= FALSE
+
+ifeq ($(DEBUG),TRUE)
+CFLAGS += -DDEBUGLIB
+CMHGFLAGS += -DDEBUGLIB
+LIBS = ${DEBUGLIBS} ${NET5LIBS}
+endif
+
+VPATH           = omap$(OMAP)
+COMPONENT       = OMAPVideo
+OBJS            = cmodule regs dispc dsi dss graphicsv sdma palette omap dispc_plat gvoverlay pmp asmbits buffer mouse consts vars
+CMHGFILE        = modhead
+HDRS            =
+LIBS            += ${SYNCLIB}
+
+ifeq ($(OMAP),3)
+OBJS += vrfb venc
+endif
+ifeq ($(OMAP),4)
+OBJS += tiler
+endif
+
+CDEFINES        += -DOMAP=${OMAP}
+CFLAGS          += -ff -wp -wc
+CMHGDEFINES     = -DCOMPONENT=${COMPONENT} ${CDEFINES}
+CMHGDEPENDS     = cmodule graphicsv pmp
+
+CUSTOMRES       = no
+
+include CModule
+
+# Dynamic dependencies:
+@
+
+
+1.11
+log
+@Build fix
+Don't set RES_OBJ to an empty string.
+
+Version 0.38. Tagged as 'OMAPVideo-0_38'
+@
+text
+@d41 1
+a41 1
+OBJS            = cmodule regs dispc dsi dss venc graphicsv sdma palette omap dispc_plat
+d44 8
+d56 1
+a56 1
+CMHGDEPENDS     = cmodule graphicsv
+@
+
+
+1.10
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@d50 1
+a50 2
+CUSTOMRES       = custom
+RES_OBJ         =
+a51 4
+include StdTools
+include ModStdRule
+include ModuleLibs
+include DbgRules
+a53 3
+resources:
+        ${NOP}
+
+@
+
+
+1.9
+log
+@Improve TV-Out support. Fix pointer transparency after DSS reset. Other tweaks.
+Detail:
+  c/venc - Fixed corruption when PAL output was in use and the display reached the bottom two rows of the screen; the screen height was being calculated incorrectly from the VENC register settings. This was also causing the constant SYNCLOSTDIGITAL interrupts.
+  c/dss - Mark the mouse pointer image as dirty inside dss_reset(), to ensure the transparency colour gets set to hardware the next time the pointer is updated
+  Makefile, cmhg/modhead - Make module help string reflect which OMAP version the module is for
+  c/venc, h/regs3 - Added revision ID registers to OMAP3 register blocks, to reduce the number of differences between the OMAP3 & OMAP4 versions. The revision ID registers do exist on OMAP3, they just weren't listed in the early TRM version the module was first created from. Also fixed layout of DSI registers on OMAP3.
+Admin:
+  OMAP3 version tested on rev A2 BB-xM
+  OMAP4 version builds but untested
+
+
+Version 0.23. Tagged as 'OMAPVideo-0_23'
+@
+text
+@d39 1
+d41 1
+a41 1
+OBJS            = cmodule regs dispc dsi dss venc graphicsv sdma palette
+d45 1
+d51 1
+@
+
+
+1.8
+log
+@Makefile changed to not fault absence of resources.
+
+Version 0.17. Tagged as 'OMAPVideo-0_17'
+@
+text
+@d45 1
+a45 1
+CMHGDEFINES     = -DCOMPONENT=${COMPONENT}
+@
+
+
+1.7
+log
+@Makefile fixes.
+
+Version 0.15. Tagged as 'OMAPVideo-0_15'
+@
+text
+@a29 1
+# $Id: Makefile,v 1.6 2011/12/12 17:54:41 srevill Exp $
+d48 1
+a48 1
+CMDHELP         = custom
+d56 1
+a56 1
+resources-custom:
+@
+
+
+1.6
+log
+@Fixed the Makefile.
+
+Attempted a non-existent export in the resources phase.
+
+Version 0.14. Tagged as 'OMAPVideo-0_14'
+@
+text
+@d30 1
+a30 1
+# $Id: Makefile,v 1.5 2011-02-08 10:41:32 srevill Exp $
+d49 1
+a49 1
+CUSTOMRES       = custom
+d57 1
+a57 1
+resources:
+a59 1
+
+@
+
+
+1.5
+log
+@Makefile tweak to fix export_hdrs phase.
+
+This component doesn't have any exported headers so this change will stop
+build errors during the header export phase.
+
+Version 0.09. Tagged as 'OMAPVideo-0_09'
+@
+text
+@d30 1
+a30 1
+# $Id: Makefile,v 1.4 2010/10/31 20:17:50 jlee Exp $
+d49 2
+d57 4
+@
+
+
+1.4
+log
+@Improve OMAPVideo power saving abilities and palette handling
+Detail:
+  Makefile, c/palette, h/palette, c/cmodule, c/dispc, c/graphicsv, h/globals - Rewrote palette handling code to support multiple different transformations on palettes, to adapt the palettes from the RISC OS formats to the DISPC formats. This means that palettes and the mouse cursor are now correctly R/B swapped for TV-out, RISC OS's gamma correction tables are now supported, and clever use of gamma tables allows 16bpp modes to be displayed correctly by mapping RISC OS's 555 format to the OMAP's 565 format (but there'll only be 4 blue bits instead of 5)
+  c/cmodule, c/dispc, c/graphicsv, h/globals - Add support for the HAL's new display power controls, and implement GraphicsV_SetBlank. For fixed LCDs this will ignore the requested DPMS state and instead just turn the power/backlight off.
+  h/sdma - Marked the functions as extern.
+Admin:
+  Tested on rev C2 beagleboard, rev C1 touchbook.
+  Requires OMAP3 HAL 0.34.
+
+
+Version 0.08. Tagged as 'OMAPVideo-0_08'
+@
+text
+@d30 1
+a30 1
+# $Id: Makefile,v 1.3 2010/09/14 21:12:53 jlee Exp $
+d43 1
+@
+
+
+1.3
+log
+@OMAPVideo fixes & tweaks
+Detail:
+  Makefile - now rewritten to use CModule fragment instead of obsolete RAMCModule/ROMCModule fragments
+  c/cmodule - Make *videoregs print out a couple more regs
+  c/dsi - Fix debug output when DSI requests time out. Fix HSDIVIDER not working on AM/DM37x.
+  c/graphicsv - When setting the mode from a VIDC list, add the border values to the porch values to take into account the hardware's inability to emulate VIDC's coloured border facility. Behaviour matches that of NVidia module.
+  h/regs - Add definitions for SMS registers (for display rotation)
+Admin:
+  Tested on rev C2 beagleboard, rev A2 BB-xM (indirectly), rev C1 TouchBook
+
+
+Version 0.07. Tagged as 'OMAPVideo-0_07'
+@
+text
+@d30 1
+a30 1
+# $Id: Makefile,v 1.2 2010/03/23 00:39:15 jlee Exp $
+d41 1
+a41 1
+OBJS            = cmodule regs dispc dsi dss venc graphicsv sdma
+@
+
+
+1.2
+log
+@Fix makefile to allow debug builds of OMAPVideo, and change default DebugLib output device to HAL_OUTPUT
+Detail:
+  Makefile - fixed a couple of mistakes that prevented debug builds of the module from being compiled
+  c/cmodule - changed default debug output device to HAL_OUTPUT to avoid PRINTF_OUTPUT interfering with the screen and potentially breaking stuff
+Admin:
+  Tested in OMAP ROM on rev C2 beagleboard
+
+
+Version 0.02. Tagged as 'OMAPVideo-0_02'
+@
+text
+@d30 1
+a30 1
+# $Id: Makefile,v 1.1 2010/02/28 19:01:11 jlee Exp $
+d37 1
+a37 1
+LIBS = ${DEBUGLIB} ${MODMALLOCLIB} ${WILDLIB} ${DDTLIB} ${DESKLIB}  ${NET5LIBS} ${ASMUTILS} ${TBOXLIBS}
+d41 6
+a46 7
+TARGET          = ${COMPONENT}
+DIRS            = o._dirs
+OBJS            = o.modhead o.cmodule o.regs o.dispc o.dsi o.dss o.venc o.graphicsv o.sdma
+
+CFLAGS          += -ff -wp -wc -zm -zps1
+CDEFINES        += ${CDEBUG}
+CMHGDEFINES     = -DCOMPONENT=${COMPONENT} ${CDEBUG}
+d51 2
+a52 25
+include RAMCModule
+include ROMCModule
+
+aif.${COMPONENT}: ${RAM_OBJS} ${RAM_LIBS} ${CLIB}  o._dirs
+        link -base 0 -aif -bin -d -o $@@ ${RAM_OBJS} ${RAM_LIBS} ${CLIB}
+
+gpa.${COMPONENT}: aif.${COMPONENT}
+        togpa aif.${COMPONENT} $@@
+
+clean:
+        ${WIPE} o ${WFLAGS}
+        ${WIPE} rm ${WFLAGS}
+        ${WIPE} gpa ${WFLAGS}
+        ${WIPE} aif ${WFLAGS}
+        ${RM}   h.modhead
+
+o._dirs:
+        ${MKDIR} o
+        ${MKDIR} c
+        ${MKDIR} gpa
+        ${MKDIR} aif
+        ${TOUCH} o._dirs
+
+o.cmodule:       h.modhead
+o.graphicsv:     h.modhead
+@
+
+
+1.1
+log
+@Add initial version of OMAP video driver module
+Detail:
+  All-new OMAP video driver, written as a module in C.
+  Functionality-wise it's basically the same as the original HAL-based driver, except it provides support for GraphicsV_Render via use of the OMAP SDMA controller, and there's currently no support for GraphicsV_IICOp.
+  However under the hood the module is significantly different, to ensure it can be expanded to expose the full feature set of the video controller once the new GraphicsV API is ready.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.01. Tagged as 'OMAPVideo-0_01'
+@
+text
+@d30 1
+a30 1
+# $Id: Makefile,v 1.4 2009/09/28 18:59:52 jlee Exp $
+d36 1
+a36 1
+CMHFGLAGS += -DDEBUGLIB
+d76 1
+@
+

@@ -1,0 +1,5704 @@
+head	1.10;
+access;
+symbols
+	SharedSnd-1_20:1.10
+	SharedSnd-1_19:1.10
+	SharedSnd-1_18:1.10
+	SharedSnd-1_17:1.8
+	SharedSnd-1_16:1.8
+	SharedSnd-1_15:1.8
+	SharedSnd-1_14:1.7
+	SharedSnd-1_13:1.7
+	SharedSnd-1_12:1.6
+	SharedSnd-1_11:1.5
+	SharedSnd-1_10:1.4
+	SharedSnd-1_09:1.4
+	SharedSnd-1_08:1.4
+	SharedSnd-1_07:1.4
+	ESP_SharedSnd-1_06_merge:1.3.2.1
+	SharedSnd-1_06:1.4
+	ESP_SharedSnd-1_06:1.3.0.2
+	ESP_SharedSnd-1_06_bp:1.3
+	SharedSnd-1_05:1.3
+	SharedSnd-1_04:1.3
+	SharedSnd-1_03:1.3
+	SharedSnd-1_02:1.2
+	SharedSnd-1_01:1.2
+	SharedSnd-1_00:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.10
+date	2016.06.18.16.39.01;	author jlee;	state Exp;
+branches;
+next	1.9;
+commitid	ODW0ixlFy50c3Yaz;
+
+1.9
+date	2016.06.18.16.19.19;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	L0sIVnG3vL4sWXaz;
+
+1.8
+date	2013.09.07.09.58.38;	author rsprowson;	state Exp;
+branches;
+next	1.7;
+commitid	DDb7J4xWmm0Dsu4x;
+
+1.7
+date	2013.09.04.07.14.41;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	2RDI391I6q1nE54x;
+
+1.6
+date	2013.04.14.16.33.37;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	spAQXyBBW956lLLw;
+
+1.5
+date	2012.05.13.12.13.47;	author bavison;	state Exp;
+branches;
+next	1.4;
+commitid	ikRUfBzwYcXxHy4w;
+
+1.4
+date	2011.08.15.23.10.49;	author bavison;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.10.01.11.46.37;	author bavison;	state Exp;
+branches
+	1.3.2.1;
+next	1.2;
+
+1.2
+date	2001.06.28.20.21.55;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.06.28.18.11.57;	author bavison;	state Exp;
+branches;
+next	;
+
+1.3.2.1
+date	2011.08.15.14.11.19;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.10
+log
+@Use Entry/EXIT, Push/Pull macros
+Detail:
+  s/* - Code updated to use Entry/EXIT and Push/Pull macros where possible instead of manual STM/LDM. Also add ROUTs for safety (although most routines use named local labels rather than numbered ones). A few obvious cases also fixed to reduce number of regs pushed onto stack.
+  A few other changes and fixes of note:
+  s/Log - Trim empty, unused installLogDriver routine when doLog is {FALSE}
+  s/Module - Add a veneer to swiHandler to deal with 26bit and 26/32bit neutral cases; avoids the need for individual SWI handlers to preserve NZC
+  s/SWIs:
+  - Remove 26/32bit neutral SWI exit code, now handled by veneers. CLRV on most SWI exits to replace the implicit CLRV from CMP pc,pc.
+  - swiHandlerVolume and swiDriverMixer were popping the wrong regs from the stack for most error cases; now fixed via the switch to Entry/EXIT
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 1.18. Tagged as 'SharedSnd-1_18'
+@
+text
+@; Copyright (c) 1995, Expressive Software Projects
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met:
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of Expressive Software Projects nor the names of its
+;       contributors may be used to endorse or promote products derived from
+;       this software without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+; ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+; DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+; (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+; ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+; (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+; 
+ [ doLog
+
+installLogDriver ROUT
+        ; Set up the registers and table for
+        ; Sound_ChannelHandler and call installDriver
+        Entry   , 32
+
+        MOV     r0,#32
+        ADR     r1,logDriverToken
+        MOV     r2,sp
+        BL      msgLookupToken
+        MOV     r3,sp                           ; Driver name
+
+        MOV     r0,#0
+        STR     r0,[r12,#work_Log_InitedFully]
+
+        ADD     R0,R12,#work_DriverEntryTable   ; Get table address
+
+        ADR     R1,logDriverInstall             ; Install entry
+        STR     R1,[R0,#driverEntry_Install]
+
+        ADR     R1,logDriverRemove              ; Remove entry
+        STR     R1,[R0,#driverEntry_Remove]
+
+        ADR     R1,logDriverSampleRate          ; Sample rate entry
+        STR     R1,[R0,#driverEntry_SampleRate]
+
+        MOV     R1,#0                           ; No volume entry
+        STR     R1,[R0,#driverEntry_Volume]
+
+        MOV     R1,#0
+        STR     R1,[R0,#driverEntry_Mixer]      ; No mixer entry
+
+        LDR     R1,[R12,#work_privateWord]      ; Parameter
+        MOV     R2,#0                           ; Flags
+
+        Debug   gn, "Install log driver....."
+        Debug   gn, " Table =",r0
+        Debug   gn, " Parameter =",r1
+        Debug   gn, " Flags =",r2
+        DebugS  gn, " Name =",r3
+
+        BL      installDriver
+
+        EXIT
+
+logDriverToken
+        DCB     "NmLog",0
+        ALIGN
+
+; -----------
+
+work_Log_OldConfigureVal
+        DCD     work_Log_OldConfigure
+
+work_Log_ChanTableVal
+        DCD     work_Log_ChanTable
+
+; ---------------
+
+logDriverInstall ROUT
+        ; Install driver using Sound_LinearHandler
+        ;  R0  = Handler address
+        ;  R1  = Parameter to pass
+        ;  R12 = parameter for driver
+        ;  R14 already on stack
+        Push    "R1-R12"
+
+        Debug   gn,"logDriverInstall: entered"
+
+        LDR     R12,[R12]
+
+        MOV     R6,R0
+
+        ; For log driver we need to store the handle address provided and install
+        ; our own code into Sound_Configure
+        ; this routine will then provide a 16 bit buffer to the original handle and then
+        ; convert it into the 8 bit buffer
+        STR     R0,[R12,#work_Log_Handler]        ; Store handler and parameter to be called by log fill code
+        STR     R1,[R12,#work_Log_Parameter]
+
+        LDR     R0,[R12,#work_privateWord]        ; Need this for access to above and other values
+        STR     R0,logDriver_WorkPtr              ; in a fixed location as ChannelHandler does not provide it
+
+        ;BL     getLogLinPtr
+        ;STR    R0,logLinTable_Ptr
+
+        ; Check to see if the log handler is already in action and buffer set up
+        MOV     R0,#0
+        MOV     R1,#0
+        MOV     R2,#0
+        MOV     R3,#0
+        MOV     R4,#0
+        SWI     XSound_Configure
+
+        TEQ     r3,#&FC000003 ; is it 'unset' (26-bit OS value) ?
+        TEQNE   r3,#SoundSystemNIL ; check modern value
+        TEQNE   r3,#0         ; in case anyone used 0 as well.
+        MOVEQ   r0,#0
+
+        DebugIf EQ,gn,"installLogDriver: Can't, no entry point"
+        BEQ     installLogDriver_Cant
+
+        LDR     R5,work_Log_OldConfigureVal
+        ADD     R5,R12,R5 ; Preserve old values
+        STMIA   R5,{R0-R4}
+
+        ; Value for R3 is a table......
+        LDR     R0,work_Log_ChanTableVal
+        ADD     R0,R12,R0  ; Channel Handler table pointer
+
+        CMP     R0,R3            ; Is it already installed?
+
+        BEQ     logDriverInstallExit
+
+        ; Set up Channel Handler table
+
+ [ doLogDirect
+        ADR     R1,logFillCode   ; Pointer to fill code
+        STR     R1,[R0]
+
+        ADR     R1,logNullCode   ; Overrun code
+        STR     R1,[R0,#4]
+
+        MOV     R1,#0
+        STR     R1,[R0,#8]        ; Linear to log table
+        STR     R1,[R0,#12]       ; Log scale table
+
+        STR     R1,[R12,#work_OldLogFill]
+
+        MOV     R3,R0   ; Put address into R3
+ |
+        LDR     R1,[R3]
+        STR     R1,[R12,#work_OldLogFill]
+
+        ADR     R1,logFillCode   ; Pointer to fill code
+        STR     R1,[R3]
+
+        ;ADR    R1,logNullCode   ; Overrun code
+        ;STR    R1,[R0,#4]
+        ;
+        ;LDR    R1,[R3,#8]
+        ;STR    R1,[R0,#8]        ; Linear to log table
+        ;
+        ;LDR    R1,[R3,#12]
+        ;STR    R1,[R0,#12]       ; Log scale table
+        ;
+        ;MOV    R3,R0   ; Put address into R3
+
+        MOV     R3,#0
+ ]
+
+        MOV     R0,#2+(1<<31)   ; Set for two channels (LR Stereo), top bit set to force SoundDMAx to pass it on
+        MOV     R1,#0
+        MOV     R2,#0
+
+        ;MOV    R4,#&FC000003           ; no scheduler
+        MOV     R4,#0
+
+        SWI     XSound_Configure
+
+        ; Now set the stereo positions
+        MOV     R0,#1   ; Channel 0
+        MVN     R1,#126 ; Full left
+        SWI     XSound_Stereo
+        STR     R1,[R12,#work_Log_OldLeft] ; Preserve old value
+
+        MOV     R0,#2   ; Channel 1
+        MOV     R1,#127   ; Full right
+        SWI     XSound_Stereo
+        STR     R1,[R12,#work_Log_OldRight] ; Preserve old vlaue
+
+; mark us as fully initialised
+        MOV     r0,#1
+        STR     r0,[r12,#work_Log_InitedFully]
+
+        MOV     R0,R6                   ; Restore R0 if successful
+        ;MOVVS  R0,#0                   ; Or 0 if error
+
+        ; ---- Now done by SoundDMAx module
+        ;MOV    R0,#18
+        ;ADR    R1,soundDMATitle
+        ;SWI    "OS_Module"
+        ;
+        ;LDR    R2,[R3,#&20]    ; Get pointer to SWI handler
+        ;ADD    R2,R2,R3
+        ;LDR    R1,term         ; Get alternative
+        ;STR    R1,[R2,#&14]    ; and patch in to Sound Configure branch code
+
+installLogDriver_Cant
+
+logDriverInstallExit
+
+        Debug   gn,"logDriverInstall: exiting"
+
+        Pull    "R1-R12,PC"
+
+; ---
+
+logDriver_WorkPtr
+        DCD     0
+; soundDMATitle
+;       = "SoundDMA"
+;       DCD     0
+
+; -----------
+
+logDriverRemove ROUT
+        ; Remove driver using Sound_LinearHandler
+        ; R14 already on stack
+
+        Push    "R0-R5"
+
+        LDR     R12,[R12]
+
+; if we're not fully initialied, don't do anything
+        LDR     r0,[r12,#work_Log_InitedFully]
+        TEQ     r0,#1
+        BNE     %FT90
+
+        MOV     R0,#1   ; Channel 0
+        LDR     R1,[R12,#work_Log_OldLeft] ; Preserve old value
+        SWI     XSound_Stereo
+
+        MOV     R0,#2   ; Channel 1
+        LDR     R1,[R12,#work_Log_OldRight] ; Preserve old vlaue
+        SWI     XSound_Stereo
+
+        LDR     R5,work_Log_OldConfigureVal
+        ADD     R5,R12,R5 ; Get old values
+        LDMIA   R5,{R0-R4}
+
+        ORR     R0,R0,#1<<31      ; Force SoundDMAx to pass it on
+        SWI     XSound_Configure
+
+        LDR     R0,[R12,#work_OldLogFill]
+        STR     R0,[R3]
+
+90
+        Pull    "R0-R5,PC"
+
+; -----------
+
+logDriverSampleRate
+        ; Choose rate and/or return current rate
+        ;  R0 = 0 to read
+        ;     > 0 to set to R0 = frequency
+        ; On exit:
+        ;  R0 = current frequency
+        Push    "R1-R12"
+
+        CMP     R0,#0
+        BEQ     logDriverSampleRateRead
+
+        ; Set the rate to R0
+        ; Do this by calculating the period from the frequency
+
+        LDR   R3,rateConst   ; R3.R2
+        MOV     R2,#0
+        MOV     R4,R0    ; DIV frequency
+
+        BL      div
+
+        ; R3 = nearest sample period, R2 = Remainder
+        TST     R2,#1<<24
+        ADDNE   R3,R3,#1
+
+        MOV     R0,#0+(1<<31)  ; Force SoundDMAx to pass it on
+        MOV     R1,#0
+        MOV     R2,R3   ; New rate in r2
+        MOV     R3,#0
+        MOV     R4,#0
+
+        SWI     XSound_Configure  ; Set new sample period
+        BVS     logDriverSampleRateFailed
+
+logDriverSampleRateRead
+        MOV     R0,#0
+        MOV     R1,#0
+        MOV     R2,#0
+        MOV     R3,#0
+        MOV     R4,#0
+
+        SWI     XSound_Configure  ; Get current sample period
+        BVS     logDriverSampleRateFailed
+
+        ; Sample period in R2
+        ; Convert it into rate
+        LDR     R3,rateConst
+        MOV     R4,R2
+        MOV     R2,#0
+        BL      div
+
+        ; Frequency in R3
+        MOV     R0,R3               ; Return it in R0
+
+logDriverSampleRateExit
+        Pull    "R1-R12,PC"
+
+logDriverSampleRateFailed
+        MOV     r0, #0 ; indicates failure
+        B       logDriverSampleRateExit
+
+;------------
+
+work_Log_16BitBufferVal
+        DCD     work_Log_16BitBuffer
+
+logFillR12
+        DCD     0
+logFillTemp
+        DCD     0
+logSoundOn
+        DCD     0
+
+; -------------
+
+logNullCode
+
+
+        MOV     PC,R14
+
+
+; ----------
+
+logFillCode     ROUT
+        ; Entry point for channel handler call
+        ; Will be called with Channel handler register settings
+        ; Needs to then call SharedSound fill routine with modified parameters
+        LDR     R0,logSoundOn
+        CMP     R0,#1
+        MOVEQ   PC,R14
+
+        MOV     R0,#1
+        STR     R0,logSoundOn
+
+        Entry   "R0-R12"
+
+        ; R8  = Sample period
+        ; R10 = end of buffer
+        ; R12 = start of buffer
+
+        STR     R12,logFillR12
+
+        LDR     R12,logDriver_WorkPtr
+        LDR     R12,[R12]              ; Get SharedSound workspace pointer
+
+        ; Either call old log code or SharedSound handler
+
+        ; If there are no handlers installed then call the log code
+        ; otherwise call SharedSound, but not both
+        ADD     R0,R12,#work_handlerTable       ; Address of table
+        MOV     R1,#handlerMax                  ; Handler count
+
+logFillCode_CheckLoop
+
+        LDR     R2,[R0,#handler_Address]        ; Does this slot contain a handler?
+        CMP     R2,#0
+        BNE     logFillCode_CallSharedSound
+
+        ADD     R0,R0,#handlerTableLen
+        SUBS    R1,R1,#1
+        BNE     logFillCode_CheckLoop
+
+        ; No handlers so use log code
+
+        LDR     R2,[R12,#work_OldLogFill]
+        CMP     R2,#0
+        BEQ     logFillCode_chandReturn
+
+        LDR     R12,logFillR12    ; Put start back at R12
+
+        ;ADR   R14,logFillCode_chandReturn  ; StrongARM compliant
+        MOV     R14,PC
+        MOV     PC,R2                         ; And call old channel handler
+
+logFillCode_chandReturn
+        B       logFillCode_Exit
+
+; ---
+
+logFillCode_CallSharedSound   ; There are some handlers installed, so call those
+
+        LDR     R9,logFillR12    ; Get old R12 into R9
+
+        ; Call SharedSound code with:
+        ;    R0 = parameter, this should be the SharedSound R12 value
+        ;    R1 = base of buffer
+        ;    R2 = end of buffer
+        ;    R3 = flags
+        ;    R4 = sample frequency
+        ;    R12= workspace ptr
+        ;    R14= return address
+
+        ; See if sample period has changed
+        MOV   R8,#48
+
+        LDR     R6,[R12,#work_SamplePeriod]
+        CMP     R6,R8                        ; Has it changed?
+        LDREQ   R4,[R12,#work_SampleFrequency]
+        BEQ     logFillCode_RateNoChange
+;       STR     R8,[R12,#work_SamplePeriod]
+
+        LDR     R3,rateConst
+        MOV     R2,#0
+        MOV     R4,R8
+        BL      div
+;       STR     R3,[R12,#work_SampleFrequency]
+        MOV     R4,R3   ; Return sample frequency in R4
+
+
+logFillCode_RateNoChange
+        ; R4 = Sample frequency
+        ; Address of shared sound routine
+        ; Set up buffer stuff - length will depend on values passed by ChannelH
+        ; Start of buffer
+        LDR     R2,work_Log_16BitBufferVal
+        ADD     R1,R12,R2
+
+        SUB     R2,R10,R9        ; Buffer length
+        ADD     R2,R1,R2,LSL #1  ; * 2 for 16 bit
+
+        ; Actually need to get data from old buffer at R9
+
+        ; Zero buffer
+
+        MOV     R5,#0
+        MOV     R6,#0
+        MOV     R7,#0
+        MOV     R8,#0
+        MOV     R11,R1
+
+logFillCode_ZeroLoop
+
+        STMIA   R11!,{R5-R8}
+        CMP     R11,R2
+        BLT     logFillCode_ZeroLoop
+
+        MOV     R3,#2   ; Flags
+
+        LDR     R0,[R12,#work_Log_Parameter]
+
+        Push    "R1,R2,R9" ; Store 8 bit buffer stuff
+
+        LDR     R5,[R12,#work_Log_Handler]
+;       ADR     R14,logFillCode_Return
+        MOV     R14,PC
+        MOV     PC,R5
+
+
+logFillCode_Return
+
+        Pull    "R1,R2,R10"
+
+        ; R1  = Start of 16 Bit buffer
+        ; R2  = End of 16 bit buffer
+        ; R3  = Returned flags
+        ; R10 = Start of 8 bit buffer
+
+;       CMP   R3,#1  ; Data exists and must be mixed   - Not fully supported by SharedSound calling routines....!!!
+;       If this was working we would not need to zero buffer as above
+;
+;       BNE   logFillCode_Exit  ; If none then return
+
+        ; Then fill the channel handler buffer with logged versions of the 16 bit data
+
+        ; Get log table pointer into R4
+
+        ADR  R4,logTable
+
+        ; Convert data
+
+logFillCode_loop
+        LDMIA   R1!,{R0,R3,R9,R11}   ; get 4 output values
+
+        MOV     R5,R0,LSR#16
+        SUB     R0,R0,R5,LSL#16
+        LDRB    R6,[R4,R5,LSR#(16-logBits)]
+        LDRB    R7,[R4,R0,LSR#(16-logBits)]
+        MOV     R5,R3,LSR#16
+        ORR     R6,R6,R7,LSL#8
+        LDRB    R7,[R4,R5,LSR#(16-logBits)]
+        SUB     R0,R3,R5,LSL#16
+        LDRB    R0,[R4,R0,LSR#(16-logBits)]
+        ORR     R6,R6,R7,LSL#16
+        ORR     R6,R6,R0,LSL#24
+
+        MOV     R5,R9,LSR#16
+        SUB     R0,R9,R5,LSL#16
+        LDRB    R7,[R4,R5,LSR#(16-logBits)]
+        LDRB    R8,[R4,R0,LSR#(16-logBits)]
+        MOV     R5,R11,LSR#16
+        ORR     R7,R7,R8,LSL#8
+        LDRB    R8,[R4,R5,LSR#(16-logBits)]
+        SUB     R0,R11,R5,LSL#16
+        ORR     R7,R7,R8,LSL#16
+        LDRB    R8,[R4,R0,LSR#(16-logBits)]
+        CMP     R1,R2
+        ORR     R7,R7,R8,LSL#24
+
+        STMIA   R10!,{R6,R7}
+        BLT     logFillCode_loop
+logFillCode_Exit
+        ; And return
+        MOV   R0,#0
+        STR   R0,logSoundOn
+
+        EXIT                            ; flags on exit have always been ignored
+
+; --------------------
+
+logTable ; 8K Lookup table using 13 bits of 16 bit number as lookup
+        DCD &06040200
+        DCD &0E0C0A08
+        DCD &16141210
+        DCD &1E1C1A18
+        DCD &24222220
+        DCD &28262624
+        DCD &2C2A2A28
+        DCD &302E2E2C
+        DCD &34323230
+        DCD &38363634
+        DCD &3C3A3A38
+        DCD &403E3E3C
+        DCD &42424240
+        DCD &44444442
+        DCD &46464644
+        DCD &48484846
+        DCD &4A4A4A48
+        DCD &4C4C4C4A
+        DCD &4E4E4E4C
+        DCD &5050504E
+        DCD &52525250
+        DCD &54545452
+        DCD &56565654
+        DCD &58585856
+        DCD &5A5A5A58
+        DCD &5C5C5C5A
+        DCD &5E5E5E5C
+        DCD &6060605E
+        DCD &62626260
+        DCD &62626262
+        DCD &64646462
+        DCD &64646464
+        DCD &66666664
+        DCD &66666666
+        DCD &68686866
+        DCD &68686868
+        DCD &6A6A6A68
+        DCD &6A6A6A6A
+        DCD &6C6C6C6A
+        DCD &6C6C6C6C
+        DCD &6E6E6E6C
+        DCD &6E6E6E6E
+        DCD &7070706E
+        DCD &70707070
+        DCD &72727270
+        DCD &72727272
+        DCD &74747472
+        DCD &74747474
+        DCD &76767674
+        DCD &76767676
+        DCD &78787876
+        DCD &78787878
+        DCD &7A7A7A78
+        DCD &7A7A7A7A
+        DCD &7C7C7C7A
+        DCD &7C7C7C7C
+        DCD &7E7E7E7C
+        DCD &7E7E7E7E
+        DCD &8080807E
+        DCD &80808080
+        DCD &82828280
+        DCD &82828282
+        DCD &82828282
+        DCD &82828282
+        DCD &84848482
+        DCD &84848484
+        DCD &84848484
+        DCD &84848484
+        DCD &86868684
+        DCD &86868686
+        DCD &86868686
+        DCD &86868686
+        DCD &88888886
+        DCD &88888888
+        DCD &88888888
+        DCD &88888888
+        DCD &8A8A8A88
+        DCD &8A8A8A8A
+        DCD &8A8A8A8A
+        DCD &8A8A8A8A
+        DCD &8C8C8C8A
+        DCD &8C8C8C8C
+        DCD &8C8C8C8C
+        DCD &8C8C8C8C
+        DCD &8E8E8E8C
+        DCD &8E8E8E8E
+        DCD &8E8E8E8E
+        DCD &8E8E8E8E
+        DCD &9090908E
+        DCD &90909090
+        DCD &90909090
+        DCD &90909090
+        DCD &92929290
+        DCD &92929292
+        DCD &92929292
+        DCD &92929292
+        DCD &94949492
+        DCD &94949494
+        DCD &94949494
+        DCD &94949494
+        DCD &96969694
+        DCD &96969696
+        DCD &96969696
+        DCD &96969696
+        DCD &98989896
+        DCD &98989898
+        DCD &98989898
+        DCD &98989898
+        DCD &9A9A9A98
+        DCD &9A9A9A9A
+        DCD &9A9A9A9A
+        DCD &9A9A9A9A
+        DCD &9C9C9C9A
+        DCD &9C9C9C9C
+        DCD &9C9C9C9C
+        DCD &9C9C9C9C
+        DCD &9E9E9E9C
+        DCD &9E9E9E9E
+        DCD &9E9E9E9E
+        DCD &9E9E9E9E
+        DCD &A0A0A09E
+        DCD &A0A0A0A0
+        DCD &A0A0A0A0
+        DCD &A0A0A0A0
+        DCD &A2A2A2A0
+        DCD &A2A2A2A2
+        DCD &A2A2A2A2
+        DCD &A2A2A2A2
+        DCD &A2A2A2A2
+        DCD &A2A2A2A2
+        DCD &A2A2A2A2
+        DCD &A2A2A2A2
+        DCD &A4A4A4A2
+        DCD &A4A4A4A4
+        DCD &A4A4A4A4
+        DCD &A4A4A4A4
+        DCD &A4A4A4A4
+        DCD &A4A4A4A4
+        DCD &A4A4A4A4
+        DCD &A4A4A4A4
+        DCD &A6A6A6A4
+        DCD &A6A6A6A6
+        DCD &A6A6A6A6
+        DCD &A6A6A6A6
+        DCD &A6A6A6A6
+        DCD &A6A6A6A6
+        DCD &A6A6A6A6
+        DCD &A6A6A6A6
+        DCD &A8A8A8A6
+        DCD &A8A8A8A8
+        DCD &A8A8A8A8
+        DCD &A8A8A8A8
+        DCD &A8A8A8A8
+        DCD &A8A8A8A8
+        DCD &A8A8A8A8
+        DCD &A8A8A8A8
+        DCD &AAAAAAA8
+        DCD &AAAAAAAA
+        DCD &AAAAAAAA
+        DCD &AAAAAAAA
+        DCD &AAAAAAAA
+        DCD &AAAAAAAA
+        DCD &AAAAAAAA
+        DCD &AAAAAAAA
+        DCD &ACACACAA
+        DCD &ACACACAC
+        DCD &ACACACAC
+        DCD &ACACACAC
+        DCD &ACACACAC
+        DCD &ACACACAC
+        DCD &ACACACAC
+        DCD &ACACACAC
+        DCD &AEAEAEAC
+        DCD &AEAEAEAE
+        DCD &AEAEAEAE
+        DCD &AEAEAEAE
+        DCD &AEAEAEAE
+        DCD &AEAEAEAE
+        DCD &AEAEAEAE
+        DCD &AEAEAEAE
+        DCD &B0B0B0AE
+        DCD &B0B0B0B0
+        DCD &B0B0B0B0
+        DCD &B0B0B0B0
+        DCD &B0B0B0B0
+        DCD &B0B0B0B0
+        DCD &B0B0B0B0
+        DCD &B0B0B0B0
+        DCD &B2B2B2B0
+        DCD &B2B2B2B2
+        DCD &B2B2B2B2
+        DCD &B2B2B2B2
+        DCD &B2B2B2B2
+        DCD &B2B2B2B2
+        DCD &B2B2B2B2
+        DCD &B2B2B2B2
+        DCD &B4B4B4B2
+        DCD &B4B4B4B4
+        DCD &B4B4B4B4
+        DCD &B4B4B4B4
+        DCD &B4B4B4B4
+        DCD &B4B4B4B4
+        DCD &B4B4B4B4
+        DCD &B4B4B4B4
+        DCD &B6B6B6B4
+        DCD &B6B6B6B6
+        DCD &B6B6B6B6
+        DCD &B6B6B6B6
+        DCD &B6B6B6B6
+        DCD &B6B6B6B6
+        DCD &B6B6B6B6
+        DCD &B6B6B6B6
+        DCD &B8B8B8B6
+        DCD &B8B8B8B8
+        DCD &B8B8B8B8
+        DCD &B8B8B8B8
+        DCD &B8B8B8B8
+        DCD &B8B8B8B8
+        DCD &B8B8B8B8
+        DCD &B8B8B8B8
+        DCD &BABABAB8
+        DCD &BABABABA
+        DCD &BABABABA
+        DCD &BABABABA
+        DCD &BABABABA
+        DCD &BABABABA
+        DCD &BABABABA
+        DCD &BABABABA
+        DCD &BCBCBCBA
+        DCD &BCBCBCBC
+        DCD &BCBCBCBC
+        DCD &BCBCBCBC
+        DCD &BCBCBCBC
+        DCD &BCBCBCBC
+        DCD &BCBCBCBC
+        DCD &BCBCBCBC
+        DCD &BEBEBEBC
+        DCD &BEBEBEBE
+        DCD &BEBEBEBE
+        DCD &BEBEBEBE
+        DCD &BEBEBEBE
+        DCD &BEBEBEBE
+        DCD &BEBEBEBE
+        DCD &BEBEBEBE
+        DCD &C0C0C0BE
+        DCD &C0C0C0C0
+        DCD &C0C0C0C0
+        DCD &C0C0C0C0
+        DCD &C0C0C0C0
+        DCD &C0C0C0C0
+        DCD &C0C0C0C0
+        DCD &C0C0C0C0
+        DCD &C2C2C2C0
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C2C2C2C2
+        DCD &C4C4C4C2
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C4C4C4C4
+        DCD &C6C6C6C4
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C6C6C6C6
+        DCD &C8C8C8C6
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &C8C8C8C8
+        DCD &CACACAC8
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CACACACA
+        DCD &CCCCCCCA
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CCCCCCCC
+        DCD &CECECECC
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &CECECECE
+        DCD &D0D0D0CE
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D0D0D0D0
+        DCD &D2D2D2D0
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D2D2D2D2
+        DCD &D4D4D4D2
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D4D4D4D4
+        DCD &D6D6D6D4
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D6D6D6D6
+        DCD &D8D8D8D6
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &D8D8D8D8
+        DCD &DADADAD8
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DADADADA
+        DCD &DCDCDCDA
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DCDCDCDC
+        DCD &DEDEDEDC
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &DEDEDEDE
+        DCD &E0E0E0DE
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E0E0E0E0
+        DCD &E2E2E2E0
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E2E2E2E2
+        DCD &E4E4E4E2
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E4E4E4E4
+        DCD &E6E6E6E4
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E6E6E6E6
+        DCD &E8E8E8E6
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &E8E8E8E8
+        DCD &EAEAEAE8
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &EAEAEAEA
+        DCD &ECECECEA
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &ECECECEC
+        DCD &EEEEEEEC
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &EEEEEEEE
+        DCD &F0F0F0EE
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F0F0F0F0
+        DCD &F2F2F2F0
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F2F2F2F2
+        DCD &F4F4F4F2
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F4F4F4F4
+        DCD &F6F6F6F4
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F6F6F6F6
+        DCD &F8F8F8F6
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &F8F8F8F8
+        DCD &FAFAFAF8
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FAFAFAFA
+        DCD &FCFCFCFA
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FCFCFCFC
+        DCD &FEFEFEFC
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FEFEFEFE
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FFFFFFFF
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FDFDFDFD
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &FBFBFBFB
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F9F9F9F9
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F7F7F7F7
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F5F5F5F5
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F3F3F3F3
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &F1F1F1F1
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EFEFEFEF
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EDEDEDED
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &EBEBEBEB
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E9E9E9E9
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E7E7E7E7
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E5E5E5E5
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E3E3E3E3
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &E1E1E1E1
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DFDFDFDF
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DDDDDDDD
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &DBDBDBDB
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D9D9D9D9
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D7D7D7D7
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D5D5D5D5
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D3D3D3D3
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &D1D1D1D1
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CFCFCFCF
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CDCDCDCD
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &CBCBCBCB
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C9C9C9C9
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C7C7C7C7
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C5C5C5C5
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C3C3C3C3
+        DCD &C1C1C1C1
+        DCD &C1C1C1C1
+        DCD &C1C1C1C1
+        DCD &C1C1C1C1
+        DCD &C1C1C1C1
+        DCD &C1C1C1C1
+        DCD &C1C1C1C1
+        DCD &C1C1C1C1
+        DCD &BFBFBFBF
+        DCD &BFBFBFBF
+        DCD &BFBFBFBF
+        DCD &BFBFBFBF
+        DCD &BFBFBFBF
+        DCD &BFBFBFBF
+        DCD &BFBFBFBF
+        DCD &BFBFBFBF
+        DCD &BDBDBDBD
+        DCD &BDBDBDBD
+        DCD &BDBDBDBD
+        DCD &BDBDBDBD
+        DCD &BDBDBDBD
+        DCD &BDBDBDBD
+        DCD &BDBDBDBD
+        DCD &BDBDBDBD
+        DCD &BBBBBBBB
+        DCD &BBBBBBBB
+        DCD &BBBBBBBB
+        DCD &BBBBBBBB
+        DCD &BBBBBBBB
+        DCD &BBBBBBBB
+        DCD &BBBBBBBB
+        DCD &BBBBBBBB
+        DCD &B9B9B9B9
+        DCD &B9B9B9B9
+        DCD &B9B9B9B9
+        DCD &B9B9B9B9
+        DCD &B9B9B9B9
+        DCD &B9B9B9B9
+        DCD &B9B9B9B9
+        DCD &B9B9B9B9
+        DCD &B7B7B7B7
+        DCD &B7B7B7B7
+        DCD &B7B7B7B7
+        DCD &B7B7B7B7
+        DCD &B7B7B7B7
+        DCD &B7B7B7B7
+        DCD &B7B7B7B7
+        DCD &B7B7B7B7
+        DCD &B5B5B5B5
+        DCD &B5B5B5B5
+        DCD &B5B5B5B5
+        DCD &B5B5B5B5
+        DCD &B5B5B5B5
+        DCD &B5B5B5B5
+        DCD &B5B5B5B5
+        DCD &B5B5B5B5
+        DCD &B3B3B3B3
+        DCD &B3B3B3B3
+        DCD &B3B3B3B3
+        DCD &B3B3B3B3
+        DCD &B3B3B3B3
+        DCD &B3B3B3B3
+        DCD &B3B3B3B3
+        DCD &B3B3B3B3
+        DCD &B1B1B1B1
+        DCD &B1B1B1B1
+        DCD &B1B1B1B1
+        DCD &B1B1B1B1
+        DCD &B1B1B1B1
+        DCD &B1B1B1B1
+        DCD &B1B1B1B1
+        DCD &B1B1B1B1
+        DCD &AFAFAFAF
+        DCD &AFAFAFAF
+        DCD &AFAFAFAF
+        DCD &AFAFAFAF
+        DCD &AFAFAFAF
+        DCD &AFAFAFAF
+        DCD &AFAFAFAF
+        DCD &AFAFAFAF
+        DCD &ADADADAD
+        DCD &ADADADAD
+        DCD &ADADADAD
+        DCD &ADADADAD
+        DCD &ADADADAD
+        DCD &ADADADAD
+        DCD &ADADADAD
+        DCD &ADADADAD
+        DCD &ABABABAB
+        DCD &ABABABAB
+        DCD &ABABABAB
+        DCD &ABABABAB
+        DCD &ABABABAB
+        DCD &ABABABAB
+        DCD &ABABABAB
+        DCD &ABABABAB
+        DCD &A9A9A9A9
+        DCD &A9A9A9A9
+        DCD &A9A9A9A9
+        DCD &A9A9A9A9
+        DCD &A9A9A9A9
+        DCD &A9A9A9A9
+        DCD &A9A9A9A9
+        DCD &A9A9A9A9
+        DCD &A7A7A7A7
+        DCD &A7A7A7A7
+        DCD &A7A7A7A7
+        DCD &A7A7A7A7
+        DCD &A7A7A7A7
+        DCD &A7A7A7A7
+        DCD &A7A7A7A7
+        DCD &A7A7A7A7
+        DCD &A5A5A5A5
+        DCD &A5A5A5A5
+        DCD &A5A5A5A5
+        DCD &A5A5A5A5
+        DCD &A5A5A5A5
+        DCD &A5A5A5A5
+        DCD &A5A5A5A5
+        DCD &A5A5A5A5
+        DCD &A3A3A3A3
+        DCD &A3A3A3A3
+        DCD &A3A3A3A3
+        DCD &A3A3A3A3
+        DCD &A3A3A3A3
+        DCD &A3A3A3A3
+        DCD &A3A3A3A3
+        DCD &A3A3A3A3
+        DCD &A1A1A1A1
+        DCD &A1A1A1A1
+        DCD &A1A1A1A1
+        DCD &A1A1A1A1
+        DCD &9F9F9F9F
+        DCD &9F9F9F9F
+        DCD &9F9F9F9F
+        DCD &9F9F9F9F
+        DCD &9D9D9D9D
+        DCD &9D9D9D9D
+        DCD &9D9D9D9D
+        DCD &9D9D9D9D
+        DCD &9B9B9B9B
+        DCD &9B9B9B9B
+        DCD &9B9B9B9B
+        DCD &9B9B9B9B
+        DCD &99999999
+        DCD &99999999
+        DCD &99999999
+        DCD &99999999
+        DCD &97979797
+        DCD &97979797
+        DCD &97979797
+        DCD &97979797
+        DCD &95959595
+        DCD &95959595
+        DCD &95959595
+        DCD &95959595
+        DCD &93939393
+        DCD &93939393
+        DCD &93939393
+        DCD &93939393
+        DCD &91919191
+        DCD &91919191
+        DCD &91919191
+        DCD &91919191
+        DCD &8F8F8F8F
+        DCD &8F8F8F8F
+        DCD &8F8F8F8F
+        DCD &8F8F8F8F
+        DCD &8D8D8D8D
+        DCD &8D8D8D8D
+        DCD &8D8D8D8D
+        DCD &8D8D8D8D
+        DCD &8B8B8B8B
+        DCD &8B8B8B8B
+        DCD &8B8B8B8B
+        DCD &8B8B8B8B
+        DCD &89898989
+        DCD &89898989
+        DCD &89898989
+        DCD &89898989
+        DCD &87878787
+        DCD &87878787
+        DCD &87878787
+        DCD &87878787
+        DCD &85858585
+        DCD &85858585
+        DCD &85858585
+        DCD &85858585
+        DCD &83838383
+        DCD &83838383
+        DCD &83838383
+        DCD &83838383
+        DCD &81818181
+        DCD &81818181
+        DCD &7F7F7F7F
+        DCD &7F7F7F7F
+        DCD &7D7D7D7D
+        DCD &7D7D7D7D
+        DCD &7B7B7B7B
+        DCD &7B7B7B7B
+        DCD &79797979
+        DCD &79797979
+        DCD &77777777
+        DCD &77777777
+        DCD &75757575
+        DCD &75757575
+        DCD &73737373
+        DCD &73737373
+        DCD &71717171
+        DCD &71717171
+        DCD &6F6F6F6F
+        DCD &6F6F6F6F
+        DCD &6D6D6D6D
+        DCD &6D6D6D6D
+        DCD &6B6B6B6B
+        DCD &6B6B6B6B
+        DCD &69696969
+        DCD &69696969
+        DCD &67676767
+        DCD &67676767
+        DCD &65656565
+        DCD &65656565
+        DCD &63636363
+        DCD &63636363
+        DCD &61616161
+        DCD &5F5F5F5F
+        DCD &5D5D5D5D
+        DCD &5B5B5B5B
+        DCD &59595959
+        DCD &57575757
+        DCD &55555555
+        DCD &53535353
+        DCD &51515151
+        DCD &4F4F4F4F
+        DCD &4D4D4D4D
+        DCD &4B4B4B4B
+        DCD &49494949
+        DCD &47474747
+        DCD &45454545
+        DCD &43434343
+        DCD &3F3F4141
+        DCD &3B3B3D3D
+        DCD &37373939
+        DCD &33333535
+        DCD &2F2F3131
+        DCD &2B2B2D2D
+        DCD &27272929
+        DCD &23232525
+        DCD &1B1D1F21
+        DCD &13151719
+        DCD &0B0D0F11
+        DCD &03050709
+ ]
+        END
+@
+
+
+1.9
+log
+@Expand tabs
+Detail:
+  s/* - Expand all tabs, to avoid space/tab use inconsistencies within some files and to match general ROOL code formatting
+Admin:
+  Binary unchanged
+
+
+Version 1.17. Not tagged
+@
+text
+@d28 1
+a28 1
+installLogDriver
+d31 1
+a31 2
+        Push    "lr"
+        SUB     sp,sp,#32
+d70 1
+a70 2
+        ADD     sp,sp,#32
+        Pull    "pc"
+d86 1
+a86 1
+logDriverInstall
+d92 1
+a92 1
+        STMDB   R13!,{R1-R12}
+d221 1
+a221 1
+        LDMIA   R13!,{R1-R12,PC}
+d233 1
+a233 1
+logDriverRemove
+d237 1
+a237 1
+        STMDB   R13!,{R0-R5}
+d265 1
+a265 1
+        LDMIA   R13!,{R0-R5,PC}
+d275 1
+a275 1
+        STMDB   R13!,{R1-R12}
+d323 1
+a323 1
+        LDMIA   R13!,{R1-R12,PC}
+d351 1
+a351 1
+logFillCode
+d362 1
+a362 1
+        STMDB   R13!,{R0-R12,R14}
+d468 1
+a468 1
+        STMDB   R13!,{R1,R2,R9} ; Store 8 bit buffer stuff
+d478 1
+a478 1
+        LDMIA   R13!,{R1,R2,R10}
+d533 1
+a533 1
+        LDMIA   R13!,{R0-R12,PC}        ; flags on exit have always been ignored
+a2585 11
+
+
+ |
+
+installLogDriver     ; Set up the registers and table for
+                       ; Sound_ChannelHandler and call installDriver
+
+        STMDB   R13!,{R14}
+
+        LDMIA   R13!,{PC}
+
+@
+
+
+1.8
+log
+@Internationalised
+Errors are now looked up via MessageTrans.
+The driver names (registered via InstallDriver or to SoundDriver_Install) are now also looked up.
+Note, the SharedSound_DriverInfo SWI used to return r2 as the pointer to a pointer to the name, the documentation seems vague as to what the intent was, but it seems more likely that a pointer to the name was what was intended. The name string is buffered (because it needs looking up for internationalisation anyway).
+
+Tested briefly, inspecting the workspace for name lookups and sending a fake Service_SoundDriver service call. Two errors deliberatly triggered to check error text.
+
+Version 1.15. Tagged as 'SharedSnd-1_15'
+@
+text
+@d29 10
+a38 10
+	; Set up the registers and table for
+	; Sound_ChannelHandler and call installDriver
+	Push	"lr"
+	SUB	sp,sp,#32
+
+	MOV	r0,#32
+	ADR	r1,logDriverToken
+	MOV	r2,sp
+	BL	msgLookupToken
+	MOV	r3,sp				; Driver name
+d43 1
+a43 1
+	ADD	R0,R12,#work_DriverEntryTable	; Get table address
+d45 2
+a46 2
+	ADR	R1,logDriverInstall		; Install entry
+	STR	R1,[R0,#driverEntry_Install]
+d48 2
+a49 2
+	ADR	R1,logDriverRemove		; Remove entry
+	STR	R1,[R0,#driverEntry_Remove]
+d51 2
+a52 2
+	ADR	R1,logDriverSampleRate		; Sample rate entry
+	STR	R1,[R0,#driverEntry_SampleRate]
+d54 2
+a55 2
+	MOV	R1,#0				; No volume entry
+	STR	R1,[R0,#driverEntry_Volume]
+d57 2
+a58 2
+	MOV	R1,#0
+	STR	R1,[R0,#driverEntry_Mixer]	; No mixer entry
+d60 2
+a61 2
+	LDR	R1,[R12,#work_privateWord]	; Parameter
+	MOV	R2,#0				; Flags
+d69 1
+a69 1
+	BL	installDriver
+d71 2
+a72 2
+	ADD	sp,sp,#32
+	Pull	"pc"
+d75 2
+a76 2
+	DCB	"NmLog",0
+	ALIGN
+d81 1
+a81 1
+	DCD	work_Log_OldConfigure
+d84 1
+a84 1
+	DCD	work_Log_ChanTable
+d89 6
+a94 6
+	; Install driver using Sound_LinearHandler
+	;  R0  = Handler address
+	;  R1  = Parameter to pass
+	;  R12 = parameter for driver
+	;  R14 already on stack
+	STMDB	R13!,{R1-R12}
+d98 1
+a98 1
+	LDR	R12,[R12]
+d100 1
+a100 1
+	MOV	R6,R0
+d102 25
+a126 25
+	; For log driver we need to store the handle address provided and install
+	; our own code into Sound_Configure
+	; this routine will then provide a 16 bit buffer to the original handle and then
+	; convert it into the 8 bit buffer
+	STR	R0,[R12,#work_Log_Handler]        ; Store handler and parameter to be called by log fill code
+	STR	R1,[R12,#work_Log_Parameter]
+
+	LDR	R0,[R12,#work_privateWord]        ; Need this for access to above and other values
+	STR	R0,logDriver_WorkPtr              ; in a fixed location as ChannelHandler does not provide it
+
+	;BL	getLogLinPtr
+	;STR	R0,logLinTable_Ptr
+
+	; Check to see if the log handler is already in action and buffer set up
+	MOV	R0,#0
+	MOV	R1,#0
+	MOV	R2,#0
+	MOV	R3,#0
+	MOV	R4,#0
+	SWI	XSound_Configure
+
+	TEQ     r3,#&FC000003 ; is it 'unset' (26-bit OS value) ?
+	TEQNE   r3,#SoundSystemNIL ; check modern value
+	TEQNE   r3,#0         ; in case anyone used 0 as well.
+	MOVEQ   r0,#0
+d129 1
+a129 1
+	BEQ     installLogDriver_Cant
+d131 3
+a133 3
+	LDR	R5,work_Log_OldConfigureVal
+	ADD	R5,R12,R5 ; Preserve old values
+	STMIA	R5,{R0-R4}
+d135 3
+a137 3
+	; Value for R3 is a table......
+	LDR	R0,work_Log_ChanTableVal
+	ADD	R0,R12,R0  ; Channel Handler table pointer
+d139 1
+a139 1
+	CMP	R0,R3            ; Is it already installed?
+d141 1
+a141 1
+	BEQ	logDriverInstallExit
+d143 1
+a143 1
+	; Set up Channel Handler table
+d146 2
+a147 2
+	ADR	R1,logFillCode   ; Pointer to fill code
+	STR	R1,[R0]
+d149 2
+a150 2
+	ADR	R1,logNullCode   ; Overrun code
+	STR	R1,[R0,#4]
+d152 3
+a154 3
+	MOV	R1,#0
+	STR	R1,[R0,#8]        ; Linear to log table
+	STR	R1,[R0,#12]       ; Log scale table
+d156 1
+a156 1
+	STR	R1,[R12,#work_OldLogFill]
+d158 1
+a158 1
+	MOV	R3,R0   ; Put address into R3
+d160 2
+a161 2
+	LDR	R1,[R3]
+	STR	R1,[R12,#work_OldLogFill]
+d163 2
+a164 2
+	ADR	R1,logFillCode   ; Pointer to fill code
+	STR	R1,[R3]
+d166 10
+a175 10
+	;ADR	R1,logNullCode   ; Overrun code
+	;STR	R1,[R0,#4]
+	;
+	;LDR	R1,[R3,#8]
+	;STR	R1,[R0,#8]        ; Linear to log table
+	;
+	;LDR	R1,[R3,#12]
+	;STR	R1,[R0,#12]       ; Log scale table
+	;
+	;MOV	R3,R0   ; Put address into R3
+d177 1
+a177 1
+	MOV	R3,#0
+d180 19
+a198 19
+	MOV	R0,#2+(1<<31)   ; Set for two channels (LR Stereo), top bit set to force SoundDMAx to pass it on
+	MOV	R1,#0
+	MOV	R2,#0
+
+	;MOV	R4,#&FC000003           ; no scheduler
+	MOV	R4,#0
+
+	SWI	XSound_Configure
+
+	; Now set the stereo positions
+	MOV	R0,#1   ; Channel 0
+	MVN	R1,#126 ; Full left
+	SWI	XSound_Stereo
+	STR	R1,[R12,#work_Log_OldLeft] ; Preserve old value
+
+	MOV	R0,#2   ; Channel 1
+	MOV	R1,#127   ; Full right
+	SWI	XSound_Stereo
+	STR	R1,[R12,#work_Log_OldRight] ; Preserve old vlaue
+d204 2
+a205 2
+	MOV	R0,R6                   ; Restore R0 if successful
+	;MOVVS	R0,#0                   ; Or 0 if error
+d207 9
+a215 9
+	; ---- Now done by SoundDMAx module
+	;MOV	R0,#18
+	;ADR	R1,soundDMATitle
+	;SWI	"OS_Module"
+	;
+	;LDR	R2,[R3,#&20]	; Get pointer to SWI handler
+	;ADD	R2,R2,R3
+	;LDR	R1,term		; Get alternative
+	;STR	R1,[R2,#&14]	; and patch in to Sound Configure branch code
+d223 1
+a223 1
+	LDMIA	R13!,{R1-R12,PC}
+d228 1
+a228 1
+	DCD	0
+d230 2
+a231 2
+; 	= "SoundDMA"
+; 	DCD	0
+d236 2
+a237 2
+	; Remove driver using Sound_LinearHandler
+	; R14 already on stack
+d239 1
+a239 1
+	STMDB	R13!,{R0-R5}
+d241 1
+a241 1
+	LDR	R12,[R12]
+d248 11
+a258 11
+	MOV	R0,#1   ; Channel 0
+	LDR	R1,[R12,#work_Log_OldLeft] ; Preserve old value
+	SWI	XSound_Stereo
+
+	MOV	R0,#2   ; Channel 1
+	LDR	R1,[R12,#work_Log_OldRight] ; Preserve old vlaue
+	SWI	XSound_Stereo
+
+	LDR	R5,work_Log_OldConfigureVal
+	ADD	R5,R12,R5 ; Get old values
+	LDMIA	R5,{R0-R4}
+d260 2
+a261 2
+	ORR	R0,R0,#1<<31      ; Force SoundDMAx to pass it on
+	SWI	XSound_Configure
+d263 2
+a264 2
+	LDR	R0,[R12,#work_OldLogFill]
+	STR	R0,[R3]
+d267 1
+a267 1
+	LDMIA	R13!,{R0-R5,PC}
+d272 28
+a299 28
+	; Choose rate and/or return current rate
+	;  R0 = 0 to read
+	;     > 0 to set to R0 = frequency
+	; On exit:
+	;  R0 = current frequency
+	STMDB	R13!,{R1-R12}
+
+	CMP	R0,#0
+	BEQ	logDriverSampleRateRead
+
+	; Set the rate to R0
+	; Do this by calculating the period from the frequency
+
+	LDR   R3,rateConst   ; R3.R2
+	MOV	R2,#0
+	MOV	R4,R0    ; DIV frequency
+
+	BL	div
+
+	; R3 = nearest sample period, R2 = Remainder
+	TST	R2,#1<<24
+	ADDNE	R3,R3,#1
+
+	MOV	R0,#0+(1<<31)  ; Force SoundDMAx to pass it on
+	MOV	R1,#0
+	MOV	R2,R3   ; New rate in r2
+	MOV	R3,#0
+	MOV	R4,#0
+d301 2
+a302 2
+	SWI	XSound_Configure  ; Set new sample period
+	BVS     logDriverSampleRateFailed
+d305 15
+a319 15
+	MOV	R0,#0
+	MOV	R1,#0
+	MOV	R2,#0
+	MOV	R3,#0
+	MOV	R4,#0
+
+	SWI	XSound_Configure  ; Get current sample period
+	BVS     logDriverSampleRateFailed
+
+	; Sample period in R2
+	; Convert it into rate
+	LDR	R3,rateConst
+	MOV	R4,R2
+	MOV	R2,#0
+	BL	div
+d321 2
+a322 2
+	; Frequency in R3
+	MOV	R0,R3               ; Return it in R0
+d325 1
+a325 1
+	LDMIA	R13!,{R1-R12,PC}
+d334 1
+a334 1
+	DCD	work_Log_16BitBuffer
+d337 1
+a337 1
+	DCD	0
+d339 1
+a339 1
+	DCD	0
+d341 1
+a341 1
+	DCD	0
+d348 1
+a348 1
+	MOV	PC,R14
+d354 6
+a359 6
+	; Entry point for channel handler call
+	; Will be called with Channel handler register settings
+	; Needs to then call SharedSound fill routine with modified parameters
+	LDR	R0,logSoundOn
+	CMP	R0,#1
+	MOVEQ	PC,R14
+d361 2
+a362 2
+	MOV	R0,#1
+	STR	R0,logSoundOn
+d364 1
+a364 1
+	STMDB	R13!,{R0-R12,R14}
+d366 3
+a368 3
+	; R8  = Sample period
+	; R10 = end of buffer
+	; R12 = start of buffer
+d370 1
+a370 1
+	STR	R12,logFillR12
+d372 2
+a373 2
+	LDR	R12,logDriver_WorkPtr
+	LDR	R12,[R12]              ; Get SharedSound workspace pointer
+d375 1
+a375 1
+	; Either call old log code or SharedSound handler
+d377 4
+a380 4
+	; If there are no handlers installed then call the log code
+	; otherwise call SharedSound, but not both
+	ADD	R0,R12,#work_handlerTable       ; Address of table
+	MOV	R1,#handlerMax                  ; Handler count
+d384 3
+a386 3
+	LDR	R2,[R0,#handler_Address]        ; Does this slot contain a handler?
+	CMP	R2,#0
+	BNE	logFillCode_CallSharedSound
+d388 3
+a390 3
+	ADD	R0,R0,#handlerTableLen
+	SUBS	R1,R1,#1
+	BNE	logFillCode_CheckLoop
+d392 1
+a392 1
+	; No handlers so use log code
+d394 3
+a396 3
+	LDR	R2,[R12,#work_OldLogFill]
+	CMP	R2,#0
+	BEQ	logFillCode_chandReturn
+d398 1
+a398 1
+	LDR	R12,logFillR12    ; Put start back at R12
+d400 3
+a402 3
+	;ADR   R14,logFillCode_chandReturn  ; StrongARM compliant
+	MOV	R14,PC
+	MOV	PC,R2                         ; And call old channel handler
+d405 1
+a405 1
+	B	logFillCode_Exit
+d411 1
+a411 1
+	LDR	R9,logFillR12    ; Get old R12 into R9
+d413 24
+a436 24
+	; Call SharedSound code with:
+	;    R0 = parameter, this should be the SharedSound R12 value
+	;    R1 = base of buffer
+	;    R2 = end of buffer
+	;    R3 = flags
+	;    R4 = sample frequency
+	;    R12= workspace ptr
+	;    R14= return address
+
+	; See if sample period has changed
+	MOV   R8,#48
+
+	LDR	R6,[R12,#work_SamplePeriod]
+	CMP	R6,R8                        ; Has it changed?
+	LDREQ	R4,[R12,#work_SampleFrequency]
+	BEQ	logFillCode_RateNoChange
+;	STR	R8,[R12,#work_SamplePeriod]
+
+	LDR	R3,rateConst
+	MOV	R2,#0
+	MOV	R4,R8
+	BL	div
+;	STR	R3,[R12,#work_SampleFrequency]
+	MOV	R4,R3   ; Return sample frequency in R4
+d440 19
+a458 19
+	; R4 = Sample frequency
+	; Address of shared sound routine
+	; Set up buffer stuff - length will depend on values passed by ChannelH
+	; Start of buffer
+	LDR	R2,work_Log_16BitBufferVal
+	ADD	R1,R12,R2
+
+	SUB	R2,R10,R9        ; Buffer length
+	ADD	R2,R1,R2,LSL #1  ; * 2 for 16 bit
+
+	; Actually need to get data from old buffer at R9
+
+	; Zero buffer
+
+	MOV	R5,#0
+	MOV	R6,#0
+	MOV	R7,#0
+	MOV	R8,#0
+	MOV	R11,R1
+d462 3
+a464 3
+	STMIA	R11!,{R5-R8}
+	CMP	R11,R2
+	BLT	logFillCode_ZeroLoop
+d466 1
+a466 1
+	MOV	R3,#2   ; Flags
+d468 1
+a468 1
+	LDR	R0,[R12,#work_Log_Parameter]
+d470 1
+a470 1
+	STMDB	R13!,{R1,R2,R9} ; Store 8 bit buffer stuff
+d472 4
+a475 4
+	LDR	R5,[R12,#work_Log_Handler]
+;	ADR	R14,logFillCode_Return
+	MOV	R14,PC
+	MOV	PC,R5
+d480 1
+a480 1
+	LDMIA	R13!,{R1,R2,R10}
+d482 4
+a485 4
+	; R1  = Start of 16 Bit buffer
+	; R2  = End of 16 bit buffer
+	; R3  = Returned flags
+	; R10 = Start of 8 bit buffer
+d487 2
+a488 2
+;	CMP   R3,#1  ; Data exists and must be mixed   - Not fully supported by SharedSound calling routines....!!!
+;	If this was working we would not need to zero buffer as above
+d490 1
+a490 1
+;	BNE   logFillCode_Exit  ; If none then return
+d492 1
+a492 1
+	; Then fill the channel handler buffer with logged versions of the 16 bit data
+d494 1
+a494 1
+	; Get log table pointer into R4
+d496 1
+a496 1
+	ADR  R4,logTable
+d498 1
+a498 1
+	; Convert data
+d501 1
+a501 1
+	LDMIA	R1!,{R0,R3,R9,R11}   ; get 4 output values
+d503 24
+a526 24
+	MOV	R5,R0,LSR#16
+	SUB	R0,R0,R5,LSL#16
+	LDRB	R6,[R4,R5,LSR#(16-logBits)]
+	LDRB	R7,[R4,R0,LSR#(16-logBits)]
+	MOV	R5,R3,LSR#16
+	ORR	R6,R6,R7,LSL#8
+	LDRB	R7,[R4,R5,LSR#(16-logBits)]
+	SUB	R0,R3,R5,LSL#16
+	LDRB	R0,[R4,R0,LSR#(16-logBits)]
+	ORR	R6,R6,R7,LSL#16
+	ORR	R6,R6,R0,LSL#24
+
+	MOV	R5,R9,LSR#16
+	SUB	R0,R9,R5,LSL#16
+	LDRB	R7,[R4,R5,LSR#(16-logBits)]
+	LDRB	R8,[R4,R0,LSR#(16-logBits)]
+	MOV	R5,R11,LSR#16
+	ORR	R7,R7,R8,LSL#8
+	LDRB	R8,[R4,R5,LSR#(16-logBits)]
+	SUB	R0,R11,R5,LSL#16
+	ORR	R7,R7,R8,LSL#16
+	LDRB	R8,[R4,R0,LSR#(16-logBits)]
+	CMP	R1,R2
+	ORR	R7,R7,R8,LSL#24
+d528 2
+a529 2
+	STMIA	R10!,{R6,R7}
+	BLT	logFillCode_loop
+d531 3
+a533 3
+	; And return
+	MOV   R0,#0
+	STR   R0,logSoundOn
+d535 1
+a535 1
+	LDMIA	R13!,{R0-R12,PC}	; flags on exit have always been ignored
+d540 2048
+a2587 2048
+	DCD &06040200
+	DCD &0E0C0A08
+	DCD &16141210
+	DCD &1E1C1A18
+	DCD &24222220
+	DCD &28262624
+	DCD &2C2A2A28
+	DCD &302E2E2C
+	DCD &34323230
+	DCD &38363634
+	DCD &3C3A3A38
+	DCD &403E3E3C
+	DCD &42424240
+	DCD &44444442
+	DCD &46464644
+	DCD &48484846
+	DCD &4A4A4A48
+	DCD &4C4C4C4A
+	DCD &4E4E4E4C
+	DCD &5050504E
+	DCD &52525250
+	DCD &54545452
+	DCD &56565654
+	DCD &58585856
+	DCD &5A5A5A58
+	DCD &5C5C5C5A
+	DCD &5E5E5E5C
+	DCD &6060605E
+	DCD &62626260
+	DCD &62626262
+	DCD &64646462
+	DCD &64646464
+	DCD &66666664
+	DCD &66666666
+	DCD &68686866
+	DCD &68686868
+	DCD &6A6A6A68
+	DCD &6A6A6A6A
+	DCD &6C6C6C6A
+	DCD &6C6C6C6C
+	DCD &6E6E6E6C
+	DCD &6E6E6E6E
+	DCD &7070706E
+	DCD &70707070
+	DCD &72727270
+	DCD &72727272
+	DCD &74747472
+	DCD &74747474
+	DCD &76767674
+	DCD &76767676
+	DCD &78787876
+	DCD &78787878
+	DCD &7A7A7A78
+	DCD &7A7A7A7A
+	DCD &7C7C7C7A
+	DCD &7C7C7C7C
+	DCD &7E7E7E7C
+	DCD &7E7E7E7E
+	DCD &8080807E
+	DCD &80808080
+	DCD &82828280
+	DCD &82828282
+	DCD &82828282
+	DCD &82828282
+	DCD &84848482
+	DCD &84848484
+	DCD &84848484
+	DCD &84848484
+	DCD &86868684
+	DCD &86868686
+	DCD &86868686
+	DCD &86868686
+	DCD &88888886
+	DCD &88888888
+	DCD &88888888
+	DCD &88888888
+	DCD &8A8A8A88
+	DCD &8A8A8A8A
+	DCD &8A8A8A8A
+	DCD &8A8A8A8A
+	DCD &8C8C8C8A
+	DCD &8C8C8C8C
+	DCD &8C8C8C8C
+	DCD &8C8C8C8C
+	DCD &8E8E8E8C
+	DCD &8E8E8E8E
+	DCD &8E8E8E8E
+	DCD &8E8E8E8E
+	DCD &9090908E
+	DCD &90909090
+	DCD &90909090
+	DCD &90909090
+	DCD &92929290
+	DCD &92929292
+	DCD &92929292
+	DCD &92929292
+	DCD &94949492
+	DCD &94949494
+	DCD &94949494
+	DCD &94949494
+	DCD &96969694
+	DCD &96969696
+	DCD &96969696
+	DCD &96969696
+	DCD &98989896
+	DCD &98989898
+	DCD &98989898
+	DCD &98989898
+	DCD &9A9A9A98
+	DCD &9A9A9A9A
+	DCD &9A9A9A9A
+	DCD &9A9A9A9A
+	DCD &9C9C9C9A
+	DCD &9C9C9C9C
+	DCD &9C9C9C9C
+	DCD &9C9C9C9C
+	DCD &9E9E9E9C
+	DCD &9E9E9E9E
+	DCD &9E9E9E9E
+	DCD &9E9E9E9E
+	DCD &A0A0A09E
+	DCD &A0A0A0A0
+	DCD &A0A0A0A0
+	DCD &A0A0A0A0
+	DCD &A2A2A2A0
+	DCD &A2A2A2A2
+	DCD &A2A2A2A2
+	DCD &A2A2A2A2
+	DCD &A2A2A2A2
+	DCD &A2A2A2A2
+	DCD &A2A2A2A2
+	DCD &A2A2A2A2
+	DCD &A4A4A4A2
+	DCD &A4A4A4A4
+	DCD &A4A4A4A4
+	DCD &A4A4A4A4
+	DCD &A4A4A4A4
+	DCD &A4A4A4A4
+	DCD &A4A4A4A4
+	DCD &A4A4A4A4
+	DCD &A6A6A6A4
+	DCD &A6A6A6A6
+	DCD &A6A6A6A6
+	DCD &A6A6A6A6
+	DCD &A6A6A6A6
+	DCD &A6A6A6A6
+	DCD &A6A6A6A6
+	DCD &A6A6A6A6
+	DCD &A8A8A8A6
+	DCD &A8A8A8A8
+	DCD &A8A8A8A8
+	DCD &A8A8A8A8
+	DCD &A8A8A8A8
+	DCD &A8A8A8A8
+	DCD &A8A8A8A8
+	DCD &A8A8A8A8
+	DCD &AAAAAAA8
+	DCD &AAAAAAAA
+	DCD &AAAAAAAA
+	DCD &AAAAAAAA
+	DCD &AAAAAAAA
+	DCD &AAAAAAAA
+	DCD &AAAAAAAA
+	DCD &AAAAAAAA
+	DCD &ACACACAA
+	DCD &ACACACAC
+	DCD &ACACACAC
+	DCD &ACACACAC
+	DCD &ACACACAC
+	DCD &ACACACAC
+	DCD &ACACACAC
+	DCD &ACACACAC
+	DCD &AEAEAEAC
+	DCD &AEAEAEAE
+	DCD &AEAEAEAE
+	DCD &AEAEAEAE
+	DCD &AEAEAEAE
+	DCD &AEAEAEAE
+	DCD &AEAEAEAE
+	DCD &AEAEAEAE
+	DCD &B0B0B0AE
+	DCD &B0B0B0B0
+	DCD &B0B0B0B0
+	DCD &B0B0B0B0
+	DCD &B0B0B0B0
+	DCD &B0B0B0B0
+	DCD &B0B0B0B0
+	DCD &B0B0B0B0
+	DCD &B2B2B2B0
+	DCD &B2B2B2B2
+	DCD &B2B2B2B2
+	DCD &B2B2B2B2
+	DCD &B2B2B2B2
+	DCD &B2B2B2B2
+	DCD &B2B2B2B2
+	DCD &B2B2B2B2
+	DCD &B4B4B4B2
+	DCD &B4B4B4B4
+	DCD &B4B4B4B4
+	DCD &B4B4B4B4
+	DCD &B4B4B4B4
+	DCD &B4B4B4B4
+	DCD &B4B4B4B4
+	DCD &B4B4B4B4
+	DCD &B6B6B6B4
+	DCD &B6B6B6B6
+	DCD &B6B6B6B6
+	DCD &B6B6B6B6
+	DCD &B6B6B6B6
+	DCD &B6B6B6B6
+	DCD &B6B6B6B6
+	DCD &B6B6B6B6
+	DCD &B8B8B8B6
+	DCD &B8B8B8B8
+	DCD &B8B8B8B8
+	DCD &B8B8B8B8
+	DCD &B8B8B8B8
+	DCD &B8B8B8B8
+	DCD &B8B8B8B8
+	DCD &B8B8B8B8
+	DCD &BABABAB8
+	DCD &BABABABA
+	DCD &BABABABA
+	DCD &BABABABA
+	DCD &BABABABA
+	DCD &BABABABA
+	DCD &BABABABA
+	DCD &BABABABA
+	DCD &BCBCBCBA
+	DCD &BCBCBCBC
+	DCD &BCBCBCBC
+	DCD &BCBCBCBC
+	DCD &BCBCBCBC
+	DCD &BCBCBCBC
+	DCD &BCBCBCBC
+	DCD &BCBCBCBC
+	DCD &BEBEBEBC
+	DCD &BEBEBEBE
+	DCD &BEBEBEBE
+	DCD &BEBEBEBE
+	DCD &BEBEBEBE
+	DCD &BEBEBEBE
+	DCD &BEBEBEBE
+	DCD &BEBEBEBE
+	DCD &C0C0C0BE
+	DCD &C0C0C0C0
+	DCD &C0C0C0C0
+	DCD &C0C0C0C0
+	DCD &C0C0C0C0
+	DCD &C0C0C0C0
+	DCD &C0C0C0C0
+	DCD &C0C0C0C0
+	DCD &C2C2C2C0
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C2C2C2C2
+	DCD &C4C4C4C2
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C4C4C4C4
+	DCD &C6C6C6C4
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C6C6C6C6
+	DCD &C8C8C8C6
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &C8C8C8C8
+	DCD &CACACAC8
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CACACACA
+	DCD &CCCCCCCA
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CCCCCCCC
+	DCD &CECECECC
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &CECECECE
+	DCD &D0D0D0CE
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D0D0D0D0
+	DCD &D2D2D2D0
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D2D2D2D2
+	DCD &D4D4D4D2
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D4D4D4D4
+	DCD &D6D6D6D4
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D6D6D6D6
+	DCD &D8D8D8D6
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &D8D8D8D8
+	DCD &DADADAD8
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DADADADA
+	DCD &DCDCDCDA
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DCDCDCDC
+	DCD &DEDEDEDC
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &DEDEDEDE
+	DCD &E0E0E0DE
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E0E0E0E0
+	DCD &E2E2E2E0
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E2E2E2E2
+	DCD &E4E4E4E2
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E4E4E4E4
+	DCD &E6E6E6E4
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E6E6E6E6
+	DCD &E8E8E8E6
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &E8E8E8E8
+	DCD &EAEAEAE8
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &EAEAEAEA
+	DCD &ECECECEA
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &ECECECEC
+	DCD &EEEEEEEC
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &EEEEEEEE
+	DCD &F0F0F0EE
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F0F0F0F0
+	DCD &F2F2F2F0
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F2F2F2F2
+	DCD &F4F4F4F2
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F4F4F4F4
+	DCD &F6F6F6F4
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F6F6F6F6
+	DCD &F8F8F8F6
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &F8F8F8F8
+	DCD &FAFAFAF8
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FAFAFAFA
+	DCD &FCFCFCFA
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FCFCFCFC
+	DCD &FEFEFEFC
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FEFEFEFE
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FFFFFFFF
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FDFDFDFD
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &FBFBFBFB
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F9F9F9F9
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F7F7F7F7
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F5F5F5F5
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F3F3F3F3
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &F1F1F1F1
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EFEFEFEF
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EDEDEDED
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &EBEBEBEB
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E9E9E9E9
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E7E7E7E7
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E5E5E5E5
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E3E3E3E3
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &E1E1E1E1
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DFDFDFDF
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DDDDDDDD
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &DBDBDBDB
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D9D9D9D9
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D7D7D7D7
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D5D5D5D5
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D3D3D3D3
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &D1D1D1D1
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CFCFCFCF
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CDCDCDCD
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &CBCBCBCB
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C9C9C9C9
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C7C7C7C7
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C5C5C5C5
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C3C3C3C3
+	DCD &C1C1C1C1
+	DCD &C1C1C1C1
+	DCD &C1C1C1C1
+	DCD &C1C1C1C1
+	DCD &C1C1C1C1
+	DCD &C1C1C1C1
+	DCD &C1C1C1C1
+	DCD &C1C1C1C1
+	DCD &BFBFBFBF
+	DCD &BFBFBFBF
+	DCD &BFBFBFBF
+	DCD &BFBFBFBF
+	DCD &BFBFBFBF
+	DCD &BFBFBFBF
+	DCD &BFBFBFBF
+	DCD &BFBFBFBF
+	DCD &BDBDBDBD
+	DCD &BDBDBDBD
+	DCD &BDBDBDBD
+	DCD &BDBDBDBD
+	DCD &BDBDBDBD
+	DCD &BDBDBDBD
+	DCD &BDBDBDBD
+	DCD &BDBDBDBD
+	DCD &BBBBBBBB
+	DCD &BBBBBBBB
+	DCD &BBBBBBBB
+	DCD &BBBBBBBB
+	DCD &BBBBBBBB
+	DCD &BBBBBBBB
+	DCD &BBBBBBBB
+	DCD &BBBBBBBB
+	DCD &B9B9B9B9
+	DCD &B9B9B9B9
+	DCD &B9B9B9B9
+	DCD &B9B9B9B9
+	DCD &B9B9B9B9
+	DCD &B9B9B9B9
+	DCD &B9B9B9B9
+	DCD &B9B9B9B9
+	DCD &B7B7B7B7
+	DCD &B7B7B7B7
+	DCD &B7B7B7B7
+	DCD &B7B7B7B7
+	DCD &B7B7B7B7
+	DCD &B7B7B7B7
+	DCD &B7B7B7B7
+	DCD &B7B7B7B7
+	DCD &B5B5B5B5
+	DCD &B5B5B5B5
+	DCD &B5B5B5B5
+	DCD &B5B5B5B5
+	DCD &B5B5B5B5
+	DCD &B5B5B5B5
+	DCD &B5B5B5B5
+	DCD &B5B5B5B5
+	DCD &B3B3B3B3
+	DCD &B3B3B3B3
+	DCD &B3B3B3B3
+	DCD &B3B3B3B3
+	DCD &B3B3B3B3
+	DCD &B3B3B3B3
+	DCD &B3B3B3B3
+	DCD &B3B3B3B3
+	DCD &B1B1B1B1
+	DCD &B1B1B1B1
+	DCD &B1B1B1B1
+	DCD &B1B1B1B1
+	DCD &B1B1B1B1
+	DCD &B1B1B1B1
+	DCD &B1B1B1B1
+	DCD &B1B1B1B1
+	DCD &AFAFAFAF
+	DCD &AFAFAFAF
+	DCD &AFAFAFAF
+	DCD &AFAFAFAF
+	DCD &AFAFAFAF
+	DCD &AFAFAFAF
+	DCD &AFAFAFAF
+	DCD &AFAFAFAF
+	DCD &ADADADAD
+	DCD &ADADADAD
+	DCD &ADADADAD
+	DCD &ADADADAD
+	DCD &ADADADAD
+	DCD &ADADADAD
+	DCD &ADADADAD
+	DCD &ADADADAD
+	DCD &ABABABAB
+	DCD &ABABABAB
+	DCD &ABABABAB
+	DCD &ABABABAB
+	DCD &ABABABAB
+	DCD &ABABABAB
+	DCD &ABABABAB
+	DCD &ABABABAB
+	DCD &A9A9A9A9
+	DCD &A9A9A9A9
+	DCD &A9A9A9A9
+	DCD &A9A9A9A9
+	DCD &A9A9A9A9
+	DCD &A9A9A9A9
+	DCD &A9A9A9A9
+	DCD &A9A9A9A9
+	DCD &A7A7A7A7
+	DCD &A7A7A7A7
+	DCD &A7A7A7A7
+	DCD &A7A7A7A7
+	DCD &A7A7A7A7
+	DCD &A7A7A7A7
+	DCD &A7A7A7A7
+	DCD &A7A7A7A7
+	DCD &A5A5A5A5
+	DCD &A5A5A5A5
+	DCD &A5A5A5A5
+	DCD &A5A5A5A5
+	DCD &A5A5A5A5
+	DCD &A5A5A5A5
+	DCD &A5A5A5A5
+	DCD &A5A5A5A5
+	DCD &A3A3A3A3
+	DCD &A3A3A3A3
+	DCD &A3A3A3A3
+	DCD &A3A3A3A3
+	DCD &A3A3A3A3
+	DCD &A3A3A3A3
+	DCD &A3A3A3A3
+	DCD &A3A3A3A3
+	DCD &A1A1A1A1
+	DCD &A1A1A1A1
+	DCD &A1A1A1A1
+	DCD &A1A1A1A1
+	DCD &9F9F9F9F
+	DCD &9F9F9F9F
+	DCD &9F9F9F9F
+	DCD &9F9F9F9F
+	DCD &9D9D9D9D
+	DCD &9D9D9D9D
+	DCD &9D9D9D9D
+	DCD &9D9D9D9D
+	DCD &9B9B9B9B
+	DCD &9B9B9B9B
+	DCD &9B9B9B9B
+	DCD &9B9B9B9B
+	DCD &99999999
+	DCD &99999999
+	DCD &99999999
+	DCD &99999999
+	DCD &97979797
+	DCD &97979797
+	DCD &97979797
+	DCD &97979797
+	DCD &95959595
+	DCD &95959595
+	DCD &95959595
+	DCD &95959595
+	DCD &93939393
+	DCD &93939393
+	DCD &93939393
+	DCD &93939393
+	DCD &91919191
+	DCD &91919191
+	DCD &91919191
+	DCD &91919191
+	DCD &8F8F8F8F
+	DCD &8F8F8F8F
+	DCD &8F8F8F8F
+	DCD &8F8F8F8F
+	DCD &8D8D8D8D
+	DCD &8D8D8D8D
+	DCD &8D8D8D8D
+	DCD &8D8D8D8D
+	DCD &8B8B8B8B
+	DCD &8B8B8B8B
+	DCD &8B8B8B8B
+	DCD &8B8B8B8B
+	DCD &89898989
+	DCD &89898989
+	DCD &89898989
+	DCD &89898989
+	DCD &87878787
+	DCD &87878787
+	DCD &87878787
+	DCD &87878787
+	DCD &85858585
+	DCD &85858585
+	DCD &85858585
+	DCD &85858585
+	DCD &83838383
+	DCD &83838383
+	DCD &83838383
+	DCD &83838383
+	DCD &81818181
+	DCD &81818181
+	DCD &7F7F7F7F
+	DCD &7F7F7F7F
+	DCD &7D7D7D7D
+	DCD &7D7D7D7D
+	DCD &7B7B7B7B
+	DCD &7B7B7B7B
+	DCD &79797979
+	DCD &79797979
+	DCD &77777777
+	DCD &77777777
+	DCD &75757575
+	DCD &75757575
+	DCD &73737373
+	DCD &73737373
+	DCD &71717171
+	DCD &71717171
+	DCD &6F6F6F6F
+	DCD &6F6F6F6F
+	DCD &6D6D6D6D
+	DCD &6D6D6D6D
+	DCD &6B6B6B6B
+	DCD &6B6B6B6B
+	DCD &69696969
+	DCD &69696969
+	DCD &67676767
+	DCD &67676767
+	DCD &65656565
+	DCD &65656565
+	DCD &63636363
+	DCD &63636363
+	DCD &61616161
+	DCD &5F5F5F5F
+	DCD &5D5D5D5D
+	DCD &5B5B5B5B
+	DCD &59595959
+	DCD &57575757
+	DCD &55555555
+	DCD &53535353
+	DCD &51515151
+	DCD &4F4F4F4F
+	DCD &4D4D4D4D
+	DCD &4B4B4B4B
+	DCD &49494949
+	DCD &47474747
+	DCD &45454545
+	DCD &43434343
+	DCD &3F3F4141
+	DCD &3B3B3D3D
+	DCD &37373939
+	DCD &33333535
+	DCD &2F2F3131
+	DCD &2B2B2D2D
+	DCD &27272929
+	DCD &23232525
+	DCD &1B1D1F21
+	DCD &13151719
+	DCD &0B0D0F11
+	DCD &03050709
+d2595 1
+a2595 1
+	STMDB	R13!,{R14}
+d2597 1
+a2597 1
+	LDMIA	R13!,{PC}
+d2600 1
+a2600 1
+	END
+@
+
+
+1.7
+log
+@Changed to use NdrDebug instead of local debug functions
+Changed GET of filenames to use <name>.<extension> form.
+Built, but not tested.
+
+Version 1.13. Tagged as 'SharedSnd-1_13'
+@
+text
+@d31 8
+a38 1
+	STMDB	R13!,{R14}
+a42 2
+        Debug   gn, "installLogDriver: installing"
+
+d63 6
+a68 1
+	ADR	R3,logDriverName		; Driver name
+d71 6
+a76 1
+	LDMIA	R13!,{PC}
+a330 6
+; -----------
+
+logDriverName
+	= "8 bit Log Sound Handler",0
+	ALIGN
+
+@
+
+
+1.6
+log
+@Fix for zombie callback loop after killing SharedSound
+When the sound system is reinitialised, but SoundChannels not yet started, SharedSound books a callback 40cs in the future to retry.
+When used with an 8 bit sound system this occurs repeatedly (in the hope that a 16 bit linear handler will become available) but on RMKILL the callback was not cancelled - so although the module is dead a pair of zombie callbacks keep booking & trying, booking & trying.
+* Finalise handler now cancels the 40cs ticker event
+* Played safe and changed the CMP of the handler addresses (clearing V) to CLRV
+* Added some asserts to the service table
+* Removed some unnecessary NOP's after MOV lr, pc operations.
+
+Tested in IOMD ROM.
+
+Version 1.12. Tagged as 'SharedSnd-1_12'
+@
+text
+@d36 1
+a36 5
+   [ debug
+	SWI     XOS_WriteS
+	= "installLogDriver: installing",0
+	SWI     XOS_NewLine
+   ]
+d81 1
+a81 5
+   [ debug
+	SWI     XOS_WriteS
+	= "logDriverInstall: entered",0
+	SWI     XOS_NewLine
+   ]
+d112 2
+a113 8
+   [ debug
+        BNE     %FT10
+	SWI     XOS_WriteS
+	= "installLogDriver: Can't, no entry point",0
+	SWI     XOS_NewLine
+        B       installLogDriver_Cant
+10
+   |
+a114 1
+   ]
+d206 1
+a206 5
+   [ debug
+	SWI     XOS_WriteS
+	= "logDriverInstall: exiting",0
+	SWI     XOS_NewLine
+   ]
+@
+
+
+1.5
+log
+@  No longer uses non-X SWIs in module code
+Detail:
+  A few of these were careless typos, others were already X SWIs but the
+  symbol names didn't reflect the fact, and in other cases there was no code
+  path to deal with error cases. All now fixed. Also fixed all the assembly
+  time warnings (at least for 32-bit ROM builds).
+Admin:
+  No longer prevents the Raspberry Pi ROM init from completing.
+
+Version 1.11. Tagged as 'SharedSnd-1_11'
+@
+text
+@a412 1
+	MOV	R0,R0
+a485 1
+	MOV	R0,R0
+@
+
+
+1.4
+log
+@  Selective merge of ESP's version 1.06 (14 May 2002) of SharedSound.
+Detail:
+  Changelog not provided by ESP. I have made an additional change to use
+  the value of SoundSystemNIL from Hdr:Sound to test if SoundChannels is not
+  installed - this constant changed in RISC OS 5 for 32-bitting reasons.
+Admin:
+  Builds, and briefly tested. Coincidentally, this is also our version 1.06.
+
+Version 1.06. Tagged as 'SharedSnd-1_06'
+@
+text
+@d305 2
+a306 1
+	SWI	Sound_Configure  ; Set new sample period
+d315 2
+a316 1
+	SWI	Sound_Configure  ; Get current sample period
+d328 1
+d331 4
+@
+
+
+1.3
+log
+@  Import of latest version from Robin Watts.
+Detail:
+  Stereo positioning fixed in log driver.
+Admin:
+  Not tested.
+
+Version 1.03. Tagged as 'SharedSnd-1_03'
+@
+text
+@d33 9
+d85 6
+d116 15
+d200 4
+d217 1
+d221 6
+d233 3
+a235 3
+soundDMATitle
+	= "SoundDMA"
+	DCD	0
+d247 5
+d270 1
+@
+
+
+1.3.2.1
+log
+@Import of latest sources from ESP.
+This represents ESP's version 1.06 (14 May 2002). The files are exactly as
+received, but they are not expected to build as they are against the public
+headers.
+@
+text
+@a32 9
+        MOV     r0,#0
+        STR     r0,[r12,#work_Log_InitedFully]
+
+   [ debug
+	SWI     XOS_WriteS
+	= "installLogDriver: installing",0
+	SWI     XOS_NewLine
+   ]
+
+a75 6
+   [ debug
+	SWI     XOS_WriteS
+	= "logDriverInstall: entered",0
+	SWI     XOS_NewLine
+   ]
+
+a100 14
+	TEQ     r3,#&FC000003 ; is it 'unset' ?
+	TEQNE   r3,#0         ; in case anyone used 0 as well.
+	MOVEQ   r0,#0
+   [ debug
+        BNE     %FT10
+	SWI     XOS_WriteS
+	= "installLogDriver: Can't, no entry point",0
+	SWI     XOS_NewLine
+        B       installLogDriver_Cant
+10
+   |
+	BEQ     installLogDriver_Cant
+   ]
+
+a169 4
+; mark us as fully initialised
+        MOV     r0,#1
+        STR     r0,[r12,#work_Log_InitedFully]
+
+a182 1
+installLogDriver_Cant
+a185 6
+   [ debug
+	SWI     XOS_WriteS
+	= "logDriverInstall: exiting",0
+	SWI     XOS_NewLine
+   ]
+
+d192 3
+a194 3
+; soundDMATitle
+; 	= "SoundDMA"
+; 	DCD	0
+a205 5
+; if we're not fully initialied, don't do anything
+        LDR     r0,[r12,#work_Log_InitedFully]
+        TEQ     r0,#1
+        BNE     %FT90
+
+a223 1
+90
+@
+
+
+1.2
+log
+@  Module scrutinised for problems, and many found and fixed.
+Detail:
+  * Module flags word and header entry reinstated.
+  * Many exits from SWIs had lost their 32-bit compatibility.
+  * Unconditional TEQP made conditional, and an MSR replaced with an MRS.
+  * A few unnecessary mode checks and alternate returns simplified because
+    transient callbacks and 8-bit fill code have never needed to preserve
+    processor flags.
+  * Driver mixer calling bug fixed again.
+  * Spelling and grammatical errors in comments and error messages re-fixed.
+  * Other insignificant stuff.
+Admin:
+  Still untested, but worth trying in a 32-bit build now.
+
+Version 1.01. Tagged as 'SharedSnd-1_01'
+@
+text
+@d160 1
+a160 1
+	MOV	R0,#0   ; Channel 0
+d165 1
+a165 1
+	MOV	R0,#1   ; Channel 1
+d206 1
+a206 1
+	MOV	R0,#0   ; Channel 0
+d210 1
+a210 1
+	MOV	R0,#1   ; Channel 1
+@
+
+
+1.1
+log
+@  Import of version 1.00 of SharedSound from WSS - this is a merge of
+  RISC OS Ltd, ESP and Pace sources. I've added the Makefile, Mk* and
+  VersionNum files.
+
+Detail (courtesy of WSS):
+  * Incorporates fixes made to 0.58c to fix the callbacks on sound
+    rate changes.
+
+  * Incorporates RISC OS Ltd changes to response to
+    TaskManager_Acknowledgements service.
+
+  * Includes 8 bit Log and PowerWave drivers.
+
+  * Now built with Objasm, not BASIC assembler.
+
+  * SharedSound_HandlerInfo SWI fixed to conform to spec. Also
+    extended to accept r0 = 0 on entry, in which case r0 = number of
+    first registered handler (or 0 for none) on exit; R1-R5 corrupted.
+
+    Therefore the following code enumerates handlers:
+
+    REM Get first handler number.
+    SYS "SharedSound_HandlerInfo",0 TO next% ; flags%
+    REM While no errors, and not finished
+    WHILE (next% <> 0) AND ((flags% AND 1) = 0)
+     SYS"SharedSound_HandlerInfo",next% TO next%,a%,b%,c%,d%,e%
+    ENDWHILE
+
+  * Sends Service_Sound (&54) with reason code 6 (SharedSound Starting)
+    on (callback after) initialisation.
+
+  * Sends Service_Sound (&54) with reason code 7 (SharedSound Dying)
+    on finalisation.
+
+  * Some small optimisations
+
+  * Version bumped to 1.00 (to allow RISC OS Ltd space to make changes
+    to their versions).
+
+  * Table of helpful fill code routines now passed to handlers in R8.
+
+  * SharedSound reinitialises correctly on lower layers reinitialising.
+
+  * More care taken to remove outstanding callbacks on finalise.
+
+  * Dual 26/32 bit version.
+
+Admin:
+  * Not tested by us.
+
+  * 8-bit sound system code is known not to be ROM safe. However, it is
+    currently switched out (see the doLog option in s.Gets).
+
+  * This version *will not work* on a 32-bit system. There are at least two
+    issues with it that I've spotted with a quick glance through the code -
+    the lack of the module flags word, and an unconditional TEQP instruction.
+    This version has been checked in nevertheless as a record of what WSS
+    delivered to us.
+
+Version 1.00. Tagged as 'SharedSnd-1_00'
+@
+text
+@d493 1
+a493 3
+	TEQ	PC,PC
+	LDMEQIA	R13!,{R0-R12,PC}	; 32 bit return
+	LDMIA	R13!,{R0-R12,PC}^	; 26 bit return
+@
+

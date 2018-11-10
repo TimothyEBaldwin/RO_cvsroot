@@ -1,0 +1,558 @@
+head	1.6;
+access;
+symbols
+	IntKey-0_99:1.6
+	IntKey-0_98-1:1.5
+	IntKey-0_98:1.5
+	IntKey-0_97:1.5
+	IntKey-0_96:1.5
+	IntKey-0_95:1.5
+	IntKey-0_94:1.4
+	IntKey-0_93:1.4
+	IntKey-0_92:1.4
+	IntKey-0_91:1.4
+	IntKey-0_90:1.4
+	RO_5_07:1.4
+	IntKey-0_89:1.4
+	IntKey-0_88:1.4
+	IntKey-0_87:1.4
+	IntKey-0_86:1.4
+	IntKey-0_85:1.4
+	IntKey-0_84:1.4
+	IntKey-0_83:1.4
+	IntKey-0_82:1.4
+	IntKey-0_81:1.4
+	IntKey-0_80:1.4
+	IntKey-0_79:1.3
+	IntKey-0_78:1.3
+	IntKey-0_77:1.3
+	IntKey-0_76:1.3
+	dellis_autobuild_BaseSW:1.3
+	IntKey-0_75:1.3
+	IntKey-0_74:1.3
+	IntKey-0_73:1.3
+	IntKey-0_72:1.3
+	IntKey-0_71:1.3
+	sbrodie_sedwards_16Mar2000:1.3
+	IntKey-0_70:1.3
+	dcotton_autobuild_BaseSW:1.4
+	IntKey-0_69:1.3
+	IntKey-0_68:1.2
+	IntKey-0_67:1.2
+	IntKey-0_66:1.1
+	IntKey-0_65:1.1
+	IntKey-0_64:1.1
+	IntKey-0_63:1.1
+	IntKey-0_62:1.1
+	IntKey-0_61:1.1
+	IntKey-0_60:1.1
+	IntKey-0_59:1.1
+	IntKey-0_58:1.1
+	IntKey-0_57:1.1
+	IntKey-0_56:1.1
+	IntKey-0_55:1.1
+	IntKey-0_54:1.1
+	IntKey-0_53:1.1
+	IntKey-0_52:1.1
+	bavison_Generic_InternationalKeyboard-0_51:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2018.01.21.09.33.13;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	bZ0A71UCujpfZInA;
+
+1.5
+date	2012.12.05.01.40.25;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	XFeMFw6wUN4JzYuw;
+
+1.4
+date	2001.06.14.16.08.37;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.09.16.16.12.05;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.09.16.14.20.01;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.09.01.16.38.29;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Fix ideograph range check and a couple of resource leaks
+unicdata.c: condition changed to match unictype_is_ideograph() in UnicodeLib
+keygen.c: free kb
+keyconvert.c: free memory and close files on exit (the C environment would do this anyway, but this makes it explicit)
+Picked up by static analysis
+  https://www.riscosopen.org/forum/forums/4/topics/9503#posts-72623
+
+Version 0.99. Tagged as 'IntKey-0_99'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "Unicode/iso10646.h"
+#include "unicdata.h"
+
+typedef struct charinfo
+{
+    UCS4 code;
+    char *name;
+} charinfo;
+
+static int numchars=0;
+static charinfo *charlist;
+
+void error(const char *p);
+
+static void parse_line(char *s)
+{
+    char *sp = s, *dp;
+    UCS4 code;
+    char name[256];
+
+    while (*sp != ';' && *sp != '\0')
+        sp++;
+    *sp='\0';
+
+    code = (UCS4) strtol(s, NULL, 16);
+    sp++;
+
+    dp = name;
+    while (*sp != ';' && *sp != '\0')
+        *dp++=*sp++;
+    *dp='\0';
+
+    if (name[0]=='<') return;
+
+    sp = malloc(dp+1-name);
+
+    if (sp)
+    {
+        charlist[numchars].code=code;
+        charlist[numchars++].name=sp;
+        strcpy(sp, name);
+    }
+    else
+        error("Out of memory");
+}
+
+static int cmp_name(const void *p1, const void *p2)
+{
+    charinfo *c1 = (charinfo *) p1;
+    charinfo *c2 = (charinfo *) p2;
+
+/*    printf("Comparing %04X(%04X) to %04X(%04X)\n", c1-charlist, c1->code, c2-charlist, c2->code);
+
+    if (c1->name == NULL)
+    {
+        if (c2->name == NULL)
+            return 0;
+        else
+            return +1;
+    }
+    else if (c2->name == NULL)
+        return -1;*/
+
+    return strcmp(c1->name, c2->name);
+}
+
+static int cmp_name2(const void *p1, const void *p2)
+{
+    char *n = (char *) p1;
+    charinfo *c2 = (charinfo *) p2;
+
+    return strcmp(n, c2->name);
+}
+
+void load_unidata(const char *filename)
+{
+    FILE *f;
+    char buffer[512];
+
+    charlist = calloc(0x10000, sizeof(charinfo));
+
+    f = fopen(filename, "r");
+    if (!f)
+    {
+        perror("fopen");
+        exit(1);
+    }
+
+    while (fgets(buffer, 512, f) != NULL)
+    {
+        if (strlen(buffer)==0 || buffer[0]==';')
+            continue;
+        parse_line(buffer);
+    }
+
+    fclose(f);
+
+    charlist[numchars].code=0xFFFFFFFF;
+    charlist[numchars++].name="-";
+
+    qsort(charlist, numchars, sizeof charlist[0], cmp_name);
+}
+
+static UCS4 get_choseong(const char **p)
+{
+    static const char list[19][3] = { "G", "GG", "N", "D", "DD", "L", "M", "B", "BB",
+                                      "S", "SS", "", "J", "JJ", "C", "K", "T", "P", "H" };
+
+    int i;
+
+    for (i=18; i>=0; i--)
+    {
+        if (list[i][0]=='\0') continue;
+        if (strncmp(*p, list[i], strlen(list[i]))==0)
+        {
+            (*p)+=strlen(list[i]);
+            return i+0x1100;
+        }
+    }
+
+    return 0x110B;
+}
+
+static UCS4 get_jungseong(const char **p)
+{
+    static const char list[21][4] = { "A", "AE", "YA", "YAE", "EO", "E", "YEO", "YE", "O",
+                                      "WA", "WAE", "OE" , "YO", "U", "WEO", "WE", "WI",
+                                      "YU", "EU", "YI", "I" };
+    int i;
+    int l=0;
+    int c=-1;
+
+    for (i=0; i<21; i++)
+    {
+        if (strncmp(*p, list[i], strlen(list[i]))==0)
+        {
+            if (strlen(list[i]) > l)
+            {
+                l = strlen(list[i]);
+                c = i;
+            }
+        }
+    }
+
+    if (c != -1)
+    {
+        (*p)+=l;
+        return c+0x1161;
+    }
+
+    error("Bad jungseong");
+    return NULL_UCS4;
+}
+
+static UCS4 get_jongseong(const char **p)
+{
+    static const char list[27][3] = { "G", "GG", "GS", "N", "NJ", "NH", "D", "L", "LG", "LM",
+                                      "LB", "LS", "LT", "LP", "LH", "M", "B", "BS",
+                                      "S", "SS", "NG", "J", "C", "K", "T", "P", "H" };
+    int i;
+
+    if (**p == '\0')
+        return 0;
+
+    for (i=26; i>=0; i--)
+    {
+        if (strncmp(*p, list[i], strlen(list[i]))==0)
+        {
+            (*p)+=strlen(list[i]);
+            return i+0x11A8;
+        }
+    }
+
+    error("Bad jungseong");
+    return NULL_UCS4;
+}
+
+static UCS4 hangul_syllable_code(const char *p)
+{
+    UCS4 L, V, T;
+
+    L=get_choseong(&p);
+    V=get_jungseong(&p);
+    T=get_jongseong(&p);
+
+    if (T==0)
+        T=0x11A7;
+
+    if (*p != '\0') {
+        error("Bad hangul syllable");
+        return NULL_UCS4;
+    }
+
+    return ((L-0x1100)*21 + (V-0x1161))*28 + (T-0x11A7) + 0xAC00;
+}
+
+static UCS4 extract_code(const char *p)
+{
+    char *end;
+
+    UCS4 c = (UCS4) strtol(p, &end, 16);
+    if (*end != '\0')
+    {
+        error("Bad hex");
+        return NULL_UCS4;
+    }
+
+    return c;
+}
+
+
+UCS4 UCS_from_name(const char *name)
+{
+    charinfo *ci;
+
+    if (strncmp(name, "CJK UNIFIED IDEOGRAPH-", 22)==0) {
+        UCS4 c=extract_code(name+22);
+        if (!((c>=0x3400 && c<=0x4DB5) || (c>=0x4E00 && c<=0x9FA5)))
+            error("Bad ideograph");
+        return c;
+    }
+
+    if (strncmp(name, "HANGUL SYLLABLE ", 16)==0)
+        return hangul_syllable_code(name+16);
+
+    if (strncmp(name, "U+", 2)==0) {
+        UCS4 c=extract_code(name+2);
+        if (c > 0xFFFF)
+            error("Bad UCS (use U-xxxxxxxx for non-BMP characters)");
+        return c;
+    }
+
+    if (strncmp(name, "U-", 2)==0) {
+        UCS4 c=extract_code(name+2);
+        if (c > 0x7FFFFFFF)
+            error("Bad UCS");
+        return c;
+    }
+
+    ci = (charinfo *) bsearch(name, charlist, numchars, sizeof charlist[0], cmp_name2);
+    if (!ci)
+    {
+        error("Unknown character");
+        return NULL_UCS4;
+    }
+
+    return ci->code;
+}
+
+const char *name_from_UCS(UCS4 u)
+{
+    static char buffer[256];
+    int i;
+
+    if (u >= 0x4E00 && u <= 0x9FA5)
+    {
+        sprintf(buffer, "CJK UNIFIED IDEOGRAPH-%X", u);
+        return buffer;
+    }
+    else if (u >= 0xAC00 && u <= 0xD7A3)
+    {
+        /* Hangul syllable - too hard */
+        sprintf(buffer, "U+%X\n", u);
+        return buffer;
+    }
+
+    for (i=0; i<numchars; i++)
+        if (charlist[i].code == u)
+            return charlist[i].name;
+
+    sprintf(buffer, "U+%X\n", u);
+    return buffer;
+}
+
+#if 0
+#include "Unicode/utf8.h"
+
+void error(const char *p)
+{
+    fputs(p, stderr);
+    fputc('\n', stderr);
+    //exit(1);
+}
+
+int main()
+{
+    int i=0;
+    char buffer[512];
+
+    load_unidata("UniData");
+    while (charlist[i].code != 0xFFFFFFFF)
+    {
+        *UCS4_to_UTF8(buffer, charlist[i].code) = '\0';
+        printf("%04X  %5d  %s  %s\n", charlist[i].code, charlist[i].code,
+                                      buffer, charlist[i].name);
+        i++;
+    }
+    /*
+    for (;;) {
+    gets(buffer);
+
+    printf("%08X\n", UCS_from_name(buffer));
+    }*/
+
+
+    return 0;
+}
+
+#endif
+@
+
+
+1.5
+log
+@Add support for the new 'wide' key handler format. Add support for keyboard types which have fundamentally different layouts to PC/Arc. Add a basic (UK) layout for the Pandora.
+Detail:
+  Doc/FileFormat, Doc/HandlerAPI - Updated docs with information about the new key handler format, and how to invoke it in layout files.
+  c/keygen, c/unicdata, h/structures - Give keygen a bit of a tidy up. Add support for the new '$Type' directive to allow the keyboard type to be specified (to ensure correct intkey table is used, unique symbol names when the same country is supported by multiple keyboard types, etc.). Add support for the new key handler format.
+  Sources/IntKeyBody, Sources/IntKeyMod, Sources/KeyStruct - Tidy up the code a bit to use key handler layout and key/OS_Byte numbers from Hdr:. Add support for the new key handler format, and for the new way keygen generates the layout files.
+  layout/Pandora, Makefile, Sources/IntKeyBody, Sources/IntKeyMod, Sources/KeyStruct - Add a layout file for the Pandora, and modify IntKey to use different sets of layout files depending on the keyboard type.
+Admin:
+  New key handler format tested on Pandora. Old format tested on Pandora & BB-xM.
+  Requires HdrSrc-2_20
+
+
+Version 0.95. Tagged as 'IntKey-0_95'
+@
+text
+@d236 1
+a236 1
+        if (!((c>=0x3400 && c<=0x4DB5) || (c>=0x4E00 || c<=0x9FA5)))
+@
+
+
+1.4
+log
+@  Some bugfixes for keygen and keyconvert, discovered by gcc.
+  Temporary GNUmakefile added containing UNIX build system.
+Detail:
+  gcc complained about returning the address of a local variable as
+    a function result in both keygen and keyconvert.  The two variables
+    concerned have now been made static like they should have been.
+    Unlikely to have caused much aggravation, but only through luck.
+  The Keyboard data structure has been updated to explicitly use an
+    unsigned char in some places.  This is necessary for systems on
+    which char is signed by default.
+  The GNUmakefile is a temporary addition until native tool support can
+    be sorted out.  In the xriscos environment, do "make links" and
+    then "make rom" to build the module.  "make clean" will remove all
+    the built stuff and the symbolic links.  Requires access to the
+    exported Unicode library files.  keyconvert is built, but will not
+    work for the obvious reason that it calls SWIs.
+Admin:
+  GNUmakefile will be removed at a later date - it's only temporary.
+  Tested - builds the same module (for Keyboard=All, Machine=Phoebe)
+    byte-identically.
+
+
+Version 0.80. Tagged as 'IntKey-0_80'
+@
+text
+@d20 1
+d28 1
+a28 1
+int numchars=0;
+@
+
+
+1.3
+log
+@keygen now built with ANSILib instead of Stubs to cope with buggy old qsorts
+in old shared C libraries.
+
+Version 0.69. Tagged as 'IntKey-0_69'
+@
+text
+@d269 1
+a269 1
+    char buffer[256];
+@
+
+
+1.2
+log
+@Dead-key tables extended as per Unicode 3.0.
+Unicode 3.0 character database imported.
+Switzerland layout now includes @@FNKey@@ (missed on previous check-in).
+
+Version 0.67. Tagged as 'IntKey-0_67'
+@
+text
+@d28 1
+a28 1
+static charinfo charlist[0x10000];
+d60 2
+d97 2
+d306 1
+@
+
+
+1.1
+log
+@Ursula branch merged.
+
+Complete new keyboard definition system in terms of the UCS. See
+Docs.FileFormat for information.
+@
+text
+@d231 1
+a231 1
+        if (c<0x4E00 || c>0x9FA5)
+d241 7
+d289 2
+d300 1
+a300 1
+    //int i=0;
+d302 2
+a303 2
+    load_unidata("UniData215");
+    /*while (charlist[i].code != 0xFFFFFFFF)
+d305 3
+a307 1
+        printf("%50s %08X\n", charlist[i].name, charlist[i].code);
+d310 1
+a310 1
+    */
+d315 1
+a315 1
+    }
+@

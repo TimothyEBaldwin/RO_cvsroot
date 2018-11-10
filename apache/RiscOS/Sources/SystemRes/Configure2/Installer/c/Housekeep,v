@@ -1,0 +1,266 @@
+head	1.3;
+access;
+symbols
+	Installer-0_15:1.3
+	Installer-0_14:1.2
+	Installer-0_13:1.1.1.2
+	Installer-0_12:1.1.1.2
+	Installer-0_11:1.1.1.2
+	Installer-0_10:1.1.1.2
+	Installer-0_09:1.1.1.2
+	Installer-0_08:1.1.1.2
+	Installer-0_07:1.1.1.2
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.2
+	bavison_Installer-0_06:1.1.1.2
+	rthornb_UrsulaBuild-17Jun1998:1.1.1.2
+	bavison_Installer-0_05:1.1.1.2
+	rthornb_UrsulaBuild-03Jun1998:1.1.1.2
+	rthornb_UrsulaBuild-27May1998:1.1.1.2
+	rthornb_UrsulaBuild-21May1998:1.1.1.2
+	rthornb_UrsulaBuild_01May1998:1.1.1.2
+	bavison_Installer_004:1.1.1.2
+	bavison_Installer_003:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2016.06.12.13.57.51;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	hSj262ELIsSRlbaz;
+
+1.2
+date	2016.04.29.20.00.27;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	WVduFvofJJZWLy4z;
+
+1.1
+date	98.04.07.18.12.52;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.04.07.18.12.52;	author bavison;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.04.27.16.11.00;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Add extra parameter for osvarlen()
+Requires AsmUtils-0_19.
+
+Version 0.15. Tagged as 'Installer-0_15'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	Housekeep.c *******************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Configure Installer module (for SysMerge/FontMerge/BootMerge)
+This file:	Module initialisation / finalisation housekeeping
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+15/12/1997	BJGA	Created
+16/12/1997	BJGA	Bugfixed / internationalised
+07/01/1997	BJGA	Now frees log workspace on exit
+20/01/1998	BJGA	Calls FileOp_Init and FileOp_Final when appropriate;
+			memory leak in OS variable lookup fixed
+27/04/1998	BJGA	Changed Housekeep_Init args to be compatible with CMHG 5.18
+
+\**************************************************************************/
+
+/* CLib */
+#include <stdlib.h>
+#include "swis.h"
+/* Common */
+#include "Global/Variables.h"
+#include "AsmUtils/osvarlen.h"
+/* local headers */
+#include "Defs.h"
+#include "FileOp.h"
+#include "Housekeep.h"
+#include "Log.h"
+#include "InstallerHdr.h"
+#include "ResMess.h"
+
+#define INSTPATH "Installer$Path"
+#define RESPATH "Resources:$.Resources.Installer."
+#define MESS_FILE "Installer:Messages"
+
+int	messages [4] = { 0, 0, 0, 0 };
+
+
+/******	Housekeep_Init() **************************************************\
+
+Purpose:	Module initialisation; registers messages file in Resources,
+		and opens it (or an alternative file on Installer$Path)
+In:		Standard args
+Out:		Pointer to error block if initialisation failed
+
+\**************************************************************************/
+
+extern _kernel_oserror *Housekeep_Init (const char *cmd_tail, int podule_base, void *pw)
+{
+  _kernel_oserror *err = NULL;
+  BOOL	FileRegistered = FALSE,
+  	MessagesOpen = FALSE;
+  
+  IGNORE(cmd_tail);
+  IGNORE(podule_base);
+  IGNORE(pw);
+  
+  /* Set path to default, unless it's already set */
+  if (osvarlen (INSTPATH, VarType_Expanded) == -1)
+  {
+    err = _swix (OS_CLI, _IN(0), "Set " INSTPATH " " RESPATH);
+  }
+  if (err != NULL) goto finish;
+  else
+  {
+    /* Register default Messages file in ResourceFS */
+    err = _swix (ResourceFS_RegisterFiles, _IN(0), Resources ());
+    if (err != NULL) goto finish;
+    else
+    {
+      FileRegistered = TRUE;
+      /* Open Messages file */
+      err = _swix (MessageTrans_OpenFile, _INR(0,2), &messages, MESS_FILE, 0);
+      if (err != NULL) goto finish;
+      else
+      {
+        MessagesOpen = TRUE;
+        /* Other initialisation */
+        err = FileOp_Init ();
+        if (err) FileOp_Final ();
+      }
+    }
+  }
+  
+finish:
+  if (err && MessagesOpen) _swix (MessageTrans_CloseFile, _IN(0), &messages);
+  if (err && FileRegistered) _swix (ResourceFS_DeregisterFiles, _IN(0), Resources ());
+
+  return err;
+}
+
+/******	Housekeep_Final() *************************************************\
+
+Purpose:	Module finalisation; closes and deregisters messages file(s)
+In:		Standard args
+Out:		Pointer to error block if finalisation failed
+
+\**************************************************************************/
+
+extern _kernel_oserror *Housekeep_Final (int fatal, int podule, void *pw)
+{
+  _kernel_oserror *err = NULL;
+  IGNORE(fatal);
+  IGNORE(podule);
+  IGNORE(pw);
+  
+  Log_Final ();
+  FileOp_Final ();
+  _swix (MessageTrans_CloseFile, _IN(0), &messages);
+  _swix (ResourceFS_DeregisterFiles, _IN(0), Resources ());
+  return err; /* anything non-NULL will prevent us from dying, so use with caution */
+}
+@
+
+
+1.2
+log
+@Makefile recreated from fragments
+Get OS_ReadVarVal assistance from AsmUtils, remove local OSVar.s.
+Rename CMHG file to follow the autogenerated name, and resource area to Resources() similarly.
+
+Version 0.14. Tagged as 'Installer-0_14'
+@
+text
+@d37 1
+d74 1
+a74 1
+  if (osvarlen (INSTPATH) == -1)
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d29 1
+d36 2
+d43 1
+a43 2
+#include "ModHdr.h"
+#include "OSVar.h"
+d62 1
+a62 1
+extern _kernel_oserror *Housekeep_Init (char *cmd_tail, int podule_base, void *pw)
+d73 1
+a73 1
+  if (!OSVar_Exists (INSTPATH))
+d81 1
+a81 1
+    err = _swix (ResourceFS_RegisterFiles, _IN(0), resourcesfiles ());
+d101 1
+a101 1
+  if (err && FileRegistered) _swix (ResourceFS_DeregisterFiles, _IN(0), resourcesfiles ());
+d124 1
+a124 1
+  _swix (ResourceFS_DeregisterFiles, _IN(0), resourcesfiles ());
+@
+
+
+1.1.1.1
+log
+@Initial commit of Configure's shared Installer module to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Now complies with CMHG 5.18
+@
+text
+@a28 1
+27/04/1998	BJGA	Changed Housekeep_Init args to be compatible with CMHG 5.18
+d60 1
+a60 1
+extern _kernel_oserror *Housekeep_Init (const char *cmd_tail, int podule_base, void *pw)
+@

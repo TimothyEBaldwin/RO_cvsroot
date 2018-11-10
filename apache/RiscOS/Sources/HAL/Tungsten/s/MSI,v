@@ -1,0 +1,217 @@
+head	1.2;
+access;
+symbols
+	Tungsten-0_63:1.2
+	Tungsten-0_62:1.2
+	Tungsten-0_61:1.2
+	Tungsten-0_60:1.2
+	SMP:1.2.0.2
+	SMP_bp:1.2
+	Tungsten-0_59:1.2
+	Tungsten-0_58:1.2
+	Tungsten-0_57:1.2
+	Tungsten-0_56:1.2
+	Tungsten-0_55:1.2
+	Tungsten-0_54:1.2
+	Tungsten-0_53:1.2
+	Tungsten-0_52:1.2
+	Tungsten-0_51:1.2
+	Tungsten-0_50:1.2
+	Tungsten-0_49:1.2
+	Tungsten-0_48:1.2
+	Tungsten-0_47:1.2
+	Tungsten-0_46:1.2
+	Tungsten-0_45:1.2
+	Tungsten-0_44:1.2
+	Tungsten-0_43:1.2
+	Tungsten-0_42:1.2
+	Tungsten-0_41:1.2
+	Tungsten-0_40:1.2
+	Tungsten-0_39:1.2
+	Tungsten-0_38:1.2
+	Tungsten-0_37:1.2
+	Tungsten-0_36:1.1
+	Tungsten-0_35:1.1
+	Tungsten-0_34:1.1
+	Tungsten-0_33:1.1
+	Tungsten-0_32:1.1
+	Tungsten-0_31:1.1
+	Tungsten-0_30:1.1
+	Tungsten-0_29:1.1
+	Tungsten-0_28:1.1
+	Tungsten-Official514:1.1
+	Tungsten-0_27:1.1
+	Tungsten-0_26:1.1
+	Tungsten-0_25:1.1
+	Tungsten-0_24:1.1
+	Tungsten-0_23:1.1
+	Tungsten-0_22:1.1
+	Tungsten-0_21:1.1
+	Tungsten-0_20:1.1
+	RO_5_07:1.1
+	Tungsten-0_19:1.1
+	Tungsten-0_18:1.1
+	Tungsten-0_17:1.1
+	Tungsten-0_16:1.1
+	Tungsten-0_15:1.1
+	Tungsten-0_14:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2012.02.25.16.43.17;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	jZ2NTOmQjvfsHyUv;
+
+1.1
+date	2003.04.15.20.03.35;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@Add compressed ROM support. Make softload-aware.
+Detail:
+  hdr/Post, s/FlashProg - Add sizeofROM definition, for expected size of compressed ROM/physical ROM chip. Used to replace references to OSROM_ImageSize throughout the code.
+  s/ATA, s/Boot, s/Debug, s/DebugPCI, s/IIC, s/Interrupts, s/MSI, s/NVMemory, s/Timers, s/Top, s/UART - Removed unnecessary GETs of Hdr:ImageSize.<ImageSize>
+  s/Boot, s/Video - Add a new 'Tungsten video' HAL device, for storing the NVidia STRAP data that the softload & ROM flash tools need to poke into the ROMs on a per-machine basis. Previously the data was stored in the NVidia module, which would have caused complications with compressed ROM images.
+  s/RAM, s/Top - Add compressed ROM & softload support. Softload code just skips some hardware initialisation and relocates the ROM to the high end of RAM.
+Admin:
+  Tested as Tungsten ROM softload only.
+  For safety, compressed ROMs that have been burnt to ROM are required to be 4MB in size. This helps to simplify the ROM consistency checks and recovery code.
+  Softloaded ROMs aren't subjected to the FlashCheck code and can be any size.
+
+
+Version 0.37. Tagged as 'Tungsten-0_37'
+@
+text
+@; Copyright 2003 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:Machine.<Machine>
+
+        GET     Hdr:OSEntries
+
+        GET     hdr.80321
+        GET     hdr.StaticWS
+
+        AREA    |Asm$$Code|, CODE, READONLY, PIC
+
+        EXPORT  MSI_Init
+        EXPORT  HAL_PCIMSIFeatures
+        EXPORT  HAL_PCIMSIGetNextMessage
+        EXPORT  pci_msi_addr
+
+        IMPORT  vtophys
+
+MU_QueueSize    *       16*1024
+
+; Note that we don't program up the other 3 queues - any reads to the
+; Inbound Queue Port, or accesses to the Outbound Queue Port could be fatal.
+
+MSI_Init
+        Push    "lr"
+        LDR     a3, NCNBWorkspace
+        ADD     a1, a3, #NCNB_MUQueue
+        BL      vtophys                 ; get physical address of queue area
+        LDR     a4, PMMR_Address
+        MOV     a2, a1, LSR #20
+        MOV     a2, a2, LSL #20
+        STR     a2, [a4, #MU_QBAR]      ; top 12 bits into QBAR
+        STR     a1, [a4, #MU_IPHPR]     ; rest into 20-bit tail+head ptrs
+        STR     a1, [a4, #MU_IPTPR]
+        MOV     a1, #1:SHL:4            ; clear the interrupt (to indicate
+        STR     a1, [a4, #MU_IISR]      ; empty, not full)
+        LDR     a1, [a4, #MU_IIMR]      ; enable the interrupt
+        ORR     a1, a1, #1:SHL:4
+        STR     a1, [a4, #MU_IIMR]
+        MOV     a1, #2_00001:SHL:1 + 1
+        STR     a1, [a4, #MU_MUCR]      ; enable the circular queues
+
+        ; Now activate 80321's BAR 0 to allow devices to access queue ports
+        LDR     a3, NCNBWorkspace
+        ADD     a1, a3, #NCNB_MUArea
+        BL      vtophys                 ; get physical address of MU area
+        LDR     a4, PMMR_Address        ; map it in as 4K at PCI address
+        LDR     a2, =&FFFFF000          ; &80000000
+        STR     a2, [a4, #ATU_IALR0]
+        STR     a1, [a4, #ATU_IATVR0]
+        MOV     a1, #&80000000
+        STR     a1, [a4, #ATU_IABAR0]
+        Pull    "pc"
+
+HAL_PCIMSIFeatures
+        MOV     pc,lr
+
+HAL_PCIMSIGetNextMessage
+        LDR     a4, PMMR_Address
+        LDR     a3, [a4, #MU_IPHPR]     ; a3 = head ptr
+        LDR     a2, [a4, #MU_IPTPR]     ; a2 = tail ptr
+        LDR     ip, [a4, #MU_IISR]
+        TEQ     a2, a3                  ; if head ptr = tail ptr AND
+        TSTEQ   ip, #1:SHL:4            ; IPQ interrupt is clear, then
+        MOVEQ   a1, #-1                 ; the queue is empty
+        MOVEQ   pc, lr
+        LDR     ip, NCNBWorkspace       ; need to convert physical
+        ADD     ip, ip, #NCNB_MUQueue   ; tail address to logical
+        ASSERT  MU_QueueSize = 1:SHL:14
+        MOV     a1, a2, LSL #18         ; a1 = bottom 14 bits of ptr
+        LDR     a1, [ip, a1, LSR #18]   ; load from logical address
+        ADD     a2, a2, #4
+        EOR     ip, a2, a3              ; did we cross a queue size boundary?
+        TST     ip, #MU_QueueSize
+        SUBNE   a2, a2, #MU_QueueSize   ;   then wrap back down
+        TEQ     a2, a3                  ; will tail now = head?
+        MOVEQ   ip, #1:SHL:4            ;   then we've emptied it, so
+        STREQ   ip, [a4, #MU_IISR]      ;   clear the interrupt
+        ; no - only empty if new head = tail = old head????...
+        STR     a2, [a4, #MU_IPTPR]     ; write back the tail
+        MOV     pc, lr
+
+pci_msi_addr
+        MOV     a1, #&80000000
+        ADD     a1, a1, #MU_IQP - MU_Base
+        MOV     pc, lr
+
+        END
+@
+
+
+1.1
+log
+@First venture into the world of message signalled interrupts (s.MSI).
+High speed RAM clear added using AAU in the XScale.
+Tighten up check on RAM modules to reject some 4 bit wide devices.
+Fix for CMOS protect link being ignored.
+Add table returned by ReadPhysicalMemory.
+New poke to move sound DMA into the top half of physical memory.
+PCI rewrite.
+
+Version 0.14. Tagged as 'Tungsten-0_14'
+@
+text
+@a18 1
+        GET     Hdr:ImageSize.<ImageSize>
+@
+

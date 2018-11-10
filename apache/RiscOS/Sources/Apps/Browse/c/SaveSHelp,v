@@ -1,0 +1,1468 @@
+head	1.4;
+access;
+symbols
+	Browse-2_16:1.4
+	Browse-2_15:1.4
+	Browse-2_14:1.4
+	Browse-2_13:1.4
+	Browse-2_12:1.4
+	Browse-2_11:1.4
+	Browse-2_10:1.4
+	Browse-2_09:1.4
+	ahodgkin_208_i4_2:1.4
+	ahodgkin_208_i4:1.2
+	ahodgkin_208_i3:1.2
+	ahodgkin_208_i2:1.2
+	ahodgkin_208_i1:1.2
+	ahodgkin_207release:1.1
+	ahodgkin_206release:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2000.11.14.08.45.08;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.05.31.15.58.47;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.03.30.15.52.03;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.07.09.10.27.25;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    SaveSHelp.c                                       */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Save a web page as a StrongHelp manual.           */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 21-May-1997 (ADH): Created.                       */
+/*          23-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+#include <tboxlibs/flex.h>
+
+#include <HTMLLib/HTMLLib.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include "Global.h"
+#include "FromROSLib.h"
+#include "MiscDefs.h"
+#include "Utils.h"
+
+#include "Browser.h"
+#include "ChoiceDefs.h"
+#include "Fetch.h" /* For ISLINK macro */
+#include "Filetypes.h"
+#include "Redraw.h"
+#include "Reformat.h"
+#include "Save.h"
+#include "TokenUtils.h"
+
+#include "SaveSHelp.h"
+
+/* Local definitions */
+
+#define SaveSHelp_MaxSubPageHeader 3
+
+/* Local statics */
+
+static FILE * outfile     = NULL;
+static int    just_did_hr = 0;
+static int    just_did_nl = 0;
+
+/* Static function prototypes */
+
+#undef HORRIFIC_HACK
+
+//static int               saveshelp_write_bytes     (const char * s, unsigned int n);
+
+#ifndef HORRIFIC_HACK
+  static _kernel_oserror * saveshelp_copy            (char * src, const char * dstpath, const char * dstleaf);
+#endif
+
+static void              saveshelp_output_safe     (const char * string);
+static void              saveshelp_output_cautious (const char * string);
+static void              saveshelp_build_safe      (const char * string, char * buffer);
+static int               saveshelp_find_subpage    (browser_data * b, const char * match);
+static void              saveshelp_output_text_tag (browser_data * b, HStream * search, int header);
+static _kernel_oserror * saveshelp_create          (browser_data * b, const char * pathname);
+
+
+#ifdef HORRIFIC_HACK
+
+  static char * outf  = NULL;
+  static int    outfs = 0;
+
+  #define fopen(a, b) { free(outf); outf = NULL, outfs = 0; outfile = (FILE *) 1;}
+  #define fclose(a) { free (outf); outf = NULL, outfs = 0; outfile = NULL;}
+  #define saveshelp_copy(a, b, c) saveshelp_copy2(a, b, c)
+  #define fputc(a, b) saveshelp_fputc(a, b)
+  #define fprintf saveshelp_fprintf
+
+  #include <stdarg.h>
+
+  static int saveshelp_fputc(int c, FILE * stream)
+  {
+    char * new = realloc(outf, outfs + 1);
+
+    if (!new) return EOF;
+    else outf = new;
+
+    outf[outfs] = (char) c;
+    outfs++;
+
+    return c;
+  }
+
+  static int saveshelp_fprintf(FILE * stream, char * format, ...)
+  {
+    int size;
+    char * new;
+    va_list ptr;
+
+    va_start(ptr, format);
+    size = utils_len_printf(format, ptr);
+    va_end(ptr);
+
+    if (!size) return 0;
+
+    new = realloc(outf, outfs + size + 1);
+
+    if (!new) return 0;
+    else outf = new;
+
+    va_start(ptr, format);
+    sprintf(outf + outfs, format, ptr);
+    va_end(ptr);
+
+    new = realloc(outf, outfs + size);
+    if (!new) return 0;
+    else outf = new, outfs += size;
+
+    return size;
+  }
+
+  static _kernel_oserror * saveshelp_copy2(char * src, const char * dstpath, const char * dstleaf)
+  {
+    _kernel_oserror * e;
+    char            * destination;
+    unsigned int      type;
+
+    destination = malloc(strlen(dstpath) + strlen(dstleaf) + 2);
+    if (!destination) return make_no_memory_error(35);
+
+    strcpy(destination, dstpath);
+    strcat(destination, ".");
+    strcat(destination, dstleaf);
+
+    /* Save the file at its destination */
+
+    type = FileType_TEXT;
+
+    e = _swix(OS_File,
+              _INR(0,2) | _INR(4,5),
+
+              10,
+              destination,
+              type,
+              outf,
+              outf + outfs);
+
+  //  free(copy);
+    free(destination);
+
+    return e;
+  }
+
+#endif
+
+// /**************************************************************/
+// /* saveshelp_write_bytes()                                    */
+// /*                                                            */
+// /* Outputs a given number of bytes of a given string to the   */
+// /* FILE * set up in the global 'outfile', returning a success */
+// /* flag.                                                      */
+// /*                                                            */
+// /* Parameters: Pointer to an array of bytes;                  */
+// /*                                                            */
+// /*             Number of characters from the array to save.   */
+// /*                                                            */
+// /* Returns:    1 if successful, 0 if failed.                  */
+// /*                                                            */
+// /* Assumes:    An appropriately opened file is accessible     */
+// /*             through the global FILE * 'outfile'.           */
+// /**************************************************************/
+//
+// static int saveshelp_write_bytes(const char * s, unsigned int n)
+// {
+//   _kernel_swi_regs r;
+//
+//   if (!s || !outfile) return 0;
+//
+//   /* Use _kernel_swi as it sets up */
+//   /* _kernel_last_oserror.         */
+//
+//   r.r[0] = 2;
+//   r.r[1] = outfile->__file;
+//   r.r[2] = (int) s;
+//   r.r[3] = n;
+//
+//   if (!r.r[1] || _kernel_swi(OS_GBPB, &r, &r)) return 0;
+//
+//   return 1;
+// }
+
+#ifndef HORRIFIC_HACK
+
+  /**************************************************************/
+  /* saveshelp_copy()                                           */
+  /*                                                            */
+  /* Copy a file into the StrongHelp manual.                    */
+  /*                                                            */
+  /* Parameters: Source pathname;                               */
+  /*                                                            */
+  /*             Pathname the *manual* is being saved under;    */
+  /*                                                            */
+  /*             Destination leafname for this file.            */
+  /*                                                            */
+  /* Assumes:    All pointers are not NULL.                     */
+  /**************************************************************/
+
+  static _kernel_oserror * saveshelp_copy(char * src, const char * dstpath, const char * dstleaf)
+  {
+    _kernel_oserror * e;
+    char            * destination;
+    char            * copy;
+    int               found, size;
+    unsigned int      type;
+
+    destination = malloc(strlen(dstpath) + strlen(dstleaf) + 2);
+    if (!destination) return make_no_memory_error(35);
+
+    strcpy(destination, dstpath);
+    strcat(destination, ".");
+    strcat(destination, dstleaf);
+
+    /* Find the object's size */
+
+    e = _swix(OS_File,
+              _INR(0, 1) | _OUT(0) | _OUT(2) | _OUT(4),
+
+              17,
+              src,
+
+              &found,
+              &type,
+              &size);
+
+    if (e || (found != 1 && found != 3)) goto saveshelp_copy_give_up_and_copy;
+
+    /* Found the object - malloc space for it */
+
+    copy = malloc(size);
+    if (!copy) goto saveshelp_copy_give_up_and_copy;
+
+    /* Load into the block */
+
+    e = _swix(OS_File,
+              _INR(0,3),
+
+              16,
+              src,
+              copy,
+              0);
+
+    if (e)
+    {
+      free(copy);
+      free(destination);
+
+      return e;
+    }
+
+    /* Save the file at its destination */
+
+    type = (type & 0xfff00000) >> 20;
+
+    e = _swix(OS_File,
+              _INR(0,2) | _INR(4,5),
+
+              10,
+              destination,
+              type,
+              copy,
+              copy + size);
+
+    free(copy);
+    free(destination);
+
+    return e;
+
+  saveshelp_copy_give_up_and_copy:
+
+    /* Can't determine file size, claim memory, or */
+    /* whatever. So just do a copy. Will cause     */
+    /* problems if destination filesystem needs    */
+    /* to claim RAM, of course.                    */
+
+    e = _swix(OS_FSControl,
+              _INR(0,8),
+
+              26, /* Copy objects */
+              src,
+              destination,
+              (1u<<7) || (1u<<1),
+              0,
+              0,
+              0,
+              0,
+              0);
+
+    free(destination);
+
+    return e;
+  }
+
+#endif
+
+/**************************************************************/
+/* saveshelp_output_safe()                                    */
+/*                                                            */
+/* Output a string to the current outfile making sure any     */
+/* possibly illegal characters (this includes spaces) are     */
+/* replaced by underscores.                                   */
+/*                                                            */
+/* Parameters: Pointer to the string to output.               */
+/**************************************************************/
+
+static void saveshelp_output_safe(const char * string)
+{
+  const char * p = string;
+
+  while (*p)
+  {
+    if (strchr(" ![]\\\"<>/.$%@@&*?#^{}", *p)) fputc('_', outfile);
+    else                                      fputc(*p,  outfile);
+
+    p++;
+  }
+}
+
+/**************************************************************/
+/* saveshelp_output_cautious()                                */
+/*                                                            */
+/* Output a string to the current outfile making sure that    */
+/* possibly illegal characters are escaped.                   */
+/*                                                            */
+/* Parameters: Pointer to the string to output.               */
+/**************************************************************/
+
+static void saveshelp_output_cautious(const char * string)
+{
+  const char * p = string;
+
+  while (*p)
+  {
+    if (strchr("[]\\<>/$%@@?#{}*_", *p)) fputc('\\', outfile);
+
+    fputc(*p, outfile);
+
+    p++;
+  }
+}
+
+/**************************************************************/
+/* saveshelp_build_safe()                                     */
+/*                                                            */
+/* Build the equivalent of what savefile_output_safe would    */
+/* output in the given buffer. Length of output equals length */
+/* of input.                                                  */
+/*                                                            */
+/* Parameters: Pointer to the string to make a safe copy of;  */
+/*                                                            */
+/*             Pointer to the buffer to fill, which is        */
+/*             assumed to be at least as long as the given    */
+/*             starting string plus terminator byte.          */
+/*                                                            */
+/* Assumes:    Neither pointer is NULL; output buffer is big  */
+/*             enough (see parameters list).                  */
+/**************************************************************/
+
+static void saveshelp_build_safe(const char * string, char * buffer)
+{
+  const char * p = string;
+  char       * b = buffer;
+
+  while (*p)
+  {
+    if (strchr(" ![]\\\"<>/.$%@@&*?#^{}", *p)) *b = '_';
+    else                                      *b = *p;
+
+    b++;
+    p++;
+  }
+
+  *b = '\0';
+}
+
+/**************************************************************/
+/* saveshelp_find_subpage()                                   */
+/*                                                            */
+/* Give it the anchor fragment from an HREF attribute - sees  */
+/* if it points to an item that's going to be defined as a    */
+/* subpage, and if so returns 1, else 0.                      */
+/*                                                            */
+/* Could make mistakes if the fragment is for a completely    */
+/* new URL but happens to have a name that matches an entry   */
+/* in this page's token list...!                              */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the anchor;                                    */
+/*                                                            */
+/*             Pointer to the anchor fragment (the bit after  */
+/*             the '#' in a URL).                             */
+/*                                                            */
+/* Returns:    1 if this appears to be a local in-page link   */
+/*             that could be used to reference a page within  */
+/*             the manual, else 0.                            */
+/**************************************************************/
+
+static int saveshelp_find_subpage(browser_data * b, const char * match)
+{
+  HStream * search = b->stream;
+
+  while (search)
+  {
+    if (
+         ISBODY(search)           &&
+         (search->style & PCDATA) &&
+         search->name             &&
+         *search->name            &&
+         search->text             &&
+         *search->text
+       )
+    {
+      int header = redraw_header(search->style);
+
+      /* Found one with the right characteristics */
+
+      if (header && header <= SaveSHelp_MaxSubPageHeader)
+      {
+        if (!utils_strcasecmp(search->name, match)) return 1;
+      }
+    }
+
+    search = search->next;
+  }
+
+  return 0;
+}
+
+/**************************************************************/
+/* saveshelp_output_text_tag()                                */
+/*                                                            */
+/* Deal with the output consequences of a tag containing      */
+/* text.                                                      */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the tag;                                       */
+/*                                                            */
+/*             Pointer to the relevant HStream structure;     */
+/*                                                            */
+/*             Current heading level (typically, the return   */
+/*             value of redraw_header for the given HStream   */
+/*             structure).                                    */
+/**************************************************************/
+
+static void saveshelp_output_text_tag(browser_data * b, HStream * search, int header)
+{
+  int          bold, italic, facenum, face, last;
+
+  unsigned int flags       = search->style;
+  unsigned int done_change = 0;
+
+  /* Miscellaneous bits */
+
+  if (search->style & HR)
+  {
+    just_did_hr = 1;
+    fprintf(outfile, "\n\n#Line\n");
+  }
+
+  /* Line spacing */
+
+  if (flags & P)
+  {
+    if (just_did_nl == 1)  fputc('\n', outfile);
+    else if (!just_did_nl) fprintf(outfile, "\n\n");
+
+    just_did_nl = 2;
+  }
+  else if (reformat_newline(search, search->prev, 0) && !just_did_nl)
+  {
+    fputc('\n', outfile);
+    just_did_nl = 1;
+  }
+  else just_did_nl = 0;
+
+  /* Indents? */
+
+  if (
+       (
+         !search->prev  &&
+         search->indent
+       )
+       ||
+       (
+         search->indent != search->prev->indent
+       )
+     )
+  {
+    fprintf(outfile, "\n#Indent %d\n", search->indent * 4);
+  }
+
+  /* Is this for text? */
+
+  if ((search->style & PCDATA) && search->text && *search->text)
+  {
+    /* Deal with headings */
+
+    if (
+         (
+           search->prev &&
+           header != redraw_header(search->prev->style)
+         )
+         ||
+         (
+           header &&
+           !search->prev
+         )
+       )
+    {
+      if (flags & P)
+      {
+        /* Just had a paragraph, so don't need any more line feeds */
+
+        if (header)
+        {
+          done_change = 1;
+
+          fprintf(outfile, "{f}{fH%d}", header);
+        }
+        else
+        {
+          fprintf(outfile, "{f}");
+        }
+      }
+      else
+      {
+        /* No paragraph preceeding, so add line feeds as required */
+
+        if (just_did_hr == 0) fputc('\n', outfile);
+        else just_did_hr = 0;
+
+        if (header)
+        {
+          done_change = 1;
+
+          fprintf(outfile, "\n{f}{fH%d}", header);
+        }
+        else
+        {
+          fprintf(outfile, "\n{f}");
+        }
+      }
+    }
+
+    /* Text style */
+
+    if (!done_change)
+    {
+      bold = italic = facenum = face = 0;
+
+      if (flags & (ITALIC | BLOCKQUOTE)) italic  = 1;
+      if (flags & (BOLD   | DT))         bold    = 1;
+      if (flags & (H_MASK | ADDRESS))    facenum = 1; /* 1 = Sans serif */
+
+      if (flags & (PRE    | TT))         facenum = 2; /* 2 = Monospaced */
+
+      if (bold && italic) face = 3;
+      else if (bold)      face = 1;
+      else if (italic)    face = 2;
+      else                face = 0;
+
+      /* (No support for sans-serif yet) */
+
+      if (facenum == 2)   face += 20;
+
+      if (search->prev)
+      {
+        flags = search->prev->style;
+
+        if (flags & (ITALIC | BLOCKQUOTE)) italic  = 1;
+        if (flags & (BOLD   | DT))         bold    = 1;
+        if (flags & (H_MASK | ADDRESS))    facenum = 1; /* 1 = Sans serif */
+
+        if (flags & (PRE    | TT))         facenum = 2; /* 2 = Monospaced */
+
+        if (bold && italic) last = 3;
+        else if (bold)      last = 1;
+        else if (italic)    last = 2;
+        else                last = 0;
+        if (facenum == 2)   last += 20;
+      }
+      else last = 0;
+
+      if (last != face) fprintf(outfile, "{f}{f%d}", face);
+    }
+
+    /* Is this a link? */
+
+    if (ISLINK(search))
+    {
+      char * hash = strchr(search->anchor, '#');
+
+      if (
+           hash &&
+           saveshelp_find_subpage(b, hash + 1)
+         )
+      {
+        fputc('<', outfile);
+        saveshelp_output_cautious(search->text);
+        fprintf(outfile, "=>");
+        saveshelp_output_safe(hash + 1);
+        fprintf(outfile, ">");
+      }
+      else
+      {
+        fputc('<', outfile);
+        saveshelp_output_cautious(search->text);
+        fprintf(outfile, "=>#URL %s>",search->anchor);
+      }
+    }
+    else
+    {
+      /* Output the main text */
+
+      saveshelp_output_cautious(search->text);
+    }
+  }
+}
+
+/**************************************************************/
+/* saveshelp_create()                                         */
+/*                                                            */
+/* Output a StrongHelp manual. Does this by creating the      */
+/* manual in the given place, outputting each page to         */
+/* <Wimp$Scrap>, then copying it over in one chunk.           */
+/*                                                            */
+/* This is obviously quite tricky, and we have to make a      */
+/* variety of assumptions about the HTML source. It's only    */
+/* going to really work for well-formed pages.                */
+/*                                                            */
+/* H1 and H2 are taken to mean 'subpage'. A new file in the   */
+/* manual will be created for each heading, so an 'F1' lookup */
+/* will work for those. Other headings are treated as inline  */
+/* text headings, not section identifiers.                    */
+/*                                                            */
+/* The routine tries to maintain links, both in-page and      */
+/* external.                                                  */
+/*                                                            */
+/* Tables are not dealt with sensibly.                        */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct to represent  */
+/*             in the manual;                                 */
+/*                                                            */
+/*             Pointer to the pathname the manual is being    */
+/*             saved to.                                      */
+/**************************************************************/
+
+static _kernel_oserror * saveshelp_create(browser_data * b, const char * pathname)
+{
+  _kernel_oserror * e;
+  HStream         * search;
+  int               found;
+  int               count;
+
+  /* Just in case...! If we left an output file open (crashed, etc.) close it */
+
+  if (outfile)
+  {
+    fclose(outfile);
+    outfile = NULL;
+  }
+
+  /* Open up <Wimp$Scrap> for !Root */
+
+  #ifndef HORRIFIC_HACK
+    outfile = fopen(Save_ScrapFile, "wb");
+    if (!outfile) RetLastE;
+  #endif
+
+  /* Use the document title in the manual */
+
+  {
+    char   title[Limits_Title];
+    char * p = title;
+    char * end;
+
+    *title = 0;
+
+    /* First, try and find a <title> tag */
+
+    search = b->stream;
+
+    while (search)
+    {
+      if (!ISBODY(search) && !ISFRAMESET(search) && ISHEAD(search))
+      {
+        if (search->tagno == TAG_TITLE && search->text)
+        {
+          StrNCpy0(title, search->text);
+
+          /* Strip any spaces at the start */
+
+          while (*p == ' ') p++;
+
+          /* Strip any spaces at the end */
+
+          end = (char *) ((int) p + strlen(p) - 1);
+          if (end > p) while (*end == ' ') *end-- = 0;
+
+          break;
+        }
+      }
+
+      search = search->next;
+    }
+
+    /* If that fails, try to read the window title directly */
+    /* (not good for frames - they've no title!)            */
+
+    if (!*title)
+    {
+      e = window_get_title(0,
+                           b->self_id,
+                           title,
+                           sizeof(title),
+                           NULL);
+
+      if (!e)
+      {
+        title[sizeof(title) - 1] = 0;
+      }
+      else *title = 0;
+    }
+
+    /* If this fails, use the pathname */
+
+    if (!*title) StrNCpy0(title, pathname);
+
+    /* Output this as the root page title */
+
+    fprintf(outfile, "%s\n", title);
+
+    /* Standard intro */
+
+    fprintf(outfile,
+
+            "{Background Wimp 1}"
+            "{f16 = Corpus.Medium 12}"
+            "{Align Centre}"
+            "{f12}");
+
+    saveshelp_output_cautious(title);
+
+    fprintf(outfile, "{f}\n");
+  }
+
+  /* Output as much body text exists from the top of the */
+  /* page down to the first heading item                 */
+
+  fprintf(outfile, "#Align left\n");
+  if (b->page_is_text) fprintf(outfile, "#Wrap off\n{fCode}");
+
+  search = b->stream;
+
+  while (search)
+  {
+    if (ISBODY(search))
+    {
+      int header = redraw_header(search->style);
+
+      if (
+           (search->style & PCDATA)             &&
+           header                               &&
+           header <= SaveSHelp_MaxSubPageHeader &&
+           search->text                         &&
+           *search->text                        &&
+           search->name                         &&
+           *search->name
+         )
+      {
+        /* We have a heading item - break out */
+
+        break;
+      }
+      else
+      {
+        /* Valid tag, not a heading item - output it */
+
+        saveshelp_output_text_tag(b, search, header);
+      }
+    }
+
+    search = search->next;
+  }
+
+  /* Go through the token stream looking for named heading 1 and */
+  /* heading 2 items that we will use as separate pages          */
+
+  search = b->stream;
+  found  = 0;
+
+  while (search)
+  {
+    if (
+         ISBODY(search)           &&
+         (search->style & PCDATA) &&
+         search->name             &&
+         *search->name            &&
+         search->text             &&
+         *search->text
+       )
+    {
+      int header = redraw_header(search->style);
+
+      /* Found one - output a link to the page */
+
+      if (header && header <= SaveSHelp_MaxSubPageHeader)
+      {
+        found += 1;
+
+        if (found == 1) fprintf(outfile, "#Line\n");
+
+        fputc('<', outfile);
+        saveshelp_output_cautious(search->text);
+        fprintf(outfile, "=>");
+        saveshelp_output_safe(search->name);
+        fprintf(outfile, ">\n");
+      }
+    }
+
+    search = search->next;
+  }
+
+  /* Close the output file, set the filetype to Data */
+
+  fclose(outfile);
+  outfile = NULL;
+
+//  _swix(OS_File,
+//        _INR(0,2) | _INR(4,5),
+//
+//        18,
+//        Save_ScrapFile,
+//        FileType_DATA);
+
+  /* Copy it to the StrongHelp manual */
+
+  RetError(saveshelp_copy(Save_ScrapFile, pathname, "!Root"));
+
+  /* Now do each of the subpages, if there are any... */
+
+  if (found)
+  {
+    char * pagename = NULL;
+
+    _swix(Hourglass_Start,
+          _IN(0),
+
+          1);
+
+    count = 0;
+
+    /* Find the first subpage heading */
+
+    search = b->stream;
+
+    while (search)
+    {
+      if (
+           ISBODY(search)           &&
+           (search->style & PCDATA) &&
+           search->text             &&
+           *search->text
+         )
+      {
+        int header = redraw_header(search->style);
+
+        if (
+             header                               &&
+             header <= SaveSHelp_MaxSubPageHeader &&
+             search->name                         &&
+             *search->name
+           )
+        {
+          /* We have a heading item - break out */
+
+          break;
+        }
+      }
+
+      search = search->next;
+    }
+
+    /* Did we find it? */
+
+    while (search)
+    {
+      /* Yes. Use the heading text as the page name. */
+
+      _swix(Hourglass_Percentage,
+            _IN(0),
+
+            (100 * count) / found); /* ('count' always lags one behind where 'found' would be here, so this goes from 0 to 99% - which is what we want) */
+
+      pagename = search->name;
+
+      #ifndef HORRIFIC_HACK
+        outfile = fopen(Save_ScrapFile, "wb");
+        if (!outfile) RetLastE;
+      #endif
+
+      /* Output the page header */
+
+      fprintf(outfile, "%s\n", search->text);
+
+      /* Standard intro */
+
+      fprintf(outfile,
+
+              "#Parent !Root\n"
+              "{Background Wimp 1}"
+              "{f16 = Corpus.Medium 12}"
+              "{Align Centre}"
+              "{f12}");
+
+      saveshelp_output_cautious(search->text);
+
+      fprintf(outfile, "{f}\n\n#Align Left\n");
+
+      /* Now output the contents up until the next header item */
+
+      search = search->next;
+
+      while (search)
+      {
+        if (ISBODY(search))
+        {
+          int header = redraw_header(search->style);
+
+          if (
+               (search->style & PCDATA)             &&
+               header                               &&
+               header <= SaveSHelp_MaxSubPageHeader &&
+               search->text                         &&
+               *search->text                        &&
+               search->name                         &&
+               *search->name
+             )
+          {
+            /* We have a heading item - break out */
+
+            count ++;
+
+            _swix(Hourglass_Percentage,
+                  _IN(0),
+
+                  (100 * count) / found); /* ('count' always lags one behind where 'found' would be here, so this goes from 0 to 99% - which is what we want) */
+
+            break;
+          }
+          else
+          {
+            /* Valid tag, not a heading item - output it */
+
+            saveshelp_output_text_tag(b, search, header);
+          }
+        }
+
+        search = search->next;
+      }
+
+      /* Close the file, set the filetype to text, and copy it */
+      /* into position - use a 'safe' form of the page name as */
+      /* the filename.                                         */
+
+      fclose(outfile);
+      outfile = NULL;
+
+//      _swix(OS_File,
+//            _INR(0,2) | _INR(4,5),
+//
+//            18,
+//            Save_ScrapFile,
+//            FileType_TEXT);
+
+      {
+        char * safename = malloc(strlen(pagename) + 1);
+
+        if (!safename)
+        {
+          _swix(Hourglass_Off, 0);
+
+          return make_no_memory_error(36);
+        }
+        else saveshelp_build_safe(pagename, safename);
+
+        e = saveshelp_copy(Save_ScrapFile, pathname, safename);
+
+        free(safename);
+
+        if (e)
+        {
+          _swix(Hourglass_Off, 0);
+
+          return e;
+        }
+      }
+    }
+
+    _swix(Hourglass_Off, 0);
+  }
+
+  return NULL;
+}
+
+
+/**************************************************************/
+/* saveshelp_save_manual()                                    */
+/*                                                            */
+/* Save a given browser page as a StrongHelp manual. See      */
+/* saveshelp_create for more info.                            */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the page to save as a manual;                  */
+/*                                                            */
+/*             Pointer to the pathname to save to.            */
+/**************************************************************/
+
+_kernel_oserror * saveshelp_save_manual(browser_data * b, const char * pathname)
+{
+  _kernel_oserror * e;
+
+  /* Only proceed if we've got a pathname */
+
+  if (pathname && *pathname)
+  {
+    /* Create the manual - we've got to build an appropriate */
+    /* command in a buffer for this.                         */
+
+    char * command = malloc(sizeof("StrongCreate ") + strlen(pathname));
+
+    if (!command) return make_no_memory_error(34);
+
+    strcpy(command, "StrongCreate ");
+    strcat(command, pathname);
+
+    e = _swix(OS_CLI,
+              _IN(0),
+
+              command);
+
+    free(command);
+
+    if (e) return e;
+
+    /* Remember the pathname use in subsequent save dialogues */
+
+    save_record_path(pathname);
+
+    /* Create the manual contents */
+
+    return saveshelp_create(b, pathname);
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* saveshelp_manual_size()                                    */
+/*                                                            */
+/* Returns the size of manual that would be written by        */
+/* saveshelp_save_manual for the given browser.               */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the page to save as a manual, for which the    */
+/*             file size is to be returned.                   */
+/*                                                            */
+/* Returns:    Size of file that would be written by          */
+/*             saveshelp_save_manual for the given browser.   */
+/**************************************************************/
+
+int saveshelp_manual_size(browser_data * b)
+{
+  /* We've got just about no way of estimating this at all */
+  /* - the function is only really here to provide a       */
+  /* comparable API to the other save related sources.     */
+
+  return 4096;
+}
+@
+
+
+1.3
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a41 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.2
+log
+@Intermediate check-in; building a browser from this gives you something
+between 2.07 and 2.08. Only the Phoenix JavaScript resources are fully
+up to date.
+
+I *think* these are the changes since the last check-in:
+
+When saved as a Draw file, horizontal rules were plotted one page width
+too far to the right (wonder when that started happening?!). Fixed. In
+addition, DrawFiles now accepted as OBJECTs - they weren't in the
+recognised filetype list before. Doh.
+
+Table size calculator tables_count_table would overestimate the number
+of cells where ROWSPAN was present and there were other rows below the
+one spanned. Fixed. In certain odd cases (e.g. optimised image exports
+as HTML tables (!!) from the Gimp) this can save vast amounts of RAM.
+
+Fixed problem where printing stops in the middle of a document. Redraw
+engine pagination code was written in the days where lines couldn't
+have gaps between them; they can now. If a gap fell at the bottom of
+a page the engine would look down, see no line straddling or touching
+the page edge, and assume there was nothing more. This case is now
+correctly handled.
+
+Made sure desktop and testbed Browse Res files had up-to-date Encoding
+menus (v2.07 Phoenix has different menus from v2.07 Browse by oversight).
+
+URL auto-completion piggy-backed onto manual completion code; any string
+without '.', '/' or ':' in it gets run through completion to see if a
+more meaningful item can be produced - "www" special cased out though.
+
+New List dialogue box handler, used for proxy exclusions etc.
+(incomplete), complete with appropriate Res file objects.
+@
+text
+@d15 12
+a26 10
+/***************************************************/
+/* File   : SaveSHelp.c                            */
+/*                                                 */
+/* Purpose: Save a web page as a StrongHelp        */
+/*          manual.                                */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 21-May-97: Created.                    */
+/***************************************************/
+d32 9
+a40 2
+#include "swis.h"
+#include "flex.h"
+d42 4
+a45 5
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a46 1
+#include "svcprint.h"
+d179 16
+a194 18
+// /*************************************************/
+// /* saveshelp_write_bytes()                       */
+// /*                                               */
+// /* Outputs a given number of bytes of a given    */
+// /* string to the FILE * set up in the global     */
+// /* 'outfile', returning a success flag.          */
+// /*                                               */
+// /* Parameters: Pointer to an array of bytes;     */
+// /*                                               */
+// /*             Number of characters from the     */
+// /*             array to save.                    */
+// /*                                               */
+// /* Returns:    1 if successful, 0 if failed.     */
+// /*                                               */
+// /* Assumes:    An appropriately opened file is   */
+// /*             accessible through the global     */
+// /*             FILE * 'outfile'.                 */
+// /*************************************************/
+d217 13
+a229 15
+  /*************************************************/
+  /* saveshelp_copy()                              */
+  /*                                               */
+  /* Copy a file into the StrongHelp manual.       */
+  /*                                               */
+  /* Parameters: Source pathname;                  */
+  /*                                               */
+  /*             Pathname the *manual* is being    */
+  /*             saved under;                      */
+  /*                                               */
+  /*             Destination leafname for this     */
+  /*             file.                             */
+  /*                                               */
+  /* Assumes:    All pointers are not NULL.        */
+  /*************************************************/
+d328 9
+a336 9
+/*************************************************/
+/* saveshelp_output_safe()                       */
+/*                                               */
+/* Output a string to the current outfile making */
+/* sure any possibly illegal characters (this    */
+/* includes spaces) are replaced by underscores. */
+/*                                               */
+/* Parameters: Pointer to the string to output.  */
+/*************************************************/
+d351 8
+a358 9
+/*************************************************/
+/* saveshelp_output_cautious()                   */
+/*                                               */
+/* Output a string to the current outfile making */
+/* sure that possibly illegal characters are     */
+/* escaped.                                      */
+/*                                               */
+/* Parameters: Pointer to the string to output.  */
+/*************************************************/
+d374 16
+a389 20
+/*************************************************/
+/* saveshelp_build_safe()                        */
+/*                                               */
+/* Build the equivalent of what                  */
+/* savefile_output_safe would output in the      */
+/* given buffer. Length of output equals length  */
+/* of input.                                     */
+/*                                               */
+/* Parameters: Pointer to the string to make a   */
+/*             safe copy of;                     */
+/*                                               */
+/*             Pointer to the buffer to fill,    */
+/*             which is assumed to be at least   */
+/*             as long as the given starting     */
+/*             string plus terminator byte.      */
+/*                                               */
+/* Assumes:    Neither pointer is NULL; output   */
+/*             buffer is big enough (see         */
+/*             parameters list).                 */
+/*************************************************/
+d408 21
+a428 24
+/*************************************************/
+/* saveshelp_find_subpage()                      */
+/*                                               */
+/* Give it the anchor fragment from an HREF      */
+/* attribute - sees if it points to an item      */
+/* that's going to be defined as a subpage, and  */
+/* if so returns 1, else 0.                      */
+/*                                               */
+/* Could make mistakes if the fragment is for a  */
+/* completely new URL but happens to have a name */
+/* that matches an entry in this page's token    */
+/* list...!                                      */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the anchor;           */
+/*                                               */
+/*             Pointer to the anchor fragment    */
+/*             (the bit after the '#' in a URL). */
+/*                                               */
+/* Returns:    1 if this appears to be a local   */
+/*             in-page link that could be used   */
+/*             to reference a page within the    */
+/*             manual, else 0.                   */
+/*************************************************/
+d461 15
+a475 17
+/*************************************************/
+/* saveshelp_output_text_tag()                   */
+/*                                               */
+/* Deal with the output consequences of a tag    */
+/* containing text.                              */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the tag;              */
+/*                                               */
+/*             Pointer to the relevant HStream   */
+/*             structure;                        */
+/*                                               */
+/*             Current heading level (typically, */
+/*             the return value of               */
+/*             redraw_header for the given       */
+/*             HStream structure).               */
+/*************************************************/
+d652 27
+a678 30
+/*************************************************/
+/* saveshelp_create()                            */
+/*                                               */
+/* Output a StrongHelp manual. Does this by      */
+/* creating the manual in the given place,       */
+/* outputting each page to <Wimp$Scrap>, then    */
+/* copying it over in one chunk.                 */
+/*                                               */
+/* This is obviously quite tricky, and we have   */
+/* to make a variety of assumptions about the    */
+/* HTML source. It's only going to really work   */
+/* for well-formed pages.                        */
+/*                                               */
+/* H1 and H2 are taken to mean 'subpage'. A new  */
+/* file in the manual will be created for each   */
+/* heading, so an 'F1' lookup will work for      */
+/* those. Other headings are treated as inline   */
+/* text headings, not section identifiers.       */
+/*                                               */
+/* The routine tries to maintain links, both     */
+/* in-page and external.                         */
+/*                                               */
+/* Tables are not dealt with sensibly.           */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             to represent in the manual;       */
+/*                                               */
+/*             Pointer to the pathname the       */
+/*             manual is being saved to.         */
+/*************************************************/
+d1039 11
+a1049 13
+/*************************************************/
+/* saveshelp_save_manual()                       */
+/*                                               */
+/* Save a given browser page as a StrongHelp     */
+/* manual. See saveshelp_create for more info.   */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the page to save as   */
+/*             a manual;                         */
+/*                                               */
+/*             Pointer to the pathname to save   */
+/*             to.                               */
+/*************************************************/
+d1090 13
+a1102 17
+/*************************************************/
+/* saveshelp_manual_size()                       */
+/*                                               */
+/* Returns the size of manual that would be      */
+/* written by saveshelp_save_manual for the      */
+/* given browser.                                */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the page to save as   */
+/*             a manual, for which the file size */
+/*             is to be returned.                */
+/*                                               */
+/* Returns:    Size of file that would be        */
+/*             written by                        */
+/*             saveshelp_save_manual for the     */
+/*             given browser.                    */
+/*************************************************/
+@
+
+
+1.1
+log
+@Check-in of Browse v2.06; using very small log file to try and avoid
+CVS crashing. Some of the Resources may well be out of date due to CVS
+locks being in place after earlier server-end core dumps, which I can't
+remove myself.
+
+I'll try and check one file in at the end with the full change log so
+people know what's happened (it's reached about 16K...) - I'll make
+that the TaskObey file '!All' in the top level directory. So for the
+full log, look for the changes on this file.
+@
+text
+@d306 1
+a306 1
+              _INR(0,3) | _IN(8),
+@

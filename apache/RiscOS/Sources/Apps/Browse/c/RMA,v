@@ -1,0 +1,901 @@
+head	1.5;
+access;
+symbols
+	Browse-2_16:1.5
+	Browse-2_15:1.5
+	Browse-2_14:1.5
+	Browse-2_13:1.5
+	Browse-2_12:1.5
+	Browse-2_11:1.5
+	Browse-2_10:1.5
+	Browse-2_09:1.5
+	ahodgkin_208_i4_2:1.5
+	ahodgkin_208_i4:1.3
+	ahodgkin_208_i3:1.3
+	ahodgkin_208_i2:1.3
+	ahodgkin_208_i1:1.3
+	ahodgkin_207release:1.3
+	ahodgkin_206release:1.3
+	ahodgkin_205release:1.3
+	ahodgkin_204release:1.3
+	ahodgkin_202release:1.3
+	ahodgkin_201release:1.3
+	ahodgkin_200release:1.3
+	ahodgkin_133beta:1.3
+	ahodgkin_132beta:1.3
+	ahodgkin_131beta:1.3
+	ahodgkin_130beta:1.3
+	ahodgkin_129:1.3
+	ahodgkin_128beta:1.2
+	ahodgkin_128alpha:1.2
+	ahodgkin_127beta2:1.2
+	ahodgkin_127beta:1.2
+	ahodgkin_126beta:1.2
+	ahodgkin_AW97patch:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2000.11.14.08.45.07;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.05.31.15.58.44;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.12.12.11.18.02;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.10.30.17.11.12;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.10.24.16.15.27;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    RMA.c                                             */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: RMA space is needed for various things including  */
+/*          some of the grottier messaging protocols. There   */
+/*          are enough places where RMA space is needed to    */
+/*          warrant a veneer which keeps track of allocated   */
+/*          blocks and makes sure they're all released.       */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 24-Oct-1997 (ADH): Created.                       */
+/*          05-Apr-2000 (ADH): 64-wide comments adopted.      */
+/*          17-Oct-2000 (ADH): Fixes from DDT2 applied.       */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <kernel.h>
+#include <swis.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "RMA.h"
+
+/* Local structures */
+
+typedef struct rma_array_item
+{
+  unsigned int   flags;     /* Currently undefined (0) */
+  browser_data * allocator;
+  void         * rma_block;
+}
+rma_array_item;
+
+/* Local variables */
+
+static rma_array_item * rma_array          = NULL;
+static int              rma_array_elements = 0;
+
+/* Local functions */
+
+static _kernel_oserror * rma_add_item    (int * new_item);
+static _kernel_oserror * rma_remove_item (int item);
+
+/**************************************************************/
+/* rma_claim()                                                */
+/*                                                            */
+/* Claims a block of RMA, recording the usage by adding an    */
+/* item to the rma_array_item array.                          */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct for which the */
+/*             claim is taking place, or NULL for a misc      */
+/*             block - in that case the block can only be     */
+/*             identified for later freeing by its address;   */
+/*                                                            */
+/*             Size of the block to allocate, in bytes;       */
+/*                                                            */
+/*             Pointer to a void * which will be filled in    */
+/*             with the address of the new block.             */
+/*                                                            */
+/* Assumes:    The void * pointer is not NULL.                */
+/**************************************************************/
+
+_kernel_oserror * rma_claim(browser_data * allocator, int size, void ** rma_block)
+{
+  _kernel_oserror * e;
+  int               new_item;
+
+  dprintf(("LMem", "rma_claim: Called for allocator %p, block size %d\n",allocator,size));
+
+  if (rma_block) *rma_block = NULL;
+  else return NULL;
+
+  /* First add an array item to hold details on the RMA claim */
+
+  RetError(rma_add_item(&new_item));
+
+  /* The above should return an error if allocation fails, */
+  /* but 'just in case'...                                 */
+
+  if (new_item == -1) return make_no_memory_error(22);
+
+  /* Fill it in, claiming the RMA space in passing */
+
+  rma_array[new_item].flags     = 0;
+  rma_array[new_item].allocator = allocator;
+  rma_array[new_item].rma_block = NULL;
+
+  dprintf(("LMem", "rma_claim: \0211Allocating %d bytes RMA\0217\n",size));
+
+  e = _swix(OS_Module,
+            _IN(0) | _IN(3) | _OUT(2),
+
+            6,
+            size,
+
+            &rma_array[new_item].rma_block);
+
+  dprintf(("LMem", "rma_claim: \0211Been given block %p\0217\n",rma_array[new_item].rma_block));
+
+  /* If the claim appears to have failed, free the array item */
+  /* again and return a generic out of memory error.          */
+
+  if (e != NULL || rma_array[new_item].rma_block == NULL)
+  {
+    rma_array[new_item].rma_block = NULL;
+    rma_remove_item(new_item);
+
+    return make_no_memory_error(22);
+  }
+
+  /* Otherwise, we've finished */
+
+  if (rma_block) *rma_block = rma_array[new_item].rma_block;
+
+  dprintf(("LMem", "rma_claim: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* rma_release()                                              */
+/*                                                            */
+/* Releases (frees) one or several blocks of RMA claimed by   */
+/* rma_claim, identified by block address or an owning        */
+/* browser.                                                   */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct for which the */
+/*             claim originally took place to free all blocks */
+/*             claimed for that browser - this is ignored if  */
+/*             the second parameter is non-NULL (see below);  */
+/*                                                            */
+/*             Address of the block - this is always used in  */
+/*             preference to the browser pointer, so it       */
+/*             *must* be NULL if all blocks for a given       */
+/*             browser are to be freed.                       */
+/**************************************************************/
+
+_kernel_oserror * rma_release(browser_data * allocator, void * rma_block)
+{
+  int search, found, found_any = 0;
+
+  dprintf(("LMem", "rma_release: Called for allocator %p, block %p\n",allocator,rma_block));
+
+  /* Sanity check */
+
+  if (!allocator && !rma_block)
+  {
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Normal;
+
+      StrNCpy0(erb.errmess,
+               "Null allocator and RMA block pointer given to rma_release");
+
+      return &erb;
+
+    #endif
+
+    return NULL;
+  }
+
+  /* If we've been given a specific block, search by that. Otherwise, */
+  /* remove all items owned by the given browser.                     */
+
+  if (rma_block)
+  {
+    do
+    {
+      found  = 0;
+      search = 0;
+
+      while (search < rma_array_elements)
+      {
+        if (rma_array[search].rma_block == rma_block)
+        {
+          /* If an allocator was given, and the block doesn't */
+          /* match it, then warn about this in TRACE builds.  */
+
+          #ifdef TRACE
+
+            if (allocator && rma_array[search].allocator != allocator)
+            {
+              erb.errnum = Utils_Error_Custom_Normal;
+
+              sprintf(erb.errmess,
+                      "Going to free block %p for browser %p, though the block's allocator was %p, in rma_release",
+                      rma_block,
+                      allocator,
+                      rma_array[search].allocator);
+
+              show_error_ret(&erb);
+            }
+
+          #endif
+
+          /* Now free the block */
+
+          rma_remove_item(search);
+          found = found_any = 1;
+          break;
+        }
+
+        search++;
+      }
+    }
+    while (found);
+  }
+  else
+  {
+    do
+    {
+      found  = 0;
+      search = 0;
+
+      while (search < rma_array_elements)
+      {
+        if (rma_array[search].allocator == allocator)
+        {
+          rma_remove_item(search);
+          found = found_any = 1;
+          break;
+        }
+
+        search++;
+      }
+    }
+    while (found);
+  }
+
+  /* Trace builds will complain if no item was found */
+  /* - found_any isn't used for non-TRACE builds at  */
+  /* the moment but could be in future, and so is    */
+  /* unconditionally compiled in.                    */
+
+  #ifdef TRACE
+
+    if (!found_any)
+    {
+      erb.errnum = Utils_Error_Custom_Message;
+
+      sprintf(erb.errmess,
+              "Didn't find the item for allocator %p, address %p in rma_release",
+              allocator,
+              rma_block);
+
+      show_error_ret(&erb);
+    }
+
+  #endif
+
+  dprintf(("LMem", "rma_release: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* rma_shutdown()                                             */
+/*                                                            */
+/* Frees all items in array of claimed blocks, and all        */
+/* associated RMA blocks.                                     */
+/*                                                            */
+/* TRACE builds will complain if there are any items to free, */
+/* as usually other processes should have tidied up and this  */
+/* function will have nothing to do except exit.              */
+/**************************************************************/
+
+void rma_shutdown(void)
+{
+  dprintf(("LMem", "rma_shutdown: Called\n"));
+
+  if (rma_array_elements)
+  {
+    int item;
+
+    #ifdef TRACE
+
+      dprintf(("LMem", "rma_shutdown: Have item(s) to free\n"));
+
+      erb.errnum = Utils_Error_Custom_Message;
+
+      if (rma_array_elements == 1)
+      {
+        StrNCpy0(erb.errmess,
+                 "Possible RMA leak; rma_shutdown has a block to free");
+      }
+      else
+      {
+        sprintf(erb.errmess,
+                "Possible RMA leak; rma_shutdown has %d blocks to free",
+                rma_array_elements);
+      }
+
+      show_error_ret(&erb);
+
+    #endif
+
+    /* Free all of the RMA blocks */
+
+    for (item = 0; item < rma_array_elements; item++)
+    {
+      if (rma_array[item].rma_block)
+      {
+        _swix(OS_Module,
+              _IN(0) | _IN(2),
+
+              7,
+              rma_array[item].rma_block);
+      }
+    }
+
+    /* Free the array itself */
+
+    free(rma_array);
+
+    rma_array          = NULL;
+    rma_array_elements = 0;
+  }
+
+  dprintf(("LMem", "rma_shutdown: Successful\n"));
+
+  return;
+}
+
+/**************************************************************/
+/* rma_add_item()                                             */
+/*                                                            */
+/* Adds an rma_array_item struct to the array of such         */
+/* structures. The contents are not initialised.              */
+/*                                                            */
+/* Parameters: Pointer to an int, in which the array index of */
+/*             the new item is placed, or -1 for an error -   */
+/*             this will be in addition to an error returned  */
+/*             directly.                                      */
+/*                                                            */
+/* Assumes:    The pointer may not be NULL.                   */
+/**************************************************************/
+
+static _kernel_oserror * rma_add_item(int * new_item)
+{
+  rma_array_item * new_array;
+
+  dprintf(("LMem", "rma_add_item: Called\n"));
+
+  if (!new_item)
+  {
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Normal;
+
+      StrNCpy0(erb.errmess,
+               "Null new_item int pointer passed to rma_add_item");
+
+      return &erb;
+
+    #endif
+
+    return NULL;
+  }
+
+  if (!rma_array_elements) new_array = malloc (sizeof(rma_array_item));
+  else                     new_array = realloc(rma_array, sizeof(rma_array_item) * (rma_array_elements + 1));
+
+  if (!new_array) return make_no_memory_error(22);
+  else rma_array = new_array;
+
+  *new_item = rma_array_elements++; /* (Post-increment as we want to return an array index, not how many elements there are) */
+
+  dprintf(("LMem", "rma_add_item: Successful, item count is now %d\n", rma_array_elements));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* rma_remove_item()                                          */
+/*                                                            */
+/* Removes an rma_array_item from the array of such           */
+/* structures.                                                */
+/*                                                            */
+/* Parameters: Index into the array of the item to remove.    */
+/**************************************************************/
+
+static _kernel_oserror * rma_remove_item(int item)
+{
+  rma_array_item * new_array;
+
+  dprintf(("LMem", "rma_remove_item: Called for item %d\n",item));
+
+  /* Limit check 'item' */
+
+  if (item >= rma_array_elements)
+  {
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Normal;
+
+      sprintf(erb.errmess,
+              "Invalid item number (%d, with %d elements) passed to rma_remove_item",
+              item,
+              rma_array_elements);
+
+      return &erb;
+
+    #endif
+
+    return NULL;
+  }
+
+  /* Is there an associated RMA block to free? If so, */
+  /* free it!                                         */
+
+  if (rma_array[item].rma_block)
+  {
+    dprintf(("LMem", "rma_remove_item: \0212Freeing RMA block %p\0217\n",rma_array[item].rma_block));
+
+    RetError(_swix(OS_Module,
+                   _IN(0) | _IN(2),
+
+                   7,
+                   rma_array[item].rma_block));
+
+    rma_array[item].rma_block = NULL;
+  }
+
+  /* Are we removing the only item? If so, just free the array */
+
+  if (rma_array_elements == 1)
+  {
+    dprintf(("LMem", "rma_remove_item: This is the last item, so freeing the array\n"));
+
+    free(rma_array);
+
+    rma_array          = NULL;
+    rma_array_elements = 0;
+  }
+  else
+  {
+    /* Are we removing the last item? If not, must shuffle */
+    /* the other elements down a bit.                      */
+
+    if (item != rma_array_elements - 1)
+    {
+      dprintf(("LMem", "rma_remove_item: This is not the head item, so shuffling higher items down\n"));
+
+      memmove(&rma_array[item],
+              &rma_array[item + 1],
+              sizeof(rma_array_item) * (rma_array_elements - (item + 1)));
+    }
+
+    /* Now shrink the array */
+
+    new_array = realloc(rma_array, sizeof(rma_array_item) * (rma_array_elements - 1));
+
+    if (new_array) rma_array = new_array, rma_array_elements--;
+  }
+
+  /* Finished. */
+
+  dprintf(("LMem", "rma_remove_item: Successful, item count is now %d\n", rma_array_elements));
+
+  return NULL;
+}
+@
+
+
+1.4
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@d30 1
+a40 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+d90 1
+a90 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_claim: Called for allocator %p, block size %d\n",allocator,size);
+  #endif
+d108 1
+d110 1
+a110 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_claim: \0211Allocating %d bytes RMA\0217\n",size);
+  #endif
+d120 1
+a120 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_claim: \0211Been given block %p\0217\n",rma_array[new_item].rma_block);
+  #endif
+d125 1
+a125 1
+  if (!rma_array[new_item].rma_block)
+d127 1
+d129 1
+d137 1
+a137 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_claim: Successful\n");
+  #endif
+d164 1
+a164 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_release: Called for allocator %p, block %p\n",allocator,rma_block);
+  #endif
+d273 1
+a273 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_release: Successful\n");
+  #endif
+d291 1
+a291 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_shutdown: Called\n");
+  #endif
+d299 1
+a299 1
+      if (tl & (1u<<12)) Printf("rma_shutdown: Have item(s) to free\n");
+d341 1
+a341 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_shutdown: Successful\n");
+  #endif
+d364 1
+a364 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_add_item: Called\n");
+  #endif
+d390 1
+a390 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_add_item: Successful, item count is now %d\n", rma_array_elements);
+  #endif
+d408 1
+a408 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_remove_item: Called for item %d\n",item);
+  #endif
+a432 4
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_remove_item: \0212Freeing RMA block %p\0217\n",rma_array[item].rma_block);
+  #endif
+
+d435 2
+d450 1
+a450 3
+    #ifdef TRACE
+      if (tl & (1u<<12)) Printf("rma_remove_item: This is the last item, so freeing the array\n");
+    #endif
+d464 1
+a464 3
+      #ifdef TRACE
+        if (tl & (1u<<12)) Printf("rma_remove_item: This is not the head item, so shuffling higher items down\n");
+      #endif
+d480 1
+a480 3
+  #ifdef TRACE
+    if (tl & (1u<<12)) Printf("rma_remove_item: Successful, item count is now %d\n", rma_array_elements);
+  #endif
+@
+
+
+1.3
+log
+@There are a few known significant problems with this code but it's being
+checked in so the Choices can be worked on. Note that Res files etc. are
+not up to date across all builds. Progress is as follows...
+
+Bug report prompted me to do this - now ignore <p> tags straight after
+<li> tags, so '<ul><li><p>Some text' works as the author (or automatic
+generator, more commonly) intended.
+
+A <p> tag before a table will be acted upon now (it was ignored before).
+Something like <li><p><table...> will give a line break and paragraph
+space after the <li> despite the changes mentioned above, as in other browsers.
+Both browsers differ from Navigator, where the table appears alongside
+the <li> tag.
+
+Multiple BR tags work as in MSIE / Navigator (they don't collapse to
+zero height anymore).
+
+For the above, line height (and so, <br><br> or <p> spacing) is now
+calculated inside reformat_text_line_height, and is used with either
+a token to get the text height at a given size (e.g. for general line
+spacing or multiple BR tags) or NULL for normal size text (e.g. for
+P spacing, though this value is in practice later scaled by 7/8ths in
+reformat_check_height). Note this behaviour is exhibited by MSIE 4;
+v3 gave two BRs the same spacing as one P (i.e. not font size
+dependent).
+
+Save dialogues can have an option button or couple of radios to
+switch between various formats (e.g. URI or URL, sprite or original
+format). See 'Docs.Notes' for more. The back-end to this is now
+implemented (i.e. at the moment, save as URI or URL, save as original
+image format). Note that when saving background images, a leafname
+based on the original fetch URL is now offered rather than a generic
+'Background'.
+
+Internal URL scheme changed to be all lower case, so relativisation
+through URL_Fetcher still makes sense... :-/
+
+Holding down 'shift' when clicking on stop reverses the interpretation
+of the Controls file 'StopWebServe' entry.
+
+Fixed row / column count for exporting tables as text; fixed a few
+bits and pieces of internal URL scheme stuff which got broken when
+HTMLLib started using URL_Fetcher's relativisation.
+@
+text
+@d15 16
+a30 15
+/***************************************************/
+/* File   : RMA.c                                  */
+/*                                                 */
+/* Purpose: The browser needs to claim RMA space   */
+/*          for some of the grottier protocols out */
+/*          there now and again. There are a       */
+/*          sufficiently large number of claims to */
+/*          warrant a thin veneer over claim and   */
+/*          release of RMA to keep track of blocks */
+/*          and make sure leaks don't occur.       */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 24-Oct-97: Created.                    */
+/***************************************************/
+d36 8
+a43 1
+#include "swis.h"
+a44 5
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+
+#include "svcprint.h"
+d50 1
+a50 1
+/* Structures */
+d60 1
+a60 1
+/* Locals */
+d62 2
+a63 2
+rma_array_item * rma_array          = NULL;
+int              rma_array_elements = 0;
+d65 1
+a65 1
+/* Static function prototypes */
+d70 18
+a87 22
+/*************************************************/
+/* rma_claim()                                   */
+/*                                               */
+/* Claims a block of RMA, recording the usage by */
+/* adding an item to the rma_array_item array.   */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             for which the claim is taking     */
+/*             place, or NULL for a misc block - */
+/*             in that case the block can only   */
+/*             be identified for later freeing   */
+/*             by its address;                   */
+/*                                               */
+/*             Size of the block to allocate, in */
+/*             bytes;                            */
+/*                                               */
+/*             Pointer to a void * which will be */
+/*             filled in with the address of the */
+/*             new block.                        */
+/*                                               */
+/* Assumes:    The void * pointer is not NULL.   */
+/*************************************************/
+d151 17
+a167 21
+/*************************************************/
+/* rma_release()                                 */
+/*                                               */
+/* Releases (frees) one or several blocks of RMA */
+/* claimed by rma_claim, identified by block     */
+/* address or an owning browser.                 */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             for which the claim originally    */
+/*             took place to free all blocks     */
+/*             claimed for that browser - this   */
+/*             is ignored if the second          */
+/*             parameter is non-NULL (see        */
+/*             below);                           */
+/*                                               */
+/*             Address of the block - this is    */
+/*             always used in preference to the  */
+/*             browser pointer, so it *must* be  */
+/*             NULL if all blocks for a given    */
+/*             browser are to be freed.          */
+/*************************************************/
+d291 10
+a300 11
+/*************************************************/
+/* rma_shutdown()                                */
+/*                                               */
+/* Frees all items in array of claimed blocks,   */
+/* and all associated RMA blocks.                */
+/*                                               */
+/* TRACE builds will complain if there are any   */
+/* items to free, as usually other processes     */
+/* should have tidied up and this function       */
+/* will have nothing to do except exit.          */
+/*************************************************/
+d363 13
+a375 15
+/*************************************************/
+/* rma_add_item()                                */
+/*                                               */
+/* Adds an rma_array_item struct to the array of */
+/* such structures. The contents are not         */
+/* initialised.                                  */
+/*                                               */
+/* Parameters: Pointer to an int, in which the   */
+/*             array index of the new item is    */
+/*             placed, or -1 for an error - this */
+/*             will be in addition to an error   */
+/*             returned directly.                */
+/*                                               */
+/* Assumes:    The pointer may not be NULL.      */
+/*************************************************/
+d416 8
+a423 9
+/*************************************************/
+/* rma_remove_item()                             */
+/*                                               */
+/* Removes an rma_array_item from the array of   */
+/* such structures.                              */
+/*                                               */
+/* Parameters: Index into the array of the item  */
+/*             to remove.                        */
+/*************************************************/
+@
+
+
+1.2
+log
+@Removed 'The Onion' link from some Hotlist files. Time showed that the
+site wasn't entirely Family Friendly (TM)... Removed Shift Control (it's
+gone offline now), and corrected the Telegraph URL from ...the-telegraph...
+to just ...telegraph...
+
+StrongHelp manual generator now tries to work out the number of lines in
+the table on the root page more intelligently.
+
+Plug-in support extended to handle Shockwave. Quite a lot of underlying
+work for this, including a pseudo cache system for temporary files.
+
+Bug in redraw routines: they plotted background images within table
+cells, when nothing should have been drawn. Oops. When background images
+in cells are properly supported, this can get sorted out.
+
+Tweaked vertical plot position of HRs (up to 4 OS units too high before due
+to rounding).
+
+Various Res file bits and pieces, Ursula build taken up to v1.26 beta
+for release on the Browser site. *Note* not all resources are up to date!
+This will be done after AW97.
+@
+text
+@d436 1
+a436 2
+  _kernel_oserror * e;
+  rma_array_item  * new_array;
+@
+
+
+1.1
+log
+@Forgot to add RMA last time.
+
+Res files sorted out a bit, to add the Proxy option to the Choices dialogues
+and fix the position of the menu popup in the Others pane.
+
+Bogus comment in Global.h showed up when trying to build the Customer
+variant (SINGLE_USER undefined); fixed.
+@
+text
+@d214 22
+@

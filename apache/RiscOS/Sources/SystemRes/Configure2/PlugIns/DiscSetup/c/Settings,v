@@ -1,0 +1,1062 @@
+head	1.5;
+access;
+symbols
+	DiscSetup-0_12:1.5
+	DiscSetup-0_11:1.5
+	DiscSetup-0_10:1.3
+	DiscSetup-0_09:1.3
+	DiscSetup-0_08:1.3
+	DiscSetup-0_07:1.3
+	DiscSetup-0_06:1.3
+	DiscSetup-0_05:1.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.2
+	Ursula_RiscPC:1.1.1.2.0.2
+	bavison_DiscSetup-0_04:1.1.1.3
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.2
+	UrsulaBuild_FinalSoftload:1.1.1.2
+	rthornb_UrsulaBuild-12Aug1998:1.1.1.2
+	aglover_UrsulaBuild-05Aug1998:1.1.1.2
+	bavison_DiscSetup-0_03:1.1.1.2
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.1
+	bavison_DiscSetup-0_02:1.1.1.1
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.1
+	bavison_DiscSetup-0_01:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2015.09.22.19.39.30;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	rJ1szNqM3aAaJhCy;
+
+1.4
+date	2015.09.22.19.35.26;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	soHqpe1Vm0cfHhCy;
+
+1.3
+date	2003.01.14.22.36.28;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2002.12.14.13.04.57;	author srevill;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.06.30.08.47.53;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.06.30.08.47.53;	author bavison;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.08.05.09.24.39;	author bavison;	state Exp;
+branches;
+next	1.1.1.3;
+
+1.1.1.3
+date	98.08.28.16.14.26;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Raise RAM disc clamp when possible
+If the 'PMP' extensions for dynamic areas are available, allow the numberrange gadget to choose a larger RAM disc, and if not clamp at 128MB as before.
+Use unsigned types to hold memory amounts, and calculate in pages where possible to avoid overflow/signedness issues above 2GB.
+As at time of writing RAMFS is still being worked on, this plugin doesn't respect that, so if you choose a size larger than RAMFS supports it'll choose the lower of the two.
+
+Tested briefly on a Risc PC with 256MB RAM with and without PMP dynamic areas.
+
+Version 0.11. Tagged as 'DiscSetup-0_11'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	Settings.c ********************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Discs configuration plug-in
+This file:	GUI <-> settings routines
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+23/06/1998	BJGA	Created
+24/06/1998	BJGA	Implemented most of Settings_Read, added static_UpdateCDFSDisplay
+25/06/1998	BJGA	Now reads RAM disc size. Implemented most of Settings_Write; added
+			static_ReadRAMFSSize, static_WriteRAMFSSize and static_WriteDiscs.
+26/06/1998	BJGA	Completed Settings_Write, including warning box before buffer changes.
+			Capped and collared RAM disc sizes when read in static_WriteRAMFSSize.
+			Made sure ADFS only gets RMReInited once during a set operation.
+29/07/1998	BJGA	Now copes if value returned for RAM disc size has overflowed.
+28/08/1998	BJGA	Implemented autodetect time numberrange
+
+\**************************************************************************/
+
+/* CLib */
+#include <string.h>
+#include "swis.h"
+#include "Global/NewErrors.h"
+#include "Global/ModHand.h"
+#include "Interface/HighFSI.h"
+/* Toolbox */
+#include "wimplib.h"
+#include "gadgets.h"
+/* Common */
+#include "message.h"
+#include "misc.h"
+#include "str.h"
+/* local headers */
+#include "Main.h"
+#include "Settings.h"
+
+/* Global variables */
+
+const cmos CmosDetails [7] =  { { 0x87, 0, 3 },		/* ADFSFloppies */
+				{ 0x89, 0, 8 },		/* ADFSBuffers */
+				{ 0x8A, 5, 3 },		/* CDFSBuffers */
+				{ 0xC7, 0, 8 },		/* ADFSDirCache */
+				{ 0xD0, 0, 3 },		/* SCSIDiscs */
+				{ 0x8A, 0, 5 },		/* CDROMDrives */
+				{ 0x1A, 0, 8 } };	/* IDE spindown */
+
+/* Prototypes */
+
+static unsigned int static_ReadRAMFSSize (void);
+static void static_WriteRAMFSSize (void);
+static void static_WriteDiscs (BOOL *ReInit_ADFS, BOOL *ReInit_CDFS);
+
+
+/******	Settings_Read() ***************************************************\
+
+Purpose:	Reads current / default settings, reflect them in GUI
+In:		Routine to determine settings (cmos_read or cmos_default)
+
+\**************************************************************************/
+
+void Settings_Read (int(*get)(cmos item, void *messages))
+{
+  int value;
+
+  value = get (cmos_ADFS_FLOPPIES, &messages);
+  throw (numberrange_set_value (0, Window_Obj, Window_FLOPPY_DISCS, value));
+
+  value = get (cmos_SCSI_DISCS, &messages);
+  throw (numberrange_set_value (0, Window_Obj, Window_SCSI_DISCS, value));
+
+  value = get (cmos_CDROM_DRIVES, &messages);
+  throw (numberrange_set_value (0, Window_Obj, Window_CDROM_DRIVES, value));
+
+  value = get (cmos_ADFS_DIR_CACHE, &messages);
+  if (value == 0) value = ADFS_Default_Buffer;
+  throw (numberrange_set_value (0, Window_Obj, Window_ADFS_DIR_CACHE, value));
+
+  value = get (cmos_ADFS_BUFFERS, &messages);
+  if (value == 1) value = ADFS_Default_Buffer;
+  throw (numberrange_set_value (0, Window_Obj, Window_ADFS_BUFFERS, value));
+
+  value = get (cmos_CDFS_BUFFERS, &messages);
+  throw (numberrange_set_value (0, Window_Obj, Window_CDFS_BUFFERS_ARROWS, value));
+  Settings_UpdateCDFSDisplay ();
+
+  value = get (cmos_IDE_SPINDOWN, &messages);
+  switch (value)
+  {
+    case 254: value = 0; break;   /* Reserved */
+    case 252: value = 240; break; /* 00:21:00 */
+    case 255: value = 240; break; /* 00:21:15 */
+    default:
+      if ((value < 241) && (value % 6))  /* Strange multiples of 5s */
+        value = 6 * ((value + 5) / 6);   /* Round-up to nearest 30s */
+  }
+
+  throw (numberrange_set_value (0, Window_Obj, Window_IDE_SPINDOWN_ARROWS, value));
+  Settings_UpdateSpindownDisplay ();
+
+  /* Now read the configured RAMFS size */
+  if (get == cmos_default)
+  {
+    value = 0;
+  }
+  else
+  {
+    value = static_ReadRAMFSSize ();
+  }
+  /* Set numberrange and optionbutton, and fade/unfade as necessary */
+  if (value == 0)
+  {
+    throw (numberrange_set_value (0, Window_Obj, Window_RAMFS_SIZE, RAMFS_Default_Size));
+    misc_shadecomponents (TRUE, Window_Obj, Window_RAMFS_SIZE, Window_RAMFS_SIZE_LABEL);
+    throw (optionbutton_set_state (0, Window_Obj, Window_RAMFS_ENABLE, 0));
+  }
+  else
+  {
+    throw (numberrange_set_value (0, Window_Obj, Window_RAMFS_SIZE, value));
+    misc_shadecomponents (FALSE, Window_Obj, Window_RAMFS_SIZE, Window_RAMFS_SIZE_LABEL);
+    throw (optionbutton_set_state (0, Window_Obj, Window_RAMFS_ENABLE, 1));
+  }
+
+}
+
+/******	Settings_Write() **************************************************\
+
+Purpose:	Reads GUI, reflect in current and configured settings
+Out:		TRUE => operation performed successfully
+
+\**************************************************************************/
+
+BOOL Settings_Write (void)
+{
+  BOOL success = TRUE;
+  int old_floppies;
+  int new_floppies;
+  int old_scsi;
+  int new_scsi;
+  int old_cdrom;
+  int new_cdrom;
+  int old_adfsdir;
+  int new_adfsdir;
+  int old_adfsbuf;
+  int new_adfsbuf;
+  int old_cdfsbuf;
+  int new_cdfsbuf;
+  int old_idespindown;
+  int new_idespindown;
+
+  /* Before we proceed, check if the user is aware of the consequences of RMReIniting modules... */
+
+  old_floppies = cmos_read (cmos_ADFS_FLOPPIES, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_FLOPPY_DISCS, &new_floppies));
+
+  old_scsi = cmos_read (cmos_SCSI_DISCS, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_SCSI_DISCS, &new_scsi));
+
+  old_cdrom = cmos_read (cmos_CDROM_DRIVES, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_CDROM_DRIVES, &new_cdrom));
+
+  old_adfsdir = cmos_read (cmos_ADFS_DIR_CACHE, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_ADFS_DIR_CACHE, &new_adfsdir));
+  if (new_adfsdir > 255) new_adfsdir = 255;
+  if (new_adfsdir == 0) new_adfsdir = 1;
+  if (new_adfsdir == ADFS_Default_Buffer) new_adfsdir = 0;
+
+  old_adfsbuf = cmos_read (cmos_ADFS_BUFFERS, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_ADFS_BUFFERS, &new_adfsbuf));
+  if (new_adfsbuf > 255) new_adfsbuf = 255;
+  if (new_adfsbuf == 1) new_adfsbuf = 2;
+  if (new_adfsbuf == ADFS_Default_Buffer) new_adfsbuf = 1;
+
+  old_cdfsbuf = cmos_read (cmos_CDFS_BUFFERS, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_CDFS_BUFFERS_ARROWS, &new_cdfsbuf));
+
+  old_idespindown = cmos_read (cmos_IDE_SPINDOWN, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_IDE_SPINDOWN_ARROWS, &new_idespindown));
+
+  if (old_floppies != new_floppies || old_scsi != new_scsi || old_cdrom != new_cdrom)
+  {
+    int button;
+    _kernel_oserror err = { 0, "" };
+    str_cpy (err.errmess, message_lookup_direct(messages,"Err_DiscChange"));
+    button = wimp_report_error (&err, Wimp_ReportError_OK | Wimp_ReportError_Cancel | 1u << 8 | 4u << 9,
+        message_lookup_direct(messages,"_TaskName"),
+        message_lookup_direct(messages,"_ConfigSprite"), (void *) 1, NULL);
+    if (button == 2)
+    {
+      success = FALSE; /* Cancel clicked */
+    }
+  }
+
+  if (success && (old_adfsdir != new_adfsdir || old_adfsbuf != new_adfsbuf || old_cdfsbuf != new_cdfsbuf))
+  {
+    int button;
+    _kernel_oserror err = { 0, "" };
+    str_cpy (err.errmess, message_lookup_direct(messages,"Err_BufChange"));
+    button = wimp_report_error (&err, Wimp_ReportError_OK | Wimp_ReportError_Cancel | 1u << 8 | 4u << 9,
+        message_lookup_direct(messages,"_TaskName"),
+        message_lookup_direct(messages,"_ConfigSprite"), (void *) 1, NULL);
+    if (button == 2)
+    {
+      success = FALSE; /* Cancel clicked */
+    }
+  }
+
+  /* Now we can set things... */
+
+  if (success)
+  {
+    BOOL ReInit_ADFS = FALSE;
+    BOOL ReInit_CDFS = FALSE;
+
+    _swix (Hourglass_On, 0);
+
+    if (old_adfsdir != new_adfsdir || old_adfsbuf != new_adfsbuf)
+    {
+      cmos_write (cmos_ADFS_DIR_CACHE, new_adfsdir);
+      cmos_write (cmos_ADFS_BUFFERS, new_adfsbuf);
+      ReInit_ADFS = TRUE;
+    }
+
+    if (old_cdfsbuf != new_cdfsbuf)
+    {
+      cmos_write (cmos_CDFS_BUFFERS, new_cdfsbuf);
+      ReInit_CDFS = TRUE;
+    }
+
+    if (old_idespindown != new_idespindown)
+    {
+      cmos_write (cmos_IDE_SPINDOWN, new_idespindown);
+    }
+
+    static_WriteRAMFSSize ();
+
+    static_WriteDiscs (&ReInit_ADFS, &ReInit_CDFS);
+
+    if (ReInit_ADFS)
+    {
+      _swix (OS_CLI, _IN(0), "RMReInit ADFS");
+    }
+
+    if (ReInit_CDFS)
+    {
+      _swix (OS_CLI, _IN(0), "RMReInit CDFS");
+    }
+
+    _swix (Hourglass_Off, 0);
+  }
+
+  return success;
+}
+
+/******	Settings_UpdateCDFSDisplay() **************************************\
+
+Purpose:	Translates from internal CDFSBuffers number (0-7) to value
+		(in K), and updates CDFSBuffers display field appropriately
+
+\**************************************************************************/
+
+void Settings_UpdateCDFSDisplay (void)
+{
+  int internal;
+  char *external;
+
+  throw (numberrange_get_value (0, Window_Obj, Window_CDFS_BUFFERS_ARROWS, &internal));
+
+  switch (internal)
+  {
+    case 0:
+      external = "0";
+      break;
+
+    case 1:
+      external = "8";
+      break;
+
+    case 2:
+      external = "16";
+      break;
+
+    case 3:
+      external = "32";
+      break;
+
+    case 4:
+      external = "64";
+      break;
+
+    case 5:
+      external = "128";
+      break;
+
+    case 6:
+      external = "256";
+      break;
+
+    case 7:
+      external = "512";
+      break;
+
+    default:
+      external = "Error";
+      break;
+  }
+
+  throw (displayfield_set_value (0, Window_Obj, Window_CDFS_BUFFERS_DISPLAY, external));
+}
+
+/******	Settings_UpdateSpindownDisplay() **********************************\
+
+Purpose:	Translates from spindown timer period into a human-readable
+		string. Based upon Table 30 in IDE document T13/1410D.
+
+\**************************************************************************/
+
+void Settings_UpdateSpindownDisplay (void)
+{
+  int internal;
+  static char external[16];
+
+  throw (numberrange_get_value (0, Window_Obj, Window_IDE_SPINDOWN_ARROWS, &internal));
+
+  switch (internal)
+  {
+    case 0: /* Maximum value specified in Res file */
+    {
+      strcpy (external, message_lookup_direct(messages,"SpindownOff"));
+      break;
+    }
+    case 252:
+    {
+      sprintf (external, "00:21:00");
+      break;
+    }
+    case 253: /* Maximum value specified in Res file */
+    {
+      strcpy (external, message_lookup_direct(messages,"Spindown8to12"));
+      break;
+    }
+    default:
+    {
+      int hr, mn, sc = 0;
+
+      if (internal < 241)
+        internal = internal * 5;
+      else
+        internal = (internal - 240) * 30 * 60;
+
+      sc        = internal % 60;
+      internal /= 60;
+      mn        = internal % 60;
+      hr        = internal / 60;
+      sprintf (external, "%02u:%02u:%02u", hr, mn, sc);
+      break;
+    }
+  }
+
+  throw (displayfield_set_value (0, Window_Obj, Window_IDE_SPINDOWN_DISPLAY, external));
+}
+
+/******	static_ReadRAMFSSize() ********************************************\
+
+Purpose:	Returns currently configured RAM disc size
+Out:		Size, in 1/10ths of a megabyte
+
+\**************************************************************************/
+
+static unsigned int static_ReadRAMFSSize (void)
+{
+  unsigned int value;
+  if (misc_fileisunreadable ((char *) StatusFileRO))
+  {
+    value = 0;
+  }
+  else
+  {
+    FILE *handle = fopen (StatusFile, "r");
+    if (handle == NULL)
+    {
+      value = 0;
+    }
+    else
+    {
+      char line [100];
+      char *compare = "ChangeDynamicArea -RamFsSize ";
+      BOOL success;
+      success = misc_readline (line, sizeof (line), handle);
+      if (success)
+      {
+        success = (0 == strncmp (line, compare, str_len (compare)));
+      }
+      if (success)
+      {
+        if (*(line + str_len (line) - 1) != 'K')
+        {
+          success = FALSE;
+        }
+        else
+        {
+          *(line + str_len (line) - 1) = '\0';
+        }
+      }
+      if (success)
+      {
+        _kernel_oserror *e = _swix (OS_ReadUnsigned, _INR(0,1)|_OUT(2), 1u<<31, line + str_len (compare), &value);
+        if (e != NULL)
+        {
+          success = FALSE;
+        }
+      }
+
+      if (!success)
+      {
+        _kernel_oserror err;
+        err.errnum = 0;
+        str_cpy (err.errmess, message_lookup_direct(messages,"CantRead"));
+        wimp_report_error (&err, Wimp_ReportError_OK | 1u << 8 | 2u << 9,
+            message_lookup_direct(messages,"_TaskName"),
+            message_lookup_direct(messages,"_ConfigSprite"), (void *) 1, NULL);
+        value = 0;
+      }
+
+      fclose (handle);
+    }
+  }
+
+  /* Rescale value */
+  value = (unsigned int) (value / 102.4);
+
+  return value;
+}
+
+/******	static_WriteRAMFSSize() *******************************************\
+
+Purpose:	Sets and configures RAMFS size from current GUI settings
+
+\**************************************************************************/
+
+static void static_WriteRAMFSSize (void)
+{
+  int oldval; /* measured in 1/10th MB */
+  int newval;
+
+  /* Work out number of kilobytes of RAM disc requested */
+  int NewRAMFS_K;
+  int PageSize = _swi (OS_ReadMemMapInfo, _RETURN(0)) >> 10; /* in K */
+  int CurrentRAMFSSize = _swi (OS_ReadDynamicArea, _IN(0)|_RETURN(1), 5) >> 10; /* in K */
+
+  throw (optionbutton_get_state (0, Window_Obj, Window_RAMFS_ENABLE, &oldval)); /* oldval used temporarily */
+  throw (numberrange_get_value (0, Window_Obj, Window_RAMFS_SIZE, &newval));
+  if (newval > RAMFS_Limit || /* overflowed? */ newval < 0) newval = RAMFS_Limit;
+  if (newval == 0) newval = 1;
+  if (oldval == 0) newval = 0;
+  oldval = static_ReadRAMFSSize (); /* the currently *configured* value, not necessarily the current one! */
+
+  NewRAMFS_K = newval * 1024; /* start off 10 times too large */
+  NewRAMFS_K = (NewRAMFS_K + (10 * PageSize) - 1) / (10 * PageSize); /* now measured in multiples of page size */
+  NewRAMFS_K *= PageSize; /* finally, in K  :-) */
+
+  /* Set current RAM disc size - unless it's already that size */
+  if (NewRAMFS_K != CurrentRAMFSSize)
+  {
+    int type;
+    _kernel_oserror *e;
+    e = _swix (OS_File, _INR(0,1)|_OUT(0), OSFile_ReadWithTypeNoPath, "RAM:$.*", &type);
+    if (e != NULL)
+    {
+      if (e->errnum != ErrorNumber_UnknownFilingSystem)
+      {
+        throw (e);
+      }
+    }
+    if (e == NULL && type != 0)
+    {
+      /* Complain that RAMFS is in use */
+      char buttons [40];
+      _kernel_oserror err = { 0, "" };
+      str_cpy (buttons, message_lookup_direct(messages,"ButtDefer"));
+      str_cpy (err.errmess, message_lookup_direct(messages,"Err_RAMFSNotEmpty"));
+      wimp_report_error (&err, 1u << 8 | 1u << 9,
+          message_lookup_direct(messages,"_TaskName"),
+          message_lookup_direct(messages,"_ConfigSprite"), (void *) 1, buttons);
+    }
+    else
+    {
+      /* Give it a go */
+      char command [100];
+      sprintf (command, "ChangeDynamicArea -RamFsSize %uK", NewRAMFS_K);
+      e = _swix (OS_CLI, _IN(0), command);
+      if (e != NULL)
+      {
+        /* Complain about lack of memory */
+        char buttons [40];
+        _kernel_oserror err = { 0, "" };
+        str_cpy (buttons, message_lookup_direct(messages,"ButtDefer"));
+        str_cpy (err.errmess, message_lookup_direct(messages,"Err_RAMFSTooBig"));
+        wimp_report_error (&err, 1u << 8 | 1u << 9,
+            message_lookup_direct(messages,"_TaskName"),
+            message_lookup_direct(messages,"_ConfigSprite"), (void *) 1, buttons);
+      }
+    }
+  }
+
+  /* Write settings file - unless the configured value isn't changing */
+  if (newval != oldval)
+  {
+    char command [100];
+    if (newval == 0)
+    {
+      /* Simply remove the status file - it's not needed */
+      _swix (OS_File, _INR(0,1), OSFile_Delete, StatusFile);
+    }
+    else
+    {
+      sprintf (command, "ChangeDynamicArea -RamFsSize %uK", NewRAMFS_K);
+      /* The file can't be changed so leave it be */
+      if (!misc_fileislocked ((char *) StatusFile))
+      {
+        if (!_swix (OS_FSControl, _INR(0,3), FSControl_Copy, "<DiscSetup$Dir>.Blank", StatusFile, 2))
+        {
+          FILE *handle;
+          /* The blank file copied,let's be sure it's unlocked too */
+          (void)_swix (OS_FSControl, _INR(0,2), FSControl_Access, StatusFile, "WR/r");
+          /* Append the command string to it */
+          if (NULL != (handle = fopen (StatusFile, "a")))
+          {
+            fprintf (handle, "%s\n", command);
+            fclose (handle);
+          }
+        }
+      }
+    }
+  }
+}
+
+/******	static_WriteDiscs() ***********************************************\
+
+Purpose:	Sets and configures floppy, SCSI hard discs and CD-ROM drives from GUI settings
+In:		Reference to BOOL to clear if we've already RMReInited ADFS
+
+\**************************************************************************/
+
+static void static_WriteDiscs (BOOL *ReInit_ADFS, BOOL *ReInit_CDFS)
+{
+  int oldval_adfs; /* floppies */
+  int newval_adfs;
+  int oldval_scsi; /* SCSI hard discs */
+  int newval_scsi;
+  int oldval_cdrom; /* CD-ROM drives */
+  int newval_cdrom;
+
+  oldval_adfs = cmos_read (cmos_ADFS_FLOPPIES, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_FLOPPY_DISCS, &newval_adfs));
+
+  oldval_scsi = cmos_read (cmos_SCSI_DISCS, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_SCSI_DISCS, &newval_scsi));
+
+  oldval_cdrom= cmos_read (cmos_CDROM_DRIVES, &messages);
+  throw (numberrange_get_value (0, Window_Obj, Window_CDROM_DRIVES, &newval_cdrom));
+
+  if (oldval_adfs != newval_adfs || oldval_scsi != newval_scsi || oldval_cdrom != newval_cdrom)
+  {
+    int FilerWorkspace;
+    int FilerHandle;
+    _kernel_oserror *e;
+
+    /* ADFS */
+    if (oldval_adfs != newval_adfs)
+    {
+      cmos_write (cmos_ADFS_FLOPPIES, newval_adfs);
+      _swix (OS_CLI, _IN(0), "RMReInit ADFS");
+      _swix (OS_CLI, _IN(0), "RMReInit ADFSFiler");
+      *ReInit_ADFS = FALSE;
+    }
+
+    /* SCSI */
+    if (oldval_scsi != newval_scsi)
+    {
+      cmos_write (cmos_SCSI_DISCS, newval_scsi);
+      _swix (OS_CLI, _IN(0), "RMReInit SCSIFS");
+      _swix (OS_CLI, _IN(0), "RMReInit SCSIFiler");
+    }
+
+    /* CD-ROM */
+    if (oldval_cdrom != newval_cdrom)
+    {
+      cmos_write (cmos_CDROM_DRIVES, newval_cdrom);
+      _swix (OS_CLI, _IN(0), "RMReInit CDFS");
+      _swix (OS_CLI, _IN(0), "RMReInit CDFSFiler");
+      *ReInit_CDFS = FALSE;
+    }
+
+    /* Look up Filer's workspace */
+    e = _swix (OS_Module, _INR(0,1)|_OUT(4), ModHandReason_LookupName, "Filer", &FilerWorkspace);
+    if (e == NULL && FilerWorkspace > NULL)
+    {
+      /* Get Filer's task handle from its workspace, and check it has initialised! */
+      FilerHandle = * (int *) FilerWorkspace;
+      if (FilerHandle > 0)
+      {
+        int claimed;
+        char *command;
+        /* Broadcast Service_StartFiler until nobody claims it */
+        do
+        {
+          _swi (OS_ServiceCall, _INR(0,1)|_OUTR(0,1), FilerHandle, 0x4B, &command, &claimed);
+          if (claimed == 0)
+          {
+            _swix (Wimp_StartTask, _IN(0), command);
+          }
+        }
+        while (claimed == 0);
+        /* Broadcast Service_StartedFiler to clear up after any non-initialised filers */
+        _swi (OS_ServiceCall, _IN(1), 0x4C);
+      }
+    }
+  }
+}
+@
+
+
+1.4
+log
+@Use symbolic defines instead of numbers
+Swap a few magic numbers for those in the central headers.
+Make sure when reading settings they're read from Choices: not <Choices$Write>.
+Not tagged.
+@
+text
+@d65 1
+a65 1
+static int static_ReadRAMFSSize (void);
+a164 1
+  int time;
+d385 1
+a385 1
+static int static_ReadRAMFSSize (void)
+d387 1
+a387 1
+  int value;
+d445 1
+a445 1
+  value = (int) (value / 102.4);
+d505 1
+a505 1
+      sprintf (command, "ChangeDynamicArea -RamFsSize %dK", NewRAMFS_K);
+d532 1
+a532 1
+      sprintf (command, "ChangeDynamicArea -RamFsSize %dK", NewRAMFS_K);
+@
+
+
+1.3
+log
+@Addition of IDE disc spindown delay option from Steve.
+Change to resources to accomodate the above.
+Now also sets the attributes of the "DiscSetup" file to WR/r having
+copied it from its "Blank" incase the Blank file got locked which would
+have prevented any settings getting saved leading to a warning about it
+being corrupt when !DiscSetup is next run.
+
+Version 0.06. Tagged as 'DiscSetup-0_06'
+@
+text
+@d39 3
+d389 1
+a389 1
+  if (misc_fileisunreadable ((char *) StatusFile))
+d483 1
+a483 1
+    e = _swix (OS_File, _INR(0,1)|_OUT(0), 23, "RAM:$.*", &type);
+d486 1
+a486 1
+      if (e->errnum != 0xF8 /* filing system or path not found */)
+d529 1
+a529 2
+      sprintf (command, "Remove %s", StatusFile);
+      _swix (OS_CLI, _IN(0), command);
+d537 1
+a537 1
+        if (!_swix (OS_FSControl, _INR(0,3), 26, "<DiscSetup$Dir>.Blank", StatusFile, 2))
+d541 1
+a541 1
+          (void)_swix (OS_FSControl, _INR(0,2), 24, StatusFile, "WR/r");
+d612 1
+a612 1
+    e = _swix (OS_Module, _INR(0,1)|_OUT(4), 18, "Filer", &FilerWorkspace);
+@
+
+
+1.2
+log
+@Change to use ADFS autodetect time rather than having to configure the
+number of drives.
+New icons
+Updated Res accordingly
+Makefile tweaks
+Addition of MkAll
+As featured on disc image accompanying RISC OS 5.00
+
+Version 0.05. Tagged as 'DiscSetup-0_05'
+@
+text
+@d52 1
+a52 1
+const cmos CmosDetails [6] =  { { 0x87, 0, 3 },		/* ADFSFloppies */
+d57 2
+a58 1
+				{ 0x8A, 0, 5 } };	/* CDROMDrives */
+d99 14
+d125 1
+a125 1
+    throw (numberrange_set_value (0, Window_Obj, Window_RAMFS_SIZE, 5 /* reasonable default */));
+d160 2
+d190 3
+d243 5
+d324 52
+d532 1
+d538 3
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d31 2
+d52 1
+a52 1
+const cmos CmosDetails [5] =  { { 0x87, 0, 3 },		/* ADFSFloppies */
+d56 2
+a57 1
+				{ 0xD0, 0, 3 } };	/* SCSIDiscs */
+d63 1
+a63 1
+static void static_WriteDiscs (BOOL *ReInit_ADFS);
+d76 1
+a76 1
+  
+d79 1
+a79 1
+  
+d82 4
+a85 1
+  
+d89 1
+a89 1
+  
+d93 1
+a93 1
+  
+d97 1
+a97 1
+  
+d120 1
+a120 1
+  
+d137 2
+d145 2
+a146 1
+  
+d148 1
+a148 1
+  
+d151 1
+a151 1
+  
+d154 4
+a157 1
+  
+d163 1
+a163 1
+  
+d169 1
+a169 1
+  
+d172 2
+a173 2
+  
+  if (old_floppies != new_floppies || old_scsi != new_scsi)
+d186 1
+a186 1
+  
+d200 1
+a200 1
+  
+d202 1
+a202 1
+  
+d206 2
+a207 1
+    
+d209 1
+a209 1
+    
+d216 1
+a216 1
+    
+d220 1
+a220 1
+      _swix (OS_CLI, _IN(0), "RMReInit CDFS");
+d222 1
+a222 1
+    
+d224 3
+a226 3
+    
+    static_WriteDiscs (&ReInit_ADFS);
+    
+d231 6
+a236 1
+    
+d239 1
+a239 1
+  
+d254 1
+a254 1
+  
+d256 1
+a256 1
+  
+d262 1
+a262 1
+      
+d266 1
+a266 1
+      
+d270 1
+a270 1
+      
+d274 1
+a274 1
+      
+d278 1
+a278 1
+      
+d282 1
+a282 1
+      
+d286 1
+a286 1
+      
+d290 1
+a290 1
+      
+d295 1
+a295 1
+  
+d349 1
+a349 1
+      
+d360 1
+a360 1
+      
+d364 1
+a364 1
+  
+d367 1
+a367 1
+  
+d381 1
+a381 1
+  
+d386 1
+a386 1
+  
+d389 1
+a389 1
+  if (newval > RAMFS_Limit) newval = RAMFS_Limit;
+d393 1
+a393 1
+  
+d397 1
+a397 1
+  
+d441 1
+a441 1
+  
+d473 1
+a473 1
+Purpose:	Sets and configures floppy and SCSI hard discs from GUI settings
+d478 1
+a478 1
+static void static_WriteDiscs (BOOL *ReInit_ADFS)
+d484 3
+a486 1
+  
+d489 1
+a489 1
+  
+d492 5
+a496 2
+  
+  if (oldval_adfs != newval_adfs || oldval_scsi != newval_scsi)
+d501 1
+a501 1
+    
+d510 1
+a510 1
+    
+d518 10
+a527 1
+    
+@
+
+
+1.1.1.1
+log
+@
+Initial import of Configure plug-in '!DiscSetup' to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Now copes if the value entered in the RAM disc numberrange gadget is so large
+that the value returned from numberrange_get_value has overflowed and gone
+negative.
+@
+text
+@a30 1
+29/07/1998	BJGA	Now copes if value returned for RAM disc size has overflowed.
+d371 1
+a371 1
+  if (newval > RAMFS_Limit || /* overflowed? */ newval < 0) newval = RAMFS_Limit;
+@
+
+
+1.1.1.3
+log
+@Implemented autodetect time numberrange gadget.
+@
+text
+@a31 1
+28/08/1998	BJGA	Implemented autodetect time numberrange
+d51 1
+a51 1
+const cmos CmosDetails [6] =  { { 0x87, 0, 3 },		/* ADFSFloppies */
+a53 1
+				{ 0xBD, 0, 6 },		/* autodetect time */
+a74 3
+  value = get (cmos_AUTODETECT_TIME, &messages);
+  throw (numberrange_set_value (0, Window_Obj, Window_AUTODETECT_TIME, value));
+  
+a137 1
+  int time;
+a196 3
+    
+    throw (numberrange_get_value (0, Window_Obj, Window_AUTODETECT_TIME, &time));
+    cmos_write (cmos_AUTODETECT_TIME, time);
+@

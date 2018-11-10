@@ -1,0 +1,772 @@
+head	1.9;
+access;
+symbols
+	URL-0_58:1.9
+	URL-0_57:1.8
+	URL-0_56:1.8
+	URL-0_55:1.8
+	URL-0_54:1.8
+	URL-0_53:1.8
+	URL-0_52:1.8
+	URL-0_51:1.8
+	URL-0_50:1.8
+	dellis_autobuild_BaseSW:1.8
+	URL-0_49:1.8
+	URL-0_48:1.7
+	URL-0_47:1.7
+	URL-0_46:1.7
+	sbrodie_sedwards_16Mar2000:1.7
+	dcotton_autobuild_BaseSW:1.8
+	URL-0_45:1.7
+	URL-0_44:1.7
+	URL-0_43:1.7
+	URL-0_42:1.7
+	URL-0_41:1.7
+	URL-0_40:1.7
+	URL-0_39:1.6
+	sbrodie_URL_0_38:1.6
+	sbrodie_URL_0_37:1.5
+	sbrodie_URL_0_36:1.5
+	sbrodie_URL_0_35:1.4
+	sbrodie_URL_0_33:1.3
+	sbrodie_Expresso_final_190298:1.3
+	sbrodie_URL_0_31:1.3
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2018.05.12.08.55.34;	author rool;	state Exp;
+branches;
+next	1.8;
+commitid	Z9VvVF7l3Nu5dZBA;
+
+1.8
+date	2000.09.14.11.11.59;	author sbrodie;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	98.09.16.10.38.12;	author sbrodie;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.05.07.12.00.55;	author sbrodie;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	98.03.31.10.38.43;	author sbrodie;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	98.03.25.16.20.41;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.02.11.19.28.08;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.02.10.18.56.47;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.01.29.18.32.35;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.01.29.18.32.35;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@Makefile recreated from fragments
+Detail:
+  Now exports its SWIs & service calls to Interface/URL.h
+Admin:
+  Submission for TCP/IP bounty.
+
+Version 0.58. Tagged as 'URL-0_58'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* -*-C-*-
+ *
+ * $Version: networking $
+ *
+ * $Source: /home/rool/cvsroot/castle/RiscOS/Sources/Networking/Fetchers/URL/c/protocol,v $
+ *
+ * © Acorn Computers Ltd. 1995-1997
+ *
+ * Protocol handler. Deals with all the protocol modules;
+ * registering, deregistering and assiging requests to the correct
+ * SWI base.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "Global/Services.h"
+#include "Interface/URL.h"
+
+#include "url.h"
+#include "protocol.h"
+#include "utils.h"
+#include "externs.h"
+#include "generic.h"
+#include "protoflags.h"
+#include "URLHdr.h"
+
+typedef struct proto {
+	char *url_base;		/* base that protocol deals with */
+	unsigned int swi_base; 	/* SWI Base for module */
+	unsigned int version;	/* Module version number */
+	unsigned int port_no;	/* Default TCP port number for this protocol */
+	int flags;		/* Protocol flags */
+#ifdef DIRECTSWI
+	unsigned int swientry;  /* Hack hack hack! */
+	void *private_word;
+#endif
+	char info[50];		/* Small info string */
+	struct proto *next;	/* wibble! */
+} Protocol;
+
+static Protocol *protocols=NULL;
+
+static int proto_default_flags(const char *);
+static unsigned int protocol_default_port_number(const char *url);
+
+static void lower_string(char *ptr)
+{
+        while (*ptr) {
+                if (isupper(*ptr)) {
+                        *ptr = tolower(*ptr);
+                }
+                ++ptr;
+        }
+}
+
+_kernel_oserror *protocol_register(_kernel_swi_regs *r)
+{
+        Protocol *proto;
+	unsigned int swibase;
+	char *protostr = Strdup((char *) r->r[2]);
+
+	if (protostr == NULL) {
+                return make_error(url_ERROR_MEMORY_EXHAUSTED, 0);
+	}
+
+	lower_string(protostr);
+
+	/* check to see if a protocol already has the same URL_Base */
+	swibase = protocol_get_swibase(protostr);
+	if (swibase != 0) {
+		return make_error(url_ERROR_PROTOCOL_EXISTS, 0);
+	}
+
+    	proto = malloc(sizeof(Protocol));
+    	if (proto == NULL) {
+    	        return make_error(url_ERROR_MEMORY_EXHAUSTED, 0);
+    	}
+    	else {
+    	        proto->next=protocols;
+    		protocols=proto;
+    	}
+
+    	/* save the swi base, protocol base & version number */
+    	proto->swi_base = r->r[1];
+    	proto->version = r->r[3];
+    	proto->url_base = protostr;
+#ifdef DIRECTSWI
+	proto->swientry = 0;
+#endif
+
+	proto->info[0] = '\0';
+    	if (r->r[4] != 0) {
+      		strncat(proto->info, (char *) r->r[4], sizeof(proto->info));
+    	}
+
+	if (r->r[0] & 1) {
+                proto->flags = r->r[5];
+	}
+	else {
+	        proto->flags = proto_default_flags(proto->url_base);
+	}
+
+	if (r->r[0] & 2) {
+	        proto->port_no = r->r[6];
+	}
+	else {
+	        proto->port_no = protocol_default_port_number(proto->url_base);
+	}
+
+	_swix(OS_ServiceCall, _INR(0,4),
+	      Service_URLModule_ProtocolModule_Started, Service_URLModule_ProtocolModule,
+	      proto->url_base, proto->swi_base, proto->info);
+
+    	return NULL;
+}
+
+_kernel_oserror *protocol_deregister(_kernel_swi_regs *r)
+{
+	const unsigned int swibase = r->r[1];
+	char *protostr = (r->r[0] & 1) ? (char *) r->r[2] : NULL;
+	Protocol *proto;
+	Protocol *owner=NULL;
+
+	for (proto=protocols; proto; owner=proto, proto=proto->next) {
+		if (proto->swi_base != swibase) continue;
+		if (protostr != NULL) {
+		        if (Strcmp_ci(proto->url_base, protostr) != 0) {
+                                continue;
+		        }
+		}
+		if (owner == NULL) {
+			protocols = proto->next;
+		}
+		else {
+			owner->next = proto->next;
+		}
+		_swix(OS_ServiceCall, _INR(0,4),
+		      Service_URLModule_ProtocolModule_Dying, Service_URLModule_ProtocolModule,
+		      proto->url_base, proto->swi_base, proto->info);
+		free(proto->url_base);
+		free(proto);
+	}
+
+	return NULL;
+}
+
+int protocol_get_details(int ctr, char **name, char **help, int *swibase, int *version)
+{
+	Protocol *proto;
+        int count = 0;
+
+        for (proto = protocols; proto && count < ctr; proto = proto->next) {
+                ++count;
+        }
+
+	if (proto == NULL) {
+	        return -1;
+	}
+	else {
+	        *name = proto->url_base;
+	        *help = proto->info;
+	        *swibase = proto->swi_base;
+	        *version = proto->version;
+	        return count + 1;
+	}
+}
+
+static const Protocol *protocol_locate(const char *url)
+{
+        const Protocol *proto;
+	const size_t lenurl = strlen(url);
+
+	for (proto=protocols; proto; proto=proto->next) {
+	        size_t protolen = strlen(proto->url_base);
+	        if (protolen == (lenurl + 1)) --protolen;
+		if (!Strncmp_ci(proto->url_base, url, protolen)) {
+			return proto;
+		}
+	}
+
+	return NULL;
+}
+
+int protocol_get_flags(const char *url)
+{
+	const Protocol *proto = protocol_locate(url);
+	return proto ? proto->flags : proto_default_flags(url);
+}
+
+#ifdef DIRECTSWI
+static unsigned int protocol_find_swi_entry(const unsigned int result, const Protocol *proto_r)
+{
+        Protocol *proto = (Protocol *) proto_r;
+        int mod = 0, inst = 0;
+
+	if (proto->swientry == 0) for (;;) {
+	        int *base;
+	        void *pw;
+	        _kernel_oserror *e = _swix(OS_Module, _INR(0,2)|_OUTR(1,4), 12, mod, inst,
+	        	&mod, &inst, &base, &pw);
+	       if (e) break;
+	       if (base[7] == (proto->swi_base & ~63) && base[8] != 0) {
+	               proto->private_word = pw;
+	               proto->swientry = (int)(((char *)base) + base[8]);
+	       }
+	}
+
+        return result;
+}
+#endif
+
+#ifdef DIRECTSWI
+_kernel_oserror *directswi_call(unsigned int swi, _kernel_swi_regs *in, _kernel_swi_regs *out)
+{
+	Protocol *proto;
+	unsigned int swichunk = swi & ~15;
+
+        for (proto = protocols; proto; proto = proto->next) {
+                if (proto->swi_base == swichunk) {
+                        extern _kernel_oserror *directswi(void **pw, unsigned int addr,
+                        	unsigned int swi, _kernel_swi_regs *, _kernel_swi_regs *);
+                        return directswi(&proto->private_word, proto->swientry, swi, in, out);
+                }
+        }
+
+        return _kernel_swi(swi, in, out);
+}
+#endif
+
+/*
+ * Given a URL, scan through the list of avaliable protocols and
+ * establish which SWI base to use.
+ */
+unsigned int protocol_get_swibase(const char *url)
+{
+	const Protocol *proto = protocol_locate(url);
+	const unsigned int result = proto ? proto->swi_base : 0;
+#ifdef DIRECTSWI
+	return protocol_find_swi_entry(result, proto);
+#else
+	return result;
+#endif
+}
+
+_kernel_oserror *protocol_list(void)
+{
+        const char *buffer = NULL;
+        size_t len;
+        _kernel_oserror *e;
+
+	if (protocols==NULL) {
+	        e = read_message("PS00", &buffer, &len);
+	        if (e != NULL) return e;
+                printf("%.*s\n", len, buffer);
+	}
+	else {
+	        e = read_message("PS01", &buffer, &len);
+	        if (e != NULL) {
+	                return e;
+	        }
+	        else {
+			const Protocol *proto;
+
+			printf("%.*s\n", len, buffer);
+			for (len=0; len<8; ++len) {
+			        printf("==========");
+			}
+			printf("\n");
+
+			printf("%-10s  0x%5x    %03d    %s\n",
+				" --- ", URL_00, Module_VersionNumber, Module_Help
+				" © Acorn 1997-8 (Built: " Module_Date ")");
+
+			for (proto=protocols; proto; proto=proto->next) {
+			printf("%-10s  0x%5x    %03d    %s\n",
+				proto->url_base,proto->swi_base,
+				proto->version, proto->info);
+		        }
+	        }
+	}
+
+	return NULL;
+}
+
+static struct proto_default_details {
+        const char *scheme;
+        int flags;
+        unsigned int port_no;
+} proto_default_setups[] = {
+        { "mailto:", 	proto_HAS_NO_NETLOC,  				25 },
+        { "telnet:", 	proto_DOES_NOT_PARSE, 				23 },
+        { "finger:", 	proto_DOES_NOT_PARSE, 				79 },
+        { "file:"  , 	proto_HOST_ALLOW_HASH | proto_HAS_NO_NETLOC, 	0 },
+        { "filer_"  , 	proto_HOST_ALLOW_HASH | proto_HAS_NO_NETLOC, 	0 },
+        { "local:"  , 	proto_HOST_ALLOW_HASH | proto_HAS_NO_NETLOC, 	0 },
+        { "gopher:", 	proto_PATH_NOT_UNIX,  				70 },
+        { "ftp:", 	proto_HAS_USER,  				21 },
+        { "http:", 	proto_STRIP_DOT_DOT,  				80 },
+        { "https:", 	proto_STRIP_DOT_DOT,  				443 },
+        { "whois:",	proto_DOES_NOT_PARSE,				43 },
+        { "ldap:",      proto_PATH_NOT_UNIX,                            389 },
+        { "data:",      proto_DOES_NOT_PARSE,                           0 },
+        { NULL,		0,						0  }
+};
+
+
+static struct proto_default_details *proto_find_default_settings(const char *url)
+{
+        struct proto_default_details *proto;
+        char *colon = strchr(url, ':');
+        size_t length;
+
+        if (!colon) colon = strchr(url, '\0') - 1;
+        length = colon + 1 - url;
+        if (length < 2) return 0;
+
+        for (proto=proto_default_setups; proto->scheme; proto++) {
+                if (strncmp(proto->scheme, url, length) == 0) return proto;
+        }
+
+        return proto;
+}
+
+static int proto_default_flags(const char *url)
+{
+        struct proto_default_details *proto = proto_find_default_settings(url);
+        return proto ? proto->flags : 0;
+}
+
+static unsigned int protocol_default_port_number(const char *url)
+{
+        struct proto_default_details *proto = proto_find_default_settings(url);
+        return proto ? proto->port_no : 0U;
+}
+
+unsigned int protocol_get_default_port(const char *url)
+{
+        const Protocol *p = protocol_locate(url);
+
+	if (p) {
+	        if (p->port_no != 0) return p->port_no;
+	}
+
+	return protocol_default_port_number(url);
+}
+@
+
+
+1.8
+log
+@  New export phase for exporting SWI number symbols.
+Detail:
+  Exports a header file for C code to use to define SWI numbers for
+    the URL module.  Include "Interface/URL.h" to get the header.
+  Updated to use DebugLib instead of its own private debugging system.
+Admin:
+  Requires RiscOS/BuildSys 2.51 or later.
+  Requires RiscOS/Library 0.53 or later
+
+Version 0.49. Tagged as 'URL-0_49'
+@
+text
+@d19 1
+a19 1
+ * $Source: /home/renaissa/cvsroot/RiscOS/Sources/Networking/Fetchers/URL/c/protocol,v $
+d34 4
+d129 3
+a131 2
+	_swix(OS_ServiceCall, _INR(0,4), 0, URL_00+1, proto->url_base, proto->swi_base,
+		proto->info);
+d156 3
+a158 2
+		_swix(OS_ServiceCall, _INR(0,4), 1, URL_00+1, proto->url_base, proto->swi_base,
+			proto->info);
+@
+
+
+1.7
+log
+@  No longer uses TinyStubs (due to __ctype)
+  Extra ResourceFS files added for shared fetcher use.
+Detail:
+  TinyStubs usage for ROM builds removed due to library static data
+    reference problems.
+  Added code for direct SWI calling to protocol modules.  This code
+    is switched out on the DIRECTSWI macro which is set in Makefile.
+  RCS log tags removed from source files.
+  New tests added to OddURLs test file.
+Admin:
+  Built from clean; tested in RAM build.
+
+Version 0.40. Tagged as 'URL-0_40'
+@
+text
+@d19 1
+a19 1
+ * $Source: /projects2/renaissa/cvsroot/RiscOS/Sources/Networking/Fetchers/URL/c/protocol,v $
+a297 100
+
+
+#ifdef USE_SYSLOG
+#include "<syslog$dir>.C-veneer.h.syslog"
+#endif
+
+/*#define DEBUG_FILENAME	"ADFS::4.$.Trace.ProtoURL"*/
+#define DEBUG_FILENAME  "RAM:$.URL_Trace"
+
+/*************************************************************/
+/* static void protocol_debug(const char *format, ...	     */
+/*************************************************************/
+/* Output trace information to the TRACE_FILE		     */
+/*************************************************************/
+#ifdef TRACE
+#include <stdarg.h>
+void protocol_debug(const char *format, ...)
+{
+	#ifdef TRACE
+	if (getenv("NoTrace$URL")) return; else {
+		va_list ap;
+		#ifdef USE_SYSLOG
+		static char buffer[1024];
+		va_start(ap, format);
+		vsprintf(buffer, format, ap);
+		va_end(ap);
+		(void) xsyslog_logmessage("URL", buffer, 100);
+		#else
+		FILE *fp = fopen(DEBUG_FILENAME, "a");
+
+		if (fp != 0) {
+			va_start(ap, format);
+			(void) vfprintf(fp, format, ap);
+			va_end(ap);
+			fclose(fp);
+		}
+		#endif
+	}
+	#else
+	(void) format;
+	#endif
+}
+#endif
+
+
+#ifdef TRACE
+
+#ifndef USE_SYSLOG
+static char *filter(char *buf, const char *ptr, int max)
+{
+	int i;
+	for (i=0; i<=max; ++i) {
+		int p = ptr[i];
+		if (p<32 || p == 127) buf[i] = '.'; else buf[i] = p;
+	}
+	buf[i] = '\0';
+	return buf;
+}
+#endif
+
+void protocol_dump(const char *ptr, int size)
+{
+	#ifdef TRACE
+	if (getenv("NoTrace$URL") || getenv("NoTrace$URL")) return; else {
+		#ifdef USE_SYSLOG
+		(void) xsyslog_logdata("URL", 100, ptr, size, 0);
+		#else
+		FILE *fp = fopen(DEBUG_FILENAME, "a");
+		if (fp != NULL) {
+			int ctr;
+			char buf[48];
+			fprintf(fp, "%08x: ", 0);
+			for (ctr=0; ctr<size; ++ctr) {
+				fprintf(fp, "%02x ", ptr[ctr]);
+				if ((ctr & 31) == 31) {
+					fprintf(fp, "  %s",
+						filter(buf, ptr+(ctr & ~31), ctr & 31));
+					fprintf(fp, "\n%08x: ", ctr+1);
+				}
+			}
+			if (ctr & 31) {
+				const char *start = ptr + (ctr & ~31);
+				while (ctr & 31) {
+					fprintf(fp, "   ");
+					++ctr;
+				}
+				fprintf(fp, "  %s", filter(buf, start, (size & 31)-1));
+			}
+			fputc('\n', fp);
+			fclose(fp);
+		}
+		#endif
+	}
+	#else
+	(void) ptr;
+	(void) size;
+	#endif
+}
+#endif
+
+d314 2
+@
+
+
+1.6
+log
+@Control characters are now hex-escaped when they are spotted by the URL
+parser and resolver.  This stops URL users getting confused by spaces
+in URLs amongst other things.
+
+Two extra tests for this code have been inserted.  This module passes all
+50 test cases.
+
+Module now maintains its version number and date via srccommit
+
+Version 0.38. Not tagged
+@
+text
+@a20 7
+ * $Log: protocol,v $
+ * Revision 1.1.1.1  1998/01/29 18:32:35  sbrodie
+ * Import from SrcFiler of Browser fetchers
+ *
+ * Revision 1.1  95/09/08  09:35:04  pwain
+ * Initial revision
+ *
+d32 1
+d48 4
+d102 3
+d203 40
+d250 6
+a255 1
+	return proto ? proto->swi_base : 0;
+@
+
+
+1.5
+log
+@Bug fix for looking up protocol as port number - which still looked it
+up in most circumstances.  This lookup only occurs on unknown protocols
+now.
+@
+text
+@d45 1
+a46 1
+#include "protoflags.h"
+@
+
+
+1.4
+log
+@Scheme names are no longer expected to match entries in the Services
+database, so they are no longer looked up there in an attempt to elide
+the port numbers when canonicalising URLs.  A table of well-known scheme
+to port mappings has been added, plus changes have been made to the way
+protocol modules register to allow them to specify their port numbers.
+@
+text
+@d405 4
+a408 2
+	if (!p) return 0;
+	if (p->port_no != 0) return 0;
+@
+
+
+1.3
+log
+@Dependency on Syslog removed
+Const-ness of veneers modified on the basis of the CMHG version number to
+avoid build problems.
+@
+text
+@d52 1
+d61 1
+d117 7
+d237 4
+d352 21
+a372 1
+static int proto_default_flags(const char *url)
+d374 1
+a380 9
+        if (strncmp("mailto:", url, length) == 0) return proto_HAS_NO_NETLOC;
+        if (strncmp("telnet:", url, length) == 0) return proto_DOES_NOT_PARSE;
+        if (strncmp("finger:", url, length) == 0) return proto_DOES_NOT_PARSE;
+	if (strncmp("file:", url, length) == 0 ||
+	    strncmp("filer_", url, 6) == 0 ||
+	    strncmp("local:", url, length) == 0) return proto_HOST_ALLOW_HASH | proto_HAS_NO_NETLOC;
+	if (strncmp("gopher:", url, length) == 0) return proto_PATH_NOT_UNIX;
+	if (strncmp("ftp:", url, length) == 0) return proto_HAS_USER;
+	if (strncmp("http:", url, length) == 0) return proto_STRIP_DOT_DOT;
+d382 26
+a407 1
+	return 0;
+@
+
+
+1.2
+log
+@URL version 0.31.
+Build process changed to use standard !Mk... taskobey scripts.
+Makefile is now capable of producing RAM and ROM versions of URL.
+Resources moved into standard subdirectory of Resources:$.Resources.URL
+General code tidies to remove all compilation warnings
+@
+text
+@a240 2
+#define USE_SYSLOG
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 5
+a23 1
+ * $Source: /ax/networking:Phileas/URL/protocol.c: $
+a24 1
+ * $Log:	protocol.c,v $
+d45 1
+a45 1
+#include "urlmodule.h"
+d154 1
+a154 1
+        
+d175 1
+a175 1
+        
+d208 1
+a208 1
+        
+d235 1
+a235 1
+	
+d345 1
+a345 1
+        
+@
+
+
+1.1.1.1
+log
+@Import from SrcFiler of Browser fetchers
+@
+text
+@@

@@ -1,0 +1,615 @@
+head	4.3;
+access;
+symbols
+	Net-6_26:4.3
+	Net-6_25:4.3
+	Net-6_24:4.2
+	Net-6_23:4.2
+	Net-6_22:4.2
+	Net-6_21:4.2
+	RO_5_07:4.2
+	Net-6_20:4.2
+	Net-6_19:4.2
+	Net-6_18:4.2
+	Ursula_merge:4.2
+	Ursula_13May1998_merge:4.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.2
+	Ursula_RiscPC:4.2.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.2
+	UrsulaBuild_FinalSoftload:4.2
+	rthornb_UrsulaBuild-12Aug1998:4.2
+	aglover_UrsulaBuild-05Aug1998:4.2
+	rthornb_UrsulaBuild-29Jul1998:4.2
+	rthornb_UrsulaBuild-22Jul1998:4.2
+	rthornb_UrsulaBuild-15Jul1998:4.2
+	rthornb_UrsulaBuild-07Jul1998:4.2
+	rthornb_UrsulaBuild-17Jun1998:4.2
+	rthornb_UrsulaBuild-03Jun1998:4.2
+	rthornb_UrsulaBuild-27May1998:4.2
+	rthornb_UrsulaBuild-21May1998:4.2
+	Ursula_bp:4.2
+	Ursula:4.2.0.6
+	Ursula_13May1998_bp:4.2
+	Ursula_13May1998:4.2.0.2
+	rthornb_UrsulaBuild_01May1998:4.2
+	Daytona:4.2.0.4
+	Daytona_bp:4.2
+	RO_3_71:4.1.3.1
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	RO_3_60:4.1.1.1
+	StrongARM:4.1.3
+	Black:4.1.1;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	2015.05.29.19.29.02;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	2VVHsW5ULMhIonny;
+
+4.2
+date	97.05.13.11.25.44;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	96.11.05.09.28.27;	author nturton;	state Exp;
+branches
+	4.1.1.1
+	4.1.3.1;
+next	;
+
+4.1.1.1
+date	96.11.05.09.28.27;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.3.1
+date	96.11.05.22.31.30;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@Have Net look after its own messages
+Net was trying to share some messages with the Econet module, though on balance this wasn't particularly useful as it then needed to duplicate message handling code to keep 2 files open. Because those messages were held in AUNMsgs they didn't get tokenised in ROM, overall ending up taking more space.
+
+Register in ResourcesFS at run time for RAM targets, add tokenisation directives for ROM targets, removed redundant !Configure related strings.
+Changed the messages fd to be int's to ensure word alignment.
+Removed inappropriate Service_MessageFileClosed handler, MessageTrans reopens the files (since the fd is in the RMA) so no need to reopen them a second time. This service call is intended to recache direct pointers to tokens, but none are ever taken.
+Save time by just making textbuf a zero length string rather than memset()ing the whole buffer.
+Resolved a couple more compiler warnings (but NetG still doesn't compile).
+Fix bug where a failure to enable the internet event would decrement the internet event count for any other modules interested in that event.
+Use CMHG finalisation rather than atexit().
+Error "AUN not configured" now uses a non zero trappable error number.
+Error number for BadSWI corrected from 0x111 to 0x110.
+
+Requires HdrSrc-2_51 for the error number.
+
+Version 6.25. Tagged as 'Net-6_25'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* output.c
+ *
+ * Author: Keith Ruttle (Acorn)
+ *
+ * Description
+ * ===========
+ * Output routines
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.06 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ * 05-Oct-95  17:36  JPD  Version 1.00
+ * First version with change record.
+ *
+ *
+ **End of change record*
+ */
+
+#ifdef OldCode
+
+#include "defs.h"
+
+#include "net/if.h"
+
+#else
+
+#include <string.h>
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "net/if.h"
+#include "netinet/in.h"
+#include "net/route.h"
+#include "protocols/routed.h"
+
+#include "module.h"
+#include "mnsg.h"
+#include "interface.h"
+#include "table.h"
+#include "data.h"
+#include "trace.h"
+#include "output.h"
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+/*
+ * Apply the function "f" to all non-passive
+ * interfaces.
+ */
+toall(f)
+        int (*f)();
+{
+        struct interface *ifp;
+        extern struct interface *ifnet;
+
+        for (ifp = ifnet; ifp; ifp = ifp->int_next)
+                (*f)(&ifp->int_broadaddr, 0, ifp);
+}
+#else
+void toall(void (*f)())
+/*
+ * Apply the function "f" to all non-passive
+ * interfaces.
+ */
+{
+   struct interface *ifp;
+   extern struct interface *ifnet;
+
+   for (ifp = ifnet; ifp; ifp = ifp->int_next)
+      (*f)(&ifp->int_broadaddr, 0, ifp);
+
+   return;
+
+} /* toall() */
+
+#endif
+
+/******************************************************************************/
+#ifdef OldCode
+/*ARGSUSED*/
+rsendmsg(dst, flags, ifp)
+        struct sockaddr *dst;
+        int flags;
+        struct interface *ifp;
+{
+        inet_output(*routedsock, flags, dst, sizeof (struct rip));
+        TRACE_OUTPUT(ifp, dst, sizeof (struct rip));
+}
+#else
+void rsendmsg(struct sockaddr *dst, int flags, struct interface *ifp)
+{
+   UNUSED(ifp);
+
+   inet_output(*routedsock, flags, dst, sizeof(struct rip));
+
+   TRACE_OUTPUT(ifp, (struct sockaddr_in *)dst, sizeof (struct rip));
+
+   return;
+
+} /* rsendmsg() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+supply(dst, flags, ifp)
+        struct sockaddr *dst;
+        int flags;
+        struct interface *ifp;
+{
+        struct rt_entry *rt;
+        struct netinfo *n = msg->rip_nets;
+        struct rthash *rh;
+        struct rthash *base = hosthash;
+        int doinghost = 1, size;
+        int npackets = 0;
+
+        msg->rip_cmd = RIPCMD_RESPONSE;
+        msg->rip_vers = RIPVERSION;
+        memset(msg->rip_res1, 0, sizeof(msg->rip_res1));
+again:
+        for (rh = base; rh < &base[ROUTEHASHSIZ]; rh++)
+        for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw) {
+
+                if (ifp && rt->rt_ifp == ifp &&
+                    (rt->rt_state & RTS_INTERFACE) == 0)
+                        continue;
+                if (rt->rt_state & RTS_EXTERNAL)
+                        continue;
+
+                if (doinghost == 0 && rt->rt_state & RTS_SUBNET) {
+                        if (rt->rt_dst.sa_family != dst->sa_family)
+                                continue;
+                        if (inet_sendroute(rt, dst) == 0)
+                                continue;
+                }
+                size = (char *)n - packet;
+                if (size > MAXPACKETSIZE - sizeof (struct netinfo)) {
+                        TRACE_OUTPUT(ifp, dst, size);
+                        inet_output(*routedsock, flags, dst, size);
+
+                        if (ifp && (ifp->int_flags &
+                           (IFF_BROADCAST | IFF_POINTOPOINT | IFF_REMOTE)) == 0)
+                                return;
+                        n = msg->rip_nets;
+                        npackets++;
+                }
+                n->rip_dst = rt->rt_dst;
+                n->rip_metric = htonl(rt->rt_metric);
+                n++;
+        }
+        if (doinghost) {
+                doinghost = 0;
+                base = nethash;
+                goto again;
+        }
+        if (n != msg->rip_nets || npackets == 0) {
+                size = (char *)n - packet;
+                TRACE_OUTPUT(ifp, dst, size);
+                inet_output(*routedsock, flags, dst, size);
+        }
+}
+#else
+/******************************************************************************/
+
+void supply(struct sockaddr *dst, int flags, struct interface *ifp)
+{
+   struct rt_entry *rt;
+   struct netinfo *n = msg->rip_nets;
+   struct rthash *rh;
+   struct rthash *base = hosthash;
+   int doinghost = 1, size;
+   int npackets = 0;
+
+   msg->rip_cmd = RIPCMD_RESPONSE;
+   msg->rip_vers = RIPVERSION;
+   memset(msg->rip_res1, 0, sizeof(msg->rip_res1));
+
+again:
+   for (rh = base; rh < &base[ROUTEHASHSIZ]; rh++)
+      for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+      {
+         if (ifp && rt->rt_ifp == ifp &&
+            (rt->rt_state & RTS_INTERFACE) == 0)
+               continue;
+         if (rt->rt_state & RTS_EXTERNAL)
+            continue;
+
+         if (doinghost == 0 && rt->rt_state & RTS_SUBNET)
+         {
+            if (rt->rt_dst.sa_family != dst->sa_family)
+               continue;
+            if (inet_sendroute(rt, dst) == 0)
+               continue;
+         }
+         size = (char *)n - packet;
+         if (size > MAXPACKETSIZE - sizeof (struct netinfo))
+         {
+            TRACE_OUTPUT(ifp, (struct sockaddr_in *)dst, size);
+            inet_output(*routedsock, flags, dst, size);
+
+            if (ifp && (ifp->int_flags &
+                           (IFF_BROADCAST | IFF_POINTOPOINT | IFF_REMOTE)) == 0)
+               return;
+            n = msg->rip_nets;
+            npackets++;
+         }
+         n->rip_dst = rt->rt_dst;
+         n->rip_metric = htonl(rt->rt_metric);
+         n++;
+      }
+
+   if (doinghost)
+   {
+      doinghost = 0;
+      base = nethash;
+      goto again;
+   }
+
+   if (n != msg->rip_nets || npackets == 0)
+   {
+      size = (char *)n - packet;
+      TRACE_OUTPUT(ifp, (struct sockaddr_in *)dst, size);
+      inet_output(*routedsock, flags, dst, size);
+   }
+
+   return;
+
+} /* supply() */
+
+#endif
+
+/******************************************************************************/
+
+/* EOF output.c */
+@
+
+
+4.2
+log
+@Version RO_3_71 taken
+@
+text
+@d51 2
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d15 29
+d49 21
+d80 1
+a80 1
+        for (ifp = ifnet; ifp; ifp = ifp->int_next) 
+d83 12
+d96 1
+d98 6
+d113 4
+d118 1
+d120 11
+d151 1
+a151 1
+                    (rt->rt_state & RTS_INTERFACE) == 0) 
+d153 1
+a153 1
+                if (rt->rt_state & RTS_EXTERNAL) 
+d157 1
+a157 1
+                        if (rt->rt_dst.sa_family != dst->sa_family) 
+d159 1
+a159 1
+                        if (inet_sendroute(rt, dst) == 0) 
+d188 73
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@a0 43
+/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* output.c
+ *
+ * Author: Keith Ruttle (Acorn)
+ *
+ * Description
+ * ===========
+ * Output routines
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.06 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ * 05-Oct-95  17:36  JPD  Version 1.00
+ * First version with change record.
+ *
+ *
+ **End of change record*
+ */
+
+#ifdef OldCode
+a19 21
+#else
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "net/if.h"
+#include "netinet/in.h"
+#include "net/route.h"
+#include "protocols/routed.h"
+
+#include "module.h"
+#include "mnsg.h"
+#include "interface.h"
+#include "table.h"
+#include "data.h"
+#include "trace.h"
+#include "output.h"
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+d30 1
+a30 1
+        for (ifp = ifnet; ifp; ifp = ifp->int_next)
+a32 12
+#else
+void toall(void (*f)())
+/*
+ * Apply the function "f" to all non-passive
+ * interfaces.
+ */
+{
+   struct interface *ifp;
+   extern struct interface *ifnet;
+
+   for (ifp = ifnet; ifp; ifp = ifp->int_next)
+      (*f)(&ifp->int_broadaddr, 0, ifp);
+a33 1
+   return;
+a34 6
+} /* toall() */
+
+#endif
+
+/******************************************************************************/
+#ifdef OldCode
+a43 4
+#else
+void rsendmsg(struct sockaddr *dst, int flags, struct interface *ifp)
+{
+   UNUSED(ifp);
+a44 1
+   inet_output(*routedsock, flags, dst, sizeof(struct rip));
+a45 11
+   TRACE_OUTPUT(ifp, (struct sockaddr_in *)dst, sizeof (struct rip));
+
+   return;
+
+} /* rsendmsg() */
+
+#endif
+
+/******************************************************************************/
+
+#ifdef OldCode
+d66 1
+a66 1
+                    (rt->rt_state & RTS_INTERFACE) == 0)
+d68 1
+a68 1
+                if (rt->rt_state & RTS_EXTERNAL)
+d72 1
+a72 1
+                        if (rt->rt_dst.sa_family != dst->sa_family)
+d74 1
+a74 1
+                        if (inet_sendroute(rt, dst) == 0)
+a102 73
+#else
+/******************************************************************************/
+
+void supply(struct sockaddr *dst, int flags, struct interface *ifp)
+{
+   struct rt_entry *rt;
+   struct netinfo *n = msg->rip_nets;
+   struct rthash *rh;
+   struct rthash *base = hosthash;
+   int doinghost = 1, size;
+   int npackets = 0;
+
+   msg->rip_cmd = RIPCMD_RESPONSE;
+   msg->rip_vers = RIPVERSION;
+   memset(msg->rip_res1, 0, sizeof(msg->rip_res1));
+
+again:
+   for (rh = base; rh < &base[ROUTEHASHSIZ]; rh++)
+      for (rt = rh->rt_forw; rt != (struct rt_entry *)rh; rt = rt->rt_forw)
+      {
+         if (ifp && rt->rt_ifp == ifp &&
+            (rt->rt_state & RTS_INTERFACE) == 0)
+               continue;
+         if (rt->rt_state & RTS_EXTERNAL)
+            continue;
+
+         if (doinghost == 0 && rt->rt_state & RTS_SUBNET)
+         {
+            if (rt->rt_dst.sa_family != dst->sa_family)
+               continue;
+            if (inet_sendroute(rt, dst) == 0)
+               continue;
+         }
+         size = (char *)n - packet;
+         if (size > MAXPACKETSIZE - sizeof (struct netinfo))
+         {
+            TRACE_OUTPUT(ifp, (struct sockaddr_in *)dst, size);
+            inet_output(*routedsock, flags, dst, size);
+
+            if (ifp && (ifp->int_flags &
+                           (IFF_BROADCAST | IFF_POINTOPOINT | IFF_REMOTE)) == 0)
+               return;
+            n = msg->rip_nets;
+            npackets++;
+         }
+         n->rip_dst = rt->rt_dst;
+         n->rip_metric = htonl(rt->rt_metric);
+         n++;
+      }
+
+   if (doinghost)
+   {
+      doinghost = 0;
+      base = nethash;
+      goto again;
+   }
+
+   if (n != msg->rip_nets || npackets == 0)
+   {
+      size = (char *)n - packet;
+      TRACE_OUTPUT(ifp, (struct sockaddr_in *)dst, size);
+      inet_output(*routedsock, flags, dst, size);
+   }
+
+   return;
+
+} /* supply() */
+
+#endif
+
+/******************************************************************************/
+
+/* EOF output.c */
+@
+
+
+4.1.1.1
+log
+@Import from cleaned 360 CD
+@
+text
+@@

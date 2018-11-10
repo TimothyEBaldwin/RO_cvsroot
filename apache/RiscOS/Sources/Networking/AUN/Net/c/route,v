@@ -1,0 +1,786 @@
+head	4.4;
+access;
+symbols
+	Net-6_26:4.4
+	Net-6_25:4.4
+	Net-6_24:4.3
+	Net-6_23:4.3
+	Net-6_22:4.3
+	Net-6_21:4.3
+	RO_5_07:4.3
+	Net-6_20:4.3
+	Net-6_19:4.2
+	Net-6_18:4.2
+	Ursula_merge:4.2
+	Ursula_13May1998_merge:4.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.2
+	Ursula_RiscPC:4.2.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.2
+	UrsulaBuild_FinalSoftload:4.2
+	rthornb_UrsulaBuild-12Aug1998:4.2
+	aglover_UrsulaBuild-05Aug1998:4.2
+	rthornb_UrsulaBuild-29Jul1998:4.2
+	rthornb_UrsulaBuild-22Jul1998:4.2
+	rthornb_UrsulaBuild-15Jul1998:4.2
+	rthornb_UrsulaBuild-07Jul1998:4.2
+	rthornb_UrsulaBuild-17Jun1998:4.2
+	rthornb_UrsulaBuild-03Jun1998:4.2
+	rthornb_UrsulaBuild-27May1998:4.2
+	rthornb_UrsulaBuild-21May1998:4.2
+	Ursula_bp:4.2
+	Ursula:4.2.0.6
+	Ursula_13May1998_bp:4.2
+	Ursula_13May1998:4.2.0.2
+	rthornb_UrsulaBuild_01May1998:4.2
+	Daytona:4.2.0.4
+	Daytona_bp:4.2
+	RO_3_71:4.1.3.1
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	RO_3_60:4.1.1.1
+	StrongARM:4.1.3
+	Black:4.1.1;
+locks; strict;
+comment	@# @;
+
+
+4.4
+date	2015.05.29.19.28.57;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+commitid	2VVHsW5ULMhIonny;
+
+4.3
+date	2003.12.03.19.21.59;	author bavison;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	97.05.13.11.25.25;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	96.11.05.09.28.23;	author nturton;	state Exp;
+branches
+	4.1.1.1
+	4.1.3.1;
+next	;
+
+4.1.1.1
+date	96.11.05.09.28.23;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.3.1
+date	96.11.05.22.31.12;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.4
+log
+@Have Net look after its own messages
+Net was trying to share some messages with the Econet module, though on balance this wasn't particularly useful as it then needed to duplicate message handling code to keep 2 files open. Because those messages were held in AUNMsgs they didn't get tokenised in ROM, overall ending up taking more space.
+
+Register in ResourcesFS at run time for RAM targets, add tokenisation directives for ROM targets, removed redundant !Configure related strings.
+Changed the messages fd to be int's to ensure word alignment.
+Removed inappropriate Service_MessageFileClosed handler, MessageTrans reopens the files (since the fd is in the RMA) so no need to reopen them a second time. This service call is intended to recache direct pointers to tokens, but none are ever taken.
+Save time by just making textbuf a zero length string rather than memset()ing the whole buffer.
+Resolved a couple more compiler warnings (but NetG still doesn't compile).
+Fix bug where a failure to enable the internet event would decrement the internet event count for any other modules interested in that event.
+Use CMHG finalisation rather than atexit().
+Error "AUN not configured" now uses a non zero trappable error number.
+Error number for BadSWI corrected from 0x111 to 0x110.
+
+Requires HdrSrc-2_51 for the error number.
+
+Version 6.25. Tagged as 'Net-6_25'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* route.c
+ *
+ * Author: Keith Ruttle (Acorn)
+ *
+ * Description
+ * ===========
+ * Routing routines
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.06 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ *
+ * 09-Dec-94  17:42  JPD  Version 1.00
+ * First version with change record. Modified: #includes to be ANSI-compliant.
+ *
+ * 12-Jan-95  12:25  JPD  Version 1.01
+ * Add static declarations. Begin changes to allow compilation with -fah
+ * option.
+ *
+ * 14-Mar-95  15:49  JPD  Version 1.02
+ * Removed OldCode.
+ *
+ *
+ **End of change record*
+ */
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "sys/ioctl.h"
+#include "net/route.h"
+#include "protocols/routed.h"
+#include "netinet/in.h"
+
+#include "module.h"
+#include "routecode.h"
+#include "inetfn.h"
+#include "unixlib.h"
+#include "socklib.h"
+
+
+/******************************************************************************/
+
+#define rtentry ortentry
+
+struct rt_entry
+{
+   struct  rt_entry *rt_forw;
+   union
+   {
+      struct  rtentry rtu_rt;
+      struct rtuentry
+      {
+         u_long  rtu_hash;
+         struct  sockaddr rtu_dst;
+         struct  sockaddr rtu_router;
+         short   rtu_flags;
+         int     rtu_metric;
+      } rtu_entry;
+   } rt_rtu;
+};
+
+#define rt_rt           rt_rtu.rtu_rt
+#define rt_hash         rt_rtu.rtu_entry.rtu_hash
+#define rt_dst          rt_rtu.rtu_entry.rtu_dst
+#define rt_router       rt_rtu.rtu_entry.rtu_router
+#define rt_flags        rt_rtu.rtu_entry.rtu_flags
+#define rt_metric       rt_rtu.rtu_entry.rtu_metric
+
+#define equal(a1, a2) \
+        (memcmp((caddr_t)(a1), (caddr_t)(a2), sizeof (struct sockaddr)) == 0)
+
+static void rtadd(struct sockaddr *dst, struct sockaddr *gate, int metric);
+static void rtchange(struct rt_entry *rt, struct sockaddr *gate, short metric);
+static void route_attach(struct rt_entry *rt);
+static int rtioctl(int action, struct rtuentry *ort);
+static struct rip msg;
+
+#define ADD 1
+#define DELETE 2
+#define CHANGE 3
+
+/******************************************************************************/
+
+void routed_init(void)
+{
+
+   struct sockaddr_in sin;
+
+   sin.sin_family = AF_INET;
+   sin.sin_len = sizeof sin;
+   sin.sin_port = htons((u_short)ROUTEDPORT);
+   sin.sin_addr.s_addr = INADDR_BROADCAST;
+   msg.rip_cmd = RIPCMD_REQUEST;
+   msg.rip_vers = RIPVERSION;
+   msg.rip_nets[0].rip_dst.sa_family = htons((u_short)AF_UNSPEC);
+   msg.rip_nets[0].rip_metric = htonl((u_long)HOPCNT_INFINITY);
+   (void) sendto(mns.mns_routedsock, (char *)&msg, sizeof(struct rip), 0,
+                                          (struct sockaddr *)&sin, sizeof(sin));
+   mns.mns_retrydelay = RETRY_DELAY;
+
+   return;
+
+} /* routed_init() */
+
+/******************************************************************************/
+
+static struct rt_entry *rtlookup(struct sockaddr *dst)
+{
+   struct rt_entry *rt;
+
+   for (rt = (struct rt_entry *)mns.mns_route; rt; rt = rt->rt_forw)
+      if (equal(&rt->rt_dst, dst))
+         return rt;
+
+   return 0;
+
+} /* rtlookup() */
+
+/******************************************************************************/
+
+int rip_input(struct sockaddr *from, struct rip *rip, int size)
+{
+   struct netinfo *n;
+   struct rt_entry *rt;
+
+   if (rip->rip_cmd != RIPCMD_RESPONSE)
+      return 0;
+
+   size -= 4;
+   n = rip->rip_nets;
+   for (; size > 0; size -= sizeof (struct netinfo), n++)
+   {
+      if (size < sizeof (struct netinfo))
+         break;
+      n->rip_metric = ntohl(n->rip_metric);
+      if (n->rip_metric == 0 || (unsigned) n->rip_metric >= HOPCNT_INFINITY)
+         continue;
+      n->rip_metric++;
+      rt = rtlookup(&n->rip_dst);
+      if (rt == 0)
+      {
+         rtadd(&n->rip_dst, from, n->rip_metric);
+         continue;
+      }
+
+     /*
+      * Update if from gateway and different,
+      * or shorter.
+      */
+      if ((equal(from, &rt->rt_router) && n->rip_metric != rt->rt_metric) ||
+            (unsigned) n->rip_metric < rt->rt_metric)
+         rtchange(rt, from, n->rip_metric);
+   }
+
+   return 1;
+
+} /* rip_input() */
+
+/******************************************************************************/
+
+static void rtadd(struct sockaddr *dst, struct sockaddr *gate, int metric)
+{
+   struct rt_entry *rt;
+   u_long d, l;
+
+   d = ntohl(((struct sockaddr_in *)dst)->sin_addr.s_addr) & ~0xffff;
+   l = ntohl(mns.mns_ifaddrs[0]) & ~0xffff;
+   if (d == l)
+      return;
+   rt = (struct rt_entry *)malloc(sizeof (*rt));
+   if (rt == 0)
+      return;
+   memset((char *)rt, 0, sizeof(struct rt_entry));
+   rt->rt_dst = *dst;
+   rt->rt_router = *gate;
+   rt->rt_flags = RTF_UP;
+   rt->rt_metric = metric;
+   if (metric > 1)
+      rt->rt_flags |= RTF_GATEWAY;
+   route_attach(rt);
+   (void) rtioctl(ADD, (struct rtuentry *) &rt->rt_rt);
+
+   return;
+
+} /* rtadd() */
+
+/******************************************************************************/
+
+static void rtchange(struct rt_entry *rt, struct sockaddr *gate, short metric)
+{
+   struct rtentry oldroute;
+
+   rt->rt_metric = metric;
+   if (!equal(&rt->rt_router, gate))
+   {
+      oldroute = rt->rt_rt;
+      rt->rt_router = *gate;
+      (void) rtioctl(ADD, (struct rtuentry *) &rt->rt_rt);
+      (void) rtioctl(DELETE, (struct rtuentry *) &oldroute);
+   }
+
+   return;
+
+} /* rtchange() */
+
+/******************************************************************************/
+
+static void route_attach(struct rt_entry *rt)
+{
+/*
+ * Attach a route to the
+ * list of known routes.
+ */
+
+   struct rt_entry **r = (struct rt_entry **)&(mns.mns_route);
+
+   while (*r)
+      r = &((*r)->rt_forw);
+   *r = rt;
+
+   return;
+
+} /* route_attach() */
+
+static int seqno;
+
+static int rtioctl(int action, struct rtuentry *ort)
+{
+        int r, retval, temperr;
+	struct {
+		struct rt_msghdr w_rtm;
+		struct sockaddr_in w_dst;
+		struct sockaddr w_gate;
+		struct sockaddr_in w_netmask;
+	} w;
+#define rtm w.w_rtm
+
+        r = socket(PF_ROUTE, SOCK_RAW, 0);
+        if (r < 0)
+            return (-1);
+
+	bzero(&w, sizeof(w));
+	rtm.rtm_msglen = sizeof(w);
+	rtm.rtm_version = RTM_VERSION;
+	rtm.rtm_type = (action == ADD ? RTM_ADD :
+				(action == DELETE ? RTM_DELETE : RTM_CHANGE));
+#undef rt_dst
+	rtm.rtm_flags = ort->rtu_flags;
+	rtm.rtm_seq = ++seqno;
+	rtm.rtm_addrs = RTA_DST|RTA_GATEWAY;
+	memcpy(&w.w_dst, &ort->rtu_dst, sizeof(w.w_dst));
+	memcpy(&w.w_gate, &ort->rtu_router, sizeof(w.w_gate));
+	w.w_dst.sin_family = AF_INET;
+	w.w_dst.sin_len = sizeof(w.w_dst);
+	w.w_gate.sa_family = AF_INET;
+	w.w_gate.sa_len = sizeof(w.w_gate);
+	if (rtm.rtm_flags & RTF_HOST) {
+		rtm.rtm_msglen -= sizeof(w.w_netmask);
+	} else {
+		register char *cp;
+		int len;
+
+		rtm.rtm_addrs |= RTA_NETMASK;
+		w.w_netmask.sin_addr.s_addr =
+			inet_maskof(w.w_dst.sin_addr.s_addr);
+		for (cp = (char *)(1 + &w.w_netmask.sin_addr);
+				    --cp > (char *) &w.w_netmask; )
+			if (*cp)
+				break;
+		len = cp - (char *)&w.w_netmask;
+		if (len) {
+			len++;
+			w.w_netmask.sin_len = len;
+			len = 1 + ((len - 1) | (sizeof(long) - 1));
+		} else
+			len = sizeof(long);
+		rtm.rtm_msglen -= (sizeof(w.w_netmask) - len);
+	}
+	retval = socketwrite(r, &w, rtm.rtm_msglen);
+	temperr = errno;
+	socketclose(r);
+	errno = temperr;
+	return (retval);
+}
+
+/******************************************************************************/
+
+/* EOF route.c */
+@
+
+
+4.3
+log
+@ANSIized.
+
+Version 6.20. Tagged as 'Net-6_20'
+@
+text
+@a207 3
+#ifdef OldCode
+   (void) socketioctl(mns.mns_routedsock, SIOCADDRT, (char *)&rt->rt_rt);
+#else
+a208 1
+#endif
+a224 4
+#ifdef OldCode
+      (void) socketioctl(mns.mns_routedsock, SIOCADDRT, (char *)&rt->rt_rt);
+      (void) socketioctl(mns.mns_routedsock, SIOCDELRT, (char *)&oldroute);
+#else
+a226 1
+#endif
+@
+
+
+4.2
+log
+@Version RO_3_71 taken
+@
+text
+@d51 3
+d63 2
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d29 1
+a29 1
+ * Acorn Archimedes C release 5.02 or later.
+d44 3
+a50 15
+#ifdef OldCode
+#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <sys/mbuf.h>
+#include <net/route.h>
+#include <net/routed.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <ctype.h>
+#include "module.h"
+
+#else
+
+d60 6
+a65 2
+#include "stubs.h"
+#endif
+d73 1
+a73 1
+      struct
+a93 4
+#ifdef OldCode
+extern struct mns mns;
+struct rip msg;
+#else
+d97 1
+d99 4
+a102 1
+#endif
+a105 18
+#ifdef OldCode
+routed_init()
+{
+
+    struct sockaddr_in sin;
+
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons((u_short)ROUTEDPORT);
+    sin.sin_addr.s_addr = INADDR_BROADCAST;
+    msg.rip_cmd = RIPCMD_REQUEST;
+    msg.rip_vers = RIPVERSION;
+    msg.rip_nets[0].rip_dst.sa_family = htons((u_short)AF_UNSPEC);
+    msg.rip_nets[0].rip_metric = htonl((u_long)HOPCNT_INFINITY);
+    (void) sendto(mns.mns_routedsock, (char *)&msg, sizeof(struct rip), 0, &sin, sizeof(sin));
+    mns.mns_retrydelay = RETRY_DELAY;
+    return (0);
+}
+#else
+d112 1
+a126 2
+#endif
+
+a128 13
+#ifdef OldCode
+struct rt_entry *
+rtlookup(dst)
+struct sockaddr *dst;
+{
+    struct rt_entry *rt;
+
+    for (rt = (struct rt_entry *)mns.mns_route; rt; rt = rt->rt_forw)
+        if (equal(&rt->rt_dst, dst))
+                return (rt);
+    return (0);
+}
+#else
+a140 2
+#endif
+
+a142 36
+#ifdef OldCode
+int rip_input(from, rip, size)
+struct sockaddr *from;
+struct rip *rip;
+int size;
+{
+    struct netinfo *n;
+    struct rt_entry *rt;
+
+    if (rip->rip_cmd != RIPCMD_RESPONSE)
+        return (0);
+    size -= 4;
+    n = rip->rip_nets;
+    for (; size > 0; size -= sizeof (struct netinfo), n++) {
+        if (size < sizeof (struct netinfo))
+            break;
+        n->rip_metric = ntohl(n->rip_metric);
+        if (n->rip_metric == 0 || (unsigned) n->rip_metric >= HOPCNT_INFINITY)
+            continue;
+        n->rip_metric++;
+        rt = rtlookup(&n->rip_dst);
+        if (rt == 0) {
+            rtadd(&n->rip_dst, from, n->rip_metric);
+            continue;
+        }
+        /*
+         * Update if from gateway and different,
+         * or shorter.
+         */
+        if ((equal(from, &rt->rt_router) && n->rip_metric != rt->rt_metric) ||
+            (unsigned) n->rip_metric < rt->rt_metric)
+            rtchange(rt, from, n->rip_metric);
+    }
+    return (1);
+}
+#else
+a180 2
+#endif
+
+a182 26
+#ifdef OldCode
+rtadd(dst, gate, metric)
+struct sockaddr *dst, *gate;
+int metric;
+{
+    struct rt_entry *rt;
+    u_long d, l;
+
+    d = ntohl(((struct sockaddr_in *)dst)->sin_addr.s_addr) & ~0xffff;
+    l = ntohl(mns.mns_ifaddrs[0]) & ~0xffff;
+    if (d == l)
+        return;
+    rt = (struct rt_entry *)malloc(sizeof (*rt));
+    if (rt == 0)
+        return;
+    memset((char *)rt, 0, sizeof(struct rt_entry));
+    rt->rt_dst = *dst;
+    rt->rt_router = *gate;
+    rt->rt_flags = RTF_UP;
+    rt->rt_metric = metric;
+    if (metric > 1)
+        rt->rt_flags |= RTF_GATEWAY;
+    route_attach(rt);
+    (void) socketioctl(mns.mns_routedsock, SIOCADDRT, (char *)&rt->rt_rt);
+}
+#else
+d203 1
+d205 3
+a212 2
+#endif
+
+a214 17
+#ifdef OldCode
+rtchange(rt, gate, metric)
+struct rt_entry *rt;
+struct sockaddr *gate;
+short metric;
+{
+    struct rtentry oldroute;
+
+    rt->rt_metric = metric;
+    if (!equal(&rt->rt_router, gate)) {
+        oldroute = rt->rt_rt;
+        rt->rt_router = *gate;
+        (void) socketioctl(mns.mns_routedsock, SIOCADDRT, (char *)&rt->rt_rt);
+        (void) socketioctl(mns.mns_routedsock, SIOCDELRT, (char *)&oldroute);
+    }
+}
+#else
+d224 1
+d227 4
+a236 2
+#endif
+
+a238 15
+#ifdef OldCode
+/*
+ * Attach a route to the
+ * list of known routes.
+ */
+route_attach(rt)
+struct rt_entry *rt;
+{
+    struct rt_entry **r = (struct rt_entry **)&(mns.mns_route);
+
+    while (*r)
+        r = &((*r)->rt_forw);
+    *r = rt;
+}
+#else
+d256 60
+a315 1
+#endif
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@d29 1
+a29 1
+ * Acorn Archimedes C release 5.06 or later.
+a43 3
+ * 14-Mar-95  15:49  JPD  Version 1.02
+ * Removed OldCode.
+ *
+d48 15
+d72 2
+a73 6
+#include "socklib.h"
+
+
+/******************************************************************************/
+
+#define rtentry ortentry
+d81 1
+a81 1
+      struct rtuentry
+d102 4
+a108 1
+static int rtioctl(int action, struct rtuentry *ort);
+d110 1
+d112 5
+a116 3
+#define ADD 1
+#define DELETE 2
+#define CHANGE 3
+d118 1
+a118 1
+/******************************************************************************/
+d120 12
+a137 1
+   sin.sin_len = sizeof sin;
+d152 2
+d156 13
+d181 2
+d185 36
+d259 2
+d263 26
+a308 1
+#ifdef OldCode
+a309 3
+#else
+   (void) rtioctl(ADD, (struct rtuentry *) &rt->rt_rt);
+#endif
+d315 2
+d319 17
+a344 1
+#ifdef OldCode
+a346 4
+#else
+      (void) rtioctl(ADD, (struct rtuentry *) &rt->rt_rt);
+      (void) rtioctl(DELETE, (struct rtuentry *) &oldroute);
+#endif
+d353 2
+d357 15
+d389 1
+a389 60
+static int seqno;
+
+static int rtioctl(int action, struct rtuentry *ort)
+{
+        int r, retval, temperr;
+	struct {
+		struct rt_msghdr w_rtm;
+		struct sockaddr_in w_dst;
+		struct sockaddr w_gate;
+		struct sockaddr_in w_netmask;
+	} w;
+#define rtm w.w_rtm
+
+        r = socket(PF_ROUTE, SOCK_RAW, 0);
+        if (r < 0)
+            return (-1);
+
+	bzero(&w, sizeof(w));
+	rtm.rtm_msglen = sizeof(w);
+	rtm.rtm_version = RTM_VERSION;
+	rtm.rtm_type = (action == ADD ? RTM_ADD :
+				(action == DELETE ? RTM_DELETE : RTM_CHANGE));
+#undef rt_dst
+	rtm.rtm_flags = ort->rtu_flags;
+	rtm.rtm_seq = ++seqno;
+	rtm.rtm_addrs = RTA_DST|RTA_GATEWAY;
+	memcpy(&w.w_dst, &ort->rtu_dst, sizeof(w.w_dst));
+	memcpy(&w.w_gate, &ort->rtu_router, sizeof(w.w_gate));
+	w.w_dst.sin_family = AF_INET;
+	w.w_dst.sin_len = sizeof(w.w_dst);
+	w.w_gate.sa_family = AF_INET;
+	w.w_gate.sa_len = sizeof(w.w_gate);
+	if (rtm.rtm_flags & RTF_HOST) {
+		rtm.rtm_msglen -= sizeof(w.w_netmask);
+	} else {
+		register char *cp;
+		int len;
+
+		rtm.rtm_addrs |= RTA_NETMASK;
+		w.w_netmask.sin_addr.s_addr =
+			inet_maskof(w.w_dst.sin_addr.s_addr);
+		for (cp = (char *)(1 + &w.w_netmask.sin_addr);
+				    --cp > (char *) &w.w_netmask; )
+			if (*cp)
+				break;
+		len = cp - (char *)&w.w_netmask;
+		if (len) {
+			len++;
+			w.w_netmask.sin_len = len;
+			len = 1 + ((len - 1) | (sizeof(long) - 1));
+		} else
+			len = sizeof(long);
+		rtm.rtm_msglen -= (sizeof(w.w_netmask) - len);
+	}
+	retval = socketwrite(r, &w, rtm.rtm_msglen);
+	temperr = errno;
+	socketclose(r);
+	errno = temperr;
+	return (retval);
+}
+@
+
+
+4.1.1.1
+log
+@Import from cleaned 360 CD
+@
+text
+@@

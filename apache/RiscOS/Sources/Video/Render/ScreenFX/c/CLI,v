@@ -1,0 +1,588 @@
+head	1.6;
+access;
+symbols
+	ScreenFX-0_09-1:1.6
+	ScreenFX-0_09:1.6
+	ScreenFX-0_08:1.6
+	ScreenFX-0_07:1.5
+	ScreenFX-0_06:1.4
+	ScreenFX-0_05:1.4
+	ScreenFX-0_04:1.3
+	ScreenFX-0_03:1.2
+	ScreenFX-0_02:1.2
+	ScreenFX-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2007.07.22.20.38.24;	author rool;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2005.09.16.15.48.47;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2005.08.24.08.18.26;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2005.08.19.16.33.14;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2005.08.19.13.31.26;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2005.08.18.21.08.34;	author ahodgkin;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2005.08.18.21.08.34;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@  Various bug fixes; new 'escape' feature.
+Detail:
+  Incorrect command line help text fixed. Failure to pass duration to
+  effects engine for crossfades corrected. New bit to Fade and CrossFade
+  SWIs with corresponding "-escape" switch on the command line; allows
+  Escape key to interrupt fades. Documentation updated. Internal effects
+  initialisation and finalisation tidied up a bit. Now uses header files
+  in Global for EventV and PaletteV definitions (note, BBE will require
+  the addition of Global/h/PaletteV in the Export tree).
+Testing:
+  Moderate developer testing on Iyonix platform. Test harness unchanged.
+
+Version 0.08. Tagged as 'ScreenFX-0_08'
+@
+text
+@/* Copyright 2005 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    CLI.c                                             */
+/*          (C) 2005 Tematic                                  */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Star command implementations.                     */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 18-Aug-2005 (ADH): Created.                       */
+/**************************************************************/
+
+#include <string.h>
+
+#include "CLI.h"
+#include "Effect.h"
+#include "SWI.h"
+
+/**************************************************************/
+/* cli_fade()                                                 */
+/*                                                            */
+/* Implement *ScreenFXFade.                                   */
+/*                                                            */
+/* Parameters:  Pointer to the command string.                */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * cli_fade(const char * args)
+{
+  uint32_t         argbuf[64];
+  _kernel_swi_regs r;
+  char             i[4];
+
+  dprintf(("CLI",
+           "cli_fade: Called with '%s'\n",
+
+           TOSTR(args)));
+
+  /* Parse the argument list */
+
+  PRISMLIB_RETERR(_swix(OS_ReadArgs,
+                        _INR(0,3),
+
+                        "block/S,escape/S,/EA,/EA,/EA",
+                        args,
+                        argbuf,
+                        sizeof(argbuf)));
+
+  /* Pick out the bits and pieces from the returned data */
+
+  if (argbuf[0] != 0) r.r[0]  = SCREENFX_FADE_BLOCK;
+  else                r.r[0]  = 0;
+
+  if (argbuf[1] != 0) r.r[0] |= SCREENFX_FADE_ALLOWESCAPE;
+
+  /* The checks are "should never happen" candidates */
+
+  if (argbuf[2] == 0) r.r[1] = 0;
+  else
+  {
+    /* argbuf[2] points to a 5 byte block, with one byte of type
+     * information and 4 bytes of value. The value pointer is byte
+     * aligned, so we can't just dereference it directly.
+     */
+
+    memcpy(i, (((char *) argbuf[2]) + 1), 4);
+    r.r[1] = *((int *) i);
+  }
+
+  if (argbuf[3] == 0) r.r[2] = -1; /* (To give &FFFFFFFF) */
+  else
+  {
+    memcpy(i, (((char *) argbuf[3]) + 1), 4);
+    r.r[2] = *((int *) i);
+  }
+
+  if (argbuf[4] == 0) r.r[3] = 0;
+  else
+  {
+    memcpy(i, (((char *) argbuf[4]) + 1), 4);
+    r.r[3] = *((int *) i);
+  }
+
+  dprintf(("CLI", "cli_fade: Exiting through swi_fade()...\n"));
+  return swi_fade(&r);
+}
+
+/**************************************************************/
+/* cli_crossfade()                                            */
+/*                                                            */
+/* Implement *ScreenFXCrossFade.                              */
+/*                                                            */
+/* Parameters:  Pointer to the command string.                */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * cli_crossfade(const char * args)
+{
+  uint32_t         argbuf[64];
+  _kernel_swi_regs r;
+  char             i[4];
+
+  dprintf(("CLI",
+           "cli_crossfade: Called with '%s'\n",
+
+           TOSTR(args)));
+
+  /* Parse the argument list */
+
+  PRISMLIB_RETERR(_swix(OS_ReadArgs,
+                        _INR(0,3),
+
+                        "block/S,escape/S,low/S,/EA",
+                        args,
+                        argbuf,
+                        sizeof(argbuf)));
+
+  /* Pick out the bits and pieces from the returned data */
+
+  if (argbuf[0] != 0) r.r[0]  = SCREENFX_CROSSFADE_BLOCK;
+  else                r.r[0]  = 0;
+
+  if (argbuf[1] != 0) r.r[0] |= SCREENFX_CROSSFADE_ALLOWESCAPE;
+  if (argbuf[2] != 0) r.r[0] |= SCREENFX_CROSSFADE_TOLOWER;
+
+  /* The checks are "should never happen" candidates */
+
+  if (argbuf[3] == 0) r.r[1] = 0;
+  else
+  {
+    /* argbuf[2] points to a 5 byte block, with one byte of type
+     * information and 4 bytes of value. The value pointer is byte
+     * aligned, so we can't just dereference it directly.
+     */
+
+    memcpy(i, (((char *) argbuf[3]) + 1), 4);
+    r.r[1] = *((int *) i);
+  }
+
+  dprintf(("CLI", "cli_crossfade: Exiting through swi_crossfade()...\n"));
+  return swi_crossfade(&r);
+}
+
+/**************************************************************/
+/* cli_cancel()                                               */
+/*                                                            */
+/* Implement *ScreenFXCancel.                                 */
+/*                                                            */
+/* Parameters:  Pointer to the command string.                */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * cli_cancel(const char * args)
+{
+  (void) args;
+
+  dprintf(("CLI",
+           "cli_cancel: Called with '%s'\n",
+
+           TOSTR(args)));
+
+  dprintf(("CLI", "cli_cancel: Exiting through swi_cancel()...\n"));
+  return swi_cancel(NULL);
+}
+
+/**************************************************************/
+/* cli_reset()                                                */
+/*                                                            */
+/* Implement *ScreenFXReset.                                  */
+/*                                                            */
+/* Parameters:  Pointer to the command string.                */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * cli_reset(const char * args)
+{
+  (void) args;
+
+  dprintf(("CLI",
+           "cli_reset: Called with '%s'\n",
+
+           TOSTR(args)));
+
+  dprintf(("CLI", "cli_reset: Exiting through swi_reset()...\n"));
+  return swi_reset(NULL);
+}
+
+/**************************************************************/
+/* cli_status()                                               */
+/*                                                            */
+/* Implement *ScreenFXStatus.                                 */
+/*                                                            */
+/* Parameters:  Pointer to the command string.                */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * cli_status(const char * args)
+{
+  const char * buf;
+  size_t       len;
+  size_t       width;
+  uint32_t     now;
+  int32_t      run_for;
+
+  (void) args;
+
+  dprintf(("CLI",
+           "cli_status: Called with '%s'\n",
+
+           TOSTR(args)));
+
+  /* Module information and "status:" suffix */
+
+  printf(Module_Title " " Module_HelpVersion);
+
+  buf = NULL;
+  PRISMLIB_RETERR(prismlib_read_message("StatusSuffix", &buf, &len));
+
+  /* Length limit is used as we're using MessageTrans_Lookup
+   * (via PRISMLib) in its "give us the buffer" mode, so the
+   * string is terminated by LF rather than NUL.
+   */
+
+  printf("%.*s\n\n", len, buf);
+
+  /* Find the column width */
+
+  buf = NULL;
+  PRISMLIB_RETERR(prismlib_read_message("StatusColumnWidth", &buf, &len));
+
+  /* The following relies on a NUL terminator hard-coded in
+   * the Messages file.
+   */
+
+  width = atoi(buf);
+
+  /* Left endpoint */
+
+  buf = NULL;
+  PRISMLIB_RETERR(prismlib_read_message("StatusRGBSLeft", &buf, &len));
+
+  printf("%.*s", len, buf);
+  while (len++ < width) fputc(' ', stdout);
+
+  printf("&%08X\n", effect_pack(current_r[0],
+                                current_g[0],
+                                current_b[0],
+                                current_s[0]));
+
+  /* Right endpoint */
+
+  buf = NULL;
+  PRISMLIB_RETERR(prismlib_read_message("StatusRGBSRight", &buf, &len));
+
+  printf("%.*s", len, buf);
+  while (len++ < width) fputc(' ', stdout);
+
+  printf("&%08X\n", effect_pack(current_r[255],
+                                current_g[255],
+                                current_b[255],
+                                current_s[255]));
+
+  /* Fade in progress? */
+
+  buf = NULL;
+  PRISMLIB_RETERR(prismlib_read_message("StatusFading", &buf, &len));
+
+  printf("%.*s", len, buf);
+  while (len++ < width) fputc(' ', stdout);
+
+  buf = NULL;
+
+  if (fade_running != screenfx_effect_type_NONE)
+  {
+    PRISMLIB_RETERR(prismlib_read_message("Yes", &buf, &len));
+    printf("%d (%.*s)\n", fade_running, len, buf);
+  }
+  else
+  {
+    PRISMLIB_RETERR(prismlib_read_message("No", &buf, &len));
+    printf("%d (%.*s)\n", fade_running, len, buf);
+  }
+
+  /* Time to completion */
+
+  buf = NULL;
+  PRISMLIB_RETERR(prismlib_read_message("StatusCompletion", &buf, &len));
+
+  printf("%.*s", len, buf);
+  while (len++ < width) fputc(' ', stdout);
+
+  buf = NULL;
+  PRISMLIB_RETERR(prismlib_read_message("StatusCentiseconds", &buf, &len));
+
+  /* Read the current time */
+
+  PRISMLIB_RETERR(_swix(OS_ReadMonotonicTime,
+                        _OUT(0),
+
+                        &now));
+
+  /* Work out how long the fade has been running */
+
+  run_for = now - fade_start_at;
+
+  /* Bound the result */
+
+  if      (run_for < 0)             run_for = 0;
+  else if (run_for > fade_duration) run_for = fade_duration;
+
+  printf("%u%.*s\n", fade_duration - run_for, len, buf);
+
+  /* All done */
+
+  dprintf(("CLI", "cli_status: Successful\n"));
+  return NULL;
+}
+
+/* End of file */
+@
+
+
+1.5
+log
+@  Feature addition.
+Detail:
+  ScreenFX_CrossFade / *ScreenFXCrossFade - see API documentation for
+  details.
+Admin:
+  16bpp and 32bpp modes tested; ran out of time to check 8bpp cross fades.
+
+Version 0.07. Tagged as 'ScreenFX-0_07'
+@
+text
+@d61 1
+a61 1
+                        "block/S,/EA,/EA,/EA",
+d68 4
+a71 2
+  if (argbuf[0] != 0) r.r[0] = SCREENFX_FADE_BLOCK;
+  else                r.r[0] = 0;
+d75 1
+a75 1
+  if (argbuf[1] == 0) r.r[1] = 0;
+d78 1
+a78 1
+    /* argbuf[1] points to a 5 byte block, with one byte of type
+d83 1
+a83 1
+    memcpy(i, (((char *) argbuf[1]) + 1), 4);
+d87 1
+a87 1
+  if (argbuf[2] == 0) r.r[2] = -1; /* (To give &FFFFFFFF) */
+d90 1
+a90 1
+    memcpy(i, (((char *) argbuf[2]) + 1), 4);
+d94 1
+a94 1
+  if (argbuf[3] == 0) r.r[3] = 0;
+d97 1
+a97 1
+    memcpy(i, (((char *) argbuf[3]) + 1), 4);
+d133 1
+a133 1
+                        "block/S,low/S,/EA",
+d143 2
+a144 1
+  if (argbuf[1] != 0) r.r[0] |= SCREENFX_CROSSFADE_TOLOWER;
+d148 1
+a148 1
+  if (argbuf[2] == 0) r.r[1] = 0;
+d156 1
+a156 1
+    memcpy(i, (((char *) argbuf[2]) + 1), 4);
+@
+
+
+1.4
+log
+@  Official allocations. Copyright message changes.
+Detail:
+  Now includes official SWI base and error block allocations. The star
+  commands are registered too. Meanwhile, copyright messages have been
+  changed from "Castle Technology Ltd" to "Tematic".
+Admin:
+  Rebuilt from clean, simple test harness passes.
+
+Version 0.05. Tagged as 'ScreenFX-0_05'
+@
+text
+@d104 58
+d299 1
+a299 1
+  if (fade_running)
+d302 1
+a302 1
+    printf("1 (%.*s)\n", len, buf);
+d307 1
+a307 1
+    printf("0 (%.*s)\n", len, buf);
+@
+
+
+1.3
+log
+@  Tweaks.
+Detail:
+  *ScreenFXStatus didn't give remaining fade time, it gave absolute time,
+  which isn't what Docs.API says. Fixed. ScreenFX_Status didn't return time
+  at all, instead returning the pointer to the tables in R3 - the BASIC
+  test program conformed to the broken API not the documented API. Fixed
+  this too. Now cancels and resets on module exit, rather than just
+  cancelling the current operation but leaving the display state alone.
+Admin:
+  Tested; test program (such as it is!) updated.
+
+Version 0.04. Tagged as 'ScreenFX-0_04'
+@
+text
+@d17 1
+a17 1
+/*          (C) 2005 Castle Technology Ltd                    */
+@
+
+
+1.2
+log
+@  Bug fixes, redundant code removed, new feature.
+Detail:
+  Rounding errors fixed, so test harness now completes - fades always do
+  completely achieve the target parameters. Interruption timing: When a
+  new fade interrupts an old one, the percentage of its duration that is
+  used depends on how long the fade had been going, not how long it had
+  left to go. See Docs.API for why. Now links with PRISMLib the module
+  version - stops various odd effects (the bits of shared Makefile in use
+  do *not* automatically add a "zm" suffix, so the old version didn't
+  work so well). New feature: *ScreenFXReset, or SWI ScreenFX_Reset - as
+  ScreenFX_Cancel, plus a reset to default gamma and supremacy tables.
+  Again, see Docs.API for details. Finally, the Service_MessagesFileClosed
+  handler has been removed - the module does not *maintain* pointers into
+  the messages file, since it looks up tokens anew each time they are
+  needed, so therefore it does not need to handle the service call.
+Admin:
+  Interrupted fade timing looks better. No more odd effects when switching
+  between debug and non-debug modules. Test harness passes its check that
+  the tables are programmed as expected at the end of a fade. Reset feature
+  works as it should.
+
+Version 0.02. Tagged as 'ScreenFX-0_02'
+@
+text
+@d170 2
+d263 17
+a279 1
+  printf("%u%.*s\n", fade_duration, len, buf);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d124 3
+a126 1
+  effect_cancel();
+d128 23
+a150 2
+  dprintf(("CLI", "cli_cancel: Successful\n"));
+  return NULL;
+d261 1
+a261 1
+  printf("%u%.*s\n", fade_duration, len, buf)
+@
+
+
+1.1.1.1
+log
+@Initial import of ScreenFX module to CVS.
+@
+text
+@@

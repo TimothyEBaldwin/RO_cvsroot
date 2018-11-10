@@ -1,0 +1,574 @@
+head	1.12;
+access;
+symbols
+	Module-0_63:1.12
+	Module-0_62:1.12
+	Module-0_61:1.12
+	Module-0_60:1.12
+	Module-0_59:1.12
+	Module-0_58:1.12
+	Module-0_57:1.12
+	Module-0_56:1.12
+	Module-0_55:1.12
+	Module-0_54:1.11
+	Module-0_53:1.10
+	Module-0_52:1.9
+	RO_5_07:1.8
+	Module-0_51:1.8
+	Module-0_50:1.8
+	Module-0_49:1.8
+	Module-0_48:1.8
+	Module-0_47:1.7
+	Module-0_46:1.7
+	Module-0_45:1.7
+	Module-0_44:1.7
+	Module-0_43:1.7
+	Alpnet_approved:1.7
+	Module-0_42:1.7
+	dellis_autobuild_BaseSW:1.7
+	Module-0_41:1.7
+	Module-0_40:1.7
+	Module-0_39:1.7
+	Module-0_38:1.7
+	Module-0_37:1.6
+	Module-0_36:1.5
+	Module-0_35:1.4
+	sbrodie_sedwards_16Mar2000:1.4
+	dcotton_autobuild_BaseSW:1.8
+	Module-0_34:1.4
+	Module-0_33:1.3
+	Module-0_32:1.3
+	Module-0_31:1.3
+	Module-0_30:1.3
+	Module-0_29:1.2
+	Module-0_28:1.1
+	Module-0_27:1.1
+	Module-0_26:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.12
+date	2012.05.28.17.23.05;	author rsprowson;	state Exp;
+branches;
+next	1.11;
+commitid	ZP2CrZzcPLMsVv6w;
+
+1.11
+date	2012.04.01.06.54.36;	author rsprowson;	state Exp;
+branches;
+next	1.10;
+commitid	bv4LbApC6T7Hh8Zv;
+
+1.10
+date	2012.03.02.09.17.02;	author rsprowson;	state Exp;
+branches;
+next	1.9;
+commitid	HvAzpsR97Qno2iVv;
+
+1.9
+date	2012.02.20.21.17.03;	author rsprowson;	state Exp;
+branches;
+next	1.8;
+commitid	pifcrbq5LMUknWTv;
+
+1.8
+date	2001.03.22.13.54.54;	author sbrodie;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2000.08.01.09.36.06;	author jfletche;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2000.07.25.09.20.32;	author kbracey;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2000.06.08.11.05.07;	author kbracey;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.04.19.12.30.08;	author kbracey;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.10.19.11.47.15;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.09.21.09.59.44;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.09.14.11.21.02;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.12
+log
+@Addition of supporting functions for automatic daylight saving switchover
+In the default implementation SWI Territory_DaylightRules uses textual rule descriptions from the messages file for the respective territory. Other 3rd party territory module providers may choose to do it some other way, for example in code.
+The use of MessageTrans allows for sneaky wildcarding of the rules too.
+For all currently supported territories rules post year 2000 are included (for most EU countries this is simple due to pan European standardisation), other countries vary in complexity - the rules for the UK go back to the late 1960's mostly as a test vector for the parsing code.
+DateTime.s:
+  New parsing functions.
+  New flags support added to Territory_ConvertDateAndTime to allow the output text to be transformed as though DST was (or wasn't) in effect.
+  Related Territory_ConvertStandardDate/StandardTime/StandardDateAndTime changed too.
+  Likewise Territory_ConvertOrdinalsToTime.
+  Reindented a bit, swap to objasm's DCD and DCB for constant tables.
+Entries.s
+  New flags support added to Territory_ReadTimeZones.
+  Macroised the table of timezones within a territory in a better way.
+Finland.s
+  Timezones renamed to preferred EET and EEST.
+ModHead.s
+  Split out the message file block into discrete block and flag.
+Territory.s
+  Removed unused 100 byte error buffer.
+
+Version 0.55. Tagged as 'Module-0_55'
+@
+text
+@; Copyright 1998 Acorn Computers Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; > s.Territory
+
+;;-----------------------------------------------------------------------------
+;; RISC OS Generic Territory.
+;;
+;; Change list:
+;;
+;; 0.03 24-Apr-91 Fixed bug, ConvertTimeToOrdinals returned
+;;                day of year in the day of week loaction
+;; 0.05 30-Apr-91 Fixed bug, more characters are punctuation.
+;;
+;;-----------------------------------------------------------------------------
+;; Wish list
+;;-----------------------------------------------------------------------------
+
+        AREA    Module, CODE, READONLY, PIC
+
+Module_BaseAddr
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:Machine.<Machine>
+        GET     Hdr:ModHand
+        GET     Hdr:Services
+        GET     Hdr:FSNumbers
+        GET     Hdr:NewErrors
+        GET     Hdr:Variables
+        GET     Hdr:Countries
+        GET     Hdr:Proc
+        GET     Hdr:OsBytes
+        GET     Hdr:MsgTrans
+        GET     Hdr:Territory
+        GET     Hdr:ResourceFS
+        GET     Hdr:CMOS
+        GET     Hdr:NdrDebug
+
+        GET     VersionASM
+
+        GBLL    debug
+        GBLL    debugxx
+        GBLL    hostvdu
+        GBLL    debugdt
+
+hostvdu SETL    {TRUE}
+debug   SETL    {FALSE}
+debugxx SETL    {FALSE}
+debugdt SETL    {FALSE}          ; Date and Time.
+
+      [ :LNOT: :DEF: standalone
+        GBLL    standalone
+standalone      SETL {FALSE}     ; Build-in Messages file via ResourceFS
+      ]
+
+        GBLL    CollateLatin1Ligatures
+        GBLL    CollateOELigatures
+        GBLL    CollateDanishAA
+        GBLL    CollateThornAsTH
+        GBLL    CollateGermanSharpS
+        GBLL    CollateAccentsBackwards
+        GBLL    JapaneseEras
+        GBLA    IMESWIChunk
+CollateOELigatures      SETL {FALSE}
+CollateDanishAA         SETL {FALSE}
+CollateThornAsTH        SETL {FALSE}
+CollateGermanSharpS     SETL {FALSE}
+CollateAccentsBackwards SETL {FALSE}
+JapaneseEras            SETL {FALSE}
+
+        GET     $Territory..s
+
+CollateLatin1Ligatures SETL AlphNum = ISOAlphabet_Latin1 :LOR: AlphNum = ISOAlphabet_Latin5 :LOR: AlphNum = ISOAlphabet_Latin9
+
+; ----------------------------------------------------------------------------------------------------------------------
+        MACRO
+$label  ALIGNHASH  $o,$m
+      [ ((@@-$o):AND:($m-1))<>0
+$label  #          $m-((@@-$o):AND:($m-1))
+      |
+$label  #          0
+      ]
+        MEND
+
+
+
+; ----------------------------------------------------------------------------
+;       Workspace layout
+
+
+ [ JapaneseEras
+max_eras        *       7 + 1 ; One for the table terminator
+
+                ^       0
+era_day         #       4
+era_month       #       4
+era_year        #       4
+era_datasize    #       0
+ ]
+
+                ^       0,wp
+
+wsorigin           #    0
+message_file_open  #    1     ; flag
+spare              #    3
+message_file_block #   16     ; Message file block
+timezone_name_ptr  #    4
+scratch_buffer     #  180     ; Scratch buffer space.
+ [ JapaneseEras
+era_table          #  era_datasize * max_eras
+ ]
+
+        ALIGNHASH       wsorigin,16
+
+max_running_work   *       (@@-wsorigin)
+
+; -----------------------------------------------------------------------------
+
+        LNK     ModHead.s
+@
+
+
+1.11
+log
+@A few bug fixes.
+The scratch space was not large enough to hold the table for Territory_Register and overran. Buffer made bigger and assert added.
+Convert time string to ordinals did not fault 29th Feb in 1900/2100/2200 due to leap year rule error.
+For Japan, the SetUpEras function was never called so Japanese eras didn't work.
+Duff error block being returned for SWI out of range (was using the error number instead of the address of the error block).
+A couple of magic numbers swapped for header file defs.
+
+Version 0.54. Tagged as 'Module-0_54'
+@
+text
+@d117 4
+a120 2
+message_file_block #   20     ; Message file block and flag
+TimeZoneName       #    4
+a121 1
+error_buffer       #  100     ; Space for errors.
+@
+
+
+1.10
+log
+@Add ability to programmatically enumerate available timezones within a territory.
+Reduced GBLL flag proliferation by using a WHILE/WEND loop to generate the code in Territory_ReadTimeZones.
+Moved the standard date and time format strings into 'DateTime.s'.
+No longer returns untrappable error numbers of 0, nor unallocated error numbers.
+Alaska now recognised as part of the USA following its incorporation in 1912.
+Obsolete Yukon timezone removed from Canada.
+
+SWI Territory_ReadTimeZones (&4304A)
+------------------------------------
+=> R0 bits 0-9 territory number
+      bits 10-26 reserved, must be zero
+      bits 27-31 timezone within territory
+   or -1 to use the current territory (ie. as though bits 10-31 zero)
+<= R0 = name of standard time
+   R1 = name of summer time
+   R2 = signed offset of standard time from UTC in cs
+   R3 = signed offset of summer time from UTC in cs
+
+Version 0.53. Tagged as 'Module-0_53'
+@
+text
+@d45 1
+a45 2
+        GET     Hdr:Messages
+        GET     Hdr:CMOS
+d49 1
+d105 1
+a105 1
+max_eras        *       8
+d111 1
+a111 1
+eradata_size    #       0
+d114 1
+a114 2
+wsptr            RN      R12
+                ^       0,wsptr
+d119 1
+a119 1
+scratch_buffer     #  100     ; Scratch buffer space.
+d122 1
+a122 1
+era_table          #  eradata_size * max_eras
+@
+
+
+1.9
+log
+@Fix Territory_ReadTimeZones to behave as documented.
+It was reading the current timezone CMOS and returning that in R2 then adding the difference between standard and summertime to get R3.
+This meant that when in one territory it was not possible to enumerate the other territories' offsets since they all returned the current CMOS value.
+Now, R2 and R3 are purely informational (looked up from the table in the module).
+
+All terrtories on CET now call summertime the preferred "CEST".
+
+Removed unnecessary clean rule from Makefile. Changed some one register push/pull to use macros. Changed filenames to be ".s" at the end.
+
+Added extra switches for the other regions of the world that are wide enough to span multiple timezones. Currently there is no API to read these, so they are defined to cause an assembly error (affects USA/Canada1/Australia). Fixing that is a subject of discussion, whether to support one territory having multiple timezones or just make some extra territories?
+
+Version 0.52. Tagged as 'Module-0_52'
+@
+text
+@d15 1
+a15 1
+; > s.UK
+d18 1
+a18 1
+;; Risc OS English Territory.
+a58 21
+        GBLL    USTimeZones
+        GBLL    CanadaTimeZones
+        GBLL    MexicoTimeZones
+        GBLL    AustraliaTimeZones
+        GBLL    BrazilTimeZones
+        GBLL    RussiaTimeZones
+        GBLL    MongoliaTimeZones
+        GBLL    DemRepCongoTimeZones
+        GBLL    KazakhstanTimeZones
+        GBLL    IndonesiaTimeZones
+USTimeZones          SETL {FALSE}
+CanadaTimeZones      SETL {FALSE}
+MexicoTimeZones      SETL {FALSE}
+AustraliaTimeZones   SETL {FALSE}
+BrazilTimeZones      SETL {FALSE}
+RussiaTimeZones      SETL {FALSE}
+MongoliaTimeZones    SETL {FALSE}
+DemRepCongoTimeZones SETL {FALSE}
+KazakhstanTimeZones  SETL {FALSE}
+IndonesiaTimeZones   SETL {FALSE}
+
+@
+
+
+1.8
+log
+@  Updated build structure to use the shared AAsmModule makefile.
+  BBE no longer needs to export all the sources.
+  Fixed some non-32bit compatible code.
+Detail:
+  srcbuild has been updated to be able to process components which want
+    to contribute multiple targets to a build.  This means that it is
+    no longer necessary to export the entire sources for this component
+    into BBE builds.
+  There were still a few LDM {..pc}^ instructions around - these have been
+    fixed.
+Admin:
+  Requires Library 0.71 or later.
+  Requires BuildSys 3.08 or later.
+  Requires Env 0.65 or later.
+  Requires srcbuild 0.31 if you need to generate a BBE from this component.
+
+Version 0.48. Tagged as 'Module-0_48'
+@
+text
+@a58 2
+        GBLL    Standalone
+
+d61 1
+d63 27
+a97 14
+
+hostvdu SETL    {TRUE}
+debug   SETL    {FALSE}
+debugxx SETL    {FALSE}
+debugdt SETL    {FALSE}          ; Date and Time.
+
+  [ :DEF: standalone
+Standalone              SETL standalone
+  |
+Standalone              SETL {FALSE}
+  ]
+
+USTimeZones             SETL {FALSE}
+CanadaTimeZones         SETL {FALSE}
+@
+
+
+1.7
+log
+@  Added Ireland, Spain & Australia.
+Detail:
+  * Territory information added for Ireland and Australia, taken from the
+    UK.
+  * Spain information from translators for names. Spanish collation order
+    taken from GNU Lib C whilst waiting for more information from the
+    translators.
+  * MakeSorted perl script added to process localedata from GNU Lib C into
+    a collation order.
+Admin:
+  * Awaiting more information from the translators to correct the
+    spanish collation order.
+
+Version 0.38. Tagged as 'Module-0_38'
+@
+text
+@d78 3
+d82 1
+d93 1
+a93 1
+        GET     s.$Territory
+d141 1
+a141 1
+        LNK     s.ModHead
+@
+
+
+1.6
+log
+@France and Canada1 territories converted to Latin9. Other minor corrections
+to message files.
+
+Version 0.37. Tagged as 'Module-0_37'
+@
+text
+@d63 1
+@
+
+
+1.5
+log
+@Added Turkish, Italian and German territories. The Turkish and Italian are
+still unfinished, and probably totally wrong, but at least they're there and
+will build.
+
+Also, a minor collation fix for Thorn=TH, and currency of France changed to
+the Euro.
+
+Version 0.36. Tagged as 'Module-0_36'
+@
+text
+@d90 1
+a90 1
+CollateLatin1Ligatures SETL AlphNum = ISOAlphabet_Latin1
+@
+
+
+1.4
+log
+@Implemented option for reverse prioritisation of accents during second
+collation stage.
+Added French and French Canadian territories.
+Added option for standalone builds.
+
+Version 0.34. Tagged as 'Module-0_34'
+@
+text
+@d67 1
+d84 1
+@
+
+
+1.3
+log
+@Changed to cope with new Hdr:CMOS
+Fills in unknown SWI table entries correctly, as per PRM 3-794
+Implemented Territory_IME SWI.
+
+Version 0.30. Tagged as 'Module-0_30'
+@
+text
+@d49 1
+d58 2
+a59 1
+        GBLL    newsortorder
+d62 1
+d67 1
+d76 9
+a84 6
+newsortorder       SETL {TRUE}
+USTimeZones        SETL {FALSE}
+CollateOELigatures SETL {FALSE}
+CollateDanishAA    SETL {FALSE}
+CollateThornAsTH   SETL {FALSE}
+JapaneseEras       SETL {FALSE}
+@
+
+
+1.2
+log
+@Nearly complete Danish territory added.
+Dummy Swedish territory added.
+
+Version 0.29. Tagged as 'Module-0_29'
+@
+text
+@d37 1
+d65 1
+@
+
+
+1.1
+log
+@Japanese, UK and USA territories merged into one source tree.
+Collation order fixed - three pass scheme, sorting first on letters, then on
+accents, then on case.
+Currency code GBL fixed to GBP [UK]
+fi and fl ligatures collated as equivalent to separate fi, fl [UK, USA]
+Territory_NameToNumber now handles non-contiguous names in Messages file.
+Euro symbol marked as punctuation [UK, USA]
+ToControlTable fixed [UK, USA]
+%ST string changed to "Day" ideograph [Japan]
+Territory name lists extended.
+
+Version 0.26. Tagged as 'Module-0_26'
+@
+text
+@d60 3
+d70 6
+a75 3
+newsortorder SETL {TRUE}
+USTimeZones SETL {FALSE}
+JapaneseEras SETL {FALSE}
+@

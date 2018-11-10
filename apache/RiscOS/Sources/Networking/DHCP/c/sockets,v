@@ -1,0 +1,1223 @@
+head	1.11;
+access;
+symbols
+	DHCP-0_27:1.11
+	DHCP-0_26:1.11
+	DHCP-0_25:1.11
+	DHCP-0_24:1.11
+	DHCP-0_23:1.10
+	DHCP-0_22:1.9
+	RO_5_07:1.8
+	DHCP-0_21:1.8
+	DHCP-0_20:1.8
+	DHCP-0_19:1.8
+	DHCP-0_18:1.7
+	dellis_autobuild_BaseSW:1.6
+	DHCP-0_17:1.6
+	DHCP-0_16:1.6
+	DHCP-0_15:1.6
+	sbrodie_sedwards_16Mar2000:1.6
+	DHCP-0_14:1.6
+	DHCP-0_13:1.6
+	DHCP-0_12:1.6
+	dcotton_autobuild_BaseSW:1.8
+	DHCP-0_11:1.6
+	DHCP-0_10:1.6
+	DHCP-0_09:1.6
+	DHCP-0_08:1.6
+	DHCP-0_07:1.6
+	DHCP-0_06:1.5
+	DHCP-0_05:1.5
+	DHCP-0_04:1.4
+	DHCP-0_03:1.3
+	DHCP-0_02:1.2
+	DHCP-0_01:1.2
+	DHCP-0_00:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.11
+date	2013.09.04.07.10.38;	author rsprowson;	state Exp;
+branches;
+next	1.10;
+commitid	Mw18urjsIckYC54x;
+
+1.10
+date	2012.07.20.11.16.53;	author rgriffin;	state Exp;
+branches;
+next	1.9;
+commitid	ut8dDdScdaiycidw;
+
+1.9
+date	2012.07.19.10.27.43;	author rgriffin;	state Exp;
+branches;
+next	1.8;
+commitid	MFH9W84jn7sEX9dw;
+
+1.8
+date	2000.11.15.14.09.19;	author sbrodie;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2000.10.17.14.18.54;	author sbrodie;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	99.06.28.14.04.06;	author kbracey;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	99.06.25.13.24.50;	author sbrodie;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.06.11.15.45.51;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.06.10.12.08.58;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.03.30.12.41.19;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.26.16.10.55;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.03.26.16.10.55;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.11
+log
+@Makefile recreated from fragments
+Renamed dhcpextern.h to DHCP.h so the shared makefiles can export it without needing a different source and target filename.
+
+Version 0.24. Tagged as 'DHCP-0_24'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ *  DHCP (sockets.c)
+ *
+ * Copyright (C) Element 14 Ltd. 1999
+ *
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "sys/ioctl.h"
+#include "sys/filio.h"
+#include "sys/sockio.h"
+#include "net/if.h"
+#include "protocols/dhcp.h"
+#include "sys/dcistructs.h"
+#include "netinet/in.h"
+#include "arpa/inet.h"
+#include "net/if_dl.h"
+#include "net/if_arp.h"
+#include "net/if_types.h"
+#include "sys/errno.h"
+
+#include "dhcpintern.h"
+#include "interfaces.h"
+#include "sockets.h"
+#include "socklib.h"
+#include "packets.h"
+#include "iparp.h"
+#include "module.h"
+
+/* This is the minimum number of bytes in the option buffer that must be
+ * present in order to process an incoming packet.  This value MUST be
+ * at least 4.  The DHCP standard mandates that this value MUST be 64.
+ * Microsoft DHCP servers are broken and require it to be 4.
+ */
+#ifndef MINIMUM_OPTIONS_LENGTH
+#  define MINIMUM_OPTIONS_LENGTH 64
+#endif
+#if MINIMUM_OPTIONS_LENGTH < 4
+#  error "MINIMUM_OPTIONS_LENGTH must be at least 4"
+#endif
+
+/* This is the socket handle which we can use for all our activities, including
+ * sending ioctls to the Internet module, and actually receiving the incoming
+ * datagrams that are responses to our requests.
+ */
+static int s;
+
+
+/* This routine pulls the loopback interface into existence, otherwise we are
+ * unable to bind to the bootp client port because there are no active IP
+ * addresses,
+ */
+static void sockets_get_loopback(void)
+{
+        struct ifreq req;
+        di_ifdhcpreq *dif = (di_ifdhcpreq *) &req; /* Note - not the full thing! */
+
+        (void) strncpy(dif->ifr_in.name, "lo0", IFNAMSIZ);
+        (void) memset(&dif->ifr_in.sin, '\0', sizeof(dif->ifr_in.sin));
+        dif->ifr_in.sin.sin_family = AF_INET;
+#ifndef COMPAT_INET4
+        dif->ifr_in.sin.sin_len = sizeof(dif->ifr_in.sin);
+#endif
+        dif->ifr_in.sin.sin_port = 0;
+        inet_aton("127.0.0.1", &dif->ifr_in.sin.sin_addr);
+        (void) socketioctl(s, SIOCSIFADDR, &req);
+}
+
+/* Creates a new datagram socket and binds it to the DHCP client port so that it
+ * receives copies of any incoming datagrams on any interface.  This allows it
+ * to bypass the Internet module.
+ */
+void sockets_init(void)
+{
+	struct sockaddr_in sin;
+
+        s = socket(PF_INET, SOCK_DGRAM, 0);
+        if (s == -1) {
+                trace(("socket() failed -> errno %d (%s)\n", errno, _inet_err()));
+                return;
+        }
+	(void) memset(&sin, '\0', sizeof(sin));
+	sin.sin_family = AF_INET;
+#ifndef COMPAT_INET4
+	sin.sin_len = sizeof(sin);
+#endif
+	sin.sin_addr.s_addr = htonl(INADDR_ANY);
+	sin.sin_port = htons(DHCP_client);
+
+	sockets_get_loopback();
+
+	if (bind(s, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
+	        /* Erk - unable to bind.  We have a problem - reset ourselves,
+	         * although it probably won't do much good.  This is serious.
+	         * Surely the Internet module must be broken if this fails?
+	         */
+                trace(("bind() failed -> errno %d (%s)\n", errno, _inet_err()));
+	        sockets_discard();
+	}
+	else {
+		/* Set taskwindow flag - for testing mainly, but it doesn't actually
+		 * harm it having the bit set.  Request events when data is delivered
+		 * to the socket, and ensure that it is using non-blocking I/O.  If
+		 * events are not enabled, this module will not work as it relies on
+		 * them to drive the DHCP processing engine.
+		 */
+	        int one = 1;
+
+	        (void) ioctl(s, FIOSLEEPTW, &one);
+	        (void) ioctl(s, FIOASYNC, &one);
+	        (void) ioctl(s, FIONBIO, &one);
+	}
+}
+
+void sockets_discard(void)
+{
+        if (s != -1) {
+                (void) socketclose(s);
+                s = -1;
+        }
+}
+
+int sockets_data_arrived(int ns, void *private_word)
+{
+        static DHCP packet;
+        int res;
+
+        if (ns != s) {
+                /* Not our socket - pass the event on */
+                return 1;
+        }
+
+        /* Note.  The PRMs will harp on about re-enabling interrupts by calling
+         * _kernel_irqs_on() at this point, and that it is safe because it is in
+         * a callback already.  Unfortunately, that static DHCP packet up above
+         * puts a spanner in the works.  IRQs cannot even be re-enabled once the
+         * packet is copied into the dhcp_interface structure, because in the event
+         * of multiple replies arriving "simultaneously", they are almost certainly
+         * going to be destined for the same dhcp_interface (eg. multiple DHCPOFFER
+         * messages).  So, basically, don't do it!
+         */
+
+	/* Drain socket ... no more events unless we do */
+	while ((res = recv(ns, &packet, sizeof(packet), 0)) > 0) {
+	        if (res < offsetof(DHCP, options[MINIMUM_OPTIONS_LENGTH])) {
+	                /* Not a valid BOOTP or DHCP packet - too short!
+	                 * (RFC 1542 mandates that the packet must have at least
+	                 * the minimum 64 bytes of options as specified in RFC 951).
+	                 */
+	                continue;
+	        }
+	        if (packet.op != BOOTREPLY) {
+	                /* This was a request, not a reply.  If we do happen to be
+	                 * running a BOOTP/DHCP server on this host, it will have
+	                 * its own socket and will get its own copy of this packet.
+	                 */
+	                continue;
+	        }
+	        if (*(u_long *) packet.options != htonl(OPTIONS_COOKIE)) {
+	        	/* No magic cookie. We'll put one in and blank out the
+	        	 * options.
+	        	 */
+			*(u_long *) packet.options = htonl(OPTIONS_COOKIE);
+			packet.options[4] = OPTION_END;
+			memset(packet.options + 5, OPTION_PAD, res - offsetof(DHCP, options[5]));
+	        }
+	        else if (res < sizeof(DHCP)) {
+	                /* Not the maximum length we were expecting.  For
+	                 * a little bit of security and safety, we'll try
+	                 * to blat out the rest of the packet with OPTION_PAD
+	                 * and put an OPTION_END in.
+	                 */
+	                size_t ores = res - offsetof(DHCP, options);
+	                const size_t blank = sizeof(DHCP) - res;
+	                (void) memset(&packet.options[ores], OPTION_PAD, blank);
+	                /* Search back through any OPTION_PAD characters to the
+	                 * last non-pad character ...
+	                 */
+	                while (ores > 4 && packet.options[ores-1] == OPTION_PAD) {
+	                        --ores;
+	                }
+	                /* If the last non-pad character wasn't the end option,
+	                 * then put one in to defend ourselves against rubbish.
+	                 */
+	                if (packet.options[ores-1] != OPTION_END) {
+		                packet.options[ores] = OPTION_END;
+	                }
+	        }
+	        (void) dhcp_deliver_incoming_packet(&packet, private_word);
+	}
+
+	/* Claim the event - it's our socket, nobody else should be interested.
+	 * If they were, then it's tough because they should have bound their
+	 * own datagram socket to the bootpc port, then they'd have got a copy
+	 * of the packet too.
+	 */
+        return 0;
+}
+
+/* Sets an IP address type field on an interface - command indicates which types of
+ * address - netmask (SIOCSIFNETMASK) or address (SIOCSIFADDR).  Any other calls
+ * which use the sockaddr version of the ifr union may use this too.
+ */
+static int sockets_set_address(dhcp_interface *di, struct in_addr in, u_long command)
+{
+        struct sockaddr_in *const sin = &di->req.ifr_in.sin;
+
+	sockets_ensure_init();
+
+	(void) memset(sin, '\0', sizeof(*sin));
+        sin->sin_family = AF_INET;
+#ifndef COMPAT_INET4
+        sin->sin_len = sizeof(*sin);
+#endif
+	sin->sin_port = 0;
+	sin->sin_addr = in;
+
+	return socketioctl(s, command, &di->req.ifr);
+}
+
+/* Unfortunately, the interface cannot use its bound IP address any longer because
+ * it has expired.  Tell Internet to disable the interface immediately.
+ */
+int sockets_kill_interface(dhcp_interface *di)
+{
+        struct ifreq *ifr = &di->di_ifr;
+        struct in_addr in;
+
+	sockets_ensure_init();
+
+	/* Disassociate the bound address from this interface
+	 * If no error was returned, then attempt to read the interface address
+	 * and if this fails, then put the interface down.
+	 */
+        in.s_addr = di->binding.yiaddr;
+
+	trace(("delete address: %s\n", inet_ntoa(in)));
+
+	if (sockets_set_address(di, in, SIOCDIFADDR) < 0) {
+	        /* Failed to delete this IP address from the interface.  User has
+	         * presumably reconfigured the interface manually.  Bail out.
+	         */
+	        trace(("sockets_kill_interface: failed to delete address: %d\n", errno));
+	        return 0;
+	}
+
+	if (socketioctl(s, SIOCGIFADDR, ifr) < 0 && errno == EADDRNOTAVAIL) {
+	        /* No more addresses on the interface, so kill the interface */
+
+		if (socketioctl(s, SIOCGIFFLAGS, ifr) < 0) {
+	        	/* Erk - an error - the interface has gone? Let's assume so */
+	        	return -1;
+		}
+		ifr->ifr_flags &= ~(IFF_UP|IFF_RUNNING);
+
+		/* Finally, force the interface down.  Do this after setting the address
+		 * as setting the address can affect the flags
+		 */
+		if (socketioctl(s, SIOCSIFFLAGS, ifr) < 0) {
+		        /* Unable to table interface down - nasty.  Let's stick our
+		         * heads in the sand and assume the interface died.
+		         */
+		        return -1;
+		}
+	}
+
+	return 0;
+}
+
+void sockets_direct_transmit(ifdhcpreq *req, int ioctl_flags)
+{
+        sockets_ensure_init();
+        req->ifr.ifr_flags = ioctl_flags;
+        if (socketioctl(s, SIOCGWHOIAMD, req) < 0) {
+                trace(("sockets_transmit: Internet module error %d\n", errno));
+                sockets_discard();
+                sockets_ensure_init();
+        }
+}
+
+void sockets_transmit(dhcp_interface *di, int ioctl_flags)
+{
+	/* This is the function that causes packets to be sent.  It asks the
+   	 * Internet module to do this on its behalf, because there are many
+   	 * complex issues to consider, such as claiming frames in the driver,
+   	 * interface manipulation etc.  Requires Internet 5.20 or later to
+   	 * recognise the IOCTL command being used.  The IOCTL is provided
+   	 * solely for this module's benefit.  This routine is the gateway to
+   	 * the Internet module's DHCP interfaces.  The ifr_flags are used
+   	 * to indicate what action the Internet module should be taking.
+	 */
+        trace(("sockets_transmit: Transmit (DHCP Message Type %d).\n",
+        	dhcp_find_option(&di->di_dhcp, OPTION_DHCPMESSAGETYPE) ?
+        	dhcp_find_option(&di->di_dhcp, OPTION_DHCPMESSAGETYPE)[2] : -1));
+
+	sockets_direct_transmit(&di->req.ifd, ioctl_flags);
+}
+
+/* This routine is called by the handler for SWI DHCP_Execute to get the Internet
+ * module to set itself up for a BOOTP.  It won't get very far though, because when
+ * it sends around the dynamic boot start service call, we're going to claim it.
+ * Doing it this way lets Internet get into a vaguely sensible internal state first
+ * and tricks it into revealing the DCI4 driver DIB that we need for hardware
+ * address validation.  It also means that DHCP initiation is done through a
+ * single call point (the service call handler).
+ */
+void sockets_trigger_internet_dhcp(const char *if_name)
+{
+        struct ifreq ifr;
+        int res;
+
+	trace(("sockets_trigger_internet_dhcp: poking Internet module\n"));
+	sockets_ensure_init();
+	(void) memset(&ifr, '\0', sizeof(ifr));
+       	(void) strncpy(ifr.ifr_name, if_name, sizeof(ifr.ifr_name));
+       	module_idle(mir_THREAD);
+       	res = socketioctl(s, SIOCGWHOIAMB, &ifr);
+       	module_idle(mir_UNTHREAD);
+       	if (res<0) {
+                trace(("SIOCWHOIAMB -> error %d\n", errno));
+        }
+}
+
+/* Called before using the socket to make sure we really did create it.  It may
+ * have been the case that we tried to create it before the Internet module was
+ * present, in which case creation would have failed.  Repeated failure to create
+ * the datagram socket is not a feasible situation except in the absense of the
+ * Internet module - which would be a rather serious problem in itself!
+ */
+void sockets_ensure_init(void)
+{
+        if (s == -1) {
+                sockets_init();
+        }
+}
+
+/* This is called to find out whether the DHCP module thinks it has a valid
+ * socket handle.  It is called when the service call from the Internet module
+ * is received indicating that the Internet module has re-initialised.  If both
+ * Internet and DHCP are exclusively in ROM, this causes DHCP to abandon the
+ * socket that it got during its module initialisation on the basis that it is
+ * no longer a legal handle (not legal to close it).  This check allows the
+ * service call handler to recognise that the socket may be closed safely.
+ */
+int sockets_init_ok(void)
+{
+        return (s != -1);
+}
+
+/* This routine takes a local IP address and determines it which interface it belongs
+ * and what the link address of that interface is.  The interface table is searched for
+ * the AF_INET record which matches the specified IP address and then a matching AF_LINK
+ * structure is sought which gives the details on the interface itself.
+ *
+ * A buffer is malloced for the data retrieval from the Internet module.  Once the
+ * appropriate sockaddr_dl entry has been located in the buffer, it is copied down to
+ * the start of the buffer and the address of the buffer is returned.  The caller is
+ * responsible for freeing the returned buffer.  The return value is NULL if the
+ * AF_INET lookup has failed, AF_LINK lookup has failed or memory allocation has failed.
+ *
+ */
+static struct sockaddr_dl *sockets_ip_to_hardware_address(struct in_addr ia, char *actual_if)
+{
+        struct ifconf ifc;
+        struct ifreq *ifr, *end;
+        char *ifname = 0;
+        static const size_t bufsize = 1500;
+        int found = 0;
+
+        ifc.ifc_len = bufsize;
+        ifc.ifc_buf = malloc(ifc.ifc_len);
+        if (ifc.ifc_buf == NULL) {
+                return NULL;
+        }
+
+	trace(("sockets_ip_to_hardware_address\n"));
+
+        if (socketioctl(s, SIOCGIFCONF, &ifc) == 0) {
+                ifr = ifc.ifc_req;
+                end = (struct ifreq *) (ifc.ifc_buf + ifc.ifc_len);
+                trace(("SIOCGIFCONF succeeded: %p -> %p\n", ifr, end));
+                if (ia.s_addr == INADDR_ANY) {
+                        found = 1;
+                        ifname = actual_if;
+                }
+                else while (ifr < end) {
+                        trace(("Entry family: %d\n", ifr->ifr_addr.sa_family));
+                        if (ifr->ifr_addr.sa_family == AF_INET) {
+                                struct sockaddr_in *sin;
+                                sin = (struct sockaddr_in *) &ifr->ifr_addr;
+                                trace(("Internet address %s\n", inet_ntoa(sin->sin_addr)));
+                                if (sin->sin_addr.s_addr == ia.s_addr) {
+                                        ifname = ifr->ifr_name;
+                                        trace(("This is the one we wanted: %s\n",
+                                        	ifr->ifr_name));
+                                        found = 1;
+                                        /*break;*/
+                                }
+                        }
+                        if (ifr->ifr_addr.sa_len) {
+                                /* Dodgy hack for dual Internet 4/Internet 5 compat */
+                                ifr = (struct ifreq *) ((caddr_t) ifr +
+                                	ifr->ifr_addr.sa_len - sizeof(struct sockaddr));
+                        }
+                        ++ifr;
+                }
+                if (found) for (ifr = ifc.ifc_req; ifr < end; ++ifr) {
+                        if (ifr->ifr_addr.sa_family == AF_LINK) {
+                                struct sockaddr_dl *sdl = (struct sockaddr_dl *)
+                                       	&ifr->ifr_addr;
+                                int matches = !strncmp(ifr->ifr_name, ifname, IFNAMSIZ);
+
+                                trace(("Found a link address.  Interface `%*s'; type %d; MAC: %s\n",
+                                	sdl->sdl_nlen, sdl->sdl_data, sdl->sdl_type,
+                                	link_ntoa(sdl)));
+
+                                if (matches) {
+                                        /* Got it */
+                                        if (ifname != actual_if) {
+                                                (void) strncpy(actual_if, ifname, IFNAMSIZ);
+                                        }
+                                        (void) memmove(ifc.ifc_buf, sdl, sdl->sdl_len);
+                                        return (struct sockaddr_dl *) ifc.ifc_buf;
+                                }
+                        }
+                        if (ifr->ifr_addr.sa_len) {
+                                /* Dodgy hack for dual Internet 4/Internet 5 compat */
+                                ifr = (struct ifreq *) ((caddr_t) ifr +
+                                	ifr->ifr_addr.sa_len - sizeof(struct sockaddr));
+                        }
+                }
+        }
+
+        free(ifc.ifc_buf);
+        trace(("sockets_ip_to_hardware_address ends\n"));
+        return 0;
+}
+
+/* This is the inform sending socket - we use a separate socket so that we don't
+ * inadvertantly bind our *.bootpc socket to a specific interface
+ */
+static int is;
+
+static void sockets_ensure_inform_init(void)
+{
+        int one = 1;
+
+        if (is == -1) {
+	        is = socket(PF_INET, SOCK_DGRAM, 0);
+	        if (is == -1) {
+        	        trace(("socket() failed -> errno %d (%s)\n", errno, _inet_err()));
+                	return;
+	        }
+        }
+
+        (void) ioctl(is, FIOSLEEPTW, &one);
+	(void) ioctl(is, FIOASYNC, &one);
+	(void) ioctl(is, FIONBIO, &one);
+	(void) setsockopt(is, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+
+}
+
+static void sockets_inform_discard(void)
+{
+        if (is != -1) {
+	        socketclose(is);
+        	is = -1;
+        }
+}
+
+
+/* This routine is called to get hold of the handle of the inform sender socket,
+ * which will already have been bound to the correct interface ready for
+ * transmission.  It fills in a network-order 32-bit IP address in ciaddr with a
+ * value suitable for going in a DHCP packet's ciaddr header field.  The
+ * socket handle is the function's return value.
+ */
+
+int sockets_inform(DHCP *d, struct in_addr dest_ip, char *actual_interface)
+{
+        struct sockaddr_in sin;
+        int res;
+
+        sockets_ensure_init();
+        sockets_ensure_inform_init();
+
+	if (dest_ip.s_addr == htonl(INADDR_ANY)) {
+	        dest_ip.s_addr = htonl(INADDR_BROADCAST);
+	}
+
+	(void) memset(&sin, '\0', sizeof(sin));
+	sin.sin_family = AF_INET;
+#ifndef COMPAT_INET4
+	sin.sin_len = sizeof(sin);
+#endif
+	sin.sin_addr = dest_ip;
+	sin.sin_port = htons(DHCP_server);
+
+	if (connect(is, (struct sockaddr *) &sin, sizeof(sin)) < 0) {
+	        /* Erk - unable to associate - probably can't reach that IP address */
+                trace(("connect() failed -> errno %d (%s)\n", errno, _inet_err()));
+                res = -1;
+	}
+	else {
+	        /* Managed to associate socket - now find the local address ... */
+	        struct sockaddr_in lin;
+	        int sizeof_lin = sizeof(lin);
+
+	        if (getsockname(is, (struct sockaddr *)&lin, &sizeof_lin) < 0) {
+	                /* Unable to read it?  Oh dear - don't fill it in then */
+	                trace(("getsockname() failed -> %s\n", _inet_err()));
+	        }
+	        else {
+	                struct sockaddr_dl *sdl;
+	                d->ciaddr = lin.sin_addr.s_addr;
+	                sdl = sockets_ip_to_hardware_address(lin.sin_addr, actual_interface);
+	                if (sdl != NULL) {
+	                        char *address = LLADDR(sdl);
+	                        size_t len = sdl->sdl_alen;
+
+	                        if (len > sizeof(d->chaddr)) len = sizeof(d->chaddr);
+	                        d->hlen = len;
+	                        if (len) {
+	                                memcpy(d->chaddr, address, len);
+	                        }
+	                        switch (sdl->sdl_type) {
+	                                default:
+	                                        /* Allow default to Ethernet */
+	                                        if (len == 0) {
+	                                                d->htype = 0;
+	                                        }
+	                                        break;
+	                                case IFT_MODEM:
+                                        case IFT_PPP:
+                                        case IFT_SLIP:
+                                        case IFT_ISDNBASIC:
+                                        case IFT_ISDNPRIMARY:
+                                        case IFT_RS232:
+                                                if (len == 0) {
+	                                                d->htype = ARPHRD_SERIAL;
+                                                }
+                                                break;
+	                        }
+	                        free(sdl);
+	                }
+	        }
+
+		res = send(is, d, sizeof(*d), 0);
+		if (res < 0) {
+	        	trace(("send: %s\n", _inet_err));
+		}
+	}
+
+	sockets_inform_discard();
+
+        return res;
+}
+
+int sockets_unicast_transmit(DHCP *d, struct in_addr dest)
+{
+        struct sockaddr_in sin;
+
+	sockets_ensure_init();
+
+        (void) memset(&sin, '\0', sizeof(sin));
+        sin.sin_family = AF_INET;
+#ifndef COMPAT_INET4
+	sin.sin_len = sizeof(sin);
+#endif
+        sin.sin_port = htons(DHCP_server);
+        sin.sin_addr = dest;
+
+        return sendto(s, d, sizeof(*d), 0, (struct sockaddr *) &sin, sizeof(sin));
+}
+
+void sockets_set_preferred_ip_address(dhcp_interface *di, u_long ip)
+{
+        if (ip == INADDR_ANY) {
+                if (socketioctl(s, SIOCGIFADDR, &di->di_ifr) == 0) {
+                        ip = di->req.ifr_in.sin.sin_addr.s_addr;
+                        di->state = dhcpstate_INITREBOOT;
+                }
+        }
+
+        di->preferred_ip.s_addr = ip;
+}
+
+int sockets_verify_address(dhcp_interface *di)
+{
+        struct in_addr if_ip;
+
+        if (socketioctl(s, SIOCGIFADDR, &di->req) < 0) {
+                if_ip.s_addr = INADDR_ANY;
+        }
+        else {
+                if_ip.s_addr = di->req.ifr_in.sin.sin_addr.s_addr;
+        }
+
+        switch (di->state) {
+	        case dhcpstate_INIT:
+	        case dhcpstate_SELECTING:
+        	case dhcpstate_REQUESTING:
+	        case dhcpstate_INITREBOOT:
+        	case dhcpstate_REBOOTING:
+                        if (di->preferred_ip.s_addr != if_ip.s_addr) {
+                                return -1; /* Is changed */
+                        }
+                        break;
+
+		case dhcpstate_BOUND:
+	        case dhcpstate_RENEWING:
+        	case dhcpstate_REBINDING:
+
+			if (di->binding.yiaddr != if_ip.s_addr) {
+			        return -1; /* Faulty */
+			}
+			break;
+
+        	default:
+                        break;
+        }
+
+	return 0; /* OK */
+}
+
+
+int sockets_delete_address(Dib *dib, struct in_addr *addr) {
+  struct ifreq r;
+  struct sockaddr_in *p;
+
+  snprintf(r.ifr_name, IFNAMSIZ, "%s%d", dib->dib_name, dib->dib_unit);
+
+  p = (struct sockaddr_in *) &r.ifr_addr;
+  memset(p, 0, sizeof(struct sockaddr_in));
+
+  p->sin_len = sizeof(struct sockaddr_in);
+  p->sin_family = AF_INET;
+  p->sin_addr = *addr;
+
+  trace(("delete addr %s\n", inet_ntoa(p->sin_addr)));
+
+  if (socketioctl(s, SIOCDIFADDR, &r) < 0) {
+    trace(("delete address ioctl failed: %d %s\n", errno, _inet_err()));
+    return -1;
+  }
+
+  return 0;
+}
+
+
+/* Set interface address directly	*/
+int sockets_set_if_address(char *ifname, struct in_addr *addr, struct in_addr *broad, struct in_addr *mask) {
+  struct ifaliasreq r;
+  struct sockaddr_in *p;
+
+  trace(("sockets_set_if_address: %s\n", inet_ntoa(*addr)));
+  sockets_ensure_init();
+
+  memset(&r, 0, sizeof(r));
+  memcpy(r.ifra_name, ifname, IFNAMSIZ);
+
+  p = (struct sockaddr_in *) &r.ifra_addr;
+#ifndef COMPAT_INET4
+  p->sin_len = sizeof(struct sockaddr_in);
+#endif
+  p->sin_family = AF_INET;
+  p->sin_port = 0;
+  p->sin_addr = *addr;
+
+  p = (struct sockaddr_in *) &r.ifra_broadaddr;
+#ifndef COMPAT_INET4
+  p->sin_len = sizeof(struct sockaddr_in);
+#endif
+  p->sin_family = AF_INET;
+  p->sin_port = 0;
+  p->sin_addr = *broad;
+
+  p = (struct sockaddr_in *) &r.ifra_mask;
+#ifndef COMPAT_INET4
+  p->sin_len = sizeof(struct sockaddr_in);
+#endif
+  p->sin_family = AF_INET;
+  p->sin_port = 0;
+  p->sin_addr = *mask;
+
+  if (socketioctl(s, SIOCAIFADDR, &r) < 0) {
+    trace(("add address ioctl failed: %d %s\n", errno, _inet_err()));
+    return -1;
+  }
+
+  return 0;
+}
+@
+
+
+1.10
+log
+@Fixed data abort on RPi when setting private IP address.
+Delete existing address from interface before setting a private one.
+
+Version 0.23. Not tagged
+@
+text
+@d43 1
+a43 1
+#include "dhcp.h"
+@
+
+
+1.9
+log
+@Added -p switch to DHCPExecute command, that causes DHCP to assign
+a private IP address in the event of DHCP discovery timing out.
+Changed DHCP discovery timeout from 10 minutes to 20 seconds.
+
+Version 0.22. Tagged as 'DHCP-0_22'
+@
+text
+@d258 2
+d648 24
+d677 1
+d680 2
+a681 1
+  strncpy(r.ifra_name, ifname, IFNAMSIZ);
+d683 4
+a686 3
+  r.ifra_addr.sa_len = sizeof(struct sockaddr_in);
+  r.ifra_addr.sa_family = AF_INET;
+  p = (struct sockaddr_in *) r.ifra_addr.sa_data;
+d688 1
+d691 4
+a694 3
+  r.ifra_broadaddr.sa_len = sizeof(struct sockaddr_in);
+  r.ifra_broadaddr.sa_family = AF_INET;
+  p = (struct sockaddr_in *) r.ifra_broadaddr.sa_data;
+d696 1
+d699 4
+a702 3
+  r.ifra_mask.sa_len = sizeof(struct sockaddr_in);
+  r.ifra_mask.sa_family = AF_INET;
+  p = (struct sockaddr_in *) r.ifra_mask.sa_data;
+d704 1
+d708 1
+a708 1
+    trace(("address ioctl failed: %d %s\n", errno, _inet_err()));
+@
+
+
+1.8
+log
+@  Fix to initialisation behaviour.
+Detail:
+  The previous fix that was done to cope with the Internet module being in
+    the podule space broke the case where both the Internet and DHCP modules
+    were exclusively in ROM because the DHCP module saw the init service
+    call from the ROM Internet after it has initialised and didn't realise
+    that it was simply a delayed arrival of service call and not actually
+    a re-initialisation.  This used to cause DHCP attempts to apparently
+    hang.  The root cause was that the DHCP module abandonned its initial
+    socket (because it thought a new Internet had arrived) and then found
+    it was unable to rebind to the DHCP port because the other socket did
+    still exist after all.
+Admin:
+  Discovered on Ursula build; fixed in Ursula build.
+  Important that projects take this version in preference to version 0.17
+    or version 0.18.
+
+Version 0.19. Tagged as 'DHCP-0_19'
+@
+text
+@d262 1
+d644 36
+@
+
+
+1.7
+log
+@  Added build options for supporting broken Microsoft server software.
+Detail:
+  A new build option is present which, when defined in the Components file
+    for a product, allows support for Microsoft's broken DHCP server to
+    be included.  To use this, put options in the components file to set
+    OPTIONS to be -DMINIMUM_OPTIONS_LENGTH=4 (the minimum allowed value is
+    4.  The DHCP standard mandates this value should be no lower than 64).
+    Microsoft server requires it to be 4 because it sends packets that are
+    too short.
+Admin:
+  Not tested.
+  Built.
+
+Version 0.18. Tagged as 'DHCP-0_18'
+@
+text
+@d355 12
+@
+
+
+1.6
+log
+@* Added initial delay in INIT-REBOOT state to match INIT state.
+* Stopped extra DHCPREQUESTs being generated by ioctl calls in REBOOTING state.
+* Don't reject BOOTP packets just because they don't have a cookie. Treat
+  those without the correct cookie as containing no options.
+* Reject BOOTP packets < 300 bytes, as per RFC 1542.
+* Treat BOOTP responses in a more considered fashion - old versions would go
+  nuts as soon as they saw any non-DHCP response. BOOTP replies now treated as
+  (not very good) offers. BOOTP responses with correct address also accepted
+  in REBINDING state.
+* Decline DHCPACKs with no server identifier.
+* Add server to blacklist if its offer ended up being DHCPDECLINEd for any
+  reason.
+* Add server to blacklist if we timeout requests.
+* Initial boot delay now better randomised (seeded on MAC address), and in the
+  range 1-10 seconds, as per RFC 2131.
+* Corrected REBOOTING and REQUESTING back-off timers - first retransmission
+  was too slow.
+* DHCPREQUEST packets now have secs filled in correctly in REBOOTING state.
+* Voting rules extended - prefer DHCP servers to BOOTP servers and prefer
+  servers providing vendor options to those who don't.
+
+Version 0.07. Tagged as 'DHCP-0_07'
+@
+text
+@d51 12
+d166 1
+a166 1
+	        if (res < offsetof(DHCP, options[64])) {
+@
+
+
+1.5
+log
+@  Support for DHCPINFORM
+  Dynamic leasing behaviour brought in line with DHCP specification
+Detail:
+  New *-command *DHCPExecute to enable CLI launching of DHCP interface
+    control.
+  Output of *DHCPInfo tidied up and irrevelant timer info is suppressed.
+  The algorithm for deciding which offer to accept (where multiple offers
+    are received) has been significantly enhanced (and moved to voting.c)
+    If a previous offer from a server has been DHCPNAK'd by something else
+    then the server offering the dodgy IP address is blacklisted and will
+    no longer be preferred to a server which isn't blacklisted.
+  DHCP module will request and prefer offers of an existing IP address
+    configuration wherever possible.
+  DHCP module will initialise an interface into the INITREBOOT/REBOOTING
+    states if it is asked to take control of an interface which has
+    already been configured externally.
+  IP lease length suggestions are no longer sent in appropriate messages.
+    The server is trusted to choose an appropriate value.
+  The DHCP module is more careful to insert appropriate options into each
+    message.  It is no longer in breach of RFC2131 in this respect.
+  Timer values for renew and rebind times are now inferred automatically
+    where necessary (server doesn't have to send them) and are now correct.
+  DHCPRELEASE and DHCPDECLINE now include a textual message indicating the
+    reason for the message's generation.
+  Where allowed, outgoing messages contain a client class identifier to
+    enable the server to vary configuration information depending on the
+    client hardware/software type.  Currently, this information is the
+    output of OS_Byte 0.
+  In the SWI interface for examining DHCP packets, a pointer to a specific
+    packet to examine may be supplied instead of an interface identifier
+    (depending on a flag bit)
+  New SWI DHCP_Inform for sending DHCPINFORM messages to arbitrary servers
+    in order to enable retrieval of configuration information when the IP
+    address has been established via other means (eg. from NVRAM).
+  DHCP module is now capable of deleting IP addresses from interfaces.
+  DHCP module will cede control of an interface if something else changes
+    the interface's address and send a message to the server indicating
+    that the lease is being relinquished.
+  DHCP will trap the Internet (5.26 and later) module's panic service call
+    when a duplicate IP address is detected on the network, and resolve
+    the situation (send the server DHCPDECLINE and deconfigure the interface
+    and restart address discovery) if it was controlling that interface.
+  Transaction ID generation improved (uses interface MAC address to
+    reduce chance of duplication with other hosts)
+  MAC address discovery code added.
+  DHCP module attempts to unicast packets wherever possible.
+  Retry delays adjusted to conform more closely to spec (RFC2131)
+  Possible hole in state table that IPConfig triggered which caused several
+    DHCPDISCOVER messages to be sent in succession very quickly has been
+    closed.
+  Co-operates with Internet 5.26 to ensure that callers of the Internet
+    module's BOOTP ioctl are returned sensible error values so that they
+    no longer need to probe the DHCP module independently to discover
+    whether an interface has been configured successfully or not.
+Admin:
+  Requires Internet 5.26
+  Requires TCPIPLibs 5.19
+
+Version 0.05. Tagged as 'DHCP-0_05'
+@
+text
+@d154 4
+a157 4
+	        if (res < offsetof(DHCP, options[8])) {
+	                /* Not a valid DHCP packet - too short!
+	                 * (Base message without options, plus 4 for cookie
+	                 * sentinel, plus 3 for DHCP message type, plus OPTION_END).
+d168 7
+a174 3
+	        if (htonl(OPTIONS_COOKIE) != *(u_long *) packet.options) {
+	                /* Magic cookie did not match */
+	                continue;
+d176 1
+a176 1
+	        if (res < sizeof(DHCP)) {
+@
+
+
+1.4
+log
+@  BOOTP server interaction policy change and fix.
+Detail:
+  If a BOOTP response is received in reply to a DHCPDISCOVER message,
+    the DHCP module will no longer ignore it or try to palm it off to
+    the Internet module, but will accept it as a valid response (ie.
+    as if it were a DHCPACK with an infinite lease offer).
+Admin:
+  Tested in MPT Ethernet ROM.
+
+Version 0.04. Tagged as 'DHCP-0_04'
+@
+text
+@d23 1
+d38 4
+d48 2
+d53 1
+a53 1
+ * datagrams that are response sto our requests.
+a90 1
+
+d153 1
+a153 1
+	while ((res = recv(s, &packet, sizeof(packet), 0)) > 0) {
+d232 1
+d236 3
+a238 3
+	/* Disassociate address with interface */
+	/* Ignore errors on this call - the machine's shafted anyway, so
+	 * ignoring this isn't going to make any difference really.
+d240 1
+a240 3
+	{
+	        struct in_addr in;
+	        in.s_addr = INADDR_ANY;
+d242 5
+a246 1
+		(void) sockets_set_address(di, in, SIOCSIFADDR);
+d249 8
+a256 5
+	if (socketioctl(s, SIOCGIFFLAGS, ifr) < 0) {
+	        /* Erk - an error - the interface has gone? Let's assume so */
+	        return -1;
+	}
+	ifr->ifr_flags &= ~(IFF_UP|IFF_RUNNING);
+d258 9
+a266 8
+	/* Finally, force the interface down.  Do this after setting the address
+	 * as setting the address can affect the flags
+	 */
+	if (socketioctl(s, SIOCSIFFLAGS, ifr) < 0) {
+	        /* Unable to table interface down - nasty.  Let's stick our
+	         * heads in the sand and assume the interface died.
+	         */
+	        return -1;
+d272 11
+d298 1
+a298 7
+	sockets_ensure_init();
+        di->req.ifr.ifr_flags = ioctl_flags;
+        if (socketioctl(s, SIOCGWHOIAMD, &di->req) < 0) {
+                trace(("sockets_transmit: Internet module error %d\n", errno));
+                sockets_discard();
+                sockets_ensure_init();
+        }
+d318 1
+d320 1
+d337 277
+@
+
+
+1.3
+log
+@  DHCP module behaviour when presented with a BOOTP response to one of
+    its requests has been fixed.
+Detail:
+  If the DHCP module received a response from the BOOTP server rather
+    than a DHCP server, it would discard the packet silently.  Since
+    the Internet module only uses its own hooks into the UDP packet
+    delivery code if no socket is bound to the BOOTP/DHCP port, the
+    Internet module didn't see the response either.  This case is now
+    trapped and delivered to the Internet module like a DHCPACK message
+    would usually be (via sockets_transmit), except that we then forget
+    about the interface to avoid having to deal with it any more.
+  Fixed Makefile to use Do to call awk so that we can use the C library
+    redirection and hence avoid getting lots of CRs in the header file
+    which is exported to RiscOS.Export.C.h.DHCP
+  Debug output on sockets_transmit altered to avoid dereferencing a
+    NULL pointer when noting the DHCP message type of the packet being
+    passed to the Internet module.
+Admin:
+
+Version 0.03. Tagged as 'DHCP-0_03'
+@
+text
+@d155 7
+@
+
+
+1.2
+log
+@  Integration with IPConfig completed.
+  Header export added.
+Detail:
+  Blocking added to enable IPConfig to work correctly.
+  Header file exported containing states and SWI identifiers.
+  Brings loopback interface up so that it can bind to the DHCP client
+    port (failure to have any AF_INET interfaces configured causes
+    the bind() call to fail, even when INADDR_ANY is specified)
+  Failure to read ARP cache now treated as a go-ahead to accept the
+    IP address rather than a rejection.
+  Keeps a copy of Internet BOOTP requests so that the options can
+    be copied across to the DHCPDISCOVER if required.
+Admin:
+  Header export required by Internet 5.21 and IPConfig 0.15
+  Requires Internet 5.21.
+  Requires TCPIPLibs 5.11.
+  Requires IPConfig 0.15.
+  Add module after all other expansion card networking modules and
+    any attempt to BOOTP will be transparently upgraded to DHCP.
+
+
+Version 0.01. Tagged as 'DHCP-0_01'
+@
+text
+@d264 2
+a265 1
+        	dhcp_find_option(&di->di_dhcp, OPTION_DHCPMESSAGETYPE)[2]));
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d36 1
+d50 21
+d81 1
+d85 1
+d92 2
+a93 1
+	(void) memset(sin.sin_zero, '\0', sizeof(sin.sin_zero));
+d100 1
+d202 1
+a208 1
+	(void) memset(sin->sin_zero, '\0', sizeof(sin->sin_zero));
+d270 2
+d286 1
+d292 4
+a295 1
+       	(void) socketioctl(s, SIOCGWHOIAMB, &ifr);
+@
+
+
+1.1.1.1
+log
+@  Fully functional DHCP client.
+Detail:
+  Implements the Dynamic Host Configuration Protocol (RFC2131 and RFC2132)
+  This module usurps the Internet module's implementation of BOOTP in order
+    to use the superior DHCP protocol.
+Admin:
+  Requires Internet 5.20 or later.
+    (RiscOS/Sources/Networking/AUN/Internet  tag: Internet-5_20)
+  Requires TCPIPLibs 5.09 or later.
+    (RiscOS/Sources/Libs/TCPIPLibs  tag: TCPIPLibs-5_09)
+  
+
+Tagged as DHCP-0_00
+
+@
+text
+@@

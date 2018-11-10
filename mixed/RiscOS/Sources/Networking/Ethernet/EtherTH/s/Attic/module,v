@@ -1,0 +1,1055 @@
+head	1.3;
+access;
+symbols
+	EtherTH-0_25:1.2
+	EtherTH-0_24:1.1.1.1
+	EtherTH-0_23:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2017.03.11.00.13.00;	author jballance;	state dead;
+branches;
+next	1.2;
+commitid	EKCvCR7DacKJ24Jz;
+
+1.2
+date	2017.01.20.01.38.45;	author jballance;	state Exp;
+branches;
+next	1.1;
+commitid	3lTPDaiEJQlR7ECz;
+
+1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+1.1.1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+
+desc
+@@
+
+
+1.3
+log
+@    Convert to C based component with import of re-written module form Colin Granville
+Detail:
+Admin:
+    tested in iMx6
+
+Version 0.26. Tagged as 'EtherTH-0_26'
+@
+text
+@; Copyright 2016 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+        ; You'll often see these prefixed with Hdr: for historic reasons.
+        ; This is no longer necessary, and in fact omitting them makes it
+        ; possible to cross-compile your source code.
+        GET     ListOpts
+        GET     Macros
+        GET     System
+        GET     ModHand
+        GET     Services
+        GET     ResourceFS
+        GET     VersionASM
+        GET     Proc
+        GET     FSNumbers
+        GET     NewErrors
+        GET     HALEntries
+        GET     HALDevice
+        GET     EtherDevice
+        GET     OSMisc
+        GET     module
+        GET     mynw
+        GET     chip
+        GET     PCI
+
+MaxENETIF       *       0               ; highest number eth interface supported
+
+; workspace definition
+                ^       0,      wp      ; Store
+HAL_SB          #       4
+HAL_CounterDelay_p #    4
+HAL_IRQClear_p  #       4
+IRQTrigger      #       4
+ARMop_DMB_Write_p #     4
+MBufSession     #       4               ;
+MyMBufCTL       #       mbufctllen      ; reserve space for mbufctlstruct
+;
+EtherTHDevice   #       HALDevice_ENET_Size
+; end of 'must track' section
+
+ChipBase        *       (EtherTHDevice+HALDevice_Address); Chip logical base address offset
+ChipHalWS       *       (EtherTHDevice+HALDevice_ENETSpecificField); HAL logical WS address offset if needed
+ChipClock       *       (EtherTHDevice+HALDevice_ENETClock); Chip master clock rate
+
+PhyIDFound      #       4               ; ID of phy type found
+
+
+MyCallBackPtr   #       4               ; address of function to call back
+MyCallBackR12   #       4               ; R12 to use
+MyCallBackState #       4               ; state flag
+                                        ; (see callbackstate semaphore below)
+EthIRQMask      #       4               ; memory of etherirq mask during irq
+
+
+MyDIB           #       0               ; driver information block
+dib_swibase     #       4               ;
+dib_nameptr     #       4               ; char*
+dib_unit        #       4               ; int
+dib_addrptr     #       4               ; ptr to 6byte ethernet addreee
+dib_moduleptr   #       4               ; char* to module name
+dib_locnptr     #       4               ; char* to location string
+dib_slot        #       4               ; slot struct
+dib_inquflg     #       4               ; copy of inquire swi flags
+;
+dib_enetaddr    #       8               ; 6 bytes ethernet address
+;
+CircBuf_Log     #       4               ; rx/tx circ buffer logical address
+CircBuf_Phys    #       4               ; rx/tx circ buffer physical address
+CircBuf_Phy2Log #       4               ; offset physical to logical address
+TxBufferOffset  #       4               ; offset of tx packet buffer space (PCI)
+TxHdrBaseOffset #       4               ; offset of the header buffers
+StartTXBuf      #       4               ; base of tx desc
+FirstTXBufOfst  #       4               ; offset to first unused buf (0..n)
+RxBufferOffset  #       4               ; offset of rx packet buffer space (PCI)
+StartRXBuf      #       4               ; base of rx buf
+FirstRXBufOfst  #       4               ; offset to first unused buf (0..n)
+RXBufMbuf       #       (8*EnetRXBufs)  ; holds mbuf ptr for relevant rx descr
+                                        ; chain, followed by physical address
+                                        ; it is a fixed
+                                        ; offset from the 2word descriptor
+                                        ; buffers
+                                        ;
+Desc2Mbufp      #       4               ; offset between relevant rx descriptor
+                                        ; and mbuf buffer above
+RXMB2Process    #       4               ; list of rx'd membufs to process
+RXMaxFL         #       4               ; max frame length in use
+LastRXBDRead    #       4               ; address of last rx descriptor read
+LastTXBDUsed    #       4               ; address of last tx descriptor used
+TXMBRelease     #       4               ; list of tx mbufs to be released
+TXQueueP        #       4               ; pointer to stored TXQueue buffer
+TXQPBufs        #       16*TXQBlen      ;
+PhyIrqAddr      #       4               ; address of phy irq status bit
+FrameClaimsFree #       4               ; linked list of used frame claim bufs
+FrameClaimsUsed #       4               ; linked list of free frame claim bufs
+; space for frame claims
+FrameClIEEE     #       ClaimBufSize    ; claim stuff for IEEE frames
+; followed by space for up to MaxClaimedFrames other types
+FrameClaims     #       ClaimBufSize*MaxClaimedFrames
+FrameClaimEnd   #       0
+
+; workspace to build physical address/length pairs in
+EnetTKPairBuf   #       256             ; should be massive for a single mbuf
+                                        ; chain..
+
+LastDestAddr    #       8               ; for stats use
+LastSrcAddr     #       8               ;
+DroppedRxFrames #       4
+; module state semaphore
+modulestate     #       1
+; module state values
+mstate_dead     *       0
+mstate_inactive *       1
+mstate_active   *       2
+;
+; callback state semaphores
+callbackstate   #       1
+mbfcbstate      #       1
+rxbcbstate      #       1
+cb_unrequired   *       0
+cb_required     *       1
+cb_pending      *       2
+; default speed setup etc
+EN_Speed        #       1               ; 0=Auto, 1=10MB, 2=100MB, 3=1000M
+EN_Duplex       #       1               ; 1=FullDuplex, 2=HalfDuplex if notAuto
+; align to 4 byte boundary
+                 #       (((:INDEX:@@)+3):AND::NOT:3)-(:INDEX:@@)
+TotalRAMRequired *      :INDEX: @@
+
+
+
+
+        ; Assembler modules are conventionally, but not necessarily,
+        ; position-independent code. Area name |!| is guaranteed to appear
+        ; first in link order, whatever your other areas are named.
+        AREA    |!|, CODE, READONLY, PIC
+
+        ENTRY
+
+Module_BaseAddr
+        DCD     0 ; Start
+        DCD     Init - |Module_BaseAddr|
+        DCD     Final - |Module_BaseAddr|
+        DCD     ServiceCall - |Module_BaseAddr|; Service call handler
+        DCD     Title - |Module_BaseAddr|
+        DCD     Help - |Module_BaseAddr|
+        DCD     HCKTab -  |Module_BaseAddr|; Keyword table
+ModSWI  DCD     EtherTHSWI_Base   ; SWI chunk
+        DCD     SWI_Code  - |Module_BaseAddr| ; SWI handler
+        DCD     SWI_DecodeTable - |Module_BaseAddr| ; SWI table
+        DCD     0 ; SWI Decoder
+        DCD     0 ; Messages
+        DCD     Flags - |Module_BaseAddr|
+
+Title   =       Module_ComponentName, 0
+Help    =       Module_ComponentName, 9, 9, Module_HelpVersion, 0
+Flags   &       ModuleFlag_32bit
+
+HCKTab
+        Command "ETHInfo", 2, 0, 0
+        Command "ETHConfig", 3, 2, 0
+ [ Debug
+        Command "ETD", 2, 0, 0
+ ]
+        DCB     0
+ETHInfo_Help
+        DCB     "*ETHInfo displays information about the network interfaces driven by the EtherTH module", 13
+ETHInfo_Syntax
+        DCB     "Syntax: *ETHInfo [-verbose] [<unit>]", 0
+ETHConfig_Help
+        DCB     "*ETHConfig reconfigures an EtherET network device", 13
+ETHConfig_Syntax
+        DCB     "Syntax: *ETHConfig <unit> <[Auto]>|<[10|100|1000]> [<Half|Full>]", 0
+ [ Debug
+ETD_Help
+        DCB     "*ETD debug prints the regsters to screen", 13
+ETD_Syntax
+        DCB     "*ETD ", 13
+ ]
+        ALIGN
+
+ETHInfo_Code
+        mov     r6, lr
+        ldr     r12, [r12]
+; check phy speed etc
+        mov     r1, #1          ; we've only got 1 phy here
+        mov     r2, #PHY_CTRL_REG
+        bl      EtherTHMIIPhyRead
+; DebugReg r0, "Phy Ctrl "
+        mov     r2, #PHY_SP_STATUS_REG
+        bl      EtherTHMIIPhyRead
+        cmn     r0, #1
+        beq     %ft1            ; failed timeout
+; DebugReg r0, "status got "
+        and     r1, r0, #3<<14
+        swi     XOS_WriteS
+        =       "Speed 10",0
+        ALIGN
+        cmp     r1, #1<<14
+        blt     %ft10
+        swi     XOS_WriteS
+        =       "0",0
+        ALIGN
+        cmp     r1, #1<<14
+        beq     %ft10
+        swi     XOS_WriteS
+        =       "0",0
+        ALIGN
+10
+        swi     XOS_WriteS
+        =       "MB/S, ",0
+        ALIGN
+        tst     r0, #1<<13
+        beq     %ft11
+        swi     XOS_WriteS
+        =       "full-duplex, ",0
+        ALIGN
+        b       %ft12
+11      swi     XOS_WriteS
+        =       "half-duplex, ",0
+        ALIGN
+12      tst     r0, #1<<10
+        beq     %ft13
+        swi     XOS_WriteS
+        =       "link up, ",0
+        ALIGN
+        b       %ft14
+13      swi     XOS_WriteS
+        =       "link down, ",0
+        ALIGN
+14      tst     r0, #1<<6
+        beq     %ft15
+        swi     XOS_WriteS
+        =       "MDIX mode, ",0
+        ALIGN
+        b       %ft16
+15      swi     XOS_WriteS
+        =       "MDI mode, ",0
+        ALIGN
+16      tst     r0, #1<<1
+        beq     %ft17
+        swi     XOS_WriteS
+        =       "inverted polarity",10,13,0
+        ALIGN
+        b       %ft18
+17      swi     XOS_WriteS
+        =       "normal polarity",10,13,0
+        ALIGN
+18
+1
+        mov     pc, r6
+; on entry r0-> buffer either CR or Null terminated
+; on exit r0-> points to next char after the one found
+; if NE, or nothing found if EQ
+; returns char in r1
+GetNextNonSpace
+        Entry
+1       ldrb    r1, [r0], #1
+        teq     r1, #' '
+        beq     %bt1
+        teq     r1, #0
+        teqne   r1, #&d
+        EXIT
+ [ Debug
+ETD_Code
+        Entry   "r0-r3, r12"
+        ldr     r12, [r12]
+        bl     DebugPrintRegisters
+        EXIT
+ ]
+
+ETHConfig_Code
+        Entry   "r1-r10"
+        bl      GetNextNonSpace
+        beq     FailExit
+        sub     r1, r1, #'0'
+        cmp     r1, #MaxENETIF
+        bgt     FailExit
+        mov     r4, r1
+        bl      GetNextNonSpace
+        beq     FailExit
+        teq     r1, #'a'
+        teqne   r1, #'A'
+        moveq   r5, #0                  ; r5 = Auto speed etc
+        moveq   r6, #0                  ; not used but defined...
+        beq     GotAllInfo
+        teq     r1, #'1'
+        bne     FailExit
+        bl      GetNextNonSpace
+        beq     FailExit
+        teq     r1, #'0'
+        bne     FailExit
+        bl      GetNextNonSpace
+        beq     FailExit
+        teq     r1, #'0'
+        movne   r5, #1                  ; 10MB
+        bne     FindDuplex2
+        bl      GetNextNonSpace
+        beq     FailExit
+        teq     r1, #'0'
+        movne   r5, #2                  ; 100MB
+        moveq   r5, #3                  ; 1000MB
+        bne     FindDuplex2
+
+FindDuplex
+        bl      GetNextNonSpace
+        beq     FailExit
+FindDuplex2
+        teq     r1, #'h'
+        teqne   r1, #'H'
+        moveq   r6, #1                  ; Halfduplex
+        beq     GotAllInfo
+        teq     r1, #'f'
+        teqne   r1, #'F'
+        moveq   r6, #2                  ; Fullduplex
+        bne     FailExit
+
+; we now have a vaild command
+; r4 = Unit (only unit 0 ATM)
+; r5 = speed. 0=Auto, 1=10, 2 = 100, 3 = 1000
+; r6 = 1 if speed specific and half duplex or 2 if full
+GotAllInfo
+; DebugReg r4, "Unit "
+; DebugReg r5, "Speed "
+; DebugReg r6, "duplex "
+        bl      PhySpDupCfg
+        EXIT
+        ALTENTRY
+FailExit
+        swi     XOS_WriteS
+        =       "Invalid parameter",10,13,0
+        ALIGN
+        EXIT
+
+
+        ASSERT  Service_PreReset < Service_PostInit
+        ASSERT  Service_PostInit < Service_EnumerateNetworkDrivers
+        ASSERT  Service_EnumerateNetworkDrivers < Service_DCIProtocolStatus
+        ASSERT  Service_DCIProtocolStatus < Service_MbufManagerStatus
+        ASSERT  Service_MbufManagerStatus < Service_Hardware
+ServiceCallTable
+        DCD     0
+        DCD     ServiceCallEntry - Module_BaseAddr
+        DCD     Service_PreReset
+        DCD     Service_PostInit
+        DCD     Service_EnumerateNetworkDrivers
+        DCD     Service_DCIProtocolStatus
+        DCD     Service_MbufManagerStatus
+        DCD     Service_Hardware
+
+        DCD     0
+
+        DCD     ServiceCallTable - Module_BaseAddr
+ServiceCall     ROUT
+        MOV     r0, r0
+        TEQ     r1, #Service_PreReset
+        TEQNE   r1, #Service_PostInit
+        TEQNE   r1, #Service_EnumerateNetworkDrivers
+        TEQNE   r1, #Service_MbufManagerStatus
+        TEQNE   r1, #Service_Hardware
+        MOVNE   pc, lr
+
+ServiceCallEntry
+        TEQ     r1, #Service_PreReset
+        beq     D_Service_PreReset
+        TEQ     r1, #Service_PostInit
+        beq     D_Service_PostInit
+        TEQ     r1, #Service_EnumerateNetworkDrivers
+        beq     D_Service_EnumerateNetworkDrivers
+;        TEQ     r1, #Service_MbufManagerStatus
+;        beq     D_Service_MbufManagerStatus
+        movne   pc, lr
+
+; r0 = 0 - starting
+; r0 = 1 - stopping
+; r0 = 2 - scavenge
+D_Service_MbufManagerStatus
+        Entry    "r0-r2, r12"
+        ldr     r12, [r12]
+; DebugReg r0, "svce mbm reason "
+        teq      r0, #0
+        bne     %ft1
+        ldrb    r0, callbackstate
+        teq     r0, #cb_pending         ; on the way?
+        beq     %ft1                    ; yes.. ok
+                                        ; else
+        adrl    r0, StartUpRoutine      ; launch the driver on a callback
+                                        ; so our SWIs can be used
+        mov     r1, r12                 ; r12 to use
+        swi     XOS_AddCallBack         ; assume it valid!!
+        movvc   r0, #cb_pending
+        strb    r0, callbackstate
+1
+        EXIT
+; report our driver as present
+D_Service_EnumerateNetworkDrivers
+        Entry    "r1-r2, r12"
+; get a bit of rma for this .. it'll be freed 'at the other end'
+        ldr     r12, [r12]
+; DebugReg r0, "svce e-n-d reason "
+        mov     r1, r0
+        MOV     r0, #ModHandReason_Claim
+        LDR     r3, =&10
+        SWI     XOS_Module
+        EXIT    VS
+        str     r1, [r2, #0]            ; chd_next*
+        adrl    r1, MyDIB
+        str     r1, [r2, #4]            ; chd_dib *
+        mov     r0, r2
+; DebugReg r0 , "chdib "
+        EXIT
+D_Service_PostInit
+        Entry    "r0-r2"
+        EXIT
+D_Service_PreReset
+        Entry    "r12"
+        bl      ChipKillFromService
+        EXIT
+
+SWI_DecodeTable
+        DCB     "EtherTH",0
+        DCB     "DCIVersion",0
+        DCB     "Inquire",0
+        DCB     "GetNetworkMTU",0
+        DCB     "SetNetworkMTU",0
+        DCB     "Transmit",0
+        DCB     "Filter",0
+        DCB     "Stats",0
+        DCB     "MulticastRequest",0
+        DCB     "GetSetThresholds",0
+        ALIGN
+
+SWI_Code ROUT
+        MRS     R10, CPSR
+        Push    "R10,R14"
+        MSR     CPSR_c, #I32_bit :OR: SVC32_mode
+        BL      Jump_SWI_Code
+        Pull    "R10,R14"
+        MSR     CPSR_c, R10             ; restore interrupts
+        MOV     PC,R14                  ; 32-bit exit: NZ corrupted, CV passed back
+
+Jump_SWI_Code
+        ldr     r12, [r12]              ; get our PWP
+        CMP     r11, #(EndOfJumpTable-JumpTable)/4
+        ADDCC   pc, pc, r11, LSL #2
+        MOV     pc, lr
+
+JumpTable
+        b       swi_DCIVersion
+        b       swi_Inquire
+        b       swi_GetNetworkMTU
+        b       swi_SetNetworkMTU
+        b       swi_Transmit
+        b       swi_Filter
+        b       swi_Stats
+        b       swi_MulticastRequest
+        b       swi_GetSetThresholds
+EndOfJumpTable
+
+; on exit r1 = 404, the version of DCI we support
+swi_DCIVersion
+        mov     r1, #404
+        mov     pc,lr
+
+; on entry, r1= unit no
+; on exit r2 = flags supported
+swi_Inquire
+        ldr     r2, dib_inquflg
+        mov     pc, lr
+
+swi_GetNetworkMTU
+        Entry
+; DebugReg r1,"SWIGetMTU for unit "
+        mov     r2, #ENET_MTU
+        EXIT
+swi_SetNetworkMTU
+        Entry
+; DebugReg r1,"SWISetMTU for unit "
+; DebugReg r2, "to "
+        EXIT
+
+; Transmit SWI.. send packet from mbufchain (r3->) to address (r4->)
+; r0 = flags  bit 0 = 0 - use interfaces h/w address
+;                     1 - use r5 address as source
+;             bit 1 = 0 - driver assumes ownership of mbufs
+;                     1 - protocol module keeps mbuf ownership
+; r1 = unit
+; r2 = frame type
+; r3 = mbuf chain pointer, 1 packet per chain
+; additional mbuf chains for packets passed in via list pointers
+; r4 = destination h/w address (byte aligned)
+; r5 = source h/w address (byte aligned) if applicable
+swi_Transmit
+        Entry  "r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r12"
+; DebugReg r0,"SWITX flags "
+; DebugReg r1,"SWITX for unit "
+; DebugReg r2,"TX ftype "
+; DebugReg r3,"mbufptr "
+; DebugReg r4,"tx dest addr p "
+; DebugMAC r4
+; DebugReg r5,"srce addr p "
+; DebugMAC r5
+; Push "r0"
+; mov r0, r3
+; bl PrintMBUF
+; Pull "r0"
+
+
+; first check if there is a queued buffer
+; irq off
+        MRS     r9, CPSR
+        ORR     r8, r9, #I32_bit
+        MSR     CPSR_c, r8
+        AND     r9, r9, #I32_bit
+; remember state in r9
+
+        ldr     r7, TXQueueP
+        teq     r7, #0           ; nothing pending
+        beq     nextchaintxin
+; get a buffer for the incoming queue
+ DebugRegNCR r7,"TXQp-"
+        bl      FillQPBuffer
+; check .. nothing possible. =>abandon ship
+        teq     r6, #0           ; were we out of buffers?
+        bne     %ft45
+        MRS     r8, CPSR
+        BIC     r8, r8, #I32_bit
+        ORR     r8, r8, r9
+        MSR     CPSR_c, r8
+        EXIT
+
+45      bl      UseFirstQPBuffer ; reload with pending stuff
+ DebugRegNCR r6,"TXQpused-"
+nextchaintxin
+        MRS     r8, CPSR
+        BIC     r8, r8, #I32_bit
+        ORR     r8, r8, r9
+        MSR     CPSR_c, r8
+
+nextchaintx
+        ldr     r7, [r3, #mblistptr-mbufstruct]
+        teq     r7, #0
+        moveq   r6, #0
+        streq   r6, [r3, #mblistptr-mbufstruct]
+; beq %ft666
+; DebugRegNCR r7, "Txpkt list ptr "
+;666
+; DebugReg r2,"TX ftype "
+
+        bl      QueueForTX      ; load as much as we can into the TX
+                                ; and send it off,
+        teq     r3, #0          ; was this sent?
+        beq     %ft444
+ DebugReg r3, "Pkt not queued yet "
+; packet wasn't sent.. queue it for later
+; irq off
+        MRS     r9, CPSR
+        ORR     r8, r9, #I32_bit
+        MSR     CPSR_c, r8
+        AND     r9, r9, #I32_bit
+; remember state in r9
+        bl      FillQPBuffer
+        MRS     r8, CPSR
+        BIC     r8, r8, #I32_bit
+        ORR     r8, r8, r9
+        MSR     CPSR_c, r8
+        EXIT                    ; and leave for another time
+444
+
+
+                                ; store any unused chain
+; DebugReg r7, "0=end? "
+        teq     r7, #0          ; list chain thing there
+        movne   r3, r7          ; so..
+        bne     nextchaintx     ; do this too
+
+; irq off
+        MRS     r9, CPSR
+        ORR     r8, r9, #I32_bit
+        MSR     CPSR_c, r8
+        AND     r9, r9, #I32_bit
+; remember state in r9
+        mov     r3, #0          ; as double check
+        bl      UseFirstQPBuffer
+        MRS     r8, CPSR
+        BIC     r8, r8, #I32_bit
+        ORR     r8, r8, r9
+        MSR     CPSR_c, r8
+        teq     r3, #0
+        bne     nextchaintx     ; there is more to tx
+
+        EXIT
+
+; get and populate next empty TXQPBuffer in r6, or null
+; r12 = module rma
+; save current parameters
+; should be called irq off
+FillQPBuffer
+        Entry    "r8"
+        adrl    r6, TXQPBufs
+        mov     r8, #TXQBMaxBufs
+11      ldr     lr, [r6, #TXQR12]
+        teq     lr, #0           ; in use?
+        beq     %ft33            ; no
+        add     r6, r6, #TXQBlen
+        subs    r8, r8, #1
+        bgt     %bt11            ; loop
+        moveq   r6, #0           ; flag no available buffer
+        EXIT    EQ
+; if here, r6-> a buffer we can use
+; stash our input here
+33      mov     r8, r6
+ DebugReg r8, "MakeQPB-"
+        mov     lr, #0
+        str     lr, [r6], #4
+        stmia   r6, {r0, r1, r2, r3, r4, r5, r12}
+; put this pointer at the end of the existing chain
+        ldr     r6, TXQueueP        ; get head of queue
+        teq     r6, #0              ;
+        streq   r8, TXQueueP        ; tack it at start
+        EXIT    EQ
+; otherwise...
+22      ldr     lr, [r6, #TXQNext]  ; empty pointer?
+        teq     lr, #0
+        addne   r6, r6, #TXQBlen
+        bne     %bt22               ; look for next.. safe to be dumb as
+                                    ; we're only here if there is a free buffer
+; now r8-> chain end
+        streq   r8, [r6, #TXQNext]  ; tack it on the end of the chain
+        EXIT
+
+
+; Read and Free TXQPBuffer
+; should be called irq off
+UseFirstQPBuffer
+        Entry    "r6"
+; now unload what was there
+        ldr     r6, TXQueueP        ; and put to head of queue
+        teq     r6, #0
+        EXIT    EQ
+ DebugReg r6, "UseQPB-"
+        ldr     lr, [r6, #TXQNext]  ; get immediate next pointer
+        str     lr, TXQueueP        ; and put to head of queue
+        add     lr, r6, #4
+        ldmia   lr, {r0, r1, r2, r3, r4, r5, r12}
+        mov     lr, #0
+        str     lr, [r6, #TXQNext] ; flag this old buffer is empty
+        str     lr, [r6, #TXQR12]  ; flag this old buffer is empty
+        EXIT
+
+
+
+; r0 = flags  bit 0 = 0 - claim frame type
+;                     1 - release ft
+;             bit 1 = 0 - driver can pass unsafe mbuf chains to rx handler
+;                     1 - driver must 'ensure_safe' before passing to rx
+;             bit 2 = 0 - protocol module wants all frame of (r3) type
+;                     1 - protocol module asks specific frames
+; r1 = unit
+; r2 = frame type
+; r3 = address level (write)
+; r4 = error level (write)
+; r5 = pwp
+; r6 = rx frame handler routine address
+swi_Filter
+        Entry   "r1, r2, r3, r4, r5, r6, r7, r8, r9, r10"
+; DebugReg r0,"SWIFilter flags "
+; DebugReg r1,"SWIFilter for unit "
+; DebugReg r2,"ftype "
+; DebugReg r3,"addr level wr "
+; DebugReg r4,"err level wr "
+; DebugReg r5,"pwp "
+; DebugReg r6,"rx handler "
+; assume only 1 unit, so ignore unit
+; check address level
+; frame type 0 is IEEE, the first location, else one of (10?) linked buffers
+        tst     r0, #1                  ; claim or free?
+        beq     claimit
+        mov     r0, r6
+        bl      FreeFrameClaimBuf
+        EXIT
+claimit
+        teq     r2, #RXHFrmIEEE<<16     ; if IEEE type..
+        adreql  r7, FrameClIEEE
+        beq     framebuffound
+        adrl    r7, FrameClaimsUsed
+        ldr     r8, [r7]                ; get buffer
+        mov     r10, r2, lsl #16
+        mov     r10, r10, lsl #16       ; isolate frame type
+1       teq     r8, #0
+        beq     notclaimed
+        ldr     r9, [r8, #FrameClType]
+        teq     r9, r10
+        ldrne   r8, [r8]
+        bne     %bt1
+;.. frame is claimed .. exit with relevant error
+
+        EXIT
+notclaimed
+        mov     r10, r0
+        bl      GetFrameClaimBuf
+        mov     r7, r0
+        mov     r0, r10
+        teq     r7, #0                  ; success?
+; EQ means no buf available.. EXIT with relevant error
+
+        EXIT    EQ
+; if here, r7-> usable frame buf
+framebuffound
+        str     r5, [r7, #FrameClPWP]
+; assemble the flags
+        mov     r5, r2, lsl #16
+        mov     r5, r5, lsr #16         ; frame type
+        str     r5, [r7, #FrameClType]
+        and     r5, r2, #&f<<16
+        mov     r5, r5, lsr #16         ; address class/frametype
+        and     r3, r3, #&f
+        orr     r5, r3, r3, lsr #8      ; add in address level
+        and     r4, r4, #1
+        orr     r5, r5, r4, lsl #16
+        str     r5, [r7, #FrameClFlags]
+; DebugReg r5, "claim flags "
+        str     r6, [r7, #FrameClHandler] ; flag as claimed
+; DebugReg r7, "claimbuf address "
+        EXIT
+
+notIEEE
+        EXIT
+frclerrorexit
+
+        EXIT
+swi_Stats
+        Entry
+        bl      ReportStats
+        EXIT
+swi_MulticastRequest
+        Entry
+; DebugReg r1,"SWIMulticast for unit "
+        EXIT
+
+
+; on entry,
+; r1 = unit (currently only 0)
+; r2 = -1 to read
+; returns r2, r3 as below
+; else
+; r2 = RSFL  << 0
+;    + RAEM  << 8
+;    + RAFL  << 16
+;    + RSEM  << 24
+; r3 = PauseDuration
+;    + TIPG  << 16
+; returns new r2, r3 values
+;
+swi_GetSetThresholds
+        Entry
+        cmp     r2, #-1
+; DebugReg r1,"SWIGetSetThresholds for unit "
+        blne    SetThresholds
+; now build return values
+buildret
+        bl      GetThresholds
+        EXIT
+
+DIBname =       EtherTHDCIName,0
+ModLocn =       "iMx6 CPU",0
+VarValName =    "Inet$$EtherType",0
+VarValThing =   EtherTHDCIName,"0"
+VarValThingLength * . - VarValThing
+        ALIGN
+
+Init    ROUT
+        Push    "r8-r9,lr"
+        MOV     r0, #ModHandReason_Claim
+        LDR     r3, =TotalRAMRequired
+        SWI     XOS_Module
+        BVS     ExitInitModule
+
+        STR     r2, [r12]
+        mov     r12, r2
+        MOV     r0, #0
+01
+        SUBS    r3, r3, #4
+        STR     r0, [r2], #4
+        BGT     %BT01
+        ; Get HAL routine pointers
+        MOV     R8, #OSHW_LookupRoutine
+        MOV     R9, #EntryNo_HAL_CounterDelay
+        SWI     XOS_Hardware
+        STRVC   R0, HAL_CounterDelay_p
+        STRVC   R1, HAL_SB
+        MOVVC   R9, #EntryNo_HAL_IRQClear
+        SWIVC   XOS_Hardware
+        BVS     ExitInitModule
+        STR     R0, HAL_IRQClear_p
+
+        LDR     R0, =(ARMop_DMB_Write:SHL:8)+MMUCReason_GetARMop
+        SWI     XOS_MMUControl
+        ADRVS   R0, My_DMB_Write        ; old kernel?
+        STR     R0, ARMop_DMB_Write_p
+
+        ADRL    R0,resourcefsfiles
+        SWI     XResourceFS_RegisterFiles   ; ignore errors
+        adrl    r0, VarValName
+        adrl    r1, VarValThing
+        mov     r2, #VarValThingLength
+        mov     r3, #0
+        mov     r4, #4                  ; literal string
+        swi     XOS_SetVarVal
+; now start the module interfaces using a callback
+; this ensures our SWIs are available to other modules during interface start
+        adrl    r0, StartUpRoutine      ; launch the driver on a callback
+                                        ; so our SWIs can be used
+        mov     r1, r12                 ; r12 to use
+        swi     XOS_AddCallBack         ; assume it valid!!
+        movvc   r0, #cb_pending
+        strb    r0, callbackstate
+        mov     r0, #0
+        strb    r0, EN_Speed            ; default it to auto
+        strb    r0, EN_Duplex
+        mov     r0, #cb_unrequired
+        strb    r0, rxbcbstate          ; prime
+        Pull    "r8-r9,pc"
+
+ExitInitModule                            ; need to check for what is allocated
+        Pull    "r8-r9,pc"
+
+; free all and exit
+Final   ROUT
+        Push    "r0-r3,lr"
+        LDR     r12, [r12]
+;
+        adrl    r0, MyDIB               ; driver info block for this driver
+        ldr     r1, =Service_DCIDriverStatus
+        mov     r2, #1                  ; driver stopping
+        mov     r3, #EtherTHVersion
+        swi     XOS_ServiceCall
+
+; de register callback handler
+        ldrb    r0, callbackstate       ; pending callback to StartUpRoutine?
+        teq     r0, #cb_pending         ; still pending?
+        adreql  r0, StartUpRoutine
+        moveq   r1, r12
+        swieq   XOS_RemoveCallBack      ; ok clean up
+
+        bl      ChipKill                ; silence the chip itself
+
+
+        bl      mmanager_kill           ; ensure clear out of the MBufManager
+
+
+
+        ADRL    R0,resourcefsfiles
+        SWI     XResourceFS_DeregisterFiles ; ignore errors
+        CLRV
+
+        MOV     r0, #ModHandReason_Free
+        mov     r2, r12
+;  DebugReg r2, "freeing rma "
+        SWI     XOS_Module
+
+        Pull    "r0-r3,pc"
+
+My_DMB_Write
+        DMB     ST
+        MOV     pc, lr
+
+
+
+        LTORG
+;
+resourcefsfiles
+        ResourceFile    Resources.EtherTH_Help, Resources.EtherTH.EtherTH_Help
+        DCD     0                   ; terminator
+        GET     s.Debug
+
+; call back to issue the device starting service call whilst
+; able to respond to SWIs
+; R12 is module private word
+StartUpRoutine
+        Entry   "r0, r1, r2, r3, r8"
+; read board ethernet MAC
+        mov     r0, #2                  ; we need the MAC code...
+        swi     XOS_ReadSysInfo
+; build MyDIB structure
+; DebugReg r3, "mac1 "
+; DebugReg r4, "mac2 "
+        adrl    r0, dib_enetaddr        ; point to ethernet address store
+        strb    r3, [r0, #5]
+        mov     r3, r3, lsr #8
+        strb    r3, [r0, #4]
+        mov     r3, r3, lsr #8
+        strb    r3, [r0, #3]
+        mov     r3, r3, lsr #8
+        strb    r3, [r0, #2]
+        strb    r4, [r0, #1]
+        mov     r4, r4, lsr #8
+        strb    r4, [r0, #0]
+        mov     r4, r4, lsr #8
+        strb    r4, [r0, #6]
+        mov     r4, r4, lsr #8
+        strb    r4, [r0, #7]
+        str     r0, dib_addrptr
+        adrl    r0, DIBname
+        str     r0, dib_nameptr
+        adrl    r0, Title
+        str     r0, dib_moduleptr
+        adrl    r0, ModLocn
+        str     r0, dib_locnptr
+        mov     r0, #0
+        str     r0, dib_unit
+        adrl    r0, ModSWI
+        ldr     r0, [r0]
+        str     r0, dib_swibase
+        ldr     r0, =Flag_MulticastRx|Flag_Promiscuous|Flag_RcvsErrPkts|Flag_HasHWAddr|Flag_CanAlterHWAddr|Flag_StandardStats|Flag_ExtendedStats|Flag_MulticastAvailable
+        str     r0, dib_inquflg
+
+; locate the device address.. HAL should have registered it by now
+        ldr     r0, = HALDeviceType_Comms + HALDeviceComms_EtherNIC +0<<16
+        mov     r1, #0                  ; first time through
+        mov     r8, #4                  ; enumerate_drivers
+        swi     XOS_Hardware
+; DebugReg r1, "looking.. r1= "
+; DebugReg r2, "DevPtr... "
+        teq     r1, #0                  ; if -1, no find the ethernet device
+        EXIT    LE                      ; else we cannot do anything here
+; DebugReg r12, "mod pwp... "
+        adrl    r1, EtherTHDevice
+; DebugRegNCR r1, "DeviceAt "
+        mov     r0, #HALDevice_ENET_Size
+; DebugReg r0, "Length "
+1       subs    r0, r0, #4
+        ldrge   lr, [r2, r0]
+        strge   lr, [r1, r0]           ; copy it
+        bgt     %bt1
+; initialise the hardware
+        mov     r0, #EtherTHMinUBS
+        mov     r1, #EtherTHMaxUBS
+        mov     r2, #EtherTHMinContig
+        bl      mmanager_init           ; get hooked into the MBuf system
+        EXIT    VS
+        bl      ChipInit
+; DebugTX "Chip & phy initted"
+
+        adrl    r0, MyDIB               ; driver info block for this driver
+        ldr     r1, =Service_DCIDriverStatus
+        mov     r2, #0                  ; driver starting
+        mov     r3, #EtherTHVersion
+        swi     XOS_ServiceCall
+        EXIT
+
+
+
+
+
+
+
+        GET     s.mbuf                  ; mbuf handler routines
+        GET     s.chip                  ; ethernet chip handler stuff
+        END
+@
+
+
+1.2
+log
+@  Added SWI to expose receive fifo thresholds and flow control parameters
+Detail:
+Admin:
+
+
+Version 0.25. Tagged as 'EtherTH-0_25'
+@
+text
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d441 1
+d468 1
+d752 24
+@
+
+
+1.1.1.1
+log
+@   Initial import of EtherTH module
+@
+text
+@@

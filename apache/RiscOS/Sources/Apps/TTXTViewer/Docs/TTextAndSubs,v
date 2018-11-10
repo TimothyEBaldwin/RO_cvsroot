@@ -1,0 +1,332 @@
+head	1.2;
+access;
+symbols
+	TTXTViewer-0_16:1.2
+	TTXTViewer-0_15:1.2
+	TTXTViewer-0_14:1.2
+	TTXTViewer-0_12:1.2
+	TTXTViewer-0_11:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2002.06.24.14.00.02;	author srevill;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2002.06.20.11.10.52;	author srevill;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@  Updated support for setting the default language.
+Detail:
+  The URL scheme has been updated to be the 'correct' solution rather
+  than a short-term bodge. The new language parameter now takes a
+  hexadecimal charset value as per the ETS 300 706 specification.
+  Charsets specified in the stream will still override this.
+
+  E.g. HREF="teletext:?language=5" will launch the Teletext viewer
+  with a Default Charset 0 and Spanish National Subset.
+Admin:
+  I deleted the s.teletext file as it isn't used anywhere.
+
+Version 0.12. Tagged as 'TTXTViewer-0_12'
+@
+text
+@** TTextAndSubs_On ("MTTextAndSubs_On", &55A00)
+
+   Activate a teletext / subtitling service session.
+
+     +20 = Flags:
+            Bit   Meaning if set
+            Bits 0-7 =    reason code:
+                          0: teletext magazine
+                          1: DVB subtitles (anything referenced by
+                             DVB subtitling descriptor, which can include
+                             EBU Teletext subtitles)
+            Bit 8 set =>  display windowed if set
+            Bit 9 set =>  windowed display must overlay MPEG video, else
+                          use the position at +28
+            Bit 10 set => teletext should use charset at +44 as initial charset
+            Bits 11-31 reserved (currently set to zero).
+
+     +24 = Video Control client handle for related data stream.
+
+     +28 = If bit 8 of the flags is set, bounding box for
+           the display; OS units, (0,0) bottom left, order xmin,
+           ymin, xmax, ymax.
+
+     +44 = For teletext:
+
+           If flag bit 10 set, then ETS_300_706 Default G0 and G2 Character
+           Set Designation and National Option Selection, to be used as the
+           initial charset in case of none being found in the teletext stream.
+           Triplet 1 from Table 32 of the ETS specification is encoded in the
+           bottom byte. All other bits should be zero.
+
+           For subtitles:
+
+           ISO_639_language_code eg "eng", "fre", "swe". Encoded within the
+           word as a three-character null-terminated string.
+
+If flags bits 0-7 = 0 (teletext magazine)
+
++48: 0 => use page most recently displayed since stream was reset (ie since
+          channel change) - this way, you can toggle TV/Mix/Text without
+          losing your current page - or if teletext has not yet been viewed,
+          then use default page carried in packet 8/30 in the stream
+     1 => use page number specified in descriptor alongside teletext_type
+          specified in +52, or if the descriptor is absent or didn't include
+          that teletext_type, then use packet 8/30
+     2 => use page number specified in +52
+     other values reserved
+
+     Note that in case 2, since the page number is not determined from a
+     teletext descriptor, and the ISO_639_language_code at +44 is not
+     sufficient on its own to select between multiple teletext streams
+     associated with the same program, the ISO_639_language_code is ignored
+     and the first teletext stream in the PMT is used. This is unlikely to be
+     a problem in practice, as multiple language support is usually provided
+     within a single teletext stream. In case 0, the teletext stream is
+     implicitly the same as on the last call; if there was no previous call,
+     then as with case 2, the first stream in the PMT is used; either way
+     the ISO_639_language_code is irrelevant.
+
++52: unused if +48 = 0
+     teletext_type if +48 = 1
+     page number if +48 = 2     NB this is the hexadecimal (BCD) number
+
+If flags bits 0-7 = 1 (subtitles)
+
++48: subtitling type (related to subtitling_type in the DVB subtitling
+     descriptor)
+        values currently defined are:
+        0 = EBU Teletext subtitles
+        1 = DVB subtitles (normal)
+        2 = DVB subtitles (hard of hearing)
+
+        This does not map directly to the subtitling_type in the
+        subtitling descriptor, because where applicable, it is the viewer
+        application's responsibility to choose between subtitling descriptors
+        that only differ only in intended monitor aspect ratio.
+
+   This message should be broadcast with event UserMessageRecorded.
+   If it bounces, the controlling application should attempt to start
+   the viewer by issuing:
+
+   SYS "Wimp_StartTask","<TTXTViewer$Dir>"
+
+   to start the teletext viewer, or:
+
+   SYS "Wimp_StartTask","<DVBSubViewer$Dir>"
+
+   to start the subtitle viewer. The TTextAndSubs_On message should
+   then be resent. If it still bounces the service is unavailable.
+
+   If a controlling application is to raise an error message, it
+   must be aware that should the service have run single-tasking
+   for a while and then crashed, the message would also bounce, so
+   the wording of an error message should be appropriate for both
+   events.
+
+   The service acknowledges the message with MTTextAndSubs_OnAck.
+   Services must not acknowledge messages with flag bits set that
+   they do not understand. A service may wish to check that the
+   data stream identified by the handle at offset 24 is one it can
+   use, and acknowledge the message with an error if not.
+
+   If a service runs single tasking (for example, for mode 7
+   full screen display of normal teletext) it should acknowledge
+   when it exits the single tasking session, not before entering
+   it.
+
+   The bounding box passed at offset 28 is there since whilst
+   Video Control can be asked for the rectangle in which video is
+   playing, this may not related to the rectangle for display. In
+   full screen modes, services should use the Safe Area to
+   determine what regions of the screen may be used, at least, if
+   there is any ability to choose where things are placed.
+
+
+
+** TTextAndSubs_OnAck ("MTTextAndSubs_OnAck", &55A01)
+
+   Accept a request to start a teletext / subtitling session.
+
+     +20 = Flags:
+           Bit   Meaning
+           0     If set then the viewer is running but the service
+                 is unavailable for some other reason (eg, no video
+                 stream is playing)
+           1     If set, the service has run, completed, and
+                 exited cleanly. If clear, the service has started
+                 and is running normally, and must be shut down in
+                 future.
+           1-31  Reserved (set to zero).
+
+     +24 = Video Control client handle for related data stream
+           (preserved from MTTextAndSubs_On).
+
+     +28 = If bit 0 of the flags is set then, error number
+
+     +32 = If bit 0 of the flags is set then, error message
+
+   A service sends this message to a controlling application to
+   acknowledge receipt of MTTextAndSubs_On. There are three states
+   which the service may be in:
+
+   1) The service is unavailable.
+
+   2) It may have run a single-tasking full screen session (e.g.
+      for mode 7 display of normal teletext) and the user has
+      exited this normally by some defined action, e.g. a button
+      press on an IR handset.
+
+   3) It may be running multi-tasking (e.g. for DVB subtitles
+      displayed in Wimp windows) and the controlling application
+      must take steps to shut the service down in future.
+
+   In the fist case, the controlling application should optionally
+   report the error message at offset 28 and need take no further
+   action.
+
+   In the second case, the controlling application can note that
+   the service is not running and need take no more action until
+   it next wants to start the service again, in which case it
+   sends MTTextAndSubs_On as before.
+
+   In the third case, the controlling application must at some
+   point in the future send MTTextAndSubs_Off to the service (not
+   as a broadcast) in order to cleanly shut it down.
+
+   Applications should ignore flags bits they do not understand.
+
+
+
+** TTextAndSubs_Off ("MTTextAndSubs_Off", &55A02)
+
+   Deactivate a teletext / subtitling service session.
+
+     +20 = Flags (all bits currently reserved, must be zero).
+
+     +24 = Video Control client handle for related data stream
+           (as sent for MTTextAndSubs_On).
+
+   This message is sent by a controlling application when it wants
+   to shut down a session which according to a previously received
+   MTTextAndSubs_OnAck, is still running. It should be sent
+   Recorded and may be acknowledged with MTTextAndSubs_OffAck. If
+   the message bounces, the controlling application must assume
+   that the service crashed or otherwise exited abnormally (e.g.
+   because video playback failed).
+
+   In many systems, teletext and subtitles are activated and
+   deactivated using the same IR handset button which acts as a
+   toggle. If, then, the controlling application is expecting to
+   turn a service off but sees the message bounce, it knows it is
+   not running, and must thus:
+
+   * If it knows how to restart a crashed service, check it is
+     not already running (ask the Task Manager) and restart it;
+
+   * Send MTTextAndSubs_On to the service.
+
+   Obviously this is only the case if the service's running state
+   is to be toggled by the controlling application.
+
+
+
+** TTextAndSubs_OffAck ("MTTextAndSubs_OffAck", &55A03)
+
+   Accept a request to stop a teletext / subtitling session.
+
+     +20 = Flags (all bits currently reserved, must be zero).
+
+     +24 = Video Control client handle for related data stream
+           (preserved from MTTextAndSubs_Off).
+
+   This message is sent in reply to MTTextAndSubs_Off. The
+   recipient can update any internal state as required to reflect
+   the stopped condition of the teletext / subtitling session, and
+   prepare for the next time it wishes to (re)start the service.
+@
+
+
+1.1
+log
+@  Added support for setting the default language.
+Detail:
+  The URL scheme has a new parameter "language=<lang>" where <lang> is a
+  three-letter ISO_639_language_code. This is used for the default language
+  charset. Charsets specified in the stream will override this.
+
+  The launcher BASIC program can now be extended to take any number of
+  parameters, rather than the hard-wired one parameter.
+
+  E.g. HREF="teletext:?page=102&language=spa" will launch the Teletext
+  viewer will a default page of 102 and Spanish language.
+
+  I've also tidied the directory structure of these sources a little by
+  adding the 'Docs' directory.
+Admin:
+  Tested on STB.
+
+Version 0.11. Tagged as 'TTXTViewer-0_11'
+@
+text
+@d7 10
+a16 9
+            Bits 0-7 =   reason code:
+                         0: teletext magazine
+                         1: DVB subtitles (anything referenced by
+                            DVB subtitling descriptor, which can include
+                            EBU Teletext subtitles)
+            Bit 8 set => display windowed if set
+            Bit 9 set => windowed display must overlay MPEG video, else
+                         use the position at +28
+            Bits 10-31 reserved (currently set to zero).
+d24 13
+a36 3
+     +44 = ISO_639_language_code eg "eng", "fre", "swe"
+           Encoded within the word as a three-character null-terminated string
+
+d48 1
+a48 1
+
+d72 1
+a72 1
+
+d77 1
+a77 1
+
+d81 1
+a81 1
+
+d83 1
+a83 1
+
+d85 1
+a85 1
+
+d87 1
+a87 1
+
+d90 1
+a90 1
+
+d134 1
+a134 1
+
+d144 1
+a144 1
+
+@

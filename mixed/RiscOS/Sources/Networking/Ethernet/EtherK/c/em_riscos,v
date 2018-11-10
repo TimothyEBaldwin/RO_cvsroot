@@ -1,0 +1,4394 @@
+head	1.14;
+access;
+symbols
+	EtherK-0_25:1.14
+	EtherK-0_24:1.14
+	EtherK-0_23:1.14
+	EtherK-0_22:1.13
+	EtherK-0_21:1.13
+	EtherK-0_20:1.13
+	EtherK-0_19:1.13
+	EtherK-0_18:1.13
+	EtherK-0_17:1.13
+	EtherK-0_16:1.13
+	EtherK-0_15:1.13
+	EtherK-0_14:1.12
+	RO_5_07:1.12
+	EtherK-0_13:1.12
+	EtherK-0_12:1.12
+	EtherK-0_11:1.11
+	EtherK-0_10:1.11
+	EtherK-0_09:1.10
+	EtherK-0_08:1.9
+	EtherK-0_07:1.8
+	EtherK-0_06:1.7
+	EtherK-0_05:1.6
+	EtherK-0_04:1.5
+	EtherK-0_03:1.4
+	EtherK-0_02:1.3
+	EtherK-0_01:1.2
+	EtherK-0_00:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.14
+date	2012.02.05.22.38.17;	author jlee;	state Exp;
+branches;
+next	1.13;
+commitid	IbuCtBQH8ng7j1Sv;
+
+1.13
+date	2005.04.16.22.50.19;	author jballance;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	2004.03.02.19.08.21;	author jbyrne;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	2003.02.18.22.09.49;	author jbyrne;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	2002.12.20.16.04.06;	author jbyrne;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	2002.12.18.19.20.52;	author jbyrne;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	2002.12.13.17.55.54;	author jbyrne;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2002.12.11.19.14.02;	author jbyrne;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2002.11.04.16.19.10;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2002.10.21.08.37.49;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2002.10.14.23.17.20;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2002.10.09.19.54.04;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2002.10.09.19.38.10;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2002.10.09.19.21.37;	author rsprowson;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2002.10.09.19.21.37;	author rsprowson;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.14
+log
+@Fix rom_link errors
+Detail:
+  c/ekmodule, c/em_riscos, c/info, c/log, c/msgs, c/test, h/em_riscos, h/msgs
+  After the makefile rewrite the rom_link phase has started complaining about msgs_init and msgs_lookup being multiply defined (in EtherK & clib)
+  I'm not sure how the original makefile sidestepped the issue, but a simple search and replace of msgs_ -> messages_ fixes the issue
+Admin:
+  rom_link phase now completes without errors
+  Module not tested at runtime
+
+
+Version 0.23. Tagged as 'EtherK-0_23'
+@
+text
+@/* Copyright 2002 Tematic Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    em_riscos.c                                       */
+/*                                                            */
+/* Purpose: RISC OS specific interface routines to the BSD    */
+/*          driver code for the EtherK device driver.         */
+/*                                                            */
+/* Author:  J.R.Byrne. Some routines (mainly filtering) were  */
+/*          adapted from Ether1 and EtherI.                   */
+/**************************************************************/
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <Global/HalEntries.h>
+#include <Interface/PCI.h>
+
+#include <sys/types.h>
+#include <net/ethernet.h>
+
+#include <AsmUtils/irqs.h>
+#include <callx/callx.h>
+
+#include "em_riscos.h"
+#include "if_em.h"
+#include "em_device.h"
+#include "log.h"
+#include "msgs.h"
+
+/* Local definitions */
+
+/* Simple test macro for broadcast addresses - relies on character */
+/* buffers being aligned two bytes before a word boundary.         */
+#define IS_BROADCAST(x) (*(u_int *)((x) + 2) == 0xffffffff && \
+                         *(u_short *)(x) == 0xffff)
+
+/* Simple test macro for multicast addresses. */
+#define IS_MULTICAST(x) ((*(u_char *)(x) & 0x01) && \
+                         (*(u_char *)(x)) != 0xff)
+
+/* Local functions */
+
+static int ignore_intr(struct adapter * adapter);
+static void set_receive_level (device_t dev, int addrlevel);
+static _kernel_oserror * watchdog_reset_callback(_kernel_swi_regs * r, void * pw, void * handle);
+
+
+/**************************************************************/
+/* usec_delay()                                               */
+/*                                                            */
+/* Delay for a number of microseconds.                        */
+/*                                                            */
+/* Parameters: Number of microseconds to delay for.           */
+/**************************************************************/
+
+void usec_delay(uint32_t t)
+{
+    if ((t > 10000) && !_kernel_irqs_disabled())
+    {
+        _kernel_oserror * e;
+        uint32_t          start, now;
+
+        _swix(OS_ReadMonotonicTime, _OUT(0), &start);
+        t = (t+9999)/10000;
+        do
+        {
+            e = _swix(OS_ReadMonotonicTime, _OUT(0), &now);
+        } while (e == NULL && now - start <= t);
+    }
+    else
+    {
+        _swix(OS_Hardware, _IN(0)|_INR(8,9), t, 0, EntryNo_HAL_CounterDelay);
+    }
+}
+
+/**************************************************************/
+/* pci_read_config()                                          */
+/*                                                            */
+/* Read a PCI device's configuration space.                   */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             Configuration space address;                   */
+/*                                                            */
+/*             Access size (1, 2 or 4).                       */
+/*                                                            */
+/* Returns:    The value that was read.                       */
+/**************************************************************/
+
+uint32_t pci_read_config(device_t dev, int reg, int width)
+{
+    _kernel_oserror * e;
+    uint32_t          val;
+
+    e = _swix(PCI_ConfigurationRead,
+              _IN(0) | _INR(2,3) | _OUT(1),
+
+              reg,
+              width,
+              dev->function_handle,
+
+              &val);
+
+    if (e != NULL)
+    {
+        dprintf(("", "%s: PCI_ConfigurationRead failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+        log_error(dev, e);
+        val = 0;
+    }
+
+    return val;
+}
+
+/**************************************************************/
+/* pci_write_config()                                         */
+/*                                                            */
+/* Write a PCI device's configuration space.                  */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             Configuration space address;                   */
+/*                                                            */
+/*             Access size (1, 2 or 4).                       */
+/**************************************************************/
+
+void pci_write_config(device_t dev, int reg, uint32_t val, int width)
+{
+    _kernel_oserror * e;
+
+    e = _swix(PCI_ConfigurationWrite,
+              _INR(0,3),
+
+              reg,
+              val,
+              width,
+              dev->function_handle);
+
+    if (e != NULL)
+    {
+        dprintf(("", "%s: PCI_ConfigurationWrite failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+        log_error(dev, e);
+    }
+}
+
+/**************************************************************/
+/* vtophys()                                                  */
+/*                                                            */
+/* Convert a logical RAM address to a physical RAM address.   */
+/*                                                            */
+/* Parameters: The logical address to convert.                */
+/*                                                            */
+/* Returns:    The physical address.                          */
+/**************************************************************/
+
+uint32_t vtophys(vm_offset_t v)
+{
+    struct
+    {
+        uint32_t page;
+        uint32_t logical;
+        uint32_t physical;
+    } block;
+    block.logical = (uint32_t)v;
+
+    _swix(OS_Memory,
+          _INR(0,2),
+
+          (1<<9) | (1<<13),
+          &block,
+          1);
+
+    return block.physical;
+}
+
+/**************************************************************/
+/* em_ro_flush_wb()                                           */
+/*                                                            */
+/* Flush the processor's memory Write Buffer.                 */
+/**************************************************************/
+
+void em_ro_flush_wb(void)
+{
+    _swix(OS_MMUControl,
+          _IN(0),
+
+          1 | (1<<28));
+}
+
+/**************************************************************/
+/* em_ro_get_pci_hw_address()                                 */
+/*                                                            */
+/* Get the address of a PCI device's memory-mapped area.      */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             Pointer to where to store the result.          */
+/*                                                            */
+/* Returns:    Whether or not the function succeeded.         */
+/**************************************************************/
+
+bool em_ro_get_pci_hw_address(device_t dev, uint8_t ** result)
+{
+    _kernel_oserror * e;
+
+    e = _swix(PCI_HardwareAddress,
+              _INR(0,1) | _IN(3) | _OUT(4),
+
+              0,
+              0,
+              dev->function_handle,
+
+              result);
+
+    if (e != NULL)
+    {
+        dprintf(("", "%s: PCI_HardwareAddress failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+        log_error(dev, e);
+        *result = NULL;
+    }
+
+    return (e == NULL);
+}
+
+/**************************************************************/
+/* em_ro_get_pci_io_address()                                 */
+/*                                                            */
+/* Get the PCI address from a particular Base Address         */
+/* Register for a device.                                     */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             Index of the Base Address Register to read;    */
+/*                                                            */
+/*             Pointer to where to store the result.          */
+/*                                                            */
+/* Returns:    Whether or not the function succeeded.         */
+/**************************************************************/
+
+bool em_ro_get_pci_io_address(device_t dev, uint32_t address_index, uint32_t * result)
+{
+    _kernel_oserror * e;
+
+    e = _swix(PCI_HardwareAddress,
+              _INR(0,1) | _IN(3) | _OUT(1),
+
+              0,
+              address_index,
+              dev->function_handle,
+
+              result);
+
+    if (e != NULL)
+    {
+        dprintf(("", "%s: PCI_HardwareAddress failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+        log_error(dev, e);
+        return false;
+    }
+
+    return true;
+}
+
+/**************************************************************/
+/* em_ro_pci_memalloc()                                       */
+/*                                                            */
+/* Allocate a block of memory from the pool of fixed          */
+/* contiguous memory for PCI device communication. This is    */
+/* bufferable but uncacheable.                                */
+/*                                                            */
+/* Parameters: Size required;                                 */
+/*                                                            */
+/*             Alignment required (0 if none);                */
+/*                                                            */
+/*             Boundary limitation (0 if none).               */
+/*                                                            */
+/* Returns:    The logical address of the memory, or NULL.    */
+/**************************************************************/
+
+void * em_ro_pci_memalloc(size_t size, uint32_t alignment, uint32_t boundary)
+{
+    _kernel_oserror * e;
+    void            * ptr;
+
+    e = _swix(PCI_RAMAlloc,
+              _INR(0,2) | _OUT(0),
+
+              size,
+              alignment,
+              boundary,
+
+              &ptr);
+
+    if (e != NULL)
+    {
+        dprintf(("", "%s: PCI_RAMAlloc failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+        ptr = NULL;
+    }
+
+    return ptr;
+}
+
+/**************************************************************/
+/* em_ro_pci_memfree()                                        */
+/*                                                            */
+/* Free memory that was allocated with em_ro_pci_memalloc().  */
+/*                                                            */
+/* Parameters: Address of the memory to free.                 */
+/**************************************************************/
+
+void em_ro_pci_memfree(void * address)
+{
+    _kernel_oserror * e;
+
+    e = _swix(PCI_RAMFree,
+              _IN(0),
+
+              address);
+
+    if (e != NULL)
+    {
+        dprintf(("", "%s: PCI_RAMFree failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+    }
+}
+
+/**************************************************************/
+/* em_ro_disable_dev_irq()                                    */
+/*                                                            */
+/* Disables interrupts for a device.                          */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/*                                                            */
+/* Returns:    Previous interrupt state for this device       */
+/*             (non-zero if enabled).                         */
+/**************************************************************/
+
+int em_ro_disable_dev_irq(device_t dev)
+{
+    int s;
+
+    _swix(OS_Hardware,
+          _IN(0) |_INR(8,9) | _OUT(0),
+
+          dev->device_vector,
+          0,
+          EntryNo_HAL_IRQDisable,
+
+          &s);
+
+    return s;
+}
+
+/**************************************************************/
+/* em_ro_enable_dev_irq()                                     */
+/*                                                            */
+/* Enables interrupts for a device.                           */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_enable_dev_irq(device_t dev)
+{
+    _swix(OS_Hardware,
+          _IN(0) |_INR(8,9),
+
+          dev->device_vector,
+          0,
+          EntryNo_HAL_IRQEnable);
+}
+
+/**************************************************************/
+/* em_ro_setup_intr()                                         */
+/*                                                            */
+/* Start handling interrupts from a device. The device vector */
+/* is claimed and interrupts are enabled for this vector.     */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/*                                                            */
+/* Returns:    Whether or not the function succeeded.         */
+/**************************************************************/
+
+bool em_ro_setup_intr(device_t dev)
+{
+    _kernel_oserror * e;
+
+    /* Claim the device vector */
+
+    e = _swix(OS_ClaimDeviceVector,
+              _INR(0,2),
+
+              dev->device_vector | (1u<<31),
+              em_asm_irq_trampoline,
+              dev);
+
+    if (e != NULL)
+    {
+            dprintf(("", "%s: OS_ClaimDeviceVector failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+            log_error(dev, e);
+            return false;
+    }
+
+    dev->dev_vector_claimed = true;
+
+    /* Make sure interrupts are enabled */
+
+    em_ro_enable_dev_irq(dev);
+
+    return true;
+}
+
+/**************************************************************/
+/* em_ro_teardown_intr()                                      */
+/*                                                            */
+/* Stop handling interrupts from a device.                    */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_teardown_intr(device_t dev)
+{
+    if (dev->dev_vector_claimed)
+    {
+        _kernel_oserror * e;
+        
+        dev->dev_vector_claimed = false;
+
+        e = _swix(OS_ReleaseDeviceVector,
+                  _INR(0,2),
+
+                  dev->device_vector | (1u<<31),
+                  em_asm_irq_trampoline,
+                  dev);
+
+        if (e != NULL)
+        {
+            dprintf(("", "%s: OS_ReleaseDeviceVector failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+            log_error(dev, e);
+        }
+    }
+}
+
+/**************************************************************/
+/* em_ro_irq_handler()                                        */
+/*                                                            */
+/* Interrupt handler called when an interrupt occurs which    */
+/* may have been from our device. This is called via          */
+/* em_asm_irq_trampoline(), which ensures that the pointer    */
+/* to the relevant device structure is in r->r[1]. We check   */
+/* to see whether the interrupt really was from our device,   */
+/* handle it if so, and return a flag to say whether we've    */
+/* handled the interrupt or whether it should be passed on to */
+/* other claimants of the same vector.                        */
+/*                                                            */
+/* Parameters: Pointer to entry register block;               */
+/*                                                            */
+/*             Private word pointer (unused).                 */
+/*                                                            */
+/* Returns:    Either 0 (interrupt claimed) or 1 (pass on).   */
+/**************************************************************/
+
+int em_ro_irq_handler(_kernel_swi_regs * r, void * pw)
+{
+    device_t dev = (device_t)r->r[1];
+    int      pass_on;
+
+    (void)pw;
+
+    /* If re-entered, pass on the call. It's probably an interrupt from */
+    /* something sharing the same interrupt line.                       */
+    if (dev->irq_handler_entered)
+        return 1;
+
+    if (dev->ignore_irqs)
+    {
+        /* Use simple handler if we are ignoring interrupts from this device. */
+        pass_on = ignore_intr(&dev->adapter);
+    }
+    else
+    {
+        dev->irq_handler_entered = true;
+    
+        /*dprintf(("IRQ", "%s: Entry\n", __func__));*/
+    
+        pass_on = em_intr(&dev->adapter);
+    
+        dev->irq_handler_entered = false;
+    
+        /*dprintf(("IRQ", "%s: Exit (pass_on=%d)\n", __func__, pass_on));*/
+    }
+
+    return pass_on;
+}
+
+/**************************************************************/
+/* ignore_intr()                                              */
+/*                                                            */
+/* Simple interrupt handler used when we are ignoring         */
+/* interrupts from our device. Check whether our device       */
+/* really has generated an interrupt (this will clear the     */
+/* interrupt state) and also record the interrupt register    */
+/* state for use by the diagnostics code.                     */
+/*                                                            */
+/* Parameters: Pointer to the relevant adapter structure.     */
+/*                                                            */
+/* Returns:    Either 0 (interrupt claimed) or 1 (pass on).   */
+/**************************************************************/
+
+static int ignore_intr(struct adapter * adapter)
+{
+    uint32_t reg_ims = E1000_READ_REG(&adapter->hw, IMS);
+    uint32_t reg_icr = E1000_READ_REG(&adapter->hw, ICR) & reg_ims;
+
+    adapter->diag_icr |= reg_icr;   /* Record for the diagnostics code */
+    return (reg_icr == 0);
+}
+
+/**************************************************************/
+/* em_ro_init_supported_stats()                               */
+/*                                                            */
+/* Initialise a DCI 4 statistics structure to indicate which  */
+/* statistics are supported.                                  */
+/*                                                            */
+/* Parameters: Pointer to the statistics structure.           */
+/**************************************************************/
+
+void em_ro_init_supported_stats(struct stats * supported)
+{
+    int i;
+
+    /* General information */
+    supported->st_interface_type = 0xff;
+    supported->st_link_status = 0xff;
+    supported->st_link_polarity = 0xff;
+    supported->st_blank1 = 0;
+    supported->st_link_failures = ~0;
+    supported->st_network_collisions = 0;
+
+    /* Transmit statistics */
+    supported->st_collisions = ~0;
+    supported->st_excess_collisions = ~0;
+    supported->st_heartbeat_failures = 0;
+    supported->st_not_listening = 0;
+#if 0
+    supported->st_net_error = 0;
+#endif
+    supported->st_tx_frames = ~0;
+    supported->st_tx_bytes = ~0;
+    supported->st_tx_general_errors = ~0;
+
+    /* Receive statistics */
+    supported->st_crc_failures = ~0;
+    supported->st_frame_alignment_errors = ~0;
+    supported->st_dropped_frames = ~0;
+    supported->st_runt_frames = ~0;
+    supported->st_overlong_frames = ~0;
+    supported->st_jabbers = ~0;
+    supported->st_late_events = 0; /* What is this ? */
+    supported->st_unwanted_frames = ~0;
+    supported->st_rx_frames = ~0;
+    supported->st_rx_bytes = ~0;
+    supported->st_rx_general_errors = ~0;
+
+    for (i = 0; i < ETHER_ADDR_LEN; ++i)
+    {
+        supported->st_last_dest_addr[i] = 0xff;
+        supported->st_last_src_addr[i] = 0xff;
+    }
+
+    do
+    {
+        supported->st_last_dest_addr[i] = 0;
+        supported->st_last_src_addr[i] = 0;
+        ++i;
+    }
+    while (++i < sizeof (supported->st_last_dest_addr));
+}
+
+/**************************************************************/
+/* em_ro_init_stats()                                         */
+/*                                                            */
+/* Initialise the DCI 4 statistics structure for a device.    */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_init_stats(device_t dev)
+{
+    /* Nothing to do at present */
+    (void)dev;
+}
+
+/**************************************************************/
+/* em_ro_update_stats()                                       */
+/*                                                            */
+/* Update the DCI 4 statistics structure for a device with    */
+/* the latest statistics.                                     */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_update_stats(device_t dev)
+{
+    struct adapter   * adapter = &dev->adapter;
+    struct em_phy_info phy_info;
+    int                s;
+
+    if (!dev->initialised)
+    {
+        dev->stats.st_link_status = 0;
+        return;
+    }
+
+    /* Do the things that em_local_timer() does */
+
+    s = splimp();
+
+    em_check_for_link(&adapter->hw);
+    em_print_link_status(adapter);
+    em_update_stats_counters(adapter);
+
+    splx(s);
+
+    /* Set the DCI 4 stats structure with this information */
+    dev->stats.st_link_status = (dev->stats.st_link_status & ST_STATUS_RXMASK) | ST_STATUS_OK;
+    if (adapter->link_active == 1)
+    {
+        dev->stats.st_link_status |= ST_STATUS_ACTIVE;
+        if (adapter->hw.media_type == em_media_type_fiber)
+        {
+            dev->stats.st_interface_type = ST_TYPE_1000BASESX;
+            dev->stats.st_link_status |= ST_STATUS_FULL_DUPLEX;
+        }
+        else
+        {
+            switch (adapter->link_speed)
+            {
+                case 10:
+                    dev->stats.st_interface_type = ST_TYPE_10BASET;
+                    break;
+                case 100:
+                    dev->stats.st_interface_type = ST_TYPE_100BASETX;
+                    break;
+                case 1000:
+                    dev->stats.st_interface_type = ST_TYPE_1000BASET;
+                    break;
+            }
+            if (adapter->link_duplex == FULL_DUPLEX)
+                dev->stats.st_link_status |= ST_STATUS_FULL_DUPLEX;
+
+        }
+        /* Receive level bits are set by set_receive_level() */
+    }
+
+    /* Get the link polarity */
+    dev->stats.st_link_polarity = ST_LINK_POLARITY_CORRECT;
+    if (em_phy_get_info(&adapter->hw, &phy_info) == 0)
+    {
+        if (phy_info.cable_polarity == em_rev_polarity_reversed)
+            dev->stats.st_link_polarity = ST_LINK_POLARITY_INCORRECT;
+    }
+
+    /* dev->stats.st_link_failures = Directly updated by em_print_link_status() */
+
+    /* The statistics may be updated by an interrupt, so disable interrupts */
+    /* while we gather the statistics to ensure consistency.                */
+
+    s = ensure_irqs_off();
+
+    /* Transmit statistics */
+    dev->stats.st_collisions = (unsigned long)adapter->stats.colc;
+    dev->stats.st_excess_collisions = (unsigned long)adapter->stats.ecol;
+    /* dev->stats.st_heartbeat_failures = 0; */
+    /* dev->stats.st_not_listening = 0; */
+    dev->stats.st_tx_frames = (unsigned long)adapter->stats.gptc;
+    dev->stats.st_tx_bytes = (unsigned long)adapter->stats.gotcl;
+    dev->stats.st_tx_general_errors = (unsigned long)(
+                                      adapter->stats.ecol +
+                                      adapter->stats.latecol +
+                                      adapter->watchdog_resets); /* !!! TODO Check this */
+
+    /* Receive statistics */
+    dev->stats.st_crc_failures = (unsigned long)adapter->stats.crcerrs;
+    dev->stats.st_frame_alignment_errors = (unsigned long)adapter->stats.algnerrc;
+    dev->stats.st_dropped_frames = adapter->dropped_pkts;
+    dev->stats.st_runt_frames = (unsigned long)(adapter->stats.ruc + adapter->stats.rfc);
+    dev->stats.st_overlong_frames = (unsigned long)adapter->stats.roc;
+    dev->stats.st_jabbers = (unsigned long)adapter->stats.rjc;
+    /* dev->stats.st_late_events = 0; [What is this?] */
+    /* dev->stats.st_unwanted_frames = Directly updated by em_ro_filter_packet() */
+    dev->stats.st_rx_frames = (unsigned long)adapter->stats.gprc;
+    dev->stats.st_rx_bytes = (unsigned long)adapter->stats.gorcl;
+    dev->stats.st_rx_general_errors = (unsigned long)(
+                                      adapter->stats.rxerrc +  /* Receive Error Count */
+                                      /*adapter->stats.rlec +     Receive Length Error Count (=ruc+rfc+roc+rjc) */
+                                      adapter->stats.rnbc +    /* RX No Buffers Count */
+                                      adapter->stats.mpc +     /* Missed Packet Count */
+                                      adapter->stats.cexterr); /* Carrier Extension Error Count */
+
+    restore_irqs(s);
+}
+
+/**************************************************************/
+/* set_link_config()                                          */
+/*                                                            */
+/* Update the settings in the hardware structure for link     */
+/* auto-negotiation, speed advertising, forced speed, MDI-X   */
+/* and flow control from the corresponding settings in the    */
+/* device structure.                                          */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+static void set_link_config(device_t dev)
+{
+    struct adapter * adapter = &dev->adapter;
+
+    switch (dev->link_setting)
+    {
+        case link_auto:
+            adapter->hw.autoneg = DO_AUTO_NEG;
+            adapter->hw.autoneg_advertised = dev->advertise;
+            break;
+
+        case link_1000: /* Note that the user cannot actually set this */
+            adapter->hw.autoneg = DO_AUTO_NEG;
+            adapter->hw.autoneg_advertised = ADVERTISE_1000_FULL;
+            break;
+
+        case link_100_half:
+            adapter->hw.autoneg = FALSE;
+            adapter->hw.autoneg_advertised = 0;
+            adapter->hw.forced_speed_duplex = em_100_half;
+            break;
+
+        case link_100_full:
+            adapter->hw.autoneg = FALSE;
+            adapter->hw.autoneg_advertised = 0;
+            adapter->hw.forced_speed_duplex = em_100_full;
+            break;
+
+        case link_10_half:
+            adapter->hw.autoneg = FALSE;
+            adapter->hw.autoneg_advertised = 0;
+            adapter->hw.forced_speed_duplex = em_10_half;
+            break;
+
+        case link_10_full:
+            adapter->hw.autoneg = FALSE;
+            adapter->hw.autoneg_advertised = 0;
+            adapter->hw.forced_speed_duplex = em_10_full;
+            break;
+    }
+
+    adapter->hw.mdix = dev->link_mdix;
+    adapter->hw.fc = dev->flow_control;
+
+    /* Call the validation routine to be safe */
+    em_validate_mdi_setting(&adapter->hw);
+}
+
+/**************************************************************/
+/* update_nvram()                                             */
+/*                                                            */
+/* Update the NVRAM settings (if available) with the current  */
+/* settings in the device structure.                          */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/*                                                            */
+/* Returns:    Error pointer.                                 */
+/**************************************************************/
+
+static _kernel_oserror * update_nvram(device_t dev)
+{
+    _kernel_oserror * e = NULL;
+
+    if (dev->nvram_size != 0)
+    {
+        NVRAMData data;
+
+        data.value = 0;
+        data.fields.link = (uint32_t)dev->link_setting;
+        data.fields.mdix = dev->link_mdix;
+        data.fields.fc = (uint32_t)dev->flow_control;
+        data.fields.unused = 1;
+
+        /* Bits 0-2 are speed, bits 3-4 are MDI mode, bits 5-6 are flow control */
+        e = _swix(OS_Byte,
+                  _INR(0,2),
+    
+                  162,
+                  dev->nvram_addr,
+                  data.value);
+    }
+
+    return e;
+}
+
+/**************************************************************/
+/* restart_if_running()                                       */
+/*                                                            */
+/* If the interface is currently running, restart it and      */
+/* wait for autonegotiation to complete.                      */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+static void restart_if_running(device_t dev)
+{
+    struct adapter * adapter = &dev->adapter;
+
+    if (dev->initialised && (adapter->interface_data.ac_if.if_flags & IFF_RUNNING) != 0)
+    {
+        adapter->hw.wait_autoneg_complete = 1;
+        em_ro_restart(dev);
+        adapter->hw.wait_autoneg_complete = WAIT_FOR_AUTO_NEG_DEFAULT;
+    }
+}
+
+/**************************************************************/
+/* em_ro_change_link()                                        */
+/*                                                            */
+/* Change the link speed/duplex and MDI-X settings. If        */
+/* appropriate, the settings will be saved to NVRAM and the   */
+/* interface will be restarted with the new configuration.    */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             The new link speed/duplex setting;             */
+/*                                                            */
+/*             The new MDI-X setting.                         */
+/*                                                            */
+/* Returns:    Error pointer.                                 */
+/**************************************************************/
+
+_kernel_oserror * em_ro_change_link(device_t dev, ConfigLink link, uint8_t mdix)
+{
+    struct adapter * adapter = &dev->adapter;
+
+    /* Can't change settings if this is a fibre link. */
+    if (adapter->hw.media_type == em_media_type_fiber)
+        return messages_make_error("Err_Fibre", ENODEV, NULL);
+
+    /* Remember the new setting */
+    dev->link_setting = link;
+    dev->link_mdix = mdix;
+
+    /* Save to NVRAM if possible */
+    update_nvram(dev);
+
+    /* If started, restart the device with the new configuration */
+    restart_if_running(dev);
+
+    return NULL;
+}
+
+/**************************************************************/
+/* em_ro_set_advertise()                                      */
+/*                                                            */
+/* Change the speeds advertised for auto-negotiation. The new */
+/* setting will be saved to NVRAM, if possible. This setting  */
+/* won't come into force until the next time the link is      */
+/* negotiated. If they want to, the user can force this by    */
+/* doing "*Configure EKLink <unit> Auto"                      */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             The new advertised speeds bit mask.            */
+/*                                                            */
+/* Returns:    Error pointer.                                 */
+/**************************************************************/
+
+_kernel_oserror * em_ro_set_advertise(device_t dev, uint8_t setting)
+{
+    /* Remember the new setting */
+    dev->advertise = setting;
+
+    /* Save to NVRAM if possible */
+    if (dev->nvram_size > 1)
+    {
+        _swix(OS_Byte,
+              _INR(0,2),
+
+              162,
+              dev->nvram_addr + 1,
+              setting);
+    }
+
+    /* Note that this setting won't come into force until the next time */
+    /* the link is negotiated. If they want to, the user can force this */
+    /* by doing "*Configure EKLink <unit> Auto"                         */
+
+    return NULL;
+}
+
+/**************************************************************/
+/* em_ro_set_flow()                                           */
+/*                                                            */
+/* Change the link flow control settings. The new setting     */
+/* will be saved to NVRAM if possible, and the interface will */
+/* be restarted if it is currently running.                   */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             The new flow control setting.                  */
+/*                                                            */
+/* Returns:    Error pointer.                                 */
+/**************************************************************/
+
+_kernel_oserror * em_ro_set_flow(device_t dev, em_fc_type setting)
+{
+    /* Remember the new setting */
+    dev->flow_control = setting;
+
+    /* Save to NVRAM if possible */
+    update_nvram(dev);
+
+    /* If started, restart the device with the new configuration */
+    restart_if_running(dev);
+
+    return NULL;
+}
+
+/**************************************************************/
+/* em_ro_check_options()                                      */
+/*                                                            */
+/* This is called from the BSD initialisation code to ensure  */
+/* that the correct initial values are set for all            */
+/* the configuration options, overriding the BSD defaults.    */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_check_options(device_t dev)
+{
+    set_link_config(dev);
+}
+
+/**************************************************************/
+/* em_ro_read_configuration()                                 */
+/*                                                            */
+/* Read configuration options from NVRAM and update the       */
+/* device structure accordingly.                              */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_read_configuration(device_t dev)
+{
+    _kernel_oserror * e;
+    uint32_t          info[2];
+
+    e = _swix(PCI_ReadInfo,
+              _INR(0,3),
+
+              PCI_ReadInfo_CMOSAddress | PCI_ReadInfo_CMOSSize,
+              &info,
+              sizeof(info),
+              dev->function_handle);
+
+    if (e != NULL)
+    {
+        /* Something went wrong - we can't read NVRAM */
+        dev->nvram_addr = 0;
+        dev->nvram_size = 0;
+
+        dprintf(("", "%s: PCI_ReadInfo (CMOS) for function handle %u failed: '%s'\n", __func__, dev->function_handle, e->errmess));
+    }
+    else
+    {
+        dev->nvram_addr = info[0];
+        dev->nvram_size = info[1];
+
+        dprintf(("Init", "%s: Device has %u bytes of NVRAM at address %u\n", __func__, dev->nvram_size, dev->nvram_addr));
+    }
+
+    /* Read settings from the first byte of NVRAM */
+
+    dev->link_setting = link_auto;
+    dev->link_mdix = 0;
+    dev->flow_control = em_fc_full;
+
+    if (dev->nvram_size != 0)
+    {
+        NVRAMData data;
+
+        e = _swix(OS_Byte,
+                  _INR(0,1) | _OUT(2),
+
+                  161,
+                  dev->nvram_addr,
+
+                  &data.value);
+
+        if (e == NULL)
+        {
+            dprintf(("Init", "%s: NVRAM[0] value was &%x\n", __func__, data.value));
+
+            /* If bit 7 (unused) is not set to 1, use defaults */
+            if (data.fields.unused == 1)
+            {
+                /* Bits 0-2 of NVRAM are the speed/duplex part of '*Configure EKLink' */
+                if (data.fields.link >= link_max)
+                    dev->link_setting = link_auto;
+                else
+                    dev->link_setting = (ConfigLink)data.fields.link;
+    
+                /* Bits 3-4 of NVRAM are the MDI part of '*Configure EKLink' */
+                if (data.fields.mdix == 3)
+                    dev->link_mdix = 0;
+                else
+                    dev->link_mdix = (uint8_t)data.fields.mdix;
+    
+                /* Bits 5-6 of NVRAM are the setting of '*Configure EKFlowControl' */
+                dev->flow_control = (em_fc_type)data.fields.fc;
+            }
+        }
+    }
+
+    /* Read settings from the second byte of NVRAM */
+
+    dev->advertise = AUTONEG_ADV_DEFAULT;
+
+    if (dev->nvram_size > 1)
+    {
+        uint32_t data;
+
+        e = _swix(OS_Byte,
+                  _INR(0,1) | _OUT(2),
+
+                  161,
+                  dev->nvram_addr + 1,
+
+                  &data);
+
+        if (e == NULL)
+        {
+            dprintf(("Init", "%s: NVRAM[1] value was &%x\n", __func__, data));
+
+            /* Check for invalid values */
+            if (data != 0 && ((data & 0xd0) == 0))
+                dev->advertise = (uint8_t)data;
+        }
+    }
+}
+
+/**************************************************************/
+/* af_reject()                                                */
+/*                                                            */
+/* Filtering function used to reject *all* received packets.  */
+/*                                                            */
+/* Parameters: The address level;                             */
+/*                                                            */
+/*             Pointer to the packet header;                  */
+/*                                                            */
+/*             Pointer to our MAC address.                    */
+/*                                                            */
+/* Returns:    1 to say the packet should be rejected.        */
+/**************************************************************/
+
+int af_reject(uint32_t level, uint8_t * pack_hdr, uint8_t * mac_addr)
+{
+    (void)level;
+    (void)pack_hdr;
+    (void)mac_addr;
+
+    return 1;
+}
+
+/**************************************************************/
+/* af_specific()                                              */
+/*                                                            */
+/* Filtering function used when only specifically addressed   */
+/* packets are accepted by the hardware.                      */
+/*                                                            */
+/* Parameters: The address level;                             */
+/*                                                            */
+/*             Pointer to the packet header;                  */
+/*                                                            */
+/*             Pointer to our MAC address.                    */
+/*                                                            */
+/* Returns:    0 to say the packet should be accepted.        */
+/**************************************************************/
+
+static int af_specific(uint32_t level, uint8_t * pack_hdr, uint8_t * mac_addr)
+{
+    (void)level;
+    (void)pack_hdr;
+    (void)mac_addr;
+
+    /* The hardware does *all* the filtering for us */
+    return 0;
+}
+
+/**************************************************************/
+/* af_normal()                                                */
+/*                                                            */
+/* Filtering function used when hardware packet filtering     */
+/* accepts specific and broadcast packets.                    */
+/*                                                            */
+/* Parameters: The address level;                             */
+/*                                                            */
+/*             Pointer to the packet header;                  */
+/*                                                            */
+/*             Pointer to our MAC address.                    */
+/*                                                            */
+/* Returns:    0 if the packet should be accepted, 1 if it    */
+/*             should be filtered out.                        */
+/**************************************************************/
+
+static int af_normal(uint32_t level, uint8_t * pack_hdr, uint8_t * mac_addr)
+{
+    (void)mac_addr;
+    
+    if (level == ADDRLVL_SPECIFIC && IS_BROADCAST(pack_hdr)) return 1;
+
+    return 0;
+}
+
+/**************************************************************/
+/* af_multicast()                                             */
+/*                                                            */
+/* Filtering function used when hardware packet filtering     */
+/* accepts specific and broadcast and multicast packets.      */
+/*                                                            */
+/* Parameters: The address level;                             */
+/*                                                            */
+/*             Pointer to the packet header;                  */
+/*                                                            */
+/*             Pointer to our MAC address.                    */
+/*                                                            */
+/* Returns:    0 if the packet should be accepted, 1 if it    */
+/*             should be filtered out.                        */
+/**************************************************************/
+
+static int af_multicast(uint32_t level, uint8_t * pack_hdr, uint8_t * mac_addr)
+{
+    (void)mac_addr;
+    
+    switch (level)
+    {
+        case ADDRLVL_SPECIFIC:
+            if (IS_BROADCAST(pack_hdr)) return 1; /* Filter it out */
+            /* else, fall through case */
+
+        case ADDRLVL_NORMAL:
+            if (IS_MULTICAST(pack_hdr)) return 1; /* Don't want it */
+            /* else, fall through case */
+
+        case ADDRLVL_MULTICAST:
+        default:
+            return 0; /* Protocol wants this packet */
+    }
+}
+
+/**************************************************************/
+/* af_promiscuous()                                           */
+/*                                                            */
+/* Filtering function used when hardware packet filtering     */
+/* accepts all packets.                                       */
+/*                                                            */
+/* Parameters: The address level;                             */
+/*                                                            */
+/*             Pointer to the packet header;                  */
+/*                                                            */
+/*             Pointer to our MAC address.                    */
+/*                                                            */
+/* Returns:    0 if the packet should be accepted, 1 if it    */
+/*             should be filtered out.                        */
+/**************************************************************/
+
+static int af_promiscuous(uint32_t level, uint8_t * pack_hdr, uint8_t * mac_addr)
+{
+    int isbroadcast = IS_BROADCAST(pack_hdr);
+    int ismulticast = IS_MULTICAST(pack_hdr);
+
+    switch (level)
+    {
+        case ADDRLVL_SPECIFIC:
+            if (isbroadcast) return 1; /* Filter it out */
+            /* else, fall through case */
+
+        case ADDRLVL_NORMAL:
+            if (ismulticast) return 1; /* Don't want it */
+            /* else, fall through case */
+
+        case ADDRLVL_MULTICAST:
+            /* Reject all packets that aren't broadcast or multicast, */
+            /* and which don't match the MAC address.                 */
+            if (!isbroadcast && !ismulticast)
+            {
+                int i;
+    
+                for (i = 0; i < ETHER_ADDR_LEN; i++)
+                {
+                    if (pack_hdr[i] != mac_addr[i]) return 1;
+                }
+            }
+            /* fall through case */
+
+        case ADDRLVL_PROMISCUOUS:
+        default:
+            return 0; /* protocol wants this packet */
+    }
+}
+
+/**************************************************************/
+/* em_ro_update_addrlevel()                                   */
+/*                                                            */
+/* Find most general address level for all active filters on  */
+/* a given unit, and ask for hardware to be set to that       */
+/* level.                                                     */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_update_addrlevel(device_t dev)
+{
+    static const AddressFilter filters[] =
+    {
+        af_reject,
+        af_specific,
+        af_normal,
+        af_multicast,
+        af_promiscuous
+    };
+
+    int             level = -1;
+    FilterChainRef  fc;
+
+    if (dev->ieeefilter != NULL)
+        level = MAX(level, (int)dev->ieeefilter->fs_addrlevel);
+
+    if (dev->e2monitor != NULL)
+        level = MAX(level, (int)dev->e2monitor->fs_addrlevel);
+
+    if (dev->e2sink != NULL)
+        level = MAX(level, (int)dev->e2sink->fs_addrlevel);
+
+    for (fc = dev->e2specific; fc; fc = fc->fc_next)
+        level = MAX(level, (int)fc->fc_addrlevel);
+
+    set_receive_level(dev, level);
+
+    /* Set appropriate filtering function */
+    dev->address_filter = filters[level + 1];
+
+    /* Note that because the hardware filter doesn't change at exactly */
+    /* the same moment the software filtering function does, there is  */
+    /* the possibility that the odd packet may be accepted or rejected */
+    /* incorrectly immediately after changing the filtering level.     */
+    /* There doesn't seem to be a simple way to resolve this, but in   */
+    /* practice it seems unlikely to cause any problems.               */
+}
+
+/**************************************************************/
+/* set_receive_level()                                        */
+/*                                                            */
+/* Set the hardware filtering to the appropriate level, or    */
+/* stop the hardware completely (if the level is -1).         */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             The required address filtering level. The      */
+/*             possible levels are defined in dcistructs.h    */
+/*             and correspond to the Filter SWI parameters.   */
+/*             Level -1 means disable the interface.          */
+/**************************************************************/
+
+static void set_receive_level(device_t dev, int addrlevel)
+{
+    struct adapter * adapter = &dev->adapter;
+
+    dprintf(("Misc", "%s: Set receive level to %d\n", __func__, addrlevel));
+
+    if (addrlevel == -1)
+    {
+        if (dev->adapter.interface_data.ac_if.if_flags & IFF_RUNNING)
+            em_stop(adapter);
+    }
+    else
+    {
+        uint32_t reg_rctl;
+        uint8_t  status = ST_STATUS_DIRECT;
+        int      s;
+
+        s = splimp();
+
+        reg_rctl = E1000_READ_REG(&dev->adapter.hw, RCTL) &
+            ~(E1000_RCTL_BAM | E1000_RCTL_UPE | E1000_RCTL_MPE);
+
+        if (addrlevel >= ADDRLVL_NORMAL)
+        {
+            /* Broadcasts are OK */
+            reg_rctl |= E1000_RCTL_BAM;
+
+            status = ST_STATUS_BROADCAST;
+        }
+
+        if( addrlevel >= ADDRLVL_MULTICAST )
+        {
+            /* Multicasts are OK */
+            reg_rctl |= E1000_RCTL_MPE;
+
+            status = ST_STATUS_MULTICAST;
+        }
+
+        if( addrlevel >= ADDRLVL_PROMISCUOUS )
+        {
+            /* We'll go with anything */
+            reg_rctl |= E1000_RCTL_UPE;
+
+            status = ST_STATUS_PROMISCUOUS;
+        }
+
+        E1000_WRITE_REG(&adapter->hw, RCTL, reg_rctl);
+        E1000_WRITE_FLUSH(&adapter->hw);
+
+        dev->stats.st_link_status = (dev->stats.st_link_status & ~ST_STATUS_RXMASK) | status;
+    
+        splx(s);
+    }
+}
+
+/**************************************************************/
+/* em_ro_start()                                              */
+/*                                                            */
+/* Start up the interface, if it's not already running.       */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/*                                                            */
+/* Returns:    BSD error number.                              */
+/**************************************************************/
+
+int em_ro_start(device_t dev)
+{
+    if (!dev->initialised)
+        return EIO;
+
+    if (dev->adapter.interface_data.ac_if.if_flags & IFF_RUNNING)
+        return 0;
+
+    dprintf(("Misc", "%s: Starting interface\n", __func__));
+
+    /* Update the hardware structure with user settings */
+    set_link_config(dev);
+
+    return em_init(&dev->adapter);
+}
+
+/**************************************************************/
+/* em_ro_restart()                                            */
+/*                                                            */
+/* Reset and restart the interface.                           */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure.      */
+/**************************************************************/
+
+void em_ro_restart(device_t dev)
+{
+    dprintf(("Misc", "%s: Restarting interface\n", __func__));
+
+    /* Update the hardware structure with user settings */
+    set_link_config(dev);
+
+    /* Reinitialise the device */
+    em_init(&dev->adapter);
+
+    /* Restore the receive level */
+    em_ro_update_addrlevel(dev);
+}
+
+/**************************************************************/
+/* em_ro_filter_packet()                                      */
+/*                                                            */
+/* This is called when a packet has been recieved. The packet */
+/* is filtered, and if accepted it is put in an mbuf chain,   */
+/* then added to the received packets list. If the received   */
+/* packets list already contained packets accepted by a       */
+/* different filter, they are sent to their protocol          */
+/* module and the list is cleared first.                      */
+/*                                                            */
+/* Parameters: Pointer to the adapter structure for the       */
+/*             receiving device.                              */
+/*                                                            */
+/*             Pointer to the packet data. This must be       */
+/*             aligned two bytes after a word boundary.       */
+/*                                                            */
+/*             The packet length including the header but     */
+/*             excluding the CRC.                             */
+/*                                                            */
+/*             Pointer to a pointer to the head of the list   */
+/*             of received packets mbuf chains. May be        */
+/*             altered.                                       */
+/*                                                            */
+/*             Pointer to a pointer to the filter for the     */
+/*             packets on the received packets list. May be   */
+/*             altered.                                       */
+/**************************************************************/
+
+void em_ro_filter_packet(struct adapter * adapter, uint8_t * packet, uint32_t len,
+    struct mbuf ** m_head_ptr, FilterSingleRef * current_filter)
+{
+    device_t        dev = adapter->dev;
+    FilterSingleRef fs = NULL;
+    uint32_t        type;
+    struct mbuf   * mh;
+    struct mbuf   * mp;
+    struct mbuf   * m;
+    RxHdrRef        hdr;
+
+    /* Drop packets that are too short or too long. */
+    if (len < ETHER_HDR_LEN || len > (ETHER_MAX_LEN - ETHER_CRC_LEN))
+    {
+        /* The hardware should catch these, so this should never happen */
+        adapter->dropped_pkts++;
+        return;
+    }
+
+    /* Pop the source address in the statistics structure */
+    memcpy(dev->stats.st_last_src_addr, packet + ETHER_ADDR_LEN, ETHER_ADDR_LEN);
+
+    /* Get the type, and decide if we can handle it */
+    type = ntohs(*(uint16_t *)(packet + (2 * ETHER_ADDR_LEN)));
+
+    /* First discrimination of frame type - is it an IEEE 802.3 or an */
+    /* Ethernet 2.0 frame?                                            */
+    if (type <= ETHERMTU)
+    {
+        fs = dev->ieeefilter;
+    }
+    /* It's an Ethernet 2.0 frame, do we have specific or sink filters active? */
+    else if (dev->e2specific || dev->e2sink)
+    {
+        FilterChainRef fc;
+
+        /* Start by trying to match specific frame types */
+        for (fc = dev->e2specific; fc; fc = fc->fc_next)
+        {
+            if (fc->fc_type == type)
+            {
+                fs = &fc->fc_filter;
+                break;
+            }
+        }
+
+        /* Default to sink filter if no specific matches */
+        if (!fc)
+        {
+            fs = dev->e2sink;
+        }
+    }
+    /* All we have left is the Ethernet 2.0 monitor */
+    else
+    {
+        fs = dev->e2monitor;
+    }
+
+    /* Pass the packet along if it is wanted */
+    if (fs)
+    {
+        /* Use the filtering routine appropriate to the current level of */
+        /* packet reception.                                             */
+        if (dev->address_filter(fs->fs_addrlevel, packet, adapter->hw.mac_addr))
+        {
+            /* Filter rejected this frame */
+            dev->stats.st_unwanted_frames++;
+            return;
+        }
+    }
+    else
+    {
+        /* No protocols want this frame */
+        dev->stats.st_unwanted_frames++;
+        return;
+    }
+
+    /* This frame is wanted. Allocate an mbuf for the received frame header */
+    mh = ALLOC_S(sizeof(RxHdr), NULL);
+    if (mh == NULL)
+    {
+        adapter->mbuf_alloc_failed++;
+        return;
+    }
+
+    /* Create an mbuf chain and copy the packet data (less the header) into it */
+    mp = ALLOC(len - ETHER_HDR_LEN, packet + ETHER_HDR_LEN);
+    if (mp == NULL)
+    {
+        m_free(mh);
+        adapter->mbuf_alloc_failed++;
+        return;
+    }
+
+    /* Fill in the received frame header */
+    mh->m_type = MT_HEADER;
+
+    hdr = mtod(mh, RxHdrRef);
+
+    hdr->rx_tag = 0;
+    memcpy(hdr->rx_src_addr, packet + ETHER_ADDR_LEN, ETHER_ADDR_LEN);
+    memcpy(hdr->rx_dst_addr, packet, ETHER_ADDR_LEN);
+    hdr->rx_frame_type = type;
+    hdr->rx_error_level = 0;
+    hdr->rx_cksum = 0;
+    *(u_short *)(&hdr->_spad[0]) = 0;
+    *(u_short *)(&hdr->_dpad[0]) = 0;
+
+    /* Run down the packet data chain, setting the type field */
+    for (m = mp; m; m = m->m_next)
+        m->m_type = MT_DATA;
+
+    /* Join the header to the data chain */
+    CAT(mh, mp);
+
+    /* Add the packet to the list */
+    if (*m_head_ptr == NULL)
+    {
+        /* The list is empty - start it. */
+        *m_head_ptr = mh;
+        *current_filter = fs;
+    }
+    else if (fs != *current_filter)
+    {
+        /* The list contains packets accepted by a different filter - pass   */
+        /* them to their protocol module by calling the receive handler now. */
+        em_asm_callproto(&dev->dib, *m_head_ptr, (*current_filter)->fs_handler, (*current_filter)->fs_pwptr);
+
+        /* Start a new list */
+        *m_head_ptr = mh;
+        *current_filter = fs;
+    }
+    else
+    {
+        /* The list contains packets accepted by the same filter, add the */
+        /* new chain to the list.                                         */
+        for (m = *m_head_ptr; m->m_list != NULL; m = m->m_list)
+            /* Do nothing */;
+        m->m_list = mh;
+    }
+}
+
+/**************************************************************/
+/* em_ro_transmit()                                           */
+/*                                                            */
+/* Transmit a number of packets of data.                      */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             Pointer to the head of the mbuf chain to       */
+/*             transmit;                                      */
+/*                                                            */
+/*             The number of packets in the chain;            */
+/*                                                            */
+/*             Pointer to the destination MAC address;        */
+/*                                                            */
+/*             Pointer to the source MAC address;             */
+/*                                                            */
+/*             The packet type (network byte order).          */
+/*                                                            */
+/* Returns:    0 if successful, else error number.            */
+/**************************************************************/
+
+int em_ro_transmit(device_t dev, struct mbuf * m_head, int num_packets,
+    uint8_t * edst, uint8_t * esrc, uint16_t type)
+{
+    struct adapter      * adapter = &dev->adapter;
+    struct em_tx_buffer * tx_buffer;
+    struct em_tx_desc   * current_tx_desc = NULL;
+    int                   s;
+    struct mbuf         * m;
+    uint32_t              len;
+    uint8_t             * p;
+    uint32_t              now;
+    int                   error = 0;
+
+    dprintf(("TX", "%s: Called with %d packets of type &%x\n", __func__, num_packets, (unsigned)type));
+
+    _swix(OS_ReadMonotonicTime, _OUT(0), &now);
+
+    /* This is based on em_start() from if_em.c */
+
+    s = splimp();
+
+#ifdef DBG_STATS
+    u_int32_t start_time = em_ro_get_time();
+#endif
+
+    if (dev->tx_handler_entered || dev->irq_handler_entered)
+    {
+        dprintf(("", "%s: TX handler re-entrancy (tx=%d, irq=%d) - can't transmit\n",
+            __func__, (int)dev->tx_handler_entered, (int)dev->irq_handler_entered));
+
+        adapter->tx_re_ent_fails++;
+        splx(s);
+        return INETERR_TXBLOCKED;
+    }    
+
+    dev->tx_handler_entered = true;
+
+    /* Force a cleanup if number of descriptors available hit the threshold */
+    if (
+        adapter->num_tx_desc_avail < num_packets ||
+        adapter->num_tx_desc_avail <= EM_TX_CLEANUP_THRESHOLD
+       )
+        em_clean_transmit_interrupts(adapter);
+
+    if (adapter->num_tx_desc_avail < num_packets)
+    {
+        dprintf(("", "%s: Not enough TXDs (have %d, need %d) - can't transmit\n",
+                 __func__, adapter->num_tx_desc_avail, num_packets));
+        dprintf(("", "%s: First packet start time was %ucs ago\n",
+                 __func__, (now - adapter->tx_buffer_area[adapter->oldest_used_tx_desc].start_time)));
+
+        adapter->no_tx_desc_avail1++;
+        error = INETERR_TXBLOCKED;
+    }
+    else
+    {
+        int i = adapter->next_avail_tx_desc;
+        while (m_head != NULL)
+        {
+            /* Find the packet length */
+            for (len = ETHER_HDR_LEN, m = m_head; m; m = m->m_next )
+                len += m->m_len;
+
+            if (len > ETHER_HDR_LEN + ETHERMTU)
+            {
+                adapter->oversize_tx_pkts++;
+                error = EMSGSIZE;
+                break;
+            }
+
+            tx_buffer = &adapter->tx_buffer_area[i];
+            tx_buffer->start_time = now;
+
+            /* Construct the packet */
+
+            p = &tx_buffer->buffer[ETHER_ALIGN];
+
+            /* Construct the packet header */
+            memcpy(p, edst, ETHER_ADDR_LEN);
+            p += ETHER_ADDR_LEN;
+            memcpy(p, esrc, ETHER_ADDR_LEN);
+            p += ETHER_ADDR_LEN;
+            *((uint16_t *)p) = type;
+            p += ETHER_TYPE_LEN;
+
+            /* Append the packet data */
+            EXPORT(m_head, M_COPYALL, p);
+
+            /* Set the packet descriptor */
+
+            current_tx_desc = &adapter->tx_desc_base[i];
+            current_tx_desc->buffer_addr = tx_buffer->buffer_addr;
+
+            /* Last Descriptor of Packet needs End Of Packet (EOP) bit set. */
+            current_tx_desc->lower.data = (adapter->txd_cmd | len | E1000_TXD_CMD_EOP);
+            current_tx_desc->upper.data = 0;
+
+            if (++i == adapter->num_tx_desc)
+                i = 0;
+            
+            adapter->num_tx_desc_avail--;
+
+            em_ro_flush_wb();
+
+            /* Advance the Transmit Descriptor Tail (Tdt), this tells the */
+            /* E1000 that this frame is available to transmit.            */
+            E1000_WRITE_REG(&adapter->hw, TDT, i);
+
+            /* Move to next packet in list */
+            m_head = m_head->m_list;
+        }
+        adapter->next_avail_tx_desc = i;
+    }
+
+    /* Get max TX descs used for stats */
+    len = adapter->num_tx_desc - adapter->num_tx_desc_avail;
+    if (len > adapter->max_txd_used)
+        adapter->max_txd_used = len;
+
+#ifdef DBG_STATS
+    uint32_t end_time = em_ro_get_time();
+    uint32_t tx_time = end_time - start_time;
+    dprintf(("TX", "%s: %u-%u (%uus) txd used=%u\n", __func__, start_time, end_time, tx_time, len));
+
+    adapter->tx_calls++;
+    if (error != 0)
+        adapter->tx_call_errors++;
+    adapter->tx_time += tx_time;
+    if (tx_time > adapter->max_tx_time)
+        adapter->max_tx_time = tx_time;
+#endif
+
+    dev->tx_handler_entered = false;
+
+    splx(s);
+
+    return error;
+}
+
+/**************************************************************/
+/* em_ro_watchdog()                                           */
+/*                                                            */
+/* Watchdog check. If a packet has been on the transmit queue */
+/* for more than one second, assume the chip is stuck and     */
+/* attempt to reset it on a callback.                         */
+/*                                                            */
+/* Parameters: Pointer to the relevant device structure;      */
+/*                                                            */
+/*             The current monotonic time.                    */
+/**************************************************************/
+
+void em_ro_watchdog(device_t dev, uint32_t now)
+{
+    struct adapter * adapter = &dev->adapter;
+
+    if (adapter->num_tx_desc_avail != adapter->num_tx_desc)
+    {
+        if ((now - adapter->tx_buffer_area[adapter->oldest_used_tx_desc].start_time) > 100)
+        {
+            dprintf(("", "%s: Found packet stuck on transmit queue for more than 1s\n", __func__));
+    
+            /* Don't do anything if we are here because of pause frames */
+            if ((E1000_READ_REG(&adapter->hw, STATUS) & E1000_STATUS_TXOFF) == 0)
+            {
+                /* Add callback to reset chip */
+                dprintf(("", "%s: Controller stopped transmitting - reset on callback\n", __func__));
+                callx_add_callback(watchdog_reset_callback, dev);
+            }
+        }
+    }
+}
+
+/**************************************************************/
+/* watchdog_reset_callback()                                  */
+/*                                                            */
+/* Callback handler that will reset the chip if the watchdog  */
+/* found that a packet was stuck on the transmit queue.       */
+/*                                                            */
+/* Parameters: Callback handler registers (unused);           */
+/*                                                            */
+/*             Private word pointer (unused);                 */
+/*                                                            */
+/*             Pointer to the relevant device structure.      */
+/*                                                            */
+/* Returns:    Error pointer.                                 */
+/**************************************************************/
+
+static _kernel_oserror * watchdog_reset_callback(_kernel_swi_regs * r, void * pw, void * handle)
+{
+    device_t         dev = (device_t)handle;
+    struct adapter * adapter = &dev->adapter;
+
+    (void)r;
+    (void)pw;
+
+    dprintf(("", "%s: Called\n", __func__));
+
+    /* Last chance - try another cleanup */
+    em_clean_transmit_interrupts(adapter);
+
+    /* Are we still stuck? */
+    if (adapter->num_tx_desc_avail != adapter->num_tx_desc)
+    {
+        uint32_t now;
+
+        _swix(OS_ReadMonotonicTime, _OUT(0), &now);
+
+        if ((now - adapter->tx_buffer_area[adapter->oldest_used_tx_desc].start_time) > 100)
+        {
+            struct ifnet *ifp = &adapter->interface_data.ac_if;
+
+            /* Oh dear, the chip got stuck somehow - reset */
+
+            log_message(adapter->dev, "Watchdog timeout -- resetting");
+
+            ifp->if_flags &= ~IFF_RUNNING;
+            em_ro_restart(dev);
+
+            adapter->watchdog_resets++;
+        }
+    }
+
+    return NULL;
+}
+
+/**********************************************************************/
+
+#ifdef DBG_STATS
+static uint32_t   timer_period;
+static uint32_t   timer_divisor;
+static uint32_t   timer_initial = 0;
+static bool       timer_ok = false;
+
+void em_ro_init_dbg_stats(void)
+{
+    _kernel_oserror * e;
+    uint32_t          granularity;
+
+    e = _swix(OS_Hardware,
+              _IN(0) | _INR(8,9) | _OUT(0),
+
+              0,
+              0,
+              EntryNo_HAL_TimerPeriod,
+
+              &timer_period);
+
+    if (e == NULL && timer_period != 0)
+    {
+        timer_period--;
+
+        e = _swix(OS_Hardware,
+                  _IN(0) | _INR(8,9) | _OUT(0),
+
+                  0,
+                  0,
+                  EntryNo_HAL_TimerGranularity,
+
+                  &granularity);
+
+        timer_divisor = granularity / 1000000;
+
+        if (e == NULL && timer_divisor != 0)
+        {
+            timer_ok = true;
+        }
+    }
+
+    timer_initial = em_ro_get_time();
+}
+
+uint32_t em_ro_get_time(void)
+{
+    uint32_t cs1, cs2, ticks_left;
+
+    _swix(OS_ReadMonotonicTime, _OUT(0), &cs1);
+
+    if (!timer_ok)
+        return (cs1 * 10000 - timer_initial);
+
+    _swix(OS_Hardware,
+          _IN(0) | _INR(8,9) | _OUT(0),
+
+          0,
+          0,
+          EntryNo_HAL_TimerReadCountdown,
+
+          &ticks_left);
+
+    _swix(OS_ReadMonotonicTime, _OUT(0), &cs2);
+
+    if (cs1 == cs2)
+        return (cs2 * 10000 + (timer_period - ticks_left) / timer_divisor - timer_initial);
+    else
+        return (cs2 * 10000 - timer_initial);
+}
+#endif
+@
+
+
+1.13
+log
+@	fixed hang on shutdown with 82541 chips
+Detail:
+	msec_delay was being called with a large delay
+	causing use of the Monotonic timer but IRQs were off.
+
+Admin:  tested at castle.. castle added IP
+
+
+Version 0.15. Tagged as 'EtherK-0_15'
+@
+text
+@d856 1
+a856 1
+        return msgs_make_error("Err_Fibre", ENODEV, NULL);
+@
+
+
+1.12
+log
+@  Restructure and tidy up.
+Detail:
+  This version has no functional changes, but has been considerably
+  tidied up to improve commenting and modularity. In particular the
+  information printing routines, filtering routines and message
+  logging routines have been split out into separate source files.
+  The filtering routines have also been re-worked to be more
+  comprehensible. Hopefully this will provide a useful base for
+  developing future network drivers.
+Admin:
+  Requires an up-to-date version of BuildSys to build all variants.
+  Basic testing indicates it still works, but more long term testing
+  to confirm that nothing has been accidentally broken is required.
+
+
+Version 0.12. Tagged as 'EtherK-0_12'
+@
+text
+@d75 1
+a75 1
+    if (t > 10000)
+@
+
+
+1.11
+log
+@Lots of changes due to new code from Intel,this removes lots of
+useless code from the driver - smaller and faster?
+Now implements blocking if someone (eg.NetFS) tries to transmit before
+the link is up.If noone is trying to transmit then the link will
+come up in the background.
+
+Version 0.10. Tagged as 'EtherK-0_10'
+@
+text
+@d15 10
+a26 1
+#include <stdlib.h>
+a27 3
+#include <stdarg.h>
+#include <stdio.h>
+#include <locale.h>
+d44 1
+d49 2
+a50 4
+/*
+ * A really cheesy test for broadcast addresses - relies on
+ * character buffers being aligned two bytes before a word boundary.
+ */
+d54 1
+d58 1
+a58 3
+/*#define IS_MULTICAST_IP(x) ((*(u_char *)(x) >= 224) && \
+                            (*(u_char *)(x)) <= 239)
+*/
+d60 3
+a62 1
+/* Local functions */
+a63 2
+static void em_ro_set_receive_level (device_t dev, int addrlevel);
+static _kernel_oserror * em_ro_watchdog_reset(_kernel_swi_regs * r, void * pw, void * handle);
+d65 7
+a71 1
+/**********************************************************************/
+d93 14
+d124 2
+a125 2
+        em_ro_log_error(dev, e);
+        return -1;
+d131 12
+d158 1
+a158 1
+        em_ro_log_error(dev, e);
+d162 10
+d183 1
+a183 1
+          _INR (0,2),
+d192 7
+a198 1
+void em_ro_log_message(device_t dev, const char * format, ...)
+d200 2
+a201 16
+    _kernel_oserror * e;
+    uint8_t           time[5];
+    va_list           ap;
+    int               irqstate;
+    int               str_len, entry_len, offset, end_offset;
+    uint8_t         * p;
+
+    #ifdef DEBUGLIB
+    dprintf(("Log", "Log: "));
+    va_start(ap, format);
+    dvprintf(("Log", format, ap));
+    va_end(ap);
+    dprintf(("Log", "\n"));
+    #endif
+
+    /* First read the current real-time clock for the time stamp */
+d203 1
+a203 51
+    time[0] = 3;
+
+    e = _swix(OS_Word,
+              _INR(0,1),
+
+              14,
+              time);
+
+    if (e != NULL)
+        memset(time, 0, sizeof(time));
+
+    /* Now get the actual length of the string we will write */
+
+    va_start(ap, format);
+
+    str_len = vsnprintf(NULL, 0, format, ap);
+    if (str_len > 255)
+        str_len = 255;
+
+    va_end(ap);
+
+    /* Length of entry is string plus null, time stamp, string length */
+    entry_len = str_len + 1 + 5 + 1;
+
+    /* We could be called from an interrupt handler, so don't allow the */
+    /* update to be interrupted otherwise we might get in a mess.       */
+
+    irqstate = ensure_irqs_off();
+
+    p = dev->log.buffer;
+    offset = dev->log.last_msg_end;
+    if ((MSGLOG_BUFSIZE - offset) < entry_len)
+        offset = 0;
+
+    /* Write the entry into the buffer */
+    va_start(ap, format);
+    vsnprintf((char *)p + offset, str_len + 1, format, ap);
+    va_end(ap);
+
+    end_offset = offset + str_len + 1;
+    memcpy(p + end_offset, time, 5);
+    end_offset += 5;
+    p[end_offset] = (uint8_t)str_len;
+
+    /* Update the pointers */
+    dev->log.last_msg_end = end_offset + 1;
+    if (end_offset >= dev->log.top_msg_start)
+        dev->log.top_msg_start = offset;
+    dev->log.msgs_logged++;
+
+    restore_irqs(irqstate);
+d206 11
+a216 5
+void em_ro_log_error(device_t dev, _kernel_oserror * e)
+{
+    if (e != NULL)
+        em_ro_log_message(dev, "Error: %s [&%X]", e->errmess, e->errnum);
+}
+d234 2
+a235 2
+        em_ro_log_error(dev, e);
+        return false;
+d238 1
+a238 1
+    return true;
+d241 15
+d272 1
+a272 1
+        em_ro_log_error(dev, e);
+d279 16
+d312 1
+a312 1
+        return NULL;
+d318 8
+d341 11
+a351 7
+/*
+ * em_ro_disable_dev_irq() - disables interrupts for a device.
+ *
+ * Parameters: Pointer to the strcuture describing the device.
+ *
+ * Returns:    Previous interrupt state for this device (non-zero if enabled).
+ */
+d368 7
+a375 5
+/*
+ * em_ro_enable_dev_irq() - enables interrupts for a device.
+ *
+ * Parameters: Pointer to the strcuture describing the device.
+ */
+d386 11
+d413 1
+a413 1
+            em_ro_log_error(dev, e);
+d426 8
+d436 1
+a436 3
+    _kernel_oserror * e;
+
+    if ((bool)dev->dev_vector_claimed)
+d438 2
+d452 1
+a452 1
+            em_ro_log_error(dev, e);
+d457 18
+a474 8
+static int em_ro_ignore_intr(struct adapter *adapter)
+{
+    uint32_t reg_ims = E1000_READ_REG(&adapter->hw, IMS);
+    uint32_t reg_icr = E1000_READ_REG(&adapter->hw, ICR) & reg_ims;
+
+    adapter->diag_icr |= reg_icr;   /* Record for the diagnostics code */
+    return (reg_icr == 0);
+}
+d476 1
+a476 5
+/*
+ *   Return 0 to intercept the call.
+ *   Return 1 to pass on the call.
+ */
+int em_ro_irq_handler(_kernel_swi_regs *r, void *pw)
+d483 2
+a484 4
+    /*
+     * If re-entered, pass on the call. It's probably an interrupt from
+     * something sharing the same interrupt line.
+     */
+d489 16
+a504 11
+        return em_ro_ignore_intr(&dev->adapter);
+
+    dev->irq_handler_entered = true;
+
+    /*dprintf(("IRQ", "%s: Entry\n", __func__));*/
+
+    pass_on = em_intr(&dev->adapter);
+
+    dev->irq_handler_entered = false;
+
+    /*dprintf(("IRQ", "%s: Exit (pass_on=%d)\n", __func__, pass_on));*/
+d509 15
+a523 1
+void em_ro_flush_wb(void)
+d525 2
+a526 2
+    _swix(OS_MMUControl,
+          _IN(0),
+d528 2
+a529 1
+          1 | (1<<28));
+d532 10
+a541 1
+void em_ro_init_supported_stats (struct stats * supported)
+d593 9
+a601 1
+void em_ro_init_stats (device_t dev)
+a604 1
+    return;
+d607 9
+d666 1
+a666 1
+        /* Receive level bits are set by em_ro_set_receive_level() */
+a716 12
+static const char *straddrlevel(int addrlevel)
+{
+    switch (addrlevel)
+    {
+        case ADDRLVL_SPECIFIC:    return "(specific)   ";
+        case ADDRLVL_NORMAL:      return "(normal)     ";
+        case ADDRLVL_MULTICAST:   return "(multicast)  ";
+        case ADDRLVL_PROMISCUOUS: return "(promiscuous)";
+        default:                  return "";
+    }
+}
+
+d718 8
+a725 1
+/* info_indent()                                              */
+a726 5
+static void info_indent(int indent)
+{
+    for (int i = 0; i < indent * 2; i++)
+        putchar(' ');
+}
+d728 1
+a728 724
+/**************************************************************/
+/* em_ro_info_print()                                         */
+/**************************************************************/
+void em_ro_info_print(int indent, const char * token, int nparams, ...)
+{
+    va_list ap;
+    char    buf[80];
+
+    va_start(ap, nparams);
+    msgs_vlookup(buf, sizeof(buf), token, nparams, ap);
+    va_end(ap);
+
+    info_indent(indent);
+    puts(buf);
+}
+
+/**************************************************************/
+/* em_ro_info_printf()                                        */
+/**************************************************************/
+void em_ro_info_printf(int indent, const char * token, const char * format, ...)
+{
+    va_list ap;
+    char    buf[80];
+
+    va_start(ap, format);
+    msgs_vlookupf(buf, sizeof(buf), token, format, ap);
+    va_end(ap);
+
+    info_indent(indent);
+    puts(buf);
+}
+
+/**************************************************************/
+/* format_num()                                               */
+/**************************************************************/
+static int format_num(char * buffer, size_t size, unsigned long long num)
+{
+    struct lconv * l = localeconv();
+    char         * p = buffer + size;
+    char         * p2;
+    const char   * sep = l->thousands_sep;
+    const char   * group = l->grouping;
+    int            seplen = strlen(sep);
+    int            n;
+
+    n = snprintf(buffer, size, "%llu", num);
+    if (n < 0 || n >= size)
+        return n;
+
+    p2 = buffer + n - 1;
+
+    n = *group;
+    *--p = '\0';
+
+    while (p2 >= buffer)
+    {
+        if (n != CHAR_MAX)
+            n--;
+        if (n >= 0)
+        {
+            *--p = *p2--;
+        }
+        else
+        {
+            p -= seplen;
+            if (p <= p2)
+                break;
+            memcpy(p, sep, seplen);
+            n = *++group;
+            if (n == 0)
+                n = *--group;
+        }
+    }
+
+    if (p > p2)
+    {
+        n = buffer + size - p - 1;
+        memmove(buffer, p, n+1);
+    }
+    else
+    {
+        n = strlen(buffer);
+    }
+
+    return n;
+}
+
+/**************************************************************/
+/* info_print_num()                                           */
+/**************************************************************/
+static void info_print_num(int indent, const char * token, uint64_t val)
+{
+    char buf[80];
+
+    info_indent(indent);
+    msgs_lookup(buf, sizeof(buf), token, 0);
+    for (int i = 0; buf[i] != 0 && buf[i] != 10; i++)
+        putchar(buf[i]);
+    format_num(buf, sizeof(buf), val);
+    printf(": %s\n", buf);
+}
+
+/**************************************************************/
+/* info_print_stat()                                          */
+/**************************************************************/
+static void info_print_stat(const char ** head_tok, int indent, const char * token, uint64_t val)
+{
+    if (val != 0)
+    {
+        if (*head_tok != NULL)
+        {
+            putchar('\n');
+            em_ro_info_print(indent, *head_tok, 0);
+            *head_tok = NULL;
+        }
+
+        info_print_num(indent + 1, token, val);
+    }
+}
+
+/**************************************************************/
+/* em_ro_info()                                               */
+/**************************************************************/
+_kernel_oserror * em_ro_info(device_t dev, bool verbose)
+{
+    putchar('\n');
+    em_ro_info_printf(0, "Inf_Unit", "%d\n%s", dev->dib.dib_unit, dev->dib.dib_location);
+    if (!dev->initialised)
+    {
+        em_ro_info_printf(1, "Inf_Failed", "%d", dev->dib.dib_unit);
+    }
+    else
+    {
+        struct adapter *   adapter = &dev->adapter;
+        int                s;
+        struct em_hw_stats stats;
+        struct em_phy_info phy_info;
+        char               buf[80];
+        const char       * p1;
+        const char       * p2;
+        const char       * p3;
+        int                len, max_len;
+        int                filters_active = 0;
+
+        /* Do the things that em_local_timer() does */
+
+        s = splimp();
+
+        em_check_for_link(&adapter->hw);
+        em_print_link_status(adapter);
+        em_update_stats_counters(adapter);
+
+        /* Grab a copy of the stats, as they may be updated under interrupt */
+        stats = adapter->stats;
+
+        splx(s);
+
+        /* MAC address */
+
+        em_ro_info_printf(1, "Inf_Addr", "%02X:%02X:%02X:%02X:%02X:%02X",
+               adapter->hw.mac_addr[0], adapter->hw.mac_addr[1],
+               adapter->hw.mac_addr[2], adapter->hw.mac_addr[3],
+               adapter->hw.mac_addr[4], adapter->hw.mac_addr[5]);
+
+        if (verbose)
+        {
+            /* Controller type */
+
+            snprintf(buf, sizeof(buf), "Inf_Chip%d", adapter->hw.mac_type);
+            em_ro_info_print(1, "Inf_Chip", 1, msgs_return_message(buf));
+
+            /* Bus details */
+
+            switch (adapter->hw.bus_type)
+            {
+                case em_bus_type_pci:
+                    p1 = "PCI";
+                    break;
+                case em_bus_type_pcix:
+                    p1 = "PCI-X";
+                    break;
+                default:
+                    p1 = msgs_return_message("Inf_Unknown");
+                    break;
+            }
+
+            switch (adapter->hw.bus_speed)
+            {
+                case em_bus_speed_33:
+                    p2 = "33MHz";
+                    break;
+                case em_bus_speed_66:
+                    p2 = "66MHz";
+                    break;
+                case em_bus_speed_100:
+                    p2 = "100MHz";
+                    break;
+                case em_bus_speed_133:
+                    p2 = "133MHz";
+                    break;
+                default:
+                    p2 = msgs_return_message("Inf_Unknown");
+                    break;
+            }
+
+            switch (adapter->hw.bus_width)
+            {
+                case em_bus_width_32:
+                    p3 = "32-bit";
+                    break;
+                case em_bus_width_64:
+                    p3 = "64-bit";
+                    break;
+                default:
+                    p3 = msgs_return_message("Inf_Unknown");
+                    break;
+            }
+
+            em_ro_info_print(1, "Inf_Bus", 3, p1, p2, p3);
+
+            /* Media type */
+
+            snprintf(buf, sizeof(buf), "Inf_Media%d", adapter->hw.media_type);
+            em_ro_info_print(1, "Inf_Media", 1, msgs_return_message(buf));
+        }
+
+        /* Link status */
+
+        if (adapter->link_active)
+        {
+            em_ro_info_printf(1, "Inf_LinkUp", "%d\n%s",
+                adapter->link_speed,
+                msgs_return_message((adapter->link_duplex == FULL_DUPLEX) ? "Inf_LinkFull" : "Inf_LinkHalf"));
+        }
+        else
+        {
+            em_ro_info_print(1, "Inf_LinkDown", 0);
+        }
+
+        /* Controller mode */
+
+        if (adapter->interface_data.ac_if.if_flags & IFF_RUNNING)
+        {
+            snprintf(buf, sizeof(buf), "Inf_Mode%d", (dev->stats.st_link_status >> 2) & 3);
+            p1 = buf;
+        }
+        else
+        {
+            p1 = "Inf_ModeOff";
+        }
+
+        p2 = "Inf_ModeErr0"; /* NB hard coded - accepting frames with errors isn't supported yet */
+
+        em_ro_info_print(1, "Inf_Mode", 2, msgs_return_message(p1), msgs_return_message(p2));
+
+        if (verbose && adapter->hw.tbi_compatibility_en)
+        {
+            /* TBI compatibility */
+            em_ro_info_print(1, "Inf_TBI", 1,
+                msgs_return_message(adapter->hw.tbi_compatibility_on ? "Inf_On" : "Inf_Off"));
+        }
+
+        /* Frame types */
+
+        putchar('\n');
+        em_ro_info_print(1, "Inf_Frames", 0);
+
+        if (dev->ieeefilter)
+        {
+            ++filters_active;
+            printf("    IEEE 802.3       %s handler=(%08X,%08X)\n",
+                   straddrlevel(dev->ieeefilter->fs_addrlevel),
+                   (uint32_t)dev->ieeefilter->fs_handler, dev->ieeefilter->fs_pwptr);
+        }
+
+        if (dev->e2monitor)
+        {
+            ++filters_active;
+            printf("    Ethernet Monitor %s handler=(%08X,%08X)\n",
+                   straddrlevel(dev->e2monitor->fs_addrlevel),
+                   (uint32_t)dev->e2monitor->fs_handler, dev->e2monitor->fs_pwptr);
+        }
+
+        if (dev->e2sink)
+        {
+            ++filters_active;
+            printf("    Ethernet Sink    %s handler=(%08X,%08X)\n",
+                   straddrlevel(dev->e2sink->fs_addrlevel),
+                   (uint32_t)dev->e2sink->fs_handler, dev->e2sink->fs_pwptr);
+        }
+
+        if (dev->e2specific)
+        {
+            FilterChainRef  fc = dev->e2specific;
+
+            ++filters_active;
+
+            while (fc)
+            {
+                printf("    Ethernet %04x    %s handler=(%08X,%08X)\n", fc->fc_type,
+                       straddrlevel(fc->fc_filter.fs_addrlevel),
+                       (uint32_t)fc->fc_filter.fs_handler, fc->fc_filter.fs_pwptr);
+                fc = fc->fc_next;
+            }
+        }
+
+        if (!filters_active)
+        {
+            printf("    (none)\n");
+        }
+
+        /* Multicast filters */
+
+        /*
+        putchar('\n');
+        em_ro_info_print(1, "Inf_Mcast", 0);
+
+        !!!TODO!!!
+        */
+
+        /* Hardware stats summary */
+
+        putchar('\n');
+        em_ro_info_print(1, "Inf_HWSummHead", 0);
+
+        /* Transmitted bytes will be the longest number (unless it has wrapped) */
+        max_len = format_num(buf, sizeof(buf), (stats.gotch << 32) + stats.gotcl);
+
+        len = format_num(buf, sizeof(buf), stats.gptc);
+        while (len < max_len)
+            buf[len++] = ' ';
+        if (len > max_len)
+            max_len = len;
+        buf[len++] = 0;
+        format_num(buf + len, sizeof(buf) - len, stats.gprc);
+        em_ro_info_print(2, "Inf_HWSumm1", 2, buf, buf + len);
+
+        len = format_num(buf, sizeof(buf), (stats.gotch << 32) + stats.gotcl);
+        while (len < max_len)
+            buf[len++] = ' ';
+        buf[len++] = 0;
+        format_num(buf + len, sizeof(buf) - len, (stats.gorch << 32) + stats.gorcl);
+        em_ro_info_print(2, "Inf_HWSumm2", 2, buf, buf + len);
+
+        len = format_num(buf, sizeof(buf), stats.ecol + stats.latecol);
+        while (len < max_len)
+            buf[len++] = ' ';
+        buf[len++] = 0;
+        format_num(buf + len, sizeof(buf) - len,
+            stats.rxerrc + stats.crcerrs + stats.algnerrc + stats.rlec +
+            stats.rnbc + stats.mpc + stats.cexterr);
+        em_ro_info_print(2, "Inf_HWSumm3", 2, buf, buf + len);
+
+        /* Driver statistics */
+
+        p1 = "Inf_DSHead";
+        info_print_stat(&p1, 1, "Inf_DSRXF", adapter->rx_pkts);
+        info_print_stat(&p1, 1, "Inf_DSDrop", adapter->dropped_pkts);
+        info_print_stat(&p1, 1, "Inf_DSRej", dev->stats.st_unwanted_frames);
+        info_print_stat(&p1, 1, "Inf_DSMbuf", adapter->mbuf_alloc_failed);
+        info_print_stat(&p1, 1, "Inf_DSNoTXD", adapter->no_tx_desc_avail1);
+        info_print_stat(&p1, 1, "Inf_DSTXBig", adapter->oversize_tx_pkts);
+        info_print_stat(&p1, 1, "Inf_DSTXReEnt", adapter->tx_re_ent_fails);        
+        info_print_stat(&p1, 1, "Inf_DSResets", adapter->watchdog_resets);
+        if (verbose)
+        {
+            info_print_stat(&p1, 1, "Inf_DSMaxTXDU", adapter->max_txd_used);
+        }
+
+        /* Debug statistics */
+
+#ifdef DBG_STATS
+        putchar('\n');
+        em_ro_info_print(1, "X:Debug Statistics", 0);
+        info_print_num(2, "X:Interrupts with received packets", adapter->rx_interrupts);
+        if (adapter->rx_interrupts != 0)
+        {
+            info_print_num(2, "X:Average packets received per interrupt", (uint64_t)adapter->rx_pkts / adapter->rx_interrupts);
+            info_print_num(2, "X:Most packets received in one interrupt", adapter->max_rx_pkts);
+            info_print_num(2, "X:Average interrupt time with received packets", (uint64_t)adapter->rx_irq_time / adapter->rx_interrupts);
+            info_print_num(2, "X:Max interrupt time with received packets", adapter->max_rx_irq_time);
+        }
+        info_print_num(2, "X:Interrupts without received packets", adapter->non_rx_interrupts);
+        if (adapter->non_rx_interrupts != 0)
+        {
+            info_print_num(2, "X:Average interrupt time without received packets", (uint64_t)adapter->non_rx_irq_time / adapter->non_rx_interrupts);
+            info_print_num(2, "X:Max interrupt time without received packets", adapter->max_non_rx_irq_time);
+        }
+        info_print_num(2, "X:Transmit calls", adapter->tx_calls);
+        info_print_num(2, "X:Transmit call errors", adapter->tx_call_errors);
+        if (adapter->tx_calls != 0)
+        {
+            info_print_num(2, "X:Average time in transmit routine", (uint64_t)adapter->tx_time / adapter->tx_calls);
+            info_print_num(2, "X:Max time in transmit routine", adapter->max_tx_time);
+        }
+#endif
+
+        if (!verbose)
+            return NULL;
+
+        /* Hardware configuration */
+
+        putchar('\n');
+        em_ro_info_print(1, "Inf_HWCfgHead", 0);
+        info_print_num(2, "Inf_HWCfgTXD", adapter->num_tx_desc);
+        info_print_num(2, "Inf_HWCfgRXD", adapter->num_rx_desc);
+        info_print_num(2, "Inf_HWCfgTIDV", adapter->tx_int_delay);
+        if (adapter->hw.mac_type >= em_82540)
+            info_print_num(2, "Inf_HWCfgTADV", E1000_READ_REG(&adapter->hw, TADV));
+        info_print_num(2, "Inf_HWCfgRIDV", adapter->rx_int_delay);
+        if (adapter->hw.mac_type >= em_82540)
+            info_print_num(2, "Inf_HWCfgRADV", E1000_READ_REG(&adapter->hw, RADV));
+        info_print_num(2, "Inf_HWCfgITR", E1000_READ_REG(&adapter->hw, ITR));
+
+        /* Detailed hardware statistics */
+
+        putchar('\n');
+        em_ro_info_print(1, "Inf_HWFullHead", 0);
+
+        p1 = "Inf_HWRXHead";
+        info_print_stat(&p1, 2, "Inf_tor", (stats.torh << 32) + stats.torl);
+        info_print_stat(&p1, 2, "Inf_tpr", stats.tpr);
+        info_print_stat(&p1, 2, "Inf_gorc", (stats.gorch << 32) + stats.gorcl);
+        info_print_stat(&p1, 2, "Inf_gprc", stats.gprc);
+        info_print_stat(&p1, 3, "Inf_prc64", stats.prc64);
+        info_print_stat(&p1, 3, "Inf_prc127", stats.prc127);
+        info_print_stat(&p1, 3, "Inf_prc255", stats.prc255);
+        info_print_stat(&p1, 3, "Inf_prc511", stats.prc511);
+        info_print_stat(&p1, 3, "Inf_prc1023", stats.prc1023);
+        info_print_stat(&p1, 3, "Inf_prc1522", stats.prc1522);
+        info_print_stat(&p1, 2, "Inf_bprc", stats.bprc);
+        info_print_stat(&p1, 2, "Inf_mprc", stats.mprc);
+
+        p1 = "Inf_HWTXHead";
+        info_print_stat(&p1, 2, "Inf_tot", (stats.toth << 32) + stats.totl);
+        info_print_stat(&p1, 2, "Inf_tpt", stats.tpt);
+        info_print_stat(&p1, 2, "Inf_gotc", (stats.gotch << 32) + stats.gotcl);
+        info_print_stat(&p1, 2, "Inf_gptc", stats.gptc);
+        info_print_stat(&p1, 3, "Inf_ptc64", stats.ptc64);
+        info_print_stat(&p1, 3, "Inf_ptc127", stats.ptc127);
+        info_print_stat(&p1, 3, "Inf_ptc255", stats.ptc255);
+        info_print_stat(&p1, 3, "Inf_ptc511", stats.ptc511);
+        info_print_stat(&p1, 3, "Inf_ptc1023", stats.ptc1023);
+        info_print_stat(&p1, 3, "Inf_ptc1522", stats.ptc1522);
+        info_print_stat(&p1, 2, "Inf_mptc", stats.mptc);
+        info_print_stat(&p1, 2, "Inf_bptc", stats.bptc);
+
+        p1 = "Inf_HWFCHead";
+        info_print_stat(&p1, 2, "Inf_xonrxc", stats.xonrxc);
+        info_print_stat(&p1, 2, "Inf_xontxc", stats.xontxc);
+        info_print_stat(&p1, 2, "Inf_xoffrxc", stats.xoffrxc);
+        info_print_stat(&p1, 2, "Inf_xofftxc", stats.xofftxc);
+        info_print_stat(&p1, 2, "Inf_fcruc", stats.fcruc);
+
+        p1 = "Inf_RXErrHead";
+        info_print_stat(&p1, 2, "Inf_mpc", stats.mpc);
+        info_print_stat(&p1, 2, "Inf_rnbc", stats.rnbc);
+        info_print_stat(&p1, 2, "Inf_rxerrc", stats.rxerrc);
+        info_print_stat(&p1, 2, "Inf_algnerrc", stats.algnerrc);
+        info_print_stat(&p1, 2, "Inf_crcerrs", stats.crcerrs);
+        info_print_stat(&p1, 2, "Inf_rlec", stats.rlec);
+        info_print_stat(&p1, 3, "Inf_ruc", stats.ruc);
+        info_print_stat(&p1, 3, "Inf_rfc", stats.rfc);
+        info_print_stat(&p1, 3, "Inf_roc", stats.roc);
+        info_print_stat(&p1, 3, "Inf_rjc", stats.rjc);
+        info_print_stat(&p1, 2, "Inf_cexterr", stats.cexterr);
+
+        p1 = "Inf_RXInfHead";
+        info_print_stat(&p1, 2, "Inf_symerrs", stats.symerrs);
+        info_print_stat(&p1, 2, "Inf_sec", stats.sec);
+
+        p1 = "Inf_TXErrHead";
+        info_print_stat(&p1, 2, "Inf_ecol", stats.ecol);
+        info_print_stat(&p1, 2, "Inf_latecol", stats.latecol);
+
+        p1 = "Inf_TXInfHead";
+        info_print_stat(&p1, 2, "Inf_scc", stats.scc);
+        info_print_stat(&p1, 2, "Inf_mcc", stats.mcc);
+        info_print_stat(&p1, 2, "Inf_colc", stats.colc);
+        info_print_stat(&p1, 2, "Inf_dc", stats.dc);
+        info_print_stat(&p1, 2, "Inf_tncrs", stats.tncrs);
+
+        p1 = "Inf_MPHead";
+        info_print_stat(&p1, 2, "Inf_mgprc", stats.mgprc);
+        info_print_stat(&p1, 2, "Inf_mgpdc", stats.mgpdc);
+        info_print_stat(&p1, 2, "Inf_mgptc", stats.mgptc);
+
+        p1 = "Inf_MiscHead";
+        info_print_stat(&p1, 2, "Inf_tsctc", stats.tsctc);
+        info_print_stat(&p1, 2, "Inf_tsctfc", stats.tsctfc);
+
+        /* PHY information */
+
+        if (adapter->hw.media_type != em_media_type_copper)
+            return NULL;
+
+        /* Read the PHY information now */
+        if (em_phy_get_info(&adapter->hw, &phy_info) < 0)
+            return NULL;
+
+        putchar('\n');
+        em_ro_info_print(1, "Inf_PHY", 0);
+
+        /* Extended 10BaseT distance */
+        switch (phy_info.extended_10bt_distance)
+        {
+            case em_10bt_ext_dist_enable_normal:
+                p1 = "Inf_Disabled";
+                break;
+            case em_10bt_ext_dist_enable_lower:
+                p1 = "Inf_Enabled";
+                break;
+            default:
+                p1 = "Inf_Unknown";
+                break;
+        }
+        em_ro_info_print(2, "Inf_PHYExt10btD", 1, msgs_return_message(p1));
+
+        /* Polarity correction */
+        switch (phy_info.polarity_correction)
+        {
+            case em_polarity_reversal_disabled:
+                p1 = "Inf_Disabled";
+                break;
+            case em_polarity_reversal_enabled:
+                p1 = "Inf_Enabled";
+                break;
+            default:
+                p1 = "Inf_Unknown";
+                break;
+        }
+        em_ro_info_print(2, "Inf_PHYPolC", 1, msgs_return_message(p1));
+
+        /* Polarity */
+        switch (phy_info.cable_polarity)
+        {
+            case em_rev_polarity_normal:
+                p1 = "Inf_Normal";
+                break;
+            case em_rev_polarity_reversed:
+                p1 = "Inf_Reversed";
+                break;
+            default:
+                p1 = "Inf_Unknown";
+                break;
+        }
+        em_ro_info_print(2, "Inf_PHYPol", 1, msgs_return_message(p1));
+
+        /* MDI-X mode */
+        switch (phy_info.mdix_mode)
+        {
+            case em_auto_x_mode_manual_mdi:
+                p1 = "MDI";
+                break;
+            case em_auto_x_mode_manual_mdix:
+                p1 = "MDI-X";
+                break;
+            default:
+                p1 = msgs_return_message("Inf_Unknown");
+                break;
+        }
+        em_ro_info_print(2, "Inf_PHYMDIX", 1, p1);
+
+        /* The remaining items are only valid at 1000Mbps */
+
+        /* [Actually, the spec says that the cable length feature works */
+        /* at 100Mbps, but the code in if_em_hw.c disagrees.]           */
+        if (adapter->link_speed != 1000)
+            return NULL;
+
+        /* Cable length */
+        switch (phy_info.cable_length)
+        {
+            case em_cable_length_50:
+                p1 = "0-50";
+                break;
+            case em_cable_length_50_80:
+                p1 = "50-80";
+                break;
+            case em_cable_length_80_110:
+                p1 = "80-110";
+                break;
+            case em_cable_length_110_140:
+                p1 = "110-140";
+                break;
+            case em_cable_length_140:
+                p1 = "> 140";
+                break;
+            default:
+                p1 = msgs_return_message("Inf_Unknown");
+                break;
+        }
+        em_ro_info_print(2, "Inf_PHYCableLen", 1, p1);
+
+        /* Local receiver status */
+        switch (phy_info.local_rx)
+        {
+            case em_1000t_rx_status_not_ok:
+                p1 = "Inf_NotOK";
+                break;
+            case em_1000t_rx_status_ok:
+                p1 = "Inf_OK";
+                break;
+            default:
+                p1 = "Inf_Unknown";
+                break;
+        }
+        em_ro_info_print(2, "Inf_PHYLocalRX", 1, msgs_return_message(p1));
+
+        /* Remote receiver status */
+        switch (phy_info.remote_rx)
+        {
+            case em_1000t_rx_status_not_ok:
+                p1 = "Inf_NotOK";
+                break;
+            case em_1000t_rx_status_ok:
+                p1 = "Inf_OK";
+                break;
+            default:
+                p1 = "Inf_Unknown";
+                break;
+        }
+        em_ro_info_print(2, "Inf_PHYRemoteRX", 1, msgs_return_message(p1));
+
+        /* Idle errors and receive errors */
+        p1 = NULL;
+        info_print_stat(&p1, 1, "Inf_PHYIdleErr", adapter->phy_stats.idle_errors);
+        info_print_stat(&p1, 1, "Inf_PHYRXErr", adapter->phy_stats.receive_errors);
+    }
+
+    return NULL;
+}
+
+/**********************************************************************/
+
+_kernel_oserror * em_ro_log(device_t dev)
+{
+    _kernel_oserror * e;
+    MessageLog      * logcopy;
+    int               irqs_off;
+    int               num_msgs;
+    int               offset, first_msg_offset;
+    char              buf[80];
+    uint8_t         * p;
+    int               msg_len;
+
+    /* The log may be updated by interrupt routines, so grab a snapshot of it */
+
+    logcopy = malloc(sizeof(MessageLog));
+    if (logcopy == NULL)
+        return msgs_make_error("NoStore", ENOMEM, NULL);
+
+    irqs_off = _kernel_irqs_disabled();
+    _kernel_irqs_off();
+    memcpy(logcopy, &dev->log, sizeof(MessageLog));
+    if (!irqs_off)
+        _kernel_irqs_on();
+
+    /* See how many messages are in the buffer */
+
+    /* First go from the last message back to the start of the buffer */
+    num_msgs = 0;
+    offset = logcopy->last_msg_end;
+    while (offset > 0)
+    {
+        num_msgs++;
+        offset -= logcopy->buffer[offset-1] + 1 + 5 + 1;
+    }
+    first_msg_offset = offset;
+
+    /* Next go from the top message back to the last message */
+    offset = logcopy->top_msg_start;
+    while (offset >= logcopy->last_msg_end && offset > 0)
+    {
+        num_msgs++;
+        first_msg_offset = offset;
+        offset -= logcopy->buffer[offset-1] + 1 + 5 + 1;
+    }
+
+    /* Print the heading */
+    msgs_lookupf(buf, sizeof(buf), (num_msgs == 1) ? "Log_Head1" : "Log_Head",
+        "%u\n%u", logcopy->msgs_logged, dev->dib.dib_unit);
+    printf("%s\n", buf);
+    if (num_msgs < logcopy->msgs_logged)
+    {
+        msgs_lookupf(buf, sizeof(buf), "Log_Head2", "%d", num_msgs);
+        printf("%s\n", buf);
+    }
+
+    offset = first_msg_offset;
+    for (int i = 0; i < num_msgs; i++)
+    {
+        p = logcopy->buffer + offset;
+        msg_len = strlen((char *)p) + 1;
+
+        e = _swix(Territory_ConvertStandardDateAndTime,
+                  _INR(0,3),
+
+                  -1,
+                  p + msg_len,
+                  buf,
+                  sizeof(buf));
+
+        if (e != NULL)
+        {
+            buf[0] = '?';
+            buf[1] = 0;
+        }
+
+        printf("  %s: %s\n", buf, p);
+        if (offset == logcopy->top_msg_start)
+            offset = 0;
+        else
+            offset += msg_len + 5 + 1;
+    }
+
+    free(logcopy);
+
+    return NULL;
+}
+
+/**********************************************************************/
+
+static void em_ro_set_link_config(device_t dev)
+d776 10
+a785 1
+/**********************************************************************/
+d813 8
+a820 1
+/**********************************************************************/
+d834 15
+a848 1
+/**********************************************************************/
+d871 15
+a885 1
+/**********************************************************************/
+d910 13
+a922 1
+/**********************************************************************/
+d938 9
+a946 1
+/**********************************************************************/
+d950 1
+a950 1
+    em_ro_set_link_config(dev);
+d953 8
+a960 1
+/**********************************************************************/
+d1061 13
+a1073 1
+/**********************************************************************/
+d1075 1
+a1075 4
+/*
+ * af_reject - filtering function used to reject *all* received packets
+ */
+int af_reject(uint32_t level, uint8_t *pack_hdr, uint8_t *mac_addr)
+d1084 14
+a1097 1
+/**********************************************************************/
+d1099 2
+a1100 9
+/*
+ * af_specific - filtering function used when only specifically
+ * addressed packets are enabled in hardware.
+ */
+static int af_specific(uint32_t level, uint8_t *pack_hdr, uint8_t *mac_addr)
+{
+    /*
+     * the hardware does *all* the filtering for us
+     */
+d1105 1
+d1109 15
+a1123 1
+/**********************************************************************/
+d1125 1
+a1125 7
+
+/*
+ * af_normal - filtering function used when hardware packet
+ * filtering accepts specific and broadcast packets. Returns
+ * 1 if packet should be filtered out, else 0
+ */
+static int af_normal(uint32_t level, uint8_t *pack_hdr, uint8_t *mac_addr)
+d1129 3
+a1131 4
+    if (level == ADDRLVL_SPECIFIC && IS_BROADCAST(pack_hdr))
+        return 1;
+    else
+        return 0;
+d1134 15
+a1148 1
+/**********************************************************************/
+d1150 1
+a1150 6
+/*
+ * af_multicast - filtering function used when hardware packet
+ * filtering accepts specific, broadcast, and multicast
+ * packets.  returns 1 if packet should be filtered out, else 0
+ */
+static int af_multicast(uint32_t level, uint8_t *pack_hdr, uint8_t *mac_addr)
+d1156 11
+a1166 21
+      case ADDRLVL_SPECIFIC:
+        if (IS_BROADCAST(pack_hdr))
+            /* filter it out */
+            return 1;
+
+        /* fall through case */
+
+      case ADDRLVL_NORMAL:
+        if (IS_MULTICAST(pack_hdr))
+            /* don't want it */
+            return 1;
+
+        /* fall through case */
+
+      case ADDRLVL_MULTICAST:
+      default:
+        /* protocol wants this packet */
+        return 0;
+
+        /*NOTREACHED*/
+        break;
+d1170 15
+a1184 1
+/**********************************************************************/
+d1186 1
+a1186 6
+/*
+ * af_promiscuous - filtering function used when hardware packet
+ * filtering accepts all packets.  returns 1 if packet should be
+ * filtered out, else 0
+ */
+static int af_promiscuous(uint32_t level, uint8_t *pack_hdr, uint8_t *mac_addr)
+d1193 21
+a1213 34
+      case ADDRLVL_SPECIFIC:
+        if (isbroadcast)
+            /* filter it out */
+            return 1;
+
+        /* fall through case */
+
+      case ADDRLVL_NORMAL:
+        if (ismulticast)
+            /* don't want it */
+            return 1;
+
+        /* fall through case */
+
+      case ADDRLVL_MULTICAST:
+        /*
+         * reject all packets that aren't broadcast or
+         * multicast, and which don't match the MAC address
+         */
+        if (!isbroadcast && !ismulticast)
+        {
+            int i;
+
+            for (i = 0; i < 6; ++i)
+                if (pack_hdr[i] != mac_addr[i])
+                    return 1;
+        }
+
+        /* fall through case */
+
+      case ADDRLVL_PROMISCUOUS:
+      default:
+        /* protocol wants this packet */
+        return 0;
+d1215 3
+a1217 2
+        /*NOTREACHED*/
+        break;
+d1221 9
+a1229 1
+/**********************************************************************/
+a1230 5
+/*
+ * em_ro_update_addrlevel - find most general address level for all
+ * active filters on a given unit, and ask for hardware to be set to
+ * that level.
+ */
+d1257 1
+a1257 1
+    em_ro_set_receive_level(dev, level);
+d1259 1
+a1259 3
+    /*
+     * Set appropriate filtering function
+     */
+d1261 7
+d1270 15
+a1284 5
+/*
+ * em_ro_set_receive_level - either turn the hardware for the unit off
+ * (if addrlevel = -1), or enable appropriate levels of packet reception.
+ */
+static void em_ro_set_receive_level (device_t dev, int addrlevel)
+d1339 11
+a1349 4
+/*
+ * em_ro_start - called to start up the interface (if not already running)
+ */
+int em_ro_start (device_t dev)
+d1360 1
+a1360 1
+    em_ro_set_link_config(dev);
+d1365 9
+a1373 4
+/*
+ * em_ro_restart - called to reset and restart the interface
+ */
+void em_ro_restart (device_t dev)
+d1378 1
+a1378 1
+    em_ro_set_link_config(dev);
+d1387 28
+a1414 22
+/*
+ * em_ro_filter_packet - called when a packet has been recived.
+ *
+ * This function filters the packet, and if accepted puts it in an mbuf chain.
+ * If the received packets list is empty, or if it contains packets accepted
+ * by the same filter, the packet is put on the list. If the list contains
+ * packets accepted by a different filter, they are send to their protocol
+ * module and the list is cleared first.
+ *
+ * Parameters: Pointer to the adapter structure for the receiving device.
+ *
+ *             Pointer to the packet data. This is aligned two bytes after
+ *             a word boundary.
+ *
+ *             The packet length including the header but excluding the CRC.
+ *
+ *             Pointer to a pointer to the head of the list of received packets
+ *             mbuf chains. May be altered.
+ *
+ *             Pointer to a pointer to the filter for the packets on the
+ *             received packets list. May be altered.
+ */
+d1426 2
+a1427 4
+    /*
+     * Drop packets that are too short or too long
+     */
+    if( len < ETHER_HDR_LEN || len > (ETHER_MAX_LEN - ETHER_CRC_LEN) )
+d1437 1
+a1437 3
+    /*
+     * Get the type, and decide if we can handle it
+     */
+d1440 3
+a1442 5
+    /*
+     * 1st discrimination of frame type - is it
+     * an IEEE 802.3 or an Ethernet 2.0 frame?
+     */
+    if( type <= ETHERMTU )
+d1446 1
+a1446 5
+
+    /*
+     * It's an Ethernet 2.0 frame, do we have
+     * specific or sink filters active?
+     */
+d1451 1
+a1451 3
+        /*
+         * Start by trying to match specific frame types
+         */
+d1461 1
+a1461 3
+        /*
+         * Default to sink filter if no specific matches
+         */
+d1467 1
+a1467 4
+
+    /*
+     * All we have left is the Ethernet 2.0 monitor
+     */
+d1473 1
+a1473 3
+    /*
+     * Pass the packet along if it is wanted
+     */
+d1476 2
+a1477 4
+        /*
+         * Use the filtering routine appropriate to
+         * the current level of packet reception
+         */
+d1480 1
+d1487 1
+a1487 3
+        /*
+         * No protocols want this frame
+         */
+d1539 2
+a1540 4
+        /*
+         * The list contains packets accepted by a different filter, pass
+         * them to their protocol module by calling the receive handler now.
+         */
+d1549 2
+a1550 4
+        /*
+         * The list contains packets accepted by the same filter,
+         * add the new chain to the list.
+         */
+d1557 21
+d1682 2
+a1683 4
+            /*
+             * Advance the Transmit Descriptor Tail (Tdt), this tells the E1000
+             * that this frame is available to transmit.
+             */
+d1717 12
+d1744 1
+a1744 1
+                callx_add_callback(em_ro_watchdog_reset, dev);
+d1750 16
+a1765 1
+static _kernel_oserror * em_ro_watchdog_reset(_kernel_swi_regs * r, void * pw, void * handle)
+d1767 2
+a1768 2
+    device_t              dev = (device_t)handle;
+    struct adapter      * adapter = &dev->adapter;
+d1791 1
+a1791 1
+            em_ro_log_message(adapter->dev, "Watchdog timeout -- resetting");
+d1802 2
+@
+
+
+1.10
+log
+@Adds reentrancy checks to the transmit routine.
+Change to spl macros to disable *all* interrupts rather than just the
+line relating to the device vector number.
+User guide tweak.
+
+Version 0.09. Tagged as 'EtherK-0_09'
+@
+text
+@a991 2
+        info_print_stat(&p1, 1, "Inf_DSNoTXB", adapter->no_tx_buffer_avail1);
+        /*info_print_stat(&p1, 1, "Inf_DSNoTXB2", adapter->no_tx_buffer_avail2);*/
+a2082 34
+#ifdef DEBUGLIB
+static void tx_fail_debug(device_t dev)
+{
+    struct adapter      * adapter = &dev->adapter;
+    struct em_tx_buffer * tx_buffer;
+    int                   used, free;
+
+    dprintf(("", "%s: No free TXDs - can't transmit\n", __func__));
+
+    used = 0;
+    for (tx_buffer = STAILQ_FIRST(&adapter->used_tx_buffer_list);
+         tx_buffer;
+         tx_buffer = STAILQ_NEXT(tx_buffer, em_tx_entry))
+    {
+        used++;
+    }
+
+    free = 0;
+    for (tx_buffer = STAILQ_FIRST(&adapter->free_tx_buffer_list);
+         tx_buffer;
+         tx_buffer = STAILQ_NEXT(tx_buffer, em_tx_entry))
+    {
+        free++;
+    }
+    dprintf(("", "%s: Used list entries: %d, free list entries: %d\n", __func__, used, free));        
+
+    tx_buffer = STAILQ_FIRST(&adapter->used_tx_buffer_list);
+    if (tx_buffer != NULL)
+    {
+        dprintf(("", "%s: First packet start time is %u\n", __func__, tx_buffer->start_time));
+    }
+}
+#endif
+
+a2086 1
+    struct ifnet        * ifp = &adapter->interface_data.ac_if;
+d2129 5
+a2133 3
+#ifdef DEBUGLIB
+        tx_fail_debug(dev);
+#endif
+d2139 1
+d2153 2
+a2154 8
+            tx_buffer = STAILQ_FIRST(&adapter->free_tx_buffer_list);
+            if (!tx_buffer)
+            {
+                adapter->no_tx_buffer_avail1++;
+                error = INETERR_TXBLOCKED;
+                break;
+            }
+            STAILQ_REMOVE_HEAD(&adapter->free_tx_buffer_list, em_tx_entry);
+d2173 1
+a2173 2
+            current_tx_desc = adapter->next_avail_tx_desc;
+
+d2180 3
+a2182 7
+            /* Advance the descriptor pointer */
+            if (current_tx_desc == adapter->last_tx_desc)
+                adapter->next_avail_tx_desc =
+                adapter->first_tx_desc;
+            else
+                adapter->next_avail_tx_desc++;
+
+a2184 6
+            /* Put this tx_buffer at the end in the "in use" list */
+            tx_buffer->used_tx_desc = current_tx_desc;
+            tx_buffer->start_time = now;
+            STAILQ_INSERT_TAIL(&adapter->used_tx_buffer_list, tx_buffer,
+                               em_tx_entry);
+
+d2191 1
+a2191 3
+            E1000_WRITE_REG(&adapter->hw, TDT,
+                            (((uintptr_t) adapter->next_avail_tx_desc -
+                              (uintptr_t) adapter->first_tx_desc) >> 4));
+d2196 1
+a2203 4
+    /* Set timeout in case chip has problems transmitting (if anything sent) */
+    if (current_tx_desc != NULL)
+        ifp->if_timer = EM_TX_TIMEOUT;
+
+d2226 1
+a2226 2
+    struct adapter      * adapter = &dev->adapter;
+    struct em_tx_buffer * tx_buffer;
+d2228 1
+a2228 2
+    tx_buffer = STAILQ_FIRST(&adapter->used_tx_buffer_list);
+    if (tx_buffer != NULL)
+d2230 1
+a2230 1
+        if ((now - tx_buffer->start_time) > 100)
+d2233 1
+a2233 1
+
+a2248 1
+    struct em_tx_buffer * tx_buffer;
+d2259 1
+a2259 2
+    tx_buffer = STAILQ_FIRST(&adapter->used_tx_buffer_list);
+    if (tx_buffer != NULL)
+d2265 1
+a2265 1
+        if ((now - tx_buffer->start_time) > 100)
+@
+
+
+1.9
+log
+@Tidy up syntax messages
+Addition of user guide
+Rearrange ekinfo output
+Function names stripped to save ROM space
+Add link failures and polarity statistics
+
+Version 0.08. Tagged as 'EtherK-0_08'
+@
+text
+@d423 1
+a423 1
+    if ((bool)dev->irq_handler_entered)
+d995 1
+a1534 1
+        dprintf(("", "%s: PCI_ReadInfo (CMOS) for function handle %u failed: '%s'\n", __func__, dev->function_handle, e->errmess));
+d1537 2
+a1541 1
+        dprintf(("Init", "%s: Device has %u bytes of NVRAM at address %u\n", __func__, info[0], info[1]));
+d1544 2
+d1813 1
+a1813 1
+            em_stop(&dev->adapter);
+d1850 2
+a1851 2
+        E1000_WRITE_REG(&dev->adapter.hw, RCTL, reg_rctl);
+        E1000_WRITE_FLUSH(&dev->adapter.hw);
+d2085 34
+d2135 6
+d2145 4
+a2148 1
+    _swix(OS_ReadMonotonicTime, _OUT(0), &now);
+d2150 4
+a2153 1
+    /* This is based on em_start() from if_em.c */
+d2155 1
+a2155 1
+    s = splimp();
+d2166 3
+a2255 2
+    splx(s);
+
+d2273 4
+d2290 2
+@
+
+
+1.8
+log
+@Interrupt handling got broken in 0.06 so although packets were being
+received noone ever saw them.
+Change to DCI flags.
+Addition of new Configure keywords (EkAdvertise and EkFlowControl).
+Improvement to the interrupt handler so interrupts are turned off for
+slightly less time.
+
+Version 0.07. Tagged as 'EtherK-0_07'
+@
+text
+@a31 1
+#include <DebugLib/DebugLib.h>
+d417 2
+d457 1
+a457 1
+    supported->st_link_polarity = 0;
+d459 1
+a459 1
+    supported->st_link_failures = 0;        /* !!!TODO!!! */
+d505 1
+d511 3
+a513 2
+    struct adapter * adapter = &dev->adapter;
+    int              s;
+d562 10
+a576 2
+    /* !!!TODO!!! dev->stats.st_link_failures = 0; */
+
+d1052 1
+a1052 6
+        info_print_stat(&p1, 2, "Inf_prc64", stats.prc64);
+        info_print_stat(&p1, 2, "Inf_prc127", stats.prc127);
+        info_print_stat(&p1, 2, "Inf_prc255", stats.prc255);
+        info_print_stat(&p1, 2, "Inf_prc511", stats.prc511);
+        info_print_stat(&p1, 2, "Inf_prc1023", stats.prc1023);
+        info_print_stat(&p1, 2, "Inf_prc1522", stats.prc1522);
+d1054 1
+a1054 1
+        info_print_stat(&p1, 2, "Inf_tor", (stats.torh << 32) + stats.torl);
+d1056 6
+a1061 1
+        info_print_stat(&p1, 2, "Inf_gorc", (stats.gorch << 32) + stats.gorcl);
+d1066 10
+a1075 6
+        info_print_stat(&p1, 2, "Inf_ptc64", stats.ptc64);
+        info_print_stat(&p1, 2, "Inf_ptc127", stats.ptc127);
+        info_print_stat(&p1, 2, "Inf_ptc255", stats.ptc255);
+        info_print_stat(&p1, 2, "Inf_ptc511", stats.ptc511);
+        info_print_stat(&p1, 2, "Inf_ptc1023", stats.ptc1023);
+        info_print_stat(&p1, 2, "Inf_ptc1522", stats.ptc1522);
+a1077 4
+        info_print_stat(&p1, 2, "Inf_tpt", stats.tpt);
+        info_print_stat(&p1, 2, "Inf_tot", (stats.toth << 32) + stats.totl);
+        info_print_stat(&p1, 2, "Inf_gptc", stats.gptc);
+        info_print_stat(&p1, 2, "Inf_gotc", (stats.gotch << 32) + stats.gotcl);
+d1099 4
+a1119 2
+        info_print_stat(&p1, 2, "Inf_symerrs", stats.symerrs);
+        info_print_stat(&p1, 2, "Inf_sec", stats.sec);
+d1196 3
+d1622 4
+d1640 3
+d1657 2
+d1674 2
+d2252 3
+@
+
+
+1.7
+log
+@Merge in changes from the latest BSD driver. EtherK is now based on
+version 1.4.7 of the FreeBSD 'em' device driver.
+Merge in changes from the latest BSD driver. EtherK is now based on version
+
+Version 0.06. Tagged as 'EtherK-0_06'
+@
+text
+@d368 1
+a368 1
+    dev->dev_vector_claimed = 1;
+d381 1
+a381 1
+    if (dev->dev_vector_claimed != 0)
+d383 1
+a383 1
+        dev->dev_vector_claimed = 0;
+d400 1
+a400 1
+static int em_ro_diag_intr(struct adapter *adapter)
+d405 1
+a405 1
+    adapter->diag_icr |= reg_icr;
+a417 2
+    dprintf(("IRQ", "%s: Entry (re-entry flag=%d)\n", __func__, dev->irq_handler_entered));
+
+d422 1
+a422 1
+    if (dev->irq_handler_entered != 0)
+d425 6
+a430 1
+    dev->irq_handler_entered = 1;
+d432 1
+a432 4
+    if (dev->testing == 0)
+        pass_on = em_intr(&dev->adapter);
+    else
+        pass_on = em_ro_diag_intr(&dev->adapter);
+d434 1
+a434 1
+    dev->irq_handler_entered = 0;
+d436 1
+a436 1
+    dprintf(("IRQ", "%s: Exit (pass_on=%d)\n", __func__, pass_on));
+d512 1
+a512 1
+    if (dev->initialised == 0)
+d747 1
+a747 1
+    if (dev->initialised == 0)
+d1339 1
+a1339 1
+static void em_ro_set_speed_duplex(device_t dev, ConfigLink link)
+d1343 1
+a1343 1
+    switch (link)
+d1347 1
+a1347 1
+            adapter->hw.autoneg_advertised = AUTONEG_ADV_DEFAULT;
+d1350 1
+a1350 1
+        case link_1000:
+d1379 6
+d1389 43
+a1431 1
+_kernel_oserror * em_ro_change_link(device_t dev, ConfigLink link)
+d1439 1
+a1439 1
+    /* Remember new setting */
+d1441 17
+d1460 1
+a1460 1
+    if (dev->nvram_size != 0)
+d1466 2
+a1467 2
+              dev->nvram_addr,
+              (uint32_t)link);
+d1470 6
+a1475 3
+    /* If the device isn't working, we can't actually do anything */
+    if (dev->initialised == 0)
+        return NULL;
+d1477 9
+a1485 2
+    /* Update hardware structure */
+    em_ro_set_speed_duplex(dev, link);
+d1488 1
+a1488 6
+    if (adapter->interface_data.ac_if.if_flags & IFF_RUNNING)
+    {
+        adapter->hw.wait_autoneg_complete = 1;
+        em_ro_restart(dev);
+        adapter->hw.wait_autoneg_complete = WAIT_FOR_AUTO_NEG_DEFAULT;
+    }
+d1497 1
+a1497 1
+    em_ro_set_speed_duplex(dev, dev->link_setting);
+d1529 6
+d1549 42
+a1590 1
+            dprintf(("Init", "%s: NVRAM value was &%x\n", __func__, data.value));
+d1592 3
+a1594 5
+            /* Bits 0-2 of NVRAM are '*Configure EKLink' value */
+            if (data.fields.link >= link_max || data.fields.unused != 0)
+                dev->link_setting = link_auto;
+            else
+                dev->link_setting = (ConfigLink)data.fields.link;
+a1776 1
+    int              s;
+a1779 2
+    s = splimp();
+
+d1789 3
+d1821 1
+d1824 2
+a1826 2
+
+    splx(s);
+d1834 1
+a1834 1
+    if (dev->initialised == 0)
+d1842 3
+d1854 3
+@
+
+
+1.6
+log
+@Addition of support for *CONFIGURE eklink to allow forceable setting of speed
+Fix to link list handler so multiple 82540's are supported at once
+
+Version 0.05. Tagged as 'EtherK-0_05'
+@
+text
+@d34 1
+d60 1
+d100 1
+a100 1
+        dprintf(("Error", "%s: PCI_ConfigurationRead failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d122 1
+a122 1
+        dprintf(("Error", "%s: PCI_ConfigurationWrite failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d240 1
+a240 1
+        dprintf(("Error", "%s: PCI_HardwareAddress failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d263 1
+a263 1
+        dprintf(("Error", "%s: PCI_HardwareAddress failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d287 1
+a287 1
+        dprintf(("Error", "%s: PCI_RAMAlloc failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d305 1
+a305 1
+        dprintf(("Error", "%s: PCI_RAMFree failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d363 1
+a363 1
+            dprintf(("Error", "%s: OS_ClaimDeviceVector failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d394 1
+a394 1
+            dprintf(("Error", "%s: OS_ReleaseDeviceVector failed - '%s' (&%x)\n", __func__, e->errmess, e->errnum));
+d400 9
+d429 4
+a432 1
+    pass_on = em_intr(&dev->adapter);
+d573 4
+a576 1
+    dev->stats.st_tx_general_errors = (unsigned long)(adapter->stats.ecol + adapter->stats.latecol); /* !!! TODO Check this */
+d582 1
+a582 1
+    dev->stats.st_runt_frames = (unsigned long)(adapter->stats.ruc + adapter->stats.rfc); 
+d765 1
+a765 1
+    
+d767 1
+a767 1
+    
+d980 1
+a980 1
+        info_print_stat(&p1, 1, "Inf_DSNoTXD", adapter->no_tx_desc_avail);
+d982 1
+a982 1
+        info_print_stat(&p1, 1, "Inf_DSNoTXB2", adapter->no_tx_buffer_avail2);
+d984 1
+d1349 1
+a1349 1
+            
+d1354 1
+a1354 1
+            
+d1360 1
+a1360 1
+            
+d1366 1
+a1366 1
+            
+d1372 1
+a1372 1
+            
+d1412 7
+a1418 2
+    /* Restart the device with the new configuration */
+    em_init(adapter);
+d1439 1
+a1439 1
+    
+d1444 1
+a1444 1
+    
+d1448 1
+a1448 1
+        dprintf(("Init,Error", "%s: PCI_ReadInfo (CMOS) for function handle %u failed: '%s'\n", __func__, dev->function_handle, e->errmess));
+d1730 14
+d1944 1
+d1953 2
+d1959 5
+a1963 1
+    if (adapter->num_tx_desc_avail < num_packets)
+d1968 1
+a1968 1
+        adapter->no_tx_desc_avail++;
+a1989 6
+                /*
+                 * This should never happen. The em_start() code tries to
+                 * clean up if it does, but I don't see how it can, and if
+                 * it does there is something seriously wrong which needs
+                 * attention.
+                 */
+d2016 2
+a2017 5
+            /*
+             * Last Descriptor of Packet needs End Of Packet (EOP), Report Status
+             * (RS) and append Ethernet CRC (IFCS) bits set.
+             */
+            current_tx_desc->lower.data = len | adapter->txd_cmd | E1000_TXD_CMD_EOP;
+d2030 2
+d2077 58
+d2145 1
+a2145 1
+    
+d2148 1
+a2148 1
+    
+d2152 1
+a2152 1
+    
+d2161 1
+a2161 1
+    
+d2165 1
+a2165 1
+    
+d2167 1
+a2167 1
+    
+@
+
+
+1.5
+log
+@New code drop from James
+Adds AutoSense program to integrate with !Configure
+Debugging support added to IRQ handlers
+Messages tweaked to allow better compression in ROM
+
+Version 0.04. Tagged as 'EtherK-0_04'
+@
+text
+@d966 1
+d974 1
+a974 1
+#ifdef IRQ_STATS
+d991 7
+d1321 142
+d1909 6
+d1931 11
+a1956 10
+            /* Find the packet length */
+            for (len = ETHER_HDR_LEN, m = m_head; m; m = m->m_next )
+                len += m->m_len;
+
+            if (len > ETHER_HDR_LEN + ETHERMTU)
+            {
+                error = EMSGSIZE;
+                break;
+            }
+
+d2024 13
+d2040 1
+a2040 1
+#ifdef IRQ_STATS
+d2046 1
+a2046 1
+void em_ro_init_irq_stats(void)
+@
+
+
+1.4
+log
+@New drop from James Byrne
+Resources capable of being ROMmed and tokenised
+Makefile changes
+Fix for declaring the wrong MAC address which confused some switches
+
+Version 0.03. Tagged as 'EtherK-0_03'
+@
+text
+@d155 1
+d159 1
+d407 1
+a407 1
+    dprintf(("IRQ", "%s: Entered (re-entry flag=%d)\n", __func__, dev->irq_handler_entered));
+d422 2
+d695 1
+a695 2
+    const char * p;
+    char         buf[80];
+d698 3
+a700 5
+
+    p = msgs_return_message(token);
+    while (*p != 0 && *p != 10)
+        putchar(*p++);
+
+a701 1
+
+d928 9
+a936 2
+        max_len = format_num(buf, sizeof(buf), stats.gptc);
+        len = max_len + 1;
+d959 1
+a959 5
+        if (verbose)
+        {
+            info_print_stat(&p1, 1, "Inf_DSInt", adapter->interrupts);
+            info_print_stat(&p1, 2, "Inf_DSIntRX", adapter->rx_interrupts);
+        }
+a968 3
+            info_print_stat(&p1, 1, "Inf_DSMaxRXDU", adapter->max_rxd_used);
+            if (adapter->rx_interrupts != 0)
+                info_print_stat(&p1, 1, "Inf_DSAvgPPI", (uint64_t)adapter->rx_pkts / adapter->rx_interrupts);
+d971 21
+d1240 1
+a1240 1
+        return msgs_make_error("NoStore", ENOMEM, 0);
+d1869 71
+@
+
+
+1.3
+log
+@Messages placed in messages file
+Improvements to shared interrupt handling
+Makefile updated
+Tidied logging
+
+Version 0.02. Tagged as 'EtherK-0_02'
+@
+text
+@d21 1
+d26 1
+a38 1
+#include "Global/HalEntries.h"
+d405 1
+a405 1
+    dprintf(("IRQ", "%s: Entered (re-entry flag=%d)\n", dev->irq_handler_entered));
+d591 1
+a591 1
+/* em_ro_info_indent()                                        */
+d593 1
+a593 1
+void em_ro_info_indent(int indent)
+d611 1
+a611 1
+    em_ro_info_indent(indent);
+d627 1
+a627 1
+    em_ro_info_indent(indent);
+d632 1
+a632 1
+/* em_ro_info_print_stat()                                    */
+d634 1
+a634 1
+void em_ro_info_print_stat(const char ** head_tok, int indent, const char * token, uint32_t val)
+d636 18
+a653 1
+    if (val != 0)
+d655 7
+a661 3
+        const char * p;
+
+        if (*head_tok != NULL)
+d663 7
+a669 3
+            putchar('\n');
+            em_ro_info_print(indent, *head_tok, 0);
+            *head_tok = NULL;
+d671 1
+d673 8
+a680 7
+        em_ro_info_indent(indent + 1);
+    
+        p = msgs_return_message(token);
+        while (*p >= ' ')
+            putchar(*p++);
+    
+        printf(": %u\n", val);
+d682 2
+d687 1
+a687 1
+/* em_ro_info_print_llstat()                                  */
+d689 20
+a708 1
+void em_ro_info_print_llstat(const char ** head_tok, int indent, const char * token, uint64_t val)
+a711 2
+        const char * p;
+
+d719 1
+a719 7
+        em_ro_info_indent(indent + 1);
+    
+        p = msgs_return_message(token);
+        while (*p != 0 && *p != 10)
+            putchar(*p++);
+    
+        printf(": %llu\n", val);
+d744 1
+d927 21
+a947 8
+        em_ro_info_printf(2, "Inf_HWSumm1", "%-19llu\n%-19llu",
+            stats.gptc, stats.gprc);
+        em_ro_info_printf(2, "Inf_HWSumm2", "%-19llu\n%-19llu",
+            (stats.gotch << 32) + stats.gotcl, (stats.gorch << 32) + stats.gorcl);
+        em_ro_info_printf(2, "Inf_HWSumm3", "%-19llu\n%-19llu",
+            stats.ecol + stats.latecol,
+            stats.rxerrc + stats.crcerrs + stats.algnerrc +
+                stats.rlec + stats.rnbc + stats.mpc + stats.cexterr);
+d953 17
+a969 7
+            em_ro_info_print_stat(&p1, 1, "Inf_DSInt", (uint32_t)adapter->interrupts);
+        em_ro_info_print_stat(&p1, 1, "Inf_DSDrop", (uint32_t)adapter->dropped_pkts);
+        em_ro_info_print_stat(&p1, 1, "Inf_DSRej", (uint32_t)dev->stats.st_unwanted_frames);
+        em_ro_info_print_stat(&p1, 1, "Inf_DSMbuf", (uint32_t)adapter->mbuf_alloc_failed);
+        em_ro_info_print_stat(&p1, 1, "Inf_DSNoTXD", (uint32_t)adapter->no_tx_desc_avail);
+        em_ro_info_print_stat(&p1, 1, "Inf_DSNoTXB", (uint32_t)adapter->no_tx_buffer_avail1);
+        em_ro_info_print_stat(&p1, 1, "Inf_DSNoTXB2", (uint32_t)adapter->no_tx_buffer_avail2);
+d974 14
+d994 12
+a1005 12
+        em_ro_info_print_llstat(&p1, 2, "Inf_prc64", stats.prc64);
+        em_ro_info_print_llstat(&p1, 2, "Inf_prc127", stats.prc127);
+        em_ro_info_print_llstat(&p1, 2, "Inf_prc255", stats.prc255);
+        em_ro_info_print_llstat(&p1, 2, "Inf_prc511", stats.prc511);
+        em_ro_info_print_llstat(&p1, 2, "Inf_prc1023", stats.prc1023);
+        em_ro_info_print_llstat(&p1, 2, "Inf_prc1522", stats.prc1522);
+        em_ro_info_print_llstat(&p1, 2, "Inf_tpr", stats.tpr);
+        em_ro_info_print_llstat(&p1, 2, "Inf_tor", (stats.torh << 32) + stats.torl);
+        em_ro_info_print_llstat(&p1, 2, "Inf_gprc", stats.gprc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_gorc", (stats.gorch << 32) + stats.gorcl);
+        em_ro_info_print_llstat(&p1, 2, "Inf_bprc", stats.bprc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_mprc", stats.mprc);
+d1008 12
+a1019 12
+        em_ro_info_print_llstat(&p1, 2, "Inf_ptc64", stats.ptc64);
+        em_ro_info_print_llstat(&p1, 2, "Inf_ptc127", stats.ptc127);
+        em_ro_info_print_llstat(&p1, 2, "Inf_ptc255", stats.ptc255);
+        em_ro_info_print_llstat(&p1, 2, "Inf_ptc511", stats.ptc511);
+        em_ro_info_print_llstat(&p1, 2, "Inf_ptc1023", stats.ptc1023);
+        em_ro_info_print_llstat(&p1, 2, "Inf_ptc1522", stats.ptc1522);
+        em_ro_info_print_llstat(&p1, 2, "Inf_mptc", stats.mptc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_bptc", stats.bptc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_tpt", stats.tpt);
+        em_ro_info_print_llstat(&p1, 2, "Inf_tot", (stats.toth << 32) + stats.totl);
+        em_ro_info_print_llstat(&p1, 2, "Inf_gptc", stats.gptc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_gotc", (stats.gotch << 32) + stats.gotcl);
+d1022 5
+a1026 5
+        em_ro_info_print_llstat(&p1, 2, "Inf_xonrxc", stats.xonrxc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_xontxc", stats.xontxc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_xoffrxc", stats.xoffrxc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_xofftxc", stats.xofftxc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_fcruc", stats.fcruc);
+d1029 11
+a1039 11
+        em_ro_info_print_llstat(&p1, 2, "Inf_mpc", stats.mpc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_rnbc", stats.rnbc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_rxerrc", stats.rxerrc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_algnerrc", stats.algnerrc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_crcerrs", stats.crcerrs);
+        em_ro_info_print_llstat(&p1, 2, "Inf_rlec", stats.rlec);
+        em_ro_info_print_llstat(&p1, 3, "Inf_ruc", stats.ruc);
+        em_ro_info_print_llstat(&p1, 3, "Inf_rfc", stats.rfc);
+        em_ro_info_print_llstat(&p1, 3, "Inf_roc", stats.roc);
+        em_ro_info_print_llstat(&p1, 3, "Inf_rjc", stats.rjc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_cexterr", stats.cexterr);
+d1042 2
+a1043 2
+        em_ro_info_print_llstat(&p1, 2, "Inf_ecol", stats.ecol);
+        em_ro_info_print_llstat(&p1, 2, "Inf_latecol", stats.latecol);
+d1046 5
+a1050 5
+        em_ro_info_print_llstat(&p1, 2, "Inf_scc", stats.scc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_mcc", stats.mcc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_colc", stats.colc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_dc", stats.dc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_tncrs", stats.tncrs);
+d1053 3
+a1055 3
+        em_ro_info_print_llstat(&p1, 2, "Inf_mgprc", stats.mgprc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_mgpdc", stats.mgpdc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_mgptc", stats.mgptc);
+d1058 4
+a1061 4
+        em_ro_info_print_llstat(&p1, 2, "Inf_symerrs", stats.symerrs);
+        em_ro_info_print_llstat(&p1, 2, "Inf_sec", stats.sec);
+        em_ro_info_print_llstat(&p1, 2, "Inf_tsctc", stats.tsctc);
+        em_ro_info_print_llstat(&p1, 2, "Inf_tsctfc", stats.tsctfc);
+d1195 2
+a1196 2
+        em_ro_info_print_stat(&p1, 1, "Inf_PHYIdleErr", adapter->phy_stats.idle_errors);
+        em_ro_info_print_stat(&p1, 1, "Inf_PHYRXErr", adapter->phy_stats.receive_errors);
+d1470 1
+a1470 1
+    dprintf(("Misc", "%s: Set receive level to %d\n", addrlevel));
+d1530 1
+a1530 1
+    dprintf(("Misc", "%s: Starting interface\n"));
+d1641 1
+a1641 1
+        if (dev->address_filter(fs->fs_addrlevel, packet, adapter->hw.hw_addr))
+d1834 5
+@
+
+
+1.2
+log
+@em_disable_intr fudged to disable ALL interrupts
+PreReset attempt
+
+Version 0.01. Tagged as 'EtherK-0_01'
+@
+text
+@a14 1
+#include <string.h>
+d17 3
+d25 2
+d31 1
+d36 1
+a37 1
+#include "Interface/pci.h"
+d55 6
+d77 1
+a77 1
+      _swix(OS_Hardware, _IN(0)|_INR(8,9), t, 0, EntryNo_HAL_CounterDelay);
+d97 2
+a98 2
+        dprintf(("", "pci_read_config: PCI_ConfigurationRead failed - '%s' (&%x)\n", e->errmess, e->errnum));
+        em_ro_copy_error(dev, e);
+d119 2
+a120 2
+        dprintf(("", "pci_write_config: PCI_ConfigurationWrite failed - '%s' (&%x)\n", e->errmess, e->errnum));
+        em_ro_copy_error(dev, e);
+d124 1
+a124 1
+uint32_t vtophys (vm_offset_t v)
+d144 71
+a214 1
+void em_ro_copy_error(device_t dev, _kernel_oserror * e)
+d216 2
+a217 2
+    dev->last_error.errnum = e->errnum;
+    strcpy(dev->last_error.errmess, e->errmess);
+d235 2
+a236 2
+        dprintf(("", "em_ro_get_pci_hw_address: PCI_HardwareAddress failed - '%s' (&%x)\n", e->errmess, e->errnum));
+        em_ro_copy_error(dev, e);
+d258 2
+a259 2
+        dprintf(("", "em_ro_get_pci_io_address: PCI_HardwareAddress failed - '%s' (&%x)\n", e->errmess, e->errnum));
+        em_ro_copy_error(dev, e);
+d282 1
+a282 1
+        dprintf(("", "em_ro_pci_memalloc: PCI_RAMAlloc failed - '%s' (&%x)\n", e->errmess, e->errnum));
+d300 1
+a300 1
+        dprintf(("", "em_ro_pci_memfree: PCI_RAMFree failed - '%s' (&%x)\n", e->errmess, e->errnum));
+d311 1
+a311 1
+int em_ro_disable_dev_irq (device_t dev)
+d333 1
+a333 1
+void em_ro_enable_dev_irq (device_t dev)
+d347 2
+d358 2
+a359 2
+            dprintf(("", "em_ro_setup_intr: OS_ClaimDeviceVector failed - '%s' (&%x)\n", e->errmess, e->errnum));
+            em_ro_copy_error(dev, e);
+d365 4
+d389 2
+a390 2
+            dprintf(("", "em_ro_teardown_intr: OS_ReleaseDeviceVector failed - '%s' (&%x)\n", e->errmess, e->errnum));
+            em_ro_copy_error(dev, e);
+d404 2
+d422 1
+a422 1
+void em_ro_flush_wb(void * p, size_t size)
+d425 1
+a425 1
+          _INR(0,1),
+d427 1
+a427 2
+          1 | (1<<28),
+          p);
+d458 2
+a459 2
+    supported->st_runt_frames = 0;
+    supported->st_overlong_frames = 0;
+d461 1
+a461 1
+    supported->st_late_events = ~0; /* What is this ? */
+d493 6
+d510 2
+a511 1
+    if (dev->initialised == 0)
+d513 7
+a519 6
+        dev->stats.st_link_status = 0;
+    }
+    else
+    {
+        dev->stats.st_link_status = (dev->stats.st_link_status & ST_STATUS_RXMASK) | ST_STATUS_OK;
+        if (adapter->link_active == 1)
+d521 1
+a521 2
+            dev->stats.st_link_status |= ST_STATUS_ACTIVE;
+            if (adapter->hw.media_type == em_media_type_fiber)
+d523 11
+a533 1
+                dev->stats.st_interface_type = ST_TYPE_1000BASESX;
+a534 17
+            }
+            else
+            {
+                switch (adapter->link_speed)
+                {
+                    case 10:
+                        dev->stats.st_interface_type = ST_TYPE_10BASET;
+                        break;
+                    case 100:
+                        dev->stats.st_interface_type = ST_TYPE_100BASETX;
+                        break;
+                    case 1000:
+                        dev->stats.st_interface_type = ST_TYPE_1000BASET;
+                        break;
+                }
+                if (adapter->link_duplex == FULL_DUPLEX)
+                    dev->stats.st_link_status |= ST_STATUS_FULL_DUPLEX;
+a535 2
+            }
+            /* !!!TODO!!! Put receive level bits in here */
+d537 2
+d540 2
+a541 1
+        /* !!!TODO!!! dev->stats.st_link_failures = 0; */
+d543 32
+a574 26
+        /* Transmit statistics */
+        dev->stats.st_collisions = adapter->stats.colc;
+        dev->stats.st_excess_collisions = adapter->stats.ecol;
+        /* dev->stats.st_heartbeat_failures = 0; */
+        /* dev->stats.st_not_listening = 0; */
+        dev->stats.st_tx_frames = adapter->stats.gptc;
+        dev->stats.st_tx_bytes = adapter->stats.gotcl;
+        dev->stats.st_tx_general_errors = adapter->stats.ecol + adapter->stats.latecol; /* !!! TODO Check this */
+
+        /* Receive statistics */
+        dev->stats.st_crc_failures = adapter->stats.crcerrs;
+        dev->stats.st_frame_alignment_errors = adapter->stats.algnerrc;
+        dev->stats.st_dropped_frames = adapter->dropped_pkts;
+        /* dev->stats.st_runt_frames = 0; */
+        /* dev->stats.st_overlong_frames = 0; */
+        dev->stats.st_jabbers = adapter->stats.rjc;
+        /* dev->stats.st_late_events = 0; [What is this?] */
+        dev->stats.st_unwanted_frames = 0; /* !!!TODO!!! */
+        dev->stats.st_rx_frames = adapter->stats.gprc;
+        dev->stats.st_rx_bytes = adapter->stats.gorcl;
+        dev->stats.st_rx_general_errors = adapter->stats.rxerrc + /* Receive Error Count */
+                                          adapter->stats.rlec +   /* Receive Length Error Count */
+                                          adapter->stats.rnbc +   /* RX No Buffers Count */
+                                          adapter->stats.mpc +    /* Missed Packet Count */
+                                          adapter->stats.cexterr; /* Carrier Extension Error Count */
+    }
+d589 45
+a633 1
+void em_ro_info (device_t dev)
+d635 54
+a688 1
+    printf ("Unit %d, location: %s\n\n", dev->dib.dib_unit, dev->dib.dib_location);
+d691 1
+a691 1
+        printf("This unit could not be initialised\n");
+d695 83
+a777 1
+        int filters_active = 0;
+d779 48
+a826 6
+        printf("%-18s", "Card Info");
+        printf("Ethernet address %02X:%02X:%02X:%02X:%02X:%02X\n\n",
+               dev->adapter.hw.mac_addr[0], dev->adapter.hw.mac_addr[1],
+               dev->adapter.hw.mac_addr[2], dev->adapter.hw.mac_addr[3],
+               dev->adapter.hw.mac_addr[4], dev->adapter.hw.mac_addr[5]);
+        printf("%-18s", "Frame types claimed:\n");
+d831 1
+a831 1
+            printf("      IEEE 802.3       %s handler=(%08X,%08X)\n",
+d839 1
+a839 1
+            printf("      Ethernet Monitor %s handler=(%08X,%08X)\n",
+d847 1
+a847 1
+            printf("      Ethernet Sink    %s handler=(%08X,%08X)\n",
+d860 1
+a860 1
+                printf("      Ethernet %04x    %s handler=(%08X,%08X)\n", fc->fc_type,
+d869 1
+a869 1
+            printf("      (none)\n");
+d872 7
+a878 4
+        /* Lots more stuff we could print. How about normal and verbose levels?
+        * All the HW stats counters. Chip type, link type and status,
+        * interrupt count, PCI device info, multicast filters,
+        * current filter level, more stats (mbuf failures etc.)
+d881 178
+a1058 1
+        em_update_stats_counters(&dev->adapter);
+d1060 58
+a1117 1
+        em_print_hw_stats(&dev->adapter);
+d1120 34
+a1153 1
+    if (dev->last_error.errmess[0])
+d1155 2
+a1156 2
+        printf ("\n%-18s%s (&%X)\n", "Last error:", dev->last_error.errmess, dev->last_error.errnum);
+        dev->last_error.errmess[0] = 0;
+d1158 1
+d1160 3
+a1162 1
+    if (dev->last_message[0])
+d1164 3
+a1166 2
+        printf ("%-18s%s\n", "Last message:", dev->last_message);
+        dev->last_message[0] = 0;
+d1168 41
+a1210 1
+
+d1386 1
+a1386 1
+void em_ro_set_receive_level (device_t dev, int addrlevel)
+d1391 2
+d1451 2
+d1564 1
+a1564 1
+            adapter->dropped_pkts++;
+d1573 1
+a1573 1
+        adapter->dropped_pkts++;
+d1741 1
+a1741 1
+            em_ro_flush_wb(current_tx_desc, sizeof(struct em_tx_desc));
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d269 1
+a269 1
+              dev->device_vector,
+d296 1
+a296 1
+                  dev->device_vector,
+d314 1
+a314 1
+    device_t dev = (device_t)r->r[0];
+@
+
+
+1.1.1.1
+log
+@Initial import from James Byrne
+
+@
+text
+@@

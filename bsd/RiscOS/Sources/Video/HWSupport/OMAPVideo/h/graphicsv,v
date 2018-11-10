@@ -1,0 +1,390 @@
+head	1.6;
+access;
+symbols
+	OMAPVideo-0_41:1.6
+	OMAPVideo-0_40:1.5
+	OMAPVideo-0_39:1.5
+	OMAPVideo-0_38:1.5
+	OMAPVideo-0_37:1.5
+	OMAPVideo-0_36:1.5
+	OMAPVideo-0_35:1.5
+	OMAPVideo-0_34:1.5
+	OMAPVideo-0_33:1.4
+	OMAPVideo-0_32:1.4
+	OMAPVideo-0_31:1.4
+	OMAPVideo-0_30:1.4
+	OMAPVideo-0_29:1.4
+	OMAPVideo-0_28:1.4
+	OMAPVideo-0_27:1.3
+	OMAPVideo-0_26:1.3
+	OMAPVideo-0_25:1.3
+	OMAPVideo-0_24:1.3
+	OMAPVideo-0_23:1.3
+	OMAPVideo-0_22:1.3
+	OMAPVideo-0_21:1.3
+	OMAPVideo-0_20:1.3
+	OMAPVideo-0_19:1.3
+	OMAPVideo-0_18:1.2
+	OMAPVideo-0_17:1.2
+	OMAPVideo-0_16:1.2
+	OMAPVideo-0_15:1.2
+	OMAPVideo-0_14:1.2
+	OMAPVideo-0_13:1.2
+	OMAPVideo-0_12:1.1
+	OMAPVideo-0_11:1.1
+	OMAPVideo-0_10:1.1
+	OMAPVideo-0_09:1.1
+	OMAPVideo-0_08:1.1
+	OMAPVideo-0_07:1.1
+	OMAPVideo-0_06:1.1
+	OMAPVideo-0_05:1.1
+	OMAPVideo-0_04:1.1
+	OMAPVideo-0_03:1.1
+	OMAPVideo-0_02:1.1
+	OMAPVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2018.05.31.21.48.57;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	qHkabDo5zjgySuEA;
+
+1.5
+date	2015.05.17.17.50.16;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	J3i0xRSaySaJePly;
+
+1.4
+date	2013.12.15.22.56.09;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	4M7nRqPE9VC3Ahhx;
+
+1.3
+date	2012.05.06.09.16.47;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	imAmvVvRmuLKWD3w;
+
+1.2
+date	2011.10.23.21.01.56;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	0rwNv0ztfd3f9wEv;
+
+1.1
+date	2010.02.28.19.01.19;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Big refactor, introduce GraphicsV overlay API support
+Detail:
+  This change introduces initial support for the GraphicsV overlay API.
+  RGB & YUV overlays are supported, along with rotation and scaling.
+  Vertical flipping isn't supported yet, and there are still a number of bugs to track down, along with some potential improvements.
+  The code has also been refactored significantly, in an attempt to protect all critical state with spinlocks/mutexes (as appropriate), and to reduce the number of globals so that it's easier to see what's touching what. Previously very little locking was performed, which could lead to issues if VSyncs or synclost interrupts occurred during certain operations. Now, the data should be structured in such a way that this shouldn't cause problems.
+  Notable things:
+  * State which needs to be writable from interrupt handlers is protected by spinlocks
+  * State which needs to be readable from interrupt handlers is protected by reader-writer spinlocks
+  * State which doesn't need to be accessed from interrupt handlers is unprotected (mutexes can be introduced in the future to make the code SMP-safe)
+  * Using non-alpha screen modes for the desktop will currently result in only "basic" overlays being supported (i.e. overlays which appear ontop of the desktop). In some cases this could be improved by falling back to a software pointer, but for now the only way to get Z-Order overlays is to use a screen mode with an alpha channel.
+  * Memory allocation for overlays is abstracted via the buffer interface (h/buffer). This has three implementations: basic buffers for untransformed overlays, VRFB-transformed buffers for OMAP3, and TILER-transformed buffers for OMAP4.
+  * Ultimately all overlay memory is allocated as physically contiguous pages within a PMP - although since TILER contains its own MMU this isn't strictly necessary on OMAP4
+  * Overlay memory is mapped as write-through cacheable for CPU access; experimentation with different cache policies has yet to be performed. However a potential future optimisation would be to perform lazy unmapping of overlay buffers, reducing the map/unmap overhead in well-behaved code which only maps buffers when they're needed
+Admin:
+  Tested on BB-xM, Pandaboard
+
+
+Version 0.41. Tagged as 'OMAPVideo-0_41'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#ifndef OMAPVIDEO_GRAPHICSV_H
+#define OMAPVIDEO_GRAPHICSV_H
+
+#include <stdint.h>
+
+#include "kernel.h"
+
+#include "types.h"
+#include "gvtypes.h"
+
+#ifdef DEBUGLIB
+extern void graphicsv_debug(void);
+#endif
+extern int checkformat(overlaytarget target, pixelformat format);
+extern bool canhaveoverlay(pixelformat format, const modelocked_t *modelocked);
+extern int graphicsv_handler(_kernel_swi_regs *r,void *pw);
+
+#endif
+@
+
+
+1.5
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@a33 1
+#include "Global/VIDCList.h"
+d35 2
+a36 1
+/* Pointer update */
+d38 5
+a42 41
+typedef struct
+{
+	uint8_t width; /* unpadded width in bytes */
+	uint8_t height; /* in pixels */
+	uint8_t padding[2]; /* 2 bytes of padding for field alignment */
+	void *buffLA; /* logical address of buffer holding pixel data */
+	void *buffPA; /* corresponding physical address of buffer */
+} shape_t;
+
+/* GraphicsV_Render */
+
+typedef struct
+{
+	/* 0,0 = bottom-left of screen :( */
+	uint32_t src_left;
+	uint32_t src_bottom;
+	uint32_t dest_left;
+	uint32_t dest_bottom;
+	uint32_t width; /* -1 */
+	uint32_t height; /* -1 */
+} copyrect_params_t;
+
+typedef struct
+{
+	/* All inclusive. 0,0 = bottom-left of screen :( */
+	uint32_t left;
+	uint32_t top;
+	uint32_t right;
+	uint32_t bottom;
+	uint32_t *oraeor;
+} fillrect_params_t;
+
+/* GraphicsV_PixelFormats */
+
+typedef struct
+{
+	int32_t ncolour;
+	uint32_t modeflags;
+	uint32_t log2bpp;
+} pixelformat_t;
+        
+@
+
+
+1.4
+log
+@Update for new GraphicsV registration process. Remove VIDC20 16bpp gamma demangle code. Advertise red/blue swapped 16bpp & 32bpp modes when using TV-out.
+Detail:
+  c/cmodule - Updated to use new GraphicsV registration process and OS_Hardware reason code #defines
+  c/dispc, c/venc, h/graphicsv, h/venc - Use Hdr:VIDCList instead of local VIDC list definition
+  c/graphicsv - Implement GraphicsV_PixelFormats, and return an appropriate list based on whether TV-out is in use. Call through to the HAL for GraphicsV_IICOp instead of relying on the OS to call the HAL for us.
+  c/palette - Remove VIDC20 16bpp gamma demangle code, the OS now supplies the data in a sensible format. Dont use mouse palette function intended for 555 mode emulation if CPR isn't in use (i.e. we're on TV-out, i.e. gamma won't be available either)
+Admin:
+  Tested in OMAP3 ROM on BB-xM
+  OMAP4 version builds but is unstested
+  Requires HdrSrc-2_38 and Kernel-5_35-4_79_2_203
+
+
+Version 0.28. Tagged as 'OMAPVideo-0_28'
+@
+text
+@a46 7
+#define VIDCLIST3_1BPP 0
+#define VIDCLIST3_2BPP 1
+#define VIDCLIST3_4BPP 2
+#define VIDCLIST3_8BPP 3
+#define VIDCLIST3_16BPP 4
+#define VIDCLIST3_32BPP 5
+
+@
+
+
+1.3
+log
+@Merge of headers with OMAP4Video
+For the most part, this is just adding "_t" suffixes to all the typedefs.
+The OMAP4 controller registers are in "regs4.h" and OMAP3 in "regs3.h", they are selected between with a compile time switch - hence !MkROM becomes !Ms !MkRom3 and !MkRom4.
+OMAP3 version tested & still works, OMAP4 will not work.
+
+Version 0.19. Tagged as 'OMAPVideo-0_19'
+@
+text
+@d34 1
+a46 29
+/* vidclist3 for mode changes */
+
+typedef struct
+{
+	uint32_t index;
+	uint32_t value;
+} controlentry_t;
+
+typedef struct
+{
+	uint32_t Format;
+	uint32_t PixelDepth;
+	uint32_t HorizSyncWidth;
+	uint32_t HorizBackPorch;
+	uint32_t HorizLeftBorder;
+	uint32_t HorizDisplaySize;
+	uint32_t HorizRightBorder;
+	uint32_t HorizFrontPorch;
+	uint32_t VertiSyncWidth;
+	uint32_t VertiBackPorch;
+	uint32_t VertiTopBorder;
+	uint32_t VertiDisplaySize;
+	uint32_t VertiBottomBorder;
+	uint32_t VertiFrontPorch;
+	uint32_t PixelRate;
+	uint32_t SyncPol;
+	controlentry_t ControlList[1];
+} vidclist3_t;
+
+a53 3
+#define VIDCLIST3_HSYNC 1
+#define VIDCLIST3_VSYNC 2
+
+d76 9
+@
+
+
+1.2
+log
+@Fix black screen on boot issue. Use C99 number types.
+Detail:
+  c/dss - Fixed the cause of the black screens on boot on OMAP3 machines (DM37xx seems fine). It looks like the cause was due to skipping the step where you disable the LCD output before triggering the DSS reset.
+  c/cmodule, c/dispc, c/dss, c/graphicsv, h/globals - Removed code relating to previous attempts to fix the black screen issue
+  c/cmodule, c/dispc, c/dsi, c/dss, c/graphicsv, c/palette, c/regs, c/sdma, c/venc, h/dsi, h/dss, h/globals, h/graphicsv, h/palette, h/regs - Use the C99 number types instead of u32, u16, etc.
+Admin:
+  Tested on rev C2 BB, rev A2 BB-xM
+
+
+Version 0.13. Tagged as 'OMAPVideo-0_13'
+@
+text
+@d52 1
+a52 1
+} controlentry;
+d72 2
+a73 2
+	controlentry ControlList[1];
+} vidclist3;
+d96 1
+a96 1
+} copyrect_params;
+d106 1
+a106 1
+} fillrect_params;
+@
+
+
+1.1
+log
+@Add initial version of OMAP video driver module
+Detail:
+  All-new OMAP video driver, written as a module in C.
+  Functionality-wise it's basically the same as the original HAL-based driver, except it provides support for GraphicsV_Render via use of the OMAP SDMA controller, and there's currently no support for GraphicsV_IICOp.
+  However under the hood the module is significantly different, to ensure it can be expanded to expose the full feature set of the video controller once the new GraphicsV API is ready.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.01. Tagged as 'OMAPVideo-0_01'
+@
+text
+@d31 2
+d39 3
+a41 3
+	u8 width; /* unpadded width in bytes */
+	u8 height; /* in pixels */
+	u8 padding[2]; /* 2 bytes of padding for field alignment */
+d50 2
+a51 2
+	u32 index;
+	u32 value;
+d56 16
+a71 16
+	u32 Format;
+	u32 PixelDepth;
+	u32 HorizSyncWidth;
+	u32 HorizBackPorch;
+	u32 HorizLeftBorder;
+	u32 HorizDisplaySize;
+	u32 HorizRightBorder;
+	u32 HorizFrontPorch;
+	u32 VertiSyncWidth;
+	u32 VertiBackPorch;
+	u32 VertiTopBorder;
+	u32 VertiDisplaySize;
+	u32 VertiBottomBorder;
+	u32 VertiFrontPorch;
+	u32 PixelRate;
+	u32 SyncPol;
+d90 6
+a95 6
+	u32 src_left;
+	u32 src_bottom;
+	u32 dest_left;
+	u32 dest_bottom;
+	u32 width; /* -1 */
+	u32 height; /* -1 */
+d101 5
+a105 5
+	u32 left;
+	u32 top;
+	u32 right;
+	u32 bottom;
+	u32 *oraeor;
+@
+

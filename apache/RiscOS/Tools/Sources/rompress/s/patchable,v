@@ -1,0 +1,155 @@
+head	1.1;
+access;
+symbols
+	rompress-0_04:1.1
+	rompress-0_03:1.1
+	rompress-0_02:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2012.02.25.17.36.01;	author jlee;	state Exp;
+branches;
+next	;
+commitid	wIBsgVNCSMcxZyUv;
+
+
+desc
+@@
+
+
+1.1
+log
+@Multiple improvements
+Detail:
+  Makefile - Ensure additional files get cleaned now that CLEAN_DEPEND is no longer supported
+  s/patchable, Makefile, c/rompress - Add new option -p/--patchable for creating patchable compressed ROMs. Currently it's impossible for a ROM patching tool (e.g. the Iyonix softload or ROM flash tools) to update the negative checksum of the uncompressed image, because the ROM footer will have been compressed. As a workaround for this, asking rompress to produce a patchable ROM will cause it to append a small section of code that manually recalculates the uncompressed image negative checksum and writes it to the ROM footer once decompression is complete.
+  c/romcrc, c/rompress, h/romcrc - Update romcrc code to allow reading/writing of the extended ROM footer. This is used to insert the new 'compressed ROM softload hint' tag into the footer of the compressed ROM, to allow the softload tool to easily identify compressed ROMs and locate the OS header.
+  c/rompress - Add new option -s/--size for specifying that the compressed ROM must be an exact size. E.g. for padding Tungsten ROMs to 4MB.
+  c/zlib, zinflate/s/zinflate - Update zlib decompression stub to only copy the necessary amount of data to the decompression workspace, instead of blindly copying everything up to the end of the image. Remove broken, over-optimised memcpy implementation and replace with a simple loop, since memcpy is rarely (if ever) used.
+  s/asm - Don't rely on OS_LeaveOS for returning to user mode.
+Admin:
+  Tested with compressing/decompressing OMAP3, OMAP3Live, IOMD & Tungsten ROMs
+  Tool should now be ready for use, and will build from source if you have Kernel-5_35-4_79_2_138 or newer
+
+
+Version 0.02. Tagged as 'rompress-0_02'
+@
+text
+@; Copyright 2012 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+        GET     Hdr:OSEntries
+
+        AREA    |M2$$Code|, CODE, READONLY
+
+        EXPORT  rompress_patchablecode
+        EXPORT  rompress_patchablecodesize
+
+R0 RN 0
+R1 RN 1
+R2 RN 2
+R3 RN 3
+R4 RN 4
+R5 RN 5
+R6 RN 6
+R7 RN 7
+R8 RN 8
+R9 RN 9
+R10 RN 10
+R11 RN 11
+R12 RN 12
+R13 RN 13
+LR RN 14
+PC RN 15
+
+; This is a blob of code that's appended to 'patchable' compressed images.
+; The decompression header is patched to run this code before the real
+; decompression code. The code recalculates the negative checksum of the
+; uncompressed section, and combines that value with a precalculated negative
+; checksum for the compressed section, producing an accurate checksum of the
+; entire image. A short code section gets copied to the stack, to allow it to be
+; run after the image has been decompressed (and this original patch code
+; overwritten). This stack code simply stores the updated checksum at the end of
+; the image and returns back to RISC OS.
+
+; If we assume that we're using patch tools which correctly update the negative
+; checksum in the ROM footer then we could do away with the manual checksum
+; recalculation and instead just adjust a precalculated checksum by the
+; checksum in the ROM footer. But since the checksum code is small and only a
+; small part of the image needs checking, there shouldn't be any harm in doing
+; it the hard way.
+
+; Stack layout:
+; LDR pc,[sp],#24
+; STR a2,[a1,#-12]
+; LDMIB sp,{a1,a2} <- patch code
+; a2 <- updated checksum 
+; a1 <- ptr to end of uncompressed image
+; pc <- return address (to OS), sp points here upon return from decompression
+; -----
+; pc <- original decompression code
+; a3 <- WS ptr
+; a2 <- IMB func
+; a1 <- OS hdr
+
+
+rompress_patchablecode
+        ; In: a1 = OS hdr
+        ;     a2 = IMB func
+        ;     a3 = WS ptr
+        LDR     ip, original_decomp_code
+        SUB     sp, sp, #20 ; Allocate space for code, a1, a2
+        ADD     ip, a1, ip
+        STMFD   sp!,{a1-a3,ip,lr} ; save a1-a3, pc (decomp code), pc (return address)
+        ADR     a2, vals
+        LDMIA   a2, {a2-a3} ; get compressed checksum, halsize
+        LDR     lr, [a1,#OSHdr_ImageSize]
+        SUB     a4, a1, a3 ; Checksum area start addr
+        LDR     ip, [a1,#OSHdr_CompressOffset]
+        ADD     a3, a1, ip ; Checksum area end addr
+        ADD     a1, a1, lr ; Uncompressed image end
+loop
+        LDR     ip, [a4], #4
+        CMP     a4, a3
+        SUB     a2, a2, ip
+        BNE     loop
+        ADR     a3, code
+        LDMIA   a3, {a4,ip,lr} ; Get stack code
+        ADD     a3, sp, #20 ; point to a1, a2
+        STMIA   a3!, {a1-a2,a4,ip,lr} ; Put a1, a2, stack code
+        MOV     a1, #1
+        ADD     a2, sp, #20
+        MOV     lr, pc
+        LDR     pc, [sp,#4] ; Call IMB
+        ADD     lr, sp, #28 ; Return to LDMIB in stack code
+        LDMFD   sp!,{a1-a3,pc} ; Call decompression code
+code
+        LDMIB   sp, {a1,a2} ; Grab image end pointer and updated checksum
+        STR     a2, [a1,#-12] ; Store updated checksum
+        LDR     pc, [sp],#24 ; Return to OS & pop our stack frame
+vals
+        DCD     0 ; Checksum of compressed area
+        DCD     0 ; HAL size/offset to start of image
+original_decomp_code
+        DCD     0 ; Offset from OSHdr to original decompression code
+rompress_patchablecodeend
+
+rompress_patchablecodesize
+        DCD rompress_patchablecodeend-rompress_patchablecode
+
+        END
+@

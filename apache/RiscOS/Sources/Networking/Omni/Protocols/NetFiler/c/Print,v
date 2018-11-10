@@ -1,0 +1,323 @@
+head	1.4;
+access;
+symbols
+	NetFiler-1_19:1.4
+	NetFiler-1_18:1.3
+	NetFiler-1_17:1.3
+	NetFiler-1_16:1.2
+	NetFiler-1_15:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2016.09.11.09.50.01;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	7QglAyKtQE4s3Rlz;
+
+1.3
+date	2016.09.11.09.43.11;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	gUipW5QlWRk71Rlz;
+
+1.2
+date	99.12.07.20.36.34;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.12.07.19.04.37;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.12.07.19.04.37;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Internationalised
+Add a Messages file, register this with the sprites from C (remove the assembler copy).
+Internationalised the date in the Omni menu, and error strings from former MakeErrors.
+Expanded the list of known machine types and look those up via Messages too.
+
+Version 1.19. Tagged as 'NetFiler-1_19'
+@
+text
+@/* Copyright 1999 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	Print.c - NetPrint interface module routines
+ *
+ * Project:	NetFiler Omni project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	9 November 1994
+ * Last Edited:	13 November 1994
+ *
+ * Copyright 1994 by ANT Limited
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "Desk/LinkList.h"
+#include "Desk/Time.h"
+#include "Desk/SWI.h"
+
+#include "NetFiler.h"
+#include "Print.h"
+
+
+/*  Delete a Print record.
+ */
+extern void PrintDelete(print_rec *pr)
+{
+  if (!pr) return;
+  Desk_LinkList_Unlink(&print_anchor, &(pr->header));
+  free(pr);
+}
+
+
+/*  Delete a PList record.
+ */
+extern void PrintDeleteList(plist_rec *pr)
+{
+  if (!pr) return;
+  Desk_LinkList_Unlink(&plist_anchor, &(pr->header));
+  free(pr);
+}
+
+
+/*  Enumerates printers into a buffer.
+ *  Returns Desk_bool_TRUE if completed.
+ */
+extern Desk_bool PrintList(char **bufp, plist_rec **mrp, int size)
+{
+  Desk_bool 		done = Desk_bool_FALSE;
+  plist_rec 	*mr = *mrp;
+  char          line[96];
+
+  /* Check OK to enumerate to buffer */
+  if ((!*mrp) || (!*bufp)) return(Desk_bool_FALSE);
+  if (size < 8) return(Desk_bool_FALSE);
+
+  /* Fill buffer with print records */
+  while ((mr != NULL) && (!done) && (size >= 8))
+  {
+    int *ibuf = (int *) &line[0];
+    char *cbuf = (char *) &line[4];
+    int llen = 4;
+
+    ibuf[0] = 0;
+    strcpy(cbuf, mr->printer);
+    cbuf += strlen(mr->printer) + 1;
+    llen += strlen(mr->printer) + 1;
+    strcpy(cbuf, mr->printer);
+    cbuf += strlen(mr->printer) + 1;
+    llen += strlen(mr->printer) + 1;
+    /* Word align */
+    if (llen % 4 > 0) llen += (4 - (llen % 4));
+    /* Can we copy ? */
+    if (size >= llen)
+    {
+      /* Can copy, do it, update pointers */
+      memcpy(*bufp, line, llen);
+      *bufp = *bufp + llen;
+      *mrp = mr = (plist_rec *) mr->header.next;
+      size -= llen;
+    } else size = 0;
+  }
+  if (mr == NULL) done = Desk_bool_TRUE;
+  return(done);
+}
+
+
+/*  Find item in linked list from pjob_id.
+ */
+extern print_rec *PrintFind(int pjob_id)
+{
+  print_rec *r = (print_rec *) print_anchor.next;
+  int loop = 0;
+  int searchtype = 0;
+
+  while (r != NULL)
+  {
+    switch (searchtype)
+    {
+      case 0: if (r->pjob_id == pjob_id) return(r);
+              break;
+      default:
+        break;
+    }
+    loop++;
+    r = (print_rec *) r->header.next;
+  }
+  return(NULL);
+}
+
+
+/*  Register a new Print job record.
+ */
+extern print_rec *PrintCreate(_kernel_swi_regs *r)
+{
+  print_rec *mr = NULL;
+  _kernel_oserror *err;
+  char buf[256];
+
+  /* printf("PrintCreate:\n"); */
+  mr = (print_rec *) malloc(sizeof(print_rec));
+  if (mr == NULL)
+  {
+    r->r[1] = 0;
+    r->r[0] = (int) intl_error(err_NOMEM);
+    return(NULL);
+  }
+  mr->pjob_id = (int) mr;
+  mr->Desk_print_id = -1;	/* We never know this? */
+  mr->status = 0;
+  mr->time = Desk_Time_Monotonic();
+  mr->handle = -1;
+
+  /* Attempt a Print connection */
+  if (r->r[2] != 0) sprintf(buf, "NetPrint#%s:", (char *) r->r[2]);
+    else strcpy(buf, "NetPrint:");
+  /* printf("PrintCreate: '%s'\n", buf); */
+  err = (_kernel_oserror *) Desk_SWI(3, 1, OS_Find, 0x8F, &buf, 0, &mr->handle);
+  if ((err) || (mr->handle <= 0))
+  {
+    free(mr);
+    r->r[1] = 0;
+    r->r[0] = (int) err;
+    return(NULL);
+  }
+  Desk_LinkList_AddToTail(&print_anchor, &(mr->header));
+  r->r[1] = mr->pjob_id;
+  return(mr);
+}
+@
+
+
+1.3
+log
+@Makefile recreated from fragments
+Untangle headers in the C source files.
+Expand tabs in Resources.s, 32 bit a ^, and use Push/Pull macros.
+Builds, but not tested.
+
+Version 1.17. Tagged as 'NetFiler-1_17'
+@
+text
+@a43 1
+#include "MakeError.h"
+d148 1
+a148 1
+    r->r[0] = (int) MakeError(err_NOMEM);
+@
+
+
+1.2
+log
+@Summary
+  * Further rationalisations to fit into our build system.
+Detail
+  * Altered to use auto-generated or centralised declarations, constants etc.
+    wherever possible.
+  * Altered to use some library routines instead of local equivalents.
+  * Debug build uses DebugLib.
+  * Modified to use SrcCommit.
+  * Got rid of warnings.
+Admin
+  * Removed entire contents of hdr directory; macros now obtained from HdrSrc.
+  * Debug.h, ModuleWrap.h and Base.s removed.
+  * Requires AsmUtils.
+  * Both builds compiled.
+
+Version 1.15. Tagged as 'NetFiler-1_15'
+@
+text
+@d36 2
+a37 2
+#include <kernel.h>
+#include <swis.h>
+d39 3
+a41 3
+#include <Desk/LinkList.h>
+#include <Desk/Time.h>
+#include <Desk/SWI.h>
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d37 1
+a43 1
+#include "ModuleWrap.h"
+d45 1
+d53 1
+a53 1
+  Desk_LinkList_Unlink(&Desk_print_anchor, &(pr->header));
+d116 1
+a116 1
+  print_rec *r = (print_rec *) Desk_print_anchor.next;
+d162 1
+a162 1
+  err = (_kernel_oserror *) Desk_SWI(3, 1, Desk_OS_Find, 0x8F, &buf, 0, &mr->handle);
+d170 1
+a170 1
+  Desk_LinkList_AddToTail(&Desk_print_anchor, &(mr->header));
+@
+
+
+1.1.1.1
+log
+@Summary
+  * Initial import of NetFiler.
+
+Details
+  * Revamped build structure.
+  * Modified sources to use Desk instead of ANT's proprietary version of
+    DeskLib; only uses linked list handling, SWI veneer and time code, so
+    don't expect this shouldn't cause any significant problem.
+
+Admin
+  * Compiled.
+  * Untested.
+@
+text
+@@

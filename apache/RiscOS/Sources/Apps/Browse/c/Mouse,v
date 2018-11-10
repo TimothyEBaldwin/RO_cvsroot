@@ -1,0 +1,1081 @@
+head	1.8;
+access;
+symbols
+	Browse-2_16:1.8
+	Browse-2_15:1.8
+	Browse-2_14:1.8
+	Browse-2_13:1.8
+	Browse-2_12:1.8
+	Browse-2_11:1.8
+	Browse-2_10:1.8
+	Browse-2_09:1.8
+	ahodgkin_208_i4_2:1.8
+	ahodgkin_208_i4:1.6
+	ahodgkin_208_i3:1.6
+	ahodgkin_208_i2:1.6
+	ahodgkin_208_i1:1.6
+	ahodgkin_207release:1.6
+	ahodgkin_206release:1.6
+	ahodgkin_205release:1.6
+	ahodgkin_204release:1.6
+	ahodgkin_202release:1.5
+	ahodgkin_201release:1.5
+	ahodgkin_200release:1.5
+	ahodgkin_133beta:1.5
+	ahodgkin_132beta:1.5
+	ahodgkin_131beta:1.5
+	ahodgkin_130beta:1.5
+	ahodgkin_129:1.5
+	ahodgkin_128beta:1.5
+	ahodgkin_128alpha:1.5
+	ahodgkin_127beta2:1.5
+	ahodgkin_127beta:1.5
+	ahodgkin_126beta:1.5
+	ahodgkin_AW97patch:1.5
+	ahodgkin_AW97:1.5;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2000.11.14.08.45.07;	author ahodgkin;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2000.05.31.15.58.42;	author ahodgkin;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.04.16.08.14.19;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	97.09.22.07.43.19;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	97.09.02.15.46.01;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.09.02.09.24.36;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.08.18.09.24.02;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.07.18.15.28.51;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    Mouse.c                                           */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Mouse pointer related functions for the browser.  */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 14-Mar-1997 (ADH): Created.                       */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <HTMLLib/HTMLLib.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include <tboxlibs/toolbox.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "Handlers.h"
+
+#include "Mouse.h"
+
+/* Locals */
+
+static int mouse_watch = 0;
+
+static int mouse_x;
+static int mouse_y;
+static int mouse_time;
+static int mouse_on    = 1;
+static int mouse_shape = 1;
+static int mouse_used  = 0;
+
+/**************************************************************/
+/* mouse_watch_pointer_control()                              */
+/*                                                            */
+/* Controls watching movement of the mouse pointer; if turned */
+/* on, when the pointer moves the function will ensure that   */
+/* the pointer is also visible.                               */
+/*                                                            */
+/* Parameters: 1 to turn watching on, 0 to turn it off.       */
+/**************************************************************/
+
+void mouse_watch_pointer_control(int on)
+{
+  if (on)
+  {
+    if (!mouse_watch)
+    {
+      mouse_x = mouse_y = mouse_time = -1;
+      register_null_claimant(Wimp_ENull, mouse_watch_pointer, NULL);
+      mouse_watch = 1;
+    }
+  }
+  else
+  {
+    if (mouse_watch)
+    {
+      deregister_null_claimant(Wimp_ENull, mouse_watch_pointer, NULL);
+      mouse_watch = 0;
+    }
+  }
+}
+
+/**************************************************************/
+/* mouse_watch_pointer()                                      */
+/*                                                            */
+/* Watches to see if the mouse pointer moves, and if so,      */
+/* ensures the pointer is visible.                            */
+/*                                                            */
+/* Parameters are as standard for a Wimp event handler.       */
+/**************************************************************/
+
+int mouse_watch_pointer(int eventcode, WimpPollBlock * block, IdBlock * idb, void * handle)
+{
+  WimpGetPointerInfoBlock i;
+
+  if (!wimp_get_pointer_info(&i))
+  {
+    if (mouse_x    < 0) mouse_x = i.x;
+    if (mouse_y    < 0) mouse_y = i.y;
+    if (mouse_time < 0) _swix(OS_ReadMonotonicTime, _OUT(0), &mouse_time);
+
+    if (mouse_x != i.x || mouse_y != i.y)
+    {
+      if (!mouse_on) mouse_pointer_on();
+
+      mouse_x = mouse_y = mouse_time = -1;
+
+      mouse_used = 1;
+    }
+    else if (mouse_on)
+    {
+      int t;
+
+      _swix(OS_ReadMonotonicTime, _OUT(0), &t);
+
+      if (t - mouse_time > 500) mouse_pointer_off();
+    }
+  }
+
+  return 0;
+}
+
+/**************************************************************/
+/* mouse_pointer_on()                                         */
+/*                                                            */
+/* Turns the mouse pointer on immediately.                    */
+/**************************************************************/
+
+void mouse_pointer_on(void)
+{
+  if (!mouse_on)
+  {
+    mouse_x = mouse_y = mouse_time = -1;
+    mouse_on = 1;
+    mouse_set_pointer_shape(mouse_shape);
+  }
+}
+
+/**************************************************************/
+/* mouse_pointer_off()                                        */
+/*                                                            */
+/* Turns the mouse pointer off immediately.                   */
+/**************************************************************/
+
+void mouse_pointer_off(void)
+{
+  if (mouse_on && !mouse_used)
+  {
+    mouse_x = mouse_y = mouse_time = -1;
+    mouse_set_pointer_shape(Mouse_Shape_Off);
+    mouse_on = 0;
+  }
+}
+
+/**************************************************************/
+/* mouse_force_unused()                                       */
+/*                                                            */
+/* Resets the internal mouse_used flag back to zero, so that  */
+/* the mouse pointer may be turned off (otherwise the user    */
+/* has moved the pointer and it shouldn't be switched off).   */
+/**************************************************************/
+
+void mouse_force_unused(void)
+{
+  mouse_used = 0;
+}
+
+/**************************************************************/
+/* mouse_set_pointer_shape()                                  */
+/*                                                            */
+/* Sets the shape of the pointer; shape 0 turns it off. If    */
+/* mouse_on is set to zero, this will *not* override that     */
+/* setting.                                                   */
+/*                                                            */
+/* Parameters: Pointer shape; see Mouse.h for definitions of  */
+/*             shapes.                                        */
+/**************************************************************/
+
+void mouse_set_pointer_shape(int shape)
+{
+  if (shape) mouse_shape = shape;
+
+  /* If the mouse is turned off, don't turn it back on... */
+
+  if (shape && !mouse_on) return;
+
+  /* Otherwise change to the required shape */
+
+  switch (shape)
+  {
+    case Mouse_Shape_Off:    _swix(OS_CLI,
+                                   _IN(0),
+
+                                   "Pointer 0");
+    break;
+
+    default: /* Catchall - use normal pointer, so no 'break' */
+
+    case Mouse_Shape_Normal:    _swix(OS_CLI,
+                                      _IN(0),
+
+                                      "Pointer 1");
+    break;
+
+    case Mouse_Shape_Link:      _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_link",
+                                      2,
+                                      controls.ptrlnkactvx,
+                                      controls.ptrlnkactvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_Map:       _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_map",
+                                      2,
+                                      controls.ptrmapactvx,
+                                      controls.ptrmapactvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_UD:        _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_ud",
+                                      2,
+                                      controls.ptrudactvx,
+                                      controls.ptrudactvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_LR:        _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_lr",
+                                      2,
+                                      controls.ptrlractvx,
+                                      controls.ptrlractvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_UDLR:      _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_udlr",
+                                      2,
+                                      controls.ptrudlractvx,
+                                      controls.ptrudlractvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_NoResize:  _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_noresize",
+                                      2,
+                                      controls.ptrnoractvx,
+                                      controls.ptrnoractvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_ToScroll:  _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_toscroll",
+                                      2,
+                                      controls.ptrtosactvx,
+                                      controls.ptrtosactvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_Scrolling: _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_scroll",
+                                      2,
+                                      controls.ptrscractvx,
+                                      controls.ptrscractvy,
+                                      0,
+                                      0);
+    break;
+
+    case Mouse_Shape_DTS:       _swix(OS_SpriteOp,
+                                      _INR(0,7),
+
+                                      292,
+                                      sprite_block,
+                                      "ptr_dts",
+                                      2,
+                                      controls.ptrdtsactvx,
+                                      controls.ptrdtsactvy,
+                                      0,
+                                      0);
+    break;
+  }
+}
+
+/**************************************************************/
+/* mouse_pointer_is_on()                                      */
+/*                                                            */
+/* States whether the pointer is on or off.                   */
+/*                                                            */
+/* Returns:    1 if the pointer is on, else 0.                */
+/**************************************************************/
+
+int mouse_pointer_is_on(void)
+{
+  if (mouse_on) return 1;
+
+  return 0;
+}
+
+/**************************************************************/
+/* mouse_to()                                                 */
+/*                                                            */
+/* Moves the mouse to a given screen coordinate.              */
+/*                                                            */
+/* Parameters: X coordinate to move to;                       */
+/*                                                            */
+/*             Y coordinate to move to;                       */
+/*                                                            */
+/*             1 to always move, else only move if mouse_used */
+/*             is zero (so it looks as if the user has not    */
+/*             yet used or does not have a mouse).            */
+/**************************************************************/
+
+void mouse_to(int x, int y, int now)
+{
+  char block[5];
+
+  if (!now && mouse_used) return;
+
+  block[0] = 3;
+  block[1] = x & 0xff;
+  block[2] = x >> 8;
+  block[3] = y & 0xff;
+  block[4] = y >> 8;
+
+  _swix(OS_Word,
+        _INR(0, 1),
+
+        21,
+        block);
+}
+
+/**************************************************************/
+/* mouse_rectangle()                                          */
+/*                                                            */
+/* Constrains the mouse pointer to a given rectangle, or      */
+/* returns the last rectangle set with this function.         */
+/*                                                            */
+/* Parameters: Pointer to a BBox, in which the new rectangle  */
+/*             is held, or NULL to set no new rectangle;      */
+/*                                                            */
+/*             1 to rectangle the pointer now, else only      */
+/*             rectangle it if it is not flagged as being     */
+/*             used.                                          */
+/*                                                            */
+/* Returns:    Pointer to a BBox, in which the previously set */
+/*             coordinates are stored if the BBox pointer     */
+/*             given as a parameter is NULL (else the         */
+/*             coordinates in the given BBox will be the same */
+/*             as the coords in the returned BBox).           */
+/**************************************************************/
+
+BBox * mouse_rectangle(BBox * rect, int now)
+{
+  char        block[9];
+  static BBox last_rect;
+
+  if (!now && mouse_used) return &last_rect;
+
+  if (rect)
+  {
+    block[0] = 1;
+    block[1] = rect->xmin & 0xff;
+    block[2] = rect->xmin >> 8;
+    block[3] = rect->ymin & 0xff;
+    block[4] = rect->ymin >> 8;
+    block[5] = rect->xmax & 0xff;
+    block[6] = rect->xmax >> 8;
+    block[7] = rect->ymax & 0xff;
+    block[8] = rect->ymax >> 8;
+
+    _swix(OS_Word,
+          _INR(0, 1),
+
+          21,
+          block);
+  }
+
+  last_rect = *rect;
+
+  return &last_rect;
+}
+@
+
+
+1.7
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a42 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.6
+log
+@All !Run[D], Choices, Messages, Controls and Res files are up to date.
+
+RefoKeep and RefoHold options added to, respectively, try and maintain
+the line at the top of the visible area when reformatting, and not shrink
+the vertical extent at the start of a reformat to try and avoid flicker
+to the top of the page and back down again when RefoKeep is on. Choices
+front-end implemented, which also allows RefoWait and RefoTime to be set.
+Unfortunately for various reasons this doesn't help the page jumping when
+unsized images come in (but RefoHold can improve matters...) - roll on
+the image history.
+
+DragToScroll and NoScrollBars options added for frames; included new
+pointer type, Mouse_Shape_DTS, so relevant Controls file entries done
+and Sprites[22] files updated as required. Noticed some builds have
+a low-res ptr_link with a mask - mask removed.
+
+Named anchor following fixed up somewhat - anchors near the bottom of
+the page shouldn't be displayed, and then pulled down when the fetcher
+releases null polls and ensures the y extent is correct (this through
+implementing the min_height field in the browser_data structure).
+
+RefoHang was never implemented and there seems little point to it now,
+so the entry for it has been removed from the global choices structure
+and all Choices files.
+
+Markers menus should work properly now (in last check-in they would not
+update correctly if Adjust was used on the entries).
+
+URI handler usage now a lot more sensible, with configuration of how the
+browser uses the module from both a Utils menu submenu (sic) and the
+Choices dialogue.
+
+Slightly dodgy 'hang around waiting for user input' stuff for the Cookies
+dialogue box: All fetches are suspended; the fetcher remembers some info
+about its state at the time the cookie came in, and restores it later; it
+will only do this for one fetch at a time. It's necessary to single-thread
+the fetcher at this point anyway, since other fetches may have a
+dependency on the cookie that is hanging in mid-air at that point. As part
+of this, some of the fetcher code has been split out into separate
+functions (to try and 'black box' the code a bit). Anyway, Cookie Query
+dialogue box now implemented with appropriate Choices file entry and
+UI work in the Choices dialogue box.
+
+Phoenix build Choices rearranged. Can now choose when the image history
+is saved from the front end. Added also MSIE 4-style table option menu
+for JPEG support (OS only, OS if it can handle it, internal only).
+
+Should be a bit faster at loading the history - though 95% of the time
+is spent in SWI URL_ParseURL. URL descriptions are stored more
+efficiently as part of this - one malloc block instead of several
+small blocks. The minimum block size for malloc blocks typically leads
+to a significantly smaller startup wimpslot depending on the visit
+history size.
+
+Nasty bug in image system fixed. If an image size came in and a reformat
+was to take place, the line the image lies in is found and the reformat
+progresses from there. Unforunately, this didn't check to see if the
+token can't be found in the line list, so it'd reformat from the top
+of the page...! This would happen if, for example, an image halfway down
+the page came in whilst a reformat for an image higher up had just begun.
+
+In Choices.c, made choices_set_timetype_field, choices_set_uri_field,
+choices_set_plugin_field, choices_set_cookie_field, and
+choices_set_jpeg_field static (so they're not declared in Choices.h now).
+
+Two memory leaks plugged in URL comparison routines in URLutils.c
+(calling free() url_description instead of urlutils_free_descripton()).
+
+Client pull reload handler was setting the reload flag if reloading
+the same page, but forgetting to turn on reload_lock so
+fetchpage_postprocessed was clearing the reload state... Similarly,
+Ctrl+Shift+SELECT-Click on a link when the Controls file 'UseSmall'
+entry is 'no' would not have reloaded as it should. Both fixed.
+
+Frames shouldn't be so keen on acquiring horizontal scroll bars and never
+letting them go when their width is decreased now. Frames set up for
+'scrolling="yes"' will not start with no scroll bars and then gain them
+shortly afterwards, causing flicker and two reformats - they'll start
+with, and continue to hold, both scroll bars.
+
+Pointer shouldn't flicker when over a frame border whilst other fetches
+are progressing now.
+@
+text
+@d15 12
+a26 10
+/***************************************************/
+/* File   : Mouse.c                                */
+/*                                                 */
+/* Purpose: Mouse pointer related functions for    */
+/*          the browser.                           */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 14-Mar-97: Created.                    */
+/***************************************************/
+d32 2
+a33 2
+#include "swis.h"
+#include "kernel.h"
+d35 1
+a35 1
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+d37 3
+a39 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+d41 6
+a46 1
+#include "toolbox.h"
+a47 1
+#include "svcprint.h"
+d66 9
+a74 11
+/*************************************************/
+/* mouse_watch_pointer_control()                 */
+/*                                               */
+/* Controls watching movement of the mouse       */
+/* pointer; if turned on, when the pointer moves */
+/* the function will ensure that the pointer is  */
+/* also visible.                                 */
+/*                                               */
+/* Parameters: 1 to turn watching on, 0 to turn  */
+/*             it off.                           */
+/*************************************************/
+d97 8
+a104 9
+/*************************************************/
+/* mouse_watch_pointer()                         */
+/*                                               */
+/* Watches to see if the mouse pointer moves,    */
+/* and if so, ensures the pointer is visible.    */
+/*                                               */
+/* Parameters are as standard for a Wimp event   */
+/* handler.                                      */
+/*************************************************/
+d137 5
+a141 5
+/*************************************************/
+/* mouse_pointer_on()                            */
+/*                                               */
+/* Turns the mouse pointer on immediately.       */
+/*************************************************/
+d153 5
+a157 5
+/*************************************************/
+/* mouse_pointer_off()                           */
+/*                                               */
+/* Turns the mouse pointer off immediately.      */
+/*************************************************/
+d169 7
+a175 8
+/*************************************************/
+/* mouse_force_unused()                          */
+/*                                               */
+/* Resets the internal mouse_used flag back to   */
+/* zero, so that the mouse pointer may be        */
+/* turned off (otherwise the user has moved the  */
+/* pointer and it shouldn't be switched off).    */
+/*************************************************/
+d182 10
+a191 10
+/*************************************************/
+/* mouse_set_pointer_shape()                     */
+/*                                               */
+/* Sets the shape of the pointer; shape 0 turns  */
+/* it off. If mouse_on is set to zero, this will */
+/* *not* override that setting.                  */
+/*                                               */
+/* Parameters: Pointer shape; see Mouse.h for    */
+/*             definitions of shapes.            */
+/*************************************************/
+d338 7
+a344 7
+/*************************************************/
+/* mouse_pointer_is_on()                         */
+/*                                               */
+/* States whether the pointer is on or off.      */
+/*                                               */
+/* Returns:    1 if the pointer is on, else 0.   */
+/*************************************************/
+d353 13
+a365 14
+/*************************************************/
+/* mouse_to()                                    */
+/*                                               */
+/* Moves the mouse to a given screen coordinate. */
+/*                                               */
+/* Parameters: X coordinate to move to;          */
+/*                                               */
+/*             Y coordinate to move to;          */
+/*                                               */
+/*             1 to always move, else only move  */
+/*             if mouse_used is zero (so it      */
+/*             looks as if the user has not yet  */
+/*             used or does not have a mouse).   */
+/*************************************************/
+d386 19
+a404 23
+/*************************************************/
+/* mouse_rectangle()                             */
+/*                                               */
+/* Constrains the mouse pointer to a given       */
+/* rectangle, or returns the last rectangle set  */
+/* with this function.                           */
+/*                                               */
+/* Parameters: Pointer to a BBox, in which the   */
+/*             new rectangle is held, or NULL to */
+/*             set no new rectangle;             */
+/*                                               */
+/*             1 to rectangle the pointer now,   */
+/*             else only rectangle it if it is   */
+/*             not flagged as being used.        */
+/*                                               */
+/* Returns:    Pointer to a BBox, in which the   */
+/*             previously set coordinates are    */
+/*             stored if the BBox pointer given  */
+/*             as a parameter is NULL (else the  */
+/*             coordinates in the given BBox     */
+/*             will be the same as the coords    */
+/*             in the returned BBox).            */
+/*************************************************/
+@
+
+
+1.5
+log
+@Now working on source merged with Kevin Bracey's internationalisation
+support. UNIFONT is undefined in the Make File for now. All Res and
+Choices files updated appropriately.
+
+Having sorted out the old Choices and Messages to form Choices, Controls
+and Messages, this build has had the same cleaning up done internally.
+This includes greater consistency in naming schemes and the removal of
+the inconsitent choices items - e.g. Choices file entries saying 'delay
+images' and 'plain backgrounds' where internally all the flags say 'show
+images' and 'show backgrounds'. ChoiceDefs.h and CtrlDefs.h added to
+clarify the meaning of some fields, though usage of these is not 100%
+in the source (there are cases where parameters are passed through to
+functions as ints, and those functions still check these against hard
+coded values rather than the #define stuff).
+
+Fetcher status return bits (connected, sent request, etc.) now reflected
+in status bar. Progress during fetchs to files are reported by %, where
+the size of the object is known. Exceeding 100% drops back to a byte
+counter, in case the estimated size was wrong. The progress counter
+may be updated after specific delays, rather than 'as often as possible',
+to reduce flicker (as requested by D.Brown some time ago).
+
+I've done a small rewrite of the fetch prioritisation scheme in FetchPage.c;
+how well this performs in general use across different processor speeds
+remains to be tested, but certainly it has some advantages. For each small
+fetch window before the rewrite, a 4cs tight loop was entered - this gave a
+noticable and substantial drain to the Desktop performance if more than one
+was opened. Now, several can be up at once with little hit. The actual file
+fetch is on half the priority it was before, with all others taken back
+just a bit - e.g. from 20cs per poll to 15cs per poll for flat out
+reformatting. You don't seem to lose much time on the format in practice,
+and the Desktop feels quite a bit lighter at the same time. There's the
+potential for smoother frameset loading in this scheme, too.
+
+When Shift+Clicking on a link meant you still fetched inside the main
+browser window, several fetches could occur in a frameset - one per frame.
+However, now that you can only do this by clicking on a link that leads to
+non-displayable data - or by turning off the small fetch windows by
+setting UseSmall to 'no' in Choices - a bug where fetchpage_preprocessed
+would stop such fetches as new ones were started was revealed.
+The API to frames_abort_fetching has now been extended to include a
+'stop file spooling too' flag, allowing a fix to be made by having
+fetchpage_preprocess's calls not set this (and it doesn't check the
+savelink flag is unset before proceeding, since frames_abort_fetching
+does that implicitly now).
+
+Had left the RAM transfer buffer at 16 bytes (from testing) accidentally...
+Oops. Upped it to 4K. In addition, when loading data by RAM transfer,
+the browser didn't notice if a RAMFetch bounced during the transfer. It
+would be treated as a 'first' RAMFetch bounce, basically, and try to go to
+file transfer - oops. Fixed.
+@
+text
+@d320 13
+@
+
+
+1.4
+log
+@This version is being checked in because the Hotlist manager in the test
+build provokes a Wimp bug. All the variant resource files are out of sync
+and there are several outstanding bugs in the main code, so I'd personally
+avoid this build like the plague unless you're mad enough to want to
+examine the Wimp problem ;-)
+@
+text
+@d224 2
+a225 2
+                                      fixed.ptrlnkactvx,
+                                      fixed.ptrlnkactvy,
+d237 2
+a238 2
+                                      fixed.ptrmapactvx,
+                                      fixed.ptrmapactvy,
+d250 2
+a251 2
+                                      fixed.ptrudactvx,
+                                      fixed.ptrudactvy,
+d263 2
+a264 2
+                                      fixed.ptrlractvx,
+                                      fixed.ptrlractvy,
+d276 2
+a277 2
+                                      fixed.ptrudlractvx,
+                                      fixed.ptrudlractvy,
+d289 2
+a290 2
+                                      fixed.ptrnoractvx,
+                                      fixed.ptrnoractvy,
+d302 2
+a303 2
+                                      fixed.ptrtosactvx,
+                                      fixed.ptrtosactvy,
+d315 2
+a316 2
+                                      fixed.ptrscractvx,
+                                      fixed.ptrscractvy,
+@
+
+
+1.3
+log
+@Couple of extra pointer types for autoscroll in the Hotlist
+@
+text
+@d250 2
+a251 2
+                                      fixed.ptrmapactvx,
+                                      fixed.ptrmapactvy,
+d263 2
+a264 2
+                                      fixed.ptrmapactvx,
+                                      fixed.ptrmapactvy,
+d276 2
+a277 2
+                                      fixed.ptrmapactvx,
+                                      fixed.ptrmapactvy,
+d289 2
+a290 2
+                                      fixed.ptrmapactvx,
+                                      fixed.ptrmapactvy,
+d300 1
+a300 1
+                                      "ptr_ud",
+d302 2
+a303 2
+                                      fixed.ptrmapactvx,
+                                      fixed.ptrmapactvy,
+d313 1
+a313 1
+                                      "ptr_udlr",
+d315 2
+a316 2
+                                      fixed.ptrmapactvx,
+                                      fixed.ptrmapactvy,
+@
+
+
+1.2
+log
+@Updated Makefile to work better in folding text editors. More or less rewrote
+Limits.h, and ensured consistent comment styling throughout all sources.
+Fetch.c/h split to Fetch, FetchHTML and URLveneer. URLstat.c/h produced to
+cope with this. OpenURL and Find sources created from bits in the Windows
+source file that shouldn't have been there... These will get filled out
+shortly. Note that a few functions in Fetch are due to be renamed and moved;
+probably to Tokenutils.
+@
+text
+@d211 2
+a212 2
+    case Mouse_Shape_Normal:   _swix(OS_CLI,
+                                     _IN(0),
+d214 1
+a214 1
+                                     "Pointer 1");
+d217 2
+a218 2
+    case Mouse_Shape_Link:     _swix(OS_SpriteOp,
+                                     _INR(0,7),
+d220 99
+a318 73
+                                     292,
+                                     sprite_block,
+                                     "ptr_link",
+                                     2,
+                                     fixed.ptrlnkactvx,
+                                     fixed.ptrlnkactvy,
+                                     0,
+                                     0);
+    break;
+
+    case Mouse_Shape_Map:      _swix(OS_SpriteOp,
+                                     _INR(0,7),
+
+                                     292,
+                                     sprite_block,
+                                     "ptr_map",
+                                     2,
+                                     fixed.ptrmapactvx,
+                                     fixed.ptrmapactvy,
+                                     0,
+                                     0);
+    break;
+
+    case Mouse_Shape_UD:       _swix(OS_SpriteOp,
+                                     _INR(0,7),
+
+                                     292,
+                                     sprite_block,
+                                     "ptr_ud",
+                                     2,
+                                     fixed.ptrmapactvx,
+                                     fixed.ptrmapactvy,
+                                     0,
+                                     0);
+    break;
+
+    case Mouse_Shape_LR:       _swix(OS_SpriteOp,
+                                     _INR(0,7),
+
+                                     292,
+                                     sprite_block,
+                                     "ptr_lr",
+                                     2,
+                                     fixed.ptrmapactvx,
+                                     fixed.ptrmapactvy,
+                                     0,
+                                     0);
+    break;
+
+    case Mouse_Shape_UDLR:     _swix(OS_SpriteOp,
+                                     _INR(0,7),
+
+                                     292,
+                                     sprite_block,
+                                     "ptr_udlr",
+                                     2,
+                                     fixed.ptrmapactvx,
+                                     fixed.ptrmapactvy,
+                                     0,
+                                     0);
+    break;
+
+    case Mouse_Shape_NoResize: _swix(OS_SpriteOp,
+                                     _INR(0,7),
+
+                                     292,
+                                     sprite_block,
+                                     "ptr_noresize",
+                                     2,
+                                     fixed.ptrmapactvx,
+                                     fixed.ptrmapactvy,
+                                     0,
+                                     0);
+@
+
+
+1.1
+log
+@First commit to CVS, at version 1.16 (Customer build).
+@
+text
+@d17 1
+d19 2
+a20 1
+/*          the browser                            */
+d22 2
+a23 1
+/* History: 14-Mar-97: Created                     */
+a209 2
+    case Mouse_Shape_Normal: _swix(OS_CLI,
+                                   _IN(0),
+d211 56
+a266 1
+                                   "Pointer 1");
+d269 2
+a270 2
+    case Mouse_Shape_Link:   _swix(OS_SpriteOp,
+                                   _INR(0,7),
+d272 8
+a279 8
+                                   292,
+                                   sprite_block,
+                                   "ptr_link",
+                                   2,
+                                   fixed.ptrlnkactvx,
+                                   fixed.ptrlnkactvy,
+                                   0,
+                                   0);
+d282 2
+a283 2
+    case Mouse_Shape_Map:    _swix(OS_SpriteOp,
+                                   _INR(0,7),
+d285 8
+a292 8
+                                   292,
+                                   sprite_block,
+                                   "ptr_map",
+                                   2,
+                                   fixed.ptrmapactvx,
+                                   fixed.ptrmapactvy,
+                                   0,
+                                   0);
+d302 1
+a302 1
+/* Returns: 1 if the pointer is on, else 0.      */
+d318 1
+d320 1
+d356 1
+a399 2
+
+/*************************************************/
+@

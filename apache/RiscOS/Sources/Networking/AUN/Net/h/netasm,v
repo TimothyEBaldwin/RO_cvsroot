@@ -1,0 +1,328 @@
+head	4.3;
+access;
+symbols
+	Net-6_26:4.3
+	Net-6_25:4.3
+	Net-6_24:4.2
+	Net-6_23:4.2
+	Net-6_22:4.2
+	Net-6_21:4.2
+	RO_5_07:4.2
+	Net-6_20:4.2
+	Net-6_19:4.2
+	Net-6_18:4.1.1.1
+	Ursula_merge:4.1.1.1
+	Ursula_13May1998_merge:4.1.1.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.1.1.1
+	Ursula_RiscPC:4.1.1.1.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.1.1.1
+	UrsulaBuild_FinalSoftload:4.1.1.1
+	rthornb_UrsulaBuild-12Aug1998:4.1.1.1
+	aglover_UrsulaBuild-05Aug1998:4.1.1.1
+	rthornb_UrsulaBuild-29Jul1998:4.1.1.1
+	rthornb_UrsulaBuild-22Jul1998:4.1.1.1
+	rthornb_UrsulaBuild-15Jul1998:4.1.1.1
+	rthornb_UrsulaBuild-07Jul1998:4.1.1.1
+	rthornb_UrsulaBuild-17Jun1998:4.1.1.1
+	rthornb_UrsulaBuild-03Jun1998:4.1.1.1
+	rthornb_UrsulaBuild-27May1998:4.1.1.1
+	rthornb_UrsulaBuild-21May1998:4.1.1.1
+	Ursula_bp:4.1.1.1
+	Ursula:4.1.1.1.0.6
+	Ursula_13May1998_bp:4.1.1.1
+	Ursula_13May1998:4.1.1.1.0.2
+	rthornb_UrsulaBuild_01May1998:4.1.1.1
+	Daytona:4.1.1.1.0.4
+	Daytona_bp:4.1.1.1
+	RO_3_71:4.1.3.1
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	RO_3_60:4.1.1.1
+	StrongARM:4.1.3
+	Black:4.1.1;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	2015.05.29.19.29.05;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	2VVHsW5ULMhIonny;
+
+4.2
+date	2003.01.17.14.59.58;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	96.11.05.09.28.30;	author nturton;	state Exp;
+branches
+	4.1.1.1
+	4.1.3.1;
+next	;
+
+4.1.1.1
+date	96.11.05.09.28.30;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.3.1
+date	96.11.05.22.31.50;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@Have Net look after its own messages
+Net was trying to share some messages with the Econet module, though on balance this wasn't particularly useful as it then needed to duplicate message handling code to keep 2 files open. Because those messages were held in AUNMsgs they didn't get tokenised in ROM, overall ending up taking more space.
+
+Register in ResourcesFS at run time for RAM targets, add tokenisation directives for ROM targets, removed redundant !Configure related strings.
+Changed the messages fd to be int's to ensure word alignment.
+Removed inappropriate Service_MessageFileClosed handler, MessageTrans reopens the files (since the fd is in the RMA) so no need to reopen them a second time. This service call is intended to recache direct pointers to tokens, but none are ever taken.
+Save time by just making textbuf a zero length string rather than memset()ing the whole buffer.
+Resolved a couple more compiler warnings (but NetG still doesn't compile).
+Fix bug where a failure to enable the internet event would decrement the internet event count for any other modules interested in that event.
+Use CMHG finalisation rather than atexit().
+Error "AUN not configured" now uses a non zero trappable error number.
+Error number for BadSWI corrected from 0x111 to 0x110.
+
+Requires HdrSrc-2_51 for the error number.
+
+Version 6.25. Tagged as 'Net-6_25'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* netasm.h
+ *
+ * Author: Jem Davies (Cambridge Systems Design)
+ *
+ * Description
+ * ===========
+ * Header file for assembler routines
+ *
+ * Environment
+ * ===========
+ * Acorn RISC OS 3.11 or later.
+ *
+ * Compiler
+ * ========
+ * Acorn Archimedes C release 5.02 or later.
+ *
+ * Change record
+ * =============
+ *
+ * JPD  Jem Davies (Cambridge Systems Design)
+ *
+ *
+ * 11-Jan-95  15:25  JPD  Version 1.00
+ * Created.
+ *
+ * 24-Jan-95  17:06  JPD  Version 1.01
+ * Updated comments.
+ *
+ * 22-Feb-95  16:11  JPD  Version 1.02
+ * Corrected comment for do_econet().
+ *
+ *
+ **End of change record*
+ */
+
+#include "AsmUtils/callbacks.h"
+#include "AsmUtils/irqs.h"
+
+/******************************************************************************/
+
+extern int escape_seen(void);
+
+/* This routine returns 1 if escape condition set, else 0
+ */
+
+/******************************************************************************/
+
+extern _kernel_oserror *do_econet(int swinum, _kernel_swi_regs *regsin,
+                             _kernel_swi_regs *regsout, int *swicode, int *pwp);
+
+/* Issue SWI to the real Econet module
+ *
+ * Parameters:
+ *     swinum  : the SWI offset to call, only range 0 to &3F significant
+ *     regsin  : a pointer to an array of registers to pass in (R0-R9)
+ *     regsout : a pointer to an array of registers to return (R0-R9)
+ *     swicode : the address of the routine to call
+ *     pwp     : the value to pass as the workspace (pointed to by R12)
+ *
+ * Returns:
+ *    0 => no error, else pointer to error as usual
+ */
+
+/******************************************************************************/
+
+extern _kernel_oserror *do_ConvertStatusToError(_kernel_swi_regs *regs,
+                                                                     int *mbp);
+
+/* Perform Op similar to action of this Econet SWI
+ *
+ * Parameters:
+ *    regs : Pointer to register block for input and output
+ *    mbp  : Pointer to the message block for Econet.Messages
+ *           Structure of the register block:
+ *           R0 ==> Status number
+ *           R1 ==> Pointer to core if required (or used)
+ *           R2 ==> Maximum buffer size
+ *           R3 ==> Station number
+ *           R4 ==> Network number
+ *           R0 <== Pointer to an error block as usual (maybe R1,
+ *                  maybe ROM (or RMA allocated buffer))
+ * Returns:
+ *    0 => no error, else pointer to error as usual
+ */
+
+/******************************************************************************/
+
+extern _kernel_oserror *do_ConvertStatusToString(_kernel_swi_regs *regs,
+                                                                     int *mbp);
+
+/* Perform Op similar to action of this Econet SWI
+ *
+ * Parameters:
+ *    regs : Pointer to register block for input and output
+ *    mbp  : Pointer to the message block for Econet.Messages
+ *           Structure of the register block:
+ *           R0 ==> Status number
+ *           R1 ==> Destination core
+ *           R2 ==> Number of bytes remaining in the buffer
+ *           R3 ==> Station number
+ *           R4 ==> Network number
+ *           R0 <== Input value of R1, else pointer to error as usual
+ *           R1 <== Updated pointer
+ *           R2 <== Bytes remaining, updated
+ * Returns:
+ *    0 => no error, else pointer to error as usual
+ */
+
+/******************************************************************************/
+
+extern _kernel_oserror *do_ReadStationNumber(_kernel_swi_regs *regs, int *mpb);
+
+/* Perform Op similar to action of this Econet SWI
+ *
+ * Parameters:
+ *    regs : Pointer to register block for input and output
+ *    mbp  : Pointer to the message block for Econet.Messages
+ *           Structure of the register block:
+ *           R1 ==> Address of number string
+ *           R0 <== Preserved if no error, else pointer to error as usual
+ *           R1 <== Updated
+ *           R2 <== Station number (-1 for not found)
+ *           R3 <== Network number (-1 for not found)
+ * Returns:
+ *    0 => no error, else pointer to error as usual
+ */
+
+/******************************************************************************/
+
+/* EOF netasm.h */
+@
+
+
+4.2
+log
+@Made 32-bit compatible.
+Changed to use VersionNum.
+
+Version 6.19. Tagged as 'Net-6_19'
+@
+text
+@d81 1
+a81 1
+                                                                     char *mbp);
+d103 1
+a103 1
+                                                                     char *mbp);
+d125 1
+a125 1
+extern _kernel_oserror *do_ReadStationNumber(_kernel_swi_regs *regs, char *mpb);
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d50 2
+a51 24
+/******************************************************************************/
+
+extern int ensure_irqs_off(void);
+
+/* Disable IRQs). Once IRQs are disabled, we cannot/must not be reentered.
+ *
+ * Returns a value indicating the state of interrupts prior to calling here.
+ */
+
+/******************************************************************************/
+
+extern void restore_irqs(int);
+
+/* Restore interrupts to the state they were in prior to a call to
+ * ensure_irqs_off, using the value returned by ensure_irqs_off.
+ */
+
+/******************************************************************************/
+
+extern int ensure_irqs_on(void);
+
+/* Ensure that interrupts are enabled. Returns a value that, when passed
+ * to restore_irqs, will restore the state prior to enabling interrupts.
+ */
+a57 13
+ */
+
+/******************************************************************************/
+
+extern void usermode_donothing(void);
+
+/* Trigger callbacks: enter use rmode with IRQs enabled and issue a SWI
+ *
+ * Parameters:
+ *    None
+ *
+ * Returns:
+ *    None
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@@
+
+
+4.1.1.1
+log
+@Import from cleaned 360 CD
+@
+text
+@@

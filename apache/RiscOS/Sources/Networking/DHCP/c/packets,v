@@ -1,0 +1,1110 @@
+head	1.12;
+access;
+symbols
+	DHCP-0_27:1.12
+	DHCP-0_26:1.12
+	DHCP-0_25:1.11
+	DHCP-0_24:1.10
+	DHCP-0_23:1.9
+	DHCP-0_22:1.9
+	RO_5_07:1.9
+	DHCP-0_21:1.9
+	DHCP-0_20:1.9
+	DHCP-0_19:1.9
+	DHCP-0_18:1.9
+	dellis_autobuild_BaseSW:1.9
+	DHCP-0_17:1.9
+	DHCP-0_16:1.9
+	DHCP-0_15:1.9
+	sbrodie_sedwards_16Mar2000:1.9
+	DHCP-0_14:1.9
+	DHCP-0_13:1.9
+	DHCP-0_12:1.9
+	dcotton_autobuild_BaseSW:1.9
+	DHCP-0_11:1.9
+	DHCP-0_10:1.9
+	DHCP-0_09:1.7
+	DHCP-0_08:1.7
+	DHCP-0_07:1.6
+	DHCP-0_06:1.5
+	DHCP-0_05:1.4
+	DHCP-0_04:1.3
+	DHCP-0_03:1.3
+	DHCP-0_02:1.2
+	DHCP-0_01:1.2
+	DHCP-0_00:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.12
+date	2013.12.23.22.33.25;	author rsprowson;	state Exp;
+branches;
+next	1.11;
+commitid	wMV7VeIO1sikcjix;
+
+1.11
+date	2013.09.05.19.23.06;	author rsprowson;	state Exp;
+branches;
+next	1.10;
+commitid	U4CSaZZlAOLfEh4x;
+
+1.10
+date	2013.09.04.07.10.38;	author rsprowson;	state Exp;
+branches;
+next	1.9;
+commitid	Mw18urjsIckYC54x;
+
+1.9
+date	99.07.22.16.00.54;	author kbracey;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	99.07.09.09.27.24;	author kbracey;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	99.06.29.09.34.21;	author kbracey;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	99.06.28.14.04.05;	author kbracey;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	99.06.25.14.01.15;	author kbracey;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.06.25.13.24.49;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.06.10.12.08.57;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.03.30.12.41.19;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.26.16.10.48;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.03.26.16.10.48;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.12
+log
+@Suggest a hostname to the DHCP server; tweak timing
+As well as providing the (optional) vendor class id string, we now also suggest an (optional) hostname if one is set in Inet$HostName. This may get overridden as the hostname is one of the parameters requested from the DHCP server, but if not the server might as well have something to call us.
+Change to the discover/initreboot timing. The recent change to the total timeout was wasting time by sending packets at t=0,4,8,16,32... but as the total timeout was set to 20s it only sent 3 packets then did nothing for 8s. Now, the packets are sent at t=0,2.5,5,10 with 2.5s slack at the end for a reply,
+Replaced a couple of DCI protocol constants with defines.
+Tested against MS Windows Server 2012 Standard, and a 3COM router, both collect DHCP addresses OK and inspection of the allocated address table shows the name of the RISC OS client.
+
+Version 0.26. Tagged as 'DHCP-0_26'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ *  DHCP (packets.c)
+ *
+ * Copyright (C) Element 14 Ltd. 1999
+ *
+ */
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <limits.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "sys/dcistructs.h"
+#include "net/if.h"
+#include "protocols/dhcp.h"
+#include "netinet/in.h"
+#include "netinet/if_ether.h"
+
+#include "dhcpintern.h"
+#include "interfaces.h"
+#include "packets.h"
+#include "consts.h"
+#include "sockets.h"
+
+/* Locate a specific option in a designated area.  Returns pointer to
+ * the code byte if found, NULL if not found.  If overload is non-NULL
+ * it will be filled in with the value of the Option Overload option,
+ * if found while searching, or 0 if not found.
+ */
+static u_char *dhcp_find_option_in_area(const u_char *options, size_t len, u_int option, int *overload)
+{
+	const u_char *eoo = options + len;
+	int xoption = -1;
+
+	if ((option >> 16) == OPTION_EXTENSION) {
+		xoption = option & 0xFFFF;
+		option >>= 16;
+	}
+
+        if (overload) {
+        	*overload = 0;
+        }
+
+        while (*options != OPTION_END && options < eoo) {
+		if (*options != OPTION_PAD) {
+			if (*options == option) {
+				/* Sanity check - does option fit in area? */
+				if (option != OPTION_END &&
+				    (options + 1 >= eoo || options + 2 + options[1] > eoo)) {
+					return NULL;
+				}
+				/* If looking for an extended option, is this the right one? */
+				if (option == OPTION_EXTENSION && xoption != -1) {
+					if (options[1] < 2 || (options[2] << 8) + options[3] != xoption)
+						continue;
+				}
+			        return (u_char *) options;
+			}
+			if (*options == OPTION_OPTIONOVERLOAD && options[1] != 0 && overload) {
+			        *overload = options[2];
+			}
+			options += options[1] + 2;
+		}
+		else {
+			++options;
+		}
+        }
+
+	/* By doing this comparison, we can use this routine to find the used length
+	 * of the options buffer.
+	 */
+	return (option == OPTION_END) ? (u_char *) options : NULL;
+}
+
+/* Locate a specific option in the options body.  Returns pointer to
+ * the code byte if found, NULL if not found.  If the message contained the overload
+ * option, indicating that the file and/or server name parts of the header have been
+ * used as extensions for the options, then search those too, in the order specified
+ * by RFC2131.
+ *
+ * Sub-options are supported by specifying a >8 bit number. For example 0x2B03 will
+ * find suboption 3 in the vendor-specific information.
+ *
+ * Extended options are supported by passing a 24-bit number: 0x7F0001 will find
+ * extended option 1.
+ *
+ * Extended options and suboptions are mutually exclusive (for now).
+ */
+u_char *dhcp_find_option(const DHCP *d, u_int option)
+{
+	u_char *o;
+        int overload;
+
+	if (option > 0xFF && (option >> 16) != OPTION_EXTENSION) {
+		o = dhcp_find_option(d, option >> 8);
+		if (o) {
+			return dhcp_find_option_in_area(o + 2, o[1], option & 0xFF, NULL);
+		}
+		else {
+			return NULL;
+		}
+	}
+
+	o = dhcp_find_option_in_area(d->options + 4, sizeof d->options - 4, option, &overload);
+
+	if (!o && (overload & 1)) {
+		o = dhcp_find_option_in_area(d->file, sizeof d->file, option, NULL);
+	}
+
+	if (!o && (overload & 2)) {
+		o = dhcp_find_option_in_area(d->sname, sizeof d->sname, option, NULL);
+	}
+
+	return o;
+}
+
+/* Add an option to a DHCP packet's options field.  Returns pointer to newly added
+ * block (NULL if unable to add it), and ensures that a new END marker is in place.
+ */
+u_char *dhcp_add_option(DHCP *d, const u_char option, const u_char size, const void *opt)
+{
+        u_char *o;
+        int end_index;
+
+	if (dhcp_find_option(d, option) != NULL) {
+	        /* This option was already present! */
+	        return NULL;
+	}
+        o = dhcp_find_option(d, OPTION_END);
+
+	if (o < &d->options[0]) {
+	        /* XXX: Want to overload file and sname? */
+	        return NULL;
+	}
+
+        end_index = size + 2 + o - &d->options[0];
+        if (end_index > sizeof(d->options)) {
+                /* Insufficient space remaining */
+                return NULL;
+        }
+
+        o[0] = option;
+        o[1] = size;
+        if (size > 0) {
+                (void) memcpy(&o[2], opt, size);
+        }
+        o[2+size] = OPTION_END;
+        return o;
+}
+
+/* Routine to byte-reverse a host-order time value and add it as an option
+ * to a DHCP packet to save time everywhere this needs to be done.
+ */
+u_char *dhcp_add_time_option(DHCP *d, dhcp_time t, u_char option)
+{
+        if (t != dhcp_infinite_lease) {
+                t = t / 100;
+        }
+        t = (dhcp_time) htonl(t);
+        return dhcp_add_option(d, option, sizeof(t), &t);
+}
+
+/* Routines to remove an option.  This routine does not validate the option
+ * being removed, so you may cause absolute havoc if you remove things like
+ * the DHCP message type.  dhcp__delete returns non-zero if the extension
+ * section it has deleted the option from is now empty.
+ */
+static int dhcp__delete(u_char *opt, u_char *start, u_char *end)
+{
+        int i;
+
+	for (i=0; i<(2+opt[1]); ++i) {
+	        opt[i] = OPTION_PAD;
+	}
+	while (opt[i] == OPTION_PAD && &opt[i] < end) {
+	        ++i;
+	}
+        opt[1] = OPTION_PAD;
+        opt[0] = OPTION_PAD;
+	/* This was the last option - move END marker further back */
+	if (&opt[i] < end && opt[i] == OPTION_END) {
+	        opt[0] = OPTION_END;
+	        opt[i] = OPTION_PAD;
+	}
+	if (opt == start) {
+	        opt[0] = OPTION_END;
+	}
+
+	return (opt == start);
+}
+
+void dhcp_delete_option(DHCP *d, const u_char option)
+{
+        u_char *opt = dhcp_find_option(d, option);
+
+        if (opt != NULL && option != OPTION_PAD && option != OPTION_END) {
+                /* Was it in the extension section? */
+                if (opt >= d->sname && opt < d->file) {
+                	if (dhcp__delete(opt, d->sname, d->file)) {
+                                opt = dhcp_find_option(d, OPTION_OPTIONOVERLOAD);
+                                if (opt != NULL) {
+	                                /* Clear the sname bit in the extensions */
+	                                opt[2] &= ~dhcpoverload_SNAME;
+                                }
+                        }
+                }
+                else if (opt >= d->file && opt < d->options) {
+                	if (dhcp__delete(opt, d->file, d->options)) {
+                                opt = dhcp_find_option(d, OPTION_OPTIONOVERLOAD);
+                                if (opt != NULL) {
+	                                /* Clear the file bit in the extensions */
+	                                opt[2] &= ~dhcpoverload_FILE;
+                                }
+                        }
+                }
+                else {
+                        dhcp__delete(opt, d->options + 4, &d->options[OPTIONS_MAX]);
+                }
+        }
+}
+
+/* Locates and extracts a given network-order time value from a packet and returns
+ * it in host-byte order and converted into centiseconds.  Returns NULL if the option
+ * was not found, else a pointer to the type byte in the packet and *expiry is filled in
+ */
+u_char *dhcp_find_lease_expiry(const DHCP *d, dhcp_time *expiry, u_char option)
+{
+        u_char *opt = dhcp_find_option(d, option);
+        if (opt != NULL) {
+                dhcp_time result;
+                (void) memcpy(&result, opt+2, sizeof(result));
+                result = (dhcp_time) htonl(result);
+                if (result != dhcp_infinite_lease) {
+                        if (result >> 24) {
+                                /* Overflow* - maximise the lease term, but don't set
+                                 * it to the infinite lease magic value, because that's
+                                 * wrong.  The consequence of us storing the wrong value
+                                 * is that we will just attempt reacquisition earlier
+                                 * than the server may be expecting.  * Well almost -
+                                 * close enough for a quick check though.
+                                 */
+                                result = dhcp_maximum_lease;
+                        }
+                        else {
+                                result = result * 100;
+                        }
+                }
+
+                *expiry = result;
+        }
+        return opt;
+}
+
+/* Locates and extracts an IP address option from the given DHCP packet.  Returns
+ * NULL if the option was not found or too short, else a pointer to the type byte in the
+ * packet and *ia is filled in. Ensures that option is at least 4 bytes long, and takes the
+ * first 4 bytes as the IP address.
+ */
+u_char *dhcp_find_ip_address(const DHCP *d, struct in_addr *ia, u_char option)
+{
+        u_char *opt = dhcp_find_option(d, option);
+        if (opt != NULL && opt[1] >= 4) {
+                (void) memcpy(ia, opt + 2, sizeof(*ia));
+                return opt;
+        }
+        else {
+                ia->s_addr = INADDR_ANY;
+                return NULL;
+        }
+}
+
+
+/* Locates and extracts the server identifier option from the given DHCP packet.  Returns
+ * NULL if the option was not found, else a pointer to the type byte in the packet and
+ * *ia is filled in.
+ */
+u_char *dhcp_find_server_identifier(const DHCP *d, struct in_addr *ia)
+{
+	return dhcp_find_ip_address(d, ia, OPTION_SERVERIDENTIFIER);
+}
+
+
+/* Locates and extracts the server priority option from the given DHCP packet.  Returns
+ * NULL if the option was not found, and *priority is set to -1, else a pointer to the
+ * type byte in the packet and *priority is filled in.
+ */
+u_char *dhcp_find_server_priority(const DHCP *d, int *priority)
+{
+	u_char *opt = dhcp_find_option(d, OPTION_SERVERPRIORITY);
+	if (opt != NULL && opt[1] == 2) {
+		*priority = (opt[2] << 8) | opt[3];
+		return opt;
+	}
+	else {
+		*priority = -1;
+		return NULL;
+	}
+}
+
+
+/* This routine copies an option from the src DHCP packet to the destination
+ * should the option be present in the source.  it returns the address of
+ * the option in the destination, or NULL if the copy did not succeed (either
+ * did not exist in original, or there was no space in the destination)
+ */
+u_char *dhcp_copy_option(DHCP *d, const DHCP *src, const u_char option)
+{
+        const u_char *opt = dhcp_find_option(src, option);
+        if (opt != NULL) {
+                return dhcp_add_option(d, opt[0], opt[1], &opt[2]);
+        }
+        return NULL;
+}
+
+/* This routine adds vendor class information to the outgoing packet */
+static void dhcp_add_vendor_class_information(DHCP *d)
+{
+        _kernel_oserror *e = _swix(OS_Byte, _INR(0,1), 0, 0);
+
+        if (e != NULL) {
+        	size_t len = strlen(e->errmess);
+        	if (len > 255) len = 255;
+
+                dhcp_add_option(d, OPTION_CLASSIDENTIFIER, len, e->errmess);
+        }
+}
+        
+/* This routine adds our proposed hostname to the outgoing packet */
+static void dhcp_add_hostname_information(DHCP *d)
+{
+        char hostname[256];
+        _kernel_oserror *e = _kernel_getenv("Inet$HostName", hostname, sizeof(hostname));
+
+        if (e == NULL) {
+                size_t len = strlen(hostname);
+                if (len > 0) {
+                        dhcp_add_option(d, OPTION_HOSTNAME, len, hostname);
+                }
+        }
+}
+
+/* This routine initialises the di->di_dhcp (di->req.ifd.packet) structure with a header
+ * suitable for sending a DHCP message.  It initialises the options field with the magic
+ * cookie and adds the terminator to it.  If a copy source (dsrc) is provided, the
+ * transaction ID (xid), client address (ciaddr) and parameter request list option are
+ * duplicated into the new packet.
+ */
+void dhcp_init_packet(dhcp_interface *di, DHCP *dsrc, u_char message_type)
+{
+        DHCP *d = &di->di_dhcp;
+
+	memset(d, '\0', sizeof(*d));
+        d->op = BOOTREQUEST;
+        d->htype = ETHERNET_TYPE;
+        d->hlen = ETHERNET_LEN;
+        d->secs = htons(0);
+        d->hops = 0;
+        d->flags = 0;
+        if (di->dib->dib_address != NULL) {
+                (void) memcpy(d->chaddr, di->dib->dib_address, d->hlen);
+        }
+
+	/* Initialise the options field */
+	*(u_long *) d->options = htonl(OPTIONS_COOKIE);
+	d->options[4] = OPTION_END;
+
+	dhcp_add_option(d, OPTION_DHCPMESSAGETYPE, 1, &message_type);
+	if (message_type != DHCPDECLINE && message_type != DHCPRELEASE) {
+		dhcp_add_vendor_class_information(d);
+		dhcp_add_hostname_information(d);
+	}
+
+	/* Random XID - but this will be overridden by dhcp_request if it requires
+	 * a duplicate transaction identifier
+	 */
+        d->xid = rand();
+
+	if (dsrc != NULL) {
+		/* Pull in the previous client IP address, if known */
+	        d->ciaddr = dsrc->ciaddr;
+		/* Copy the parameter request list from the previous request */
+		if (dhcp_copy_option(d, dsrc, OPTION_PARAMETERREQLIST) == NULL) {
+		        /* There wasn't one.  Create one - if wanted.  We don't. */
+		}
+		if (dhcp_copy_option(d, dsrc, OPTION_VENDORSPECIFIC) == NULL) {
+		        /* There wasn't one.  Create one - if wanted.  We don't. */
+		}
+	}
+}
+
+void dhcp_init_inform_packet(DHCP *d, struct ether_addr *hw_addr, u_long ciaddr)
+{
+        static int monotonic = 0;
+        u_char message_type = DHCPINFORM;
+
+	memset(d, '\0', sizeof(*d));
+        d->op = BOOTREQUEST;
+        d->htype = ETHERNET_TYPE;
+        d->hlen = ETHERNET_LEN;
+        d->secs = htons(0);
+        d->hops = 0;
+        d->flags = 0;
+        if (hw_addr != NULL) {
+                (void) memcpy(d->chaddr, hw_addr, d->hlen);
+        }
+
+	/* Initialise the options field */
+	*(u_long *) d->options = htonl(OPTIONS_COOKIE);
+	d->options[4] = OPTION_END;
+
+	dhcp_add_option(d, OPTION_DHCPMESSAGETYPE, 1, &message_type);
+
+	/* Copy in the client IP address */
+        d->ciaddr = ciaddr;
+        monotonic = (monotonic + 1) % sizeof(*d);
+        d->xid = interfaces_current_time() ^ ciaddr;
+}
+
+/* This routine controls backoff fuzz values. It changes "interval" by a randomly
+ * chosen amount uniformly distributed over -1 to +1 seconds.
+ */
+static dhcp_time dhcp_time_fuzz(dhcp_time interval)
+{
+	return interval + ((rand() % 201) - 100);
+}
+
+/* This routine is called to transmit the current packet (di->di_dhcp) on the network.
+ * It calculates the correct value for the secs field, works out the fuzzy intervals
+ * for retries and schedules them, and once it is happy, asks the sockets module to
+ * transmit the packet.
+ */
+void dhcp_transmit(dhcp_interface *di)
+{
+        /* First, calculate how long it was since we started this request */
+        u_char *msgtypeopt = dhcp_find_option(&di->di_dhcp, OPTION_DHCPMESSAGETYPE);
+        u_char msgtype = msgtypeopt ? msgtypeopt[2] : 0;
+        int elapsed_secs;
+
+	if (msgtypeopt == NULL) {
+	        trace(("DHCP (fatal): No DHCP message type option\n"));
+	        return;
+	}
+
+	if (msgtype == DHCPDISCOVER ||
+	    msgtype == DHCPREQUEST && di->state != dhcpstate_REQUESTING) {
+		elapsed_secs = (di->t1 - di->first_send) / 100;
+		if (elapsed_secs > USHRT_MAX) {
+			elapsed_secs = USHRT_MAX;
+		}
+		di->di_dhcp.secs = htons(elapsed_secs);
+	}
+
+        /* Now calculate the backoff periods.  Add the current interval to cause
+         * the timer to expire in the future */
+        if (di->state == dhcpstate_REQUESTING ||
+            di->state == dhcpstate_REBOOTING ||
+            di->state == dhcpstate_SELECTING) {
+                /* Binary exponential backoff with fuzz in these states */
+	        di->t1 += di->interval;
+        	if (di->t1 <= di->t2) {
+                	/* Re-calculate the backoff period. */
+	                dhcp_time new_interval;
+        	        if (di->interval == 0) {
+                	        new_interval = transmit_DEFAULT_INITIAL_RETRY;
+	                }
+        	        else {
+	        	        new_interval = (di->interval * 2);
+	                	if (new_interval == di->interval) ++new_interval;
+	                }
+        	        if (di->interval > transmit_BACKOFF_LIMIT) {
+                	        di->interval = transmit_BACKOFF_LIMIT;
+	                }
+	                di->interval = dhcp_time_fuzz(new_interval);
+        	}
+	        else {
+        	        /* But, we must not exceed the final cutoff point */
+                	/* The timeout would exceed the giveup time anyway - timer expiry
+	                 * code will capture this situation and terminate the retrying anyway
+			 *
+			 * We'll just let it ride - the second timer will expire before the
+			 * first, and the prioritisation in the dispatcher will cause the
+			 * giveup timeout action to be invoked rather than the retry timer.
+			 */
+	        }
+        }
+        else {
+                /* Halfway to next timeout */
+                if (di->t2 == dhcp_infinite_lease) {
+                        di->t1 = (di->t1 * 3) >> 1;
+                }
+                else {
+		        enum {
+		                minute = 5952
+	                	/* OK - 48cs too short, but 5952 == 0x1740 which can be built
+        		         * as an 8-bit constant with an even bit count rotate. :-) */
+		        };
+                        /* Calculate halfway point */
+	                dhcp_time t = (di->t1 >> 1) + (di->t2 >> 1) ;
+
+	                if ((t - di->t1) < minute) {
+		        /* Oh dear - less than a minute into the future.  Things are
+		         * getting tight - adjust timeouts.  At this stage, we can start
+	        	 * panicking because our lease is due to expire in less than one
+		         * minute.  We really really really really really really really
+		         * need a new one extremely precipitously!
+	        	 */
+	                        di->t1 += minute;
+	                }
+	                else {
+	                        di->t1 = t;
+	                }
+                }
+        }
+
+	/* If we are currently RENEWING and this a REQUEST message, then attempt to
+	 * unicast the packet to the server
+	 */
+        if (di->state == dhcpstate_RENEWING && msgtype == DHCPREQUEST) {
+                struct in_addr dest;
+                if (dhcp_find_server_identifier(&di->binding, &dest)) {
+	                if (sockets_unicast_transmit(&di->di_dhcp, dest) > 0) {
+	                        return;
+	                }
+                }
+        }
+
+	/* This is the icky bit - how to actually send the information.  We'll leave
+	 * that to the sockets module to handle, indicating whether automatically
+	 * claimed frame types should be released again after message is sent :-)
+	 */
+        sockets_transmit(di, msgtype == DHCPDECLINE ? st_RELEASE_FRAMES : st_RETAIN_FRAMES);
+}
+@
+
+
+1.11
+log
+@Internationalised
+
+Version 0.25. Tagged as 'DHCP-0_25'
+@
+text
+@d344 14
+d387 1
+@
+
+
+1.10
+log
+@Makefile recreated from fragments
+Renamed dhcpextern.h to DHCP.h so the shared makefiles can export it without needing a different source and target filename.
+
+Version 0.24. Tagged as 'DHCP-0_24'
+@
+text
+@a37 1
+#include "dhcperrors.h"
+@
+
+
+1.9
+log
+@Tweaked to build with latest TCPIPLibs
+@
+text
+@d36 1
+a36 1
+#include "dhcp.h"
+@
+
+
+1.8
+log
+@* Ignores DHCPACKS from incorrect servers.
+* DHCP_GetOption and associated internal calls support sub-options and
+  extended options.
+* Random time intervals more uniformly spread.
+* Time reports in *DHCPInfo were incorrect when real-time clock had changed
+  since module initialisation.
+* Server priority option supported.
+* CMHG file optimised - syntax not duplicated.
+
+Version 0.10. Tagged as 'DHCP-0_10'
+@
+text
+@d29 1
+@
+
+
+1.7
+log
+@Improved randomisation further from 0.07 - now we seed on all bytes of the
+hardware address, not just the first four :)
+Transaction IDs now totally random.
+
+Version 0.08. Tagged as 'DHCP-0_08'
+@
+text
+@d42 6
+a47 1
+u_char *dhcp_options_start(const DHCP *d)
+d49 7
+a55 5
+	/* The sockets module will have guaranteed a cookie, filling in a null
+	 * options list if not present.
+	 */
+	return (u_char *) &d->options[4];
+}
+d57 3
+a59 10
+/* Locate a specific option in the options body.  Returns pointer to
+ * the code byte if found, NULL if not found.  If the message contained the overload
+ * option, indicating that the file and/or server name parts of the header have been
+ * used as extensions for the options, then search those too, in the order specified
+ * by RFC2131.
+ */
+u_char *dhcp_find_option(const DHCP *d, const u_char option)
+{
+        u_char *options = dhcp_options_start(d), *eoo = options + sizeof(d->options) - 4;
+        int overload = 0;
+d61 1
+a61 1
+        while (*options != OPTION_END || overload != 0) {
+d64 11
+a74 4
+			        return options;
+			}
+			if (*options == OPTION_OPTIONOVERLOAD && options[1] != 0) {
+			        overload = options[2];
+d76 2
+a77 16
+			if (*options == OPTION_END && overload != 0) {
+			        if (overload & 1) {
+			                overload ^= 1;
+			                options = (u_char *) d->file;
+			                eoo = options + sizeof(d->file);
+			        }
+			        else if (overload & 2) {
+			                overload ^= 2;
+			                options = (u_char *) d->sname;
+			                eoo = options + sizeof(d->sname);
+			        }
+			        else {
+			                /* Don't know */
+			                overload = 0;
+			        }
+			        continue;
+a82 3
+			if (options >= eoo) {
+			        return NULL;
+			}
+d89 43
+a131 1
+	return (option == OPTION_END) ? options : NULL;
+d234 1
+a234 1
+                        dhcp__delete(opt, d->options, &d->options[OPTIONS_MAX]);
+d300 18
+d338 4
+a341 1
+                dhcp_add_option(d, OPTION_CLASSIDENTIFIER, strlen(e->errmess), e->errmess);
+d366 3
+a368 6
+	{
+	        /* Initialise the options field */
+	        const u_long cookie = htonl(OPTIONS_COOKIE);
+    		memcpy(d->options, &cookie, sizeof(cookie));
+		d->options[4] = OPTION_END;
+	}
+d409 3
+a411 6
+	{
+	        /* Initialise the options field */
+	        const u_long cookie = htonl(OPTIONS_COOKIE);
+    		memcpy(d->options, &cookie, sizeof(cookie));
+		d->options[4] = OPTION_END;
+	}
+d421 3
+a423 1
+/* This routine controls backoff fuzz values, based on the current monotonic time */
+d426 1
+a426 2
+	int now = ((interfaces_current_time() % 9) - 5) * 25;
+        return interval + now;
+@
+
+
+1.6
+log
+@* Added initial delay in INIT-REBOOT state to match INIT state.
+* Stopped extra DHCPREQUESTs being generated by ioctl calls in REBOOTING state.
+* Don't reject BOOTP packets just because they don't have a cookie. Treat
+  those without the correct cookie as containing no options.
+* Reject BOOTP packets < 300 bytes, as per RFC 1542.
+* Treat BOOTP responses in a more considered fashion - old versions would go
+  nuts as soon as they saw any non-DHCP response. BOOTP replies now treated as
+  (not very good) offers. BOOTP responses with correct address also accepted
+  in REBINDING state.
+* Decline DHCPACKs with no server identifier.
+* Add server to blacklist if its offer ended up being DHCPDECLINEd for any
+  reason.
+* Add server to blacklist if we timeout requests.
+* Initial boot delay now better randomised (seeded on MAC address), and in the
+  range 1-10 seconds, as per RFC 2131.
+* Corrected REBOOTING and REQUESTING back-off timers - first retransmission
+  was too slow.
+* DHCPREQUEST packets now have secs filled in correctly in REBOOTING state.
+* Voting rules extended - prefer DHCP servers to BOOTP servers and prefer
+  servers providing vendor options to those who don't.
+
+Version 0.07. Tagged as 'DHCP-0_07'
+@
+text
+@d21 1
+a300 1
+        u_long *hwlong = (u_long *) &d->chaddr;
+d328 1
+a328 1
+        d->xid = interfaces_current_time() ^ (u_long) di ^ hwlong[0] ^ hwlong[1];
+@
+
+
+1.5
+log
+@Fixed some RFC 2131 violations in the "secs" field output:
+    DHCPDECLINE and DHCPRELEASE now set secs to 0.
+    DHCPREQUESTs now have the same secs value as the last DHCPDISCOVER.
+
+Version 0.06. Tagged as 'DHCP-0_06'
+@
+text
+@d43 4
+a46 5
+        /* Return pointer to actual options, skipping the magic cookie.
+         * The Internet module will have already verified the cookie,
+         * so we don't have to worry about it.
+         */
+        return (u_char *) &d->options[4];
+d238 4
+a241 3
+/* Locates and extracts the server identifier option from the given DHCP packet.  Returns
+ * NULL if the option was not found, else a pointer to the type byte in the packet and
+ * *ia is filled in.
+d243 1
+a243 1
+u_char *dhcp_find_server_identifier(const DHCP *d, struct in_addr *ia)
+d245 2
+a246 2
+        u_char *opt = dhcp_find_option(d, OPTION_SERVERIDENTIFIER);
+        if (opt != NULL) {
+d248 1
+d252 1
+d254 10
+a263 1
+        return opt;
+d398 2
+a399 1
+	if (msgtype == DHCPDISCOVER) {
+@
+
+
+1.4
+log
+@  Support for DHCPINFORM
+  Dynamic leasing behaviour brought in line with DHCP specification
+Detail:
+  New *-command *DHCPExecute to enable CLI launching of DHCP interface
+    control.
+  Output of *DHCPInfo tidied up and irrevelant timer info is suppressed.
+  The algorithm for deciding which offer to accept (where multiple offers
+    are received) has been significantly enhanced (and moved to voting.c)
+    If a previous offer from a server has been DHCPNAK'd by something else
+    then the server offering the dodgy IP address is blacklisted and will
+    no longer be preferred to a server which isn't blacklisted.
+  DHCP module will request and prefer offers of an existing IP address
+    configuration wherever possible.
+  DHCP module will initialise an interface into the INITREBOOT/REBOOTING
+    states if it is asked to take control of an interface which has
+    already been configured externally.
+  IP lease length suggestions are no longer sent in appropriate messages.
+    The server is trusted to choose an appropriate value.
+  The DHCP module is more careful to insert appropriate options into each
+    message.  It is no longer in breach of RFC2131 in this respect.
+  Timer values for renew and rebind times are now inferred automatically
+    where necessary (server doesn't have to send them) and are now correct.
+  DHCPRELEASE and DHCPDECLINE now include a textual message indicating the
+    reason for the message's generation.
+  Where allowed, outgoing messages contain a client class identifier to
+    enable the server to vary configuration information depending on the
+    client hardware/software type.  Currently, this information is the
+    output of OS_Byte 0.
+  In the SWI interface for examining DHCP packets, a pointer to a specific
+    packet to examine may be supplied instead of an interface identifier
+    (depending on a flag bit)
+  New SWI DHCP_Inform for sending DHCPINFORM messages to arbitrary servers
+    in order to enable retrieval of configuration information when the IP
+    address has been established via other means (eg. from NVRAM).
+  DHCP module is now capable of deleting IP addresses from interfaces.
+  DHCP module will cede control of an interface if something else changes
+    the interface's address and send a message to the server indicating
+    that the lease is being relinquished.
+  DHCP will trap the Internet (5.26 and later) module's panic service call
+    when a duplicate IP address is detected on the network, and resolve
+    the situation (send the server DHCPDECLINE and deconfigure the interface
+    and restart address discovery) if it was controlling that interface.
+  Transaction ID generation improved (uses interface MAC address to
+    reduce chance of duplication with other hosts)
+  MAC address discovery code added.
+  DHCP module attempts to unicast packets wherever possible.
+  Retry delays adjusted to conform more closely to spec (RFC2131)
+  Possible hole in state table that IPConfig triggered which caused several
+    DHCPDISCOVER messages to be sent in succession very quickly has been
+    closed.
+  Co-operates with Internet 5.26 to ensure that callers of the Internet
+    module's BOOTP ioctl are returned sensible error values so that they
+    no longer need to probe the DHCP module independently to discover
+    whether an interface has been configured successfully or not.
+Admin:
+  Requires Internet 5.26
+  Requires TCPIPLibs 5.19
+
+Version 0.05. Tagged as 'DHCP-0_05'
+@
+text
+@d387 7
+a393 5
+        elapsed_secs = (di->t1 - di->first_send) / 100;
+        if (elapsed_secs > UCHAR_MAX) {
+                elapsed_secs = UCHAR_MAX;
+        }
+        di->di_dhcp.secs = htons(elapsed_secs);
+@
+
+
+1.3
+log
+@  DHCP module behaviour when presented with a BOOTP response to one of
+    its requests has been fixed.
+Detail:
+  If the DHCP module received a response from the BOOTP server rather
+    than a DHCP server, it would discard the packet silently.  Since
+    the Internet module only uses its own hooks into the UDP packet
+    delivery code if no socket is bound to the BOOTP/DHCP port, the
+    Internet module didn't see the response either.  This case is now
+    trapped and delivered to the Internet module like a DHCPACK message
+    would usually be (via sockets_transmit), except that we then forget
+    about the interface to avoid having to deal with it any more.
+  Fixed Makefile to use Do to call awk so that we can use the C library
+    redirection and hence avoid getting lots of CRs in the header file
+    which is exported to RiscOS.Export.C.h.DHCP
+  Debug output on sockets_transmit altered to avoid dereferencing a
+    NULL pointer when noting the DHCP message type of the packet being
+    passed to the Internet module.
+Admin:
+
+Version 0.03. Tagged as 'DHCP-0_03'
+@
+text
+@d32 1
+d41 1
+a41 1
+u_char *dhcp_options_start(DHCP *d)
+d47 1
+a47 1
+        return &d->options[4];
+d56 1
+a56 1
+u_char *dhcp_find_option(DHCP *d, const u_char option)
+d72 1
+a72 1
+			                options = d->file;
+d77 1
+a77 1
+			                options = d->sname;
+d211 1
+a211 1
+u_char *dhcp_find_lease_expiry(DHCP *d, dhcp_time *expiry, u_char option)
+d239 17
+d261 1
+a261 1
+u_char *dhcp_copy_option(DHCP *d, DHCP *src, const u_char option)
+d270 10
+d289 1
+d310 8
+a319 2
+	        /* Copy the transaction ID */
+	        d->xid = dsrc->xid;
+d330 23
+a352 2
+	else {
+	        d->xid = interfaces_current_time() ^ (u_long) di;
+d354 7
+d366 1
+a366 1
+	int now = ((interfaces_current_time() & 7) - 4) * 24;
+d407 1
+a407 1
+	        	        new_interval = (di->interval * 3) >> 1;
+a409 1
+	                di->interval = dhcp_time_fuzz(new_interval);
+d413 1
+d447 1
+a447 1
+	                        di->t1 = di->t2;
+d451 12
+@
+
+
+1.2
+log
+@  Integration with IPConfig completed.
+  Header export added.
+Detail:
+  Blocking added to enable IPConfig to work correctly.
+  Header file exported containing states and SWI identifiers.
+  Brings loopback interface up so that it can bind to the DHCP client
+    port (failure to have any AF_INET interfaces configured causes
+    the bind() call to fail, even when INADDR_ANY is specified)
+  Failure to read ARP cache now treated as a go-ahead to accept the
+    IP address rather than a rejection.
+  Keeps a copy of Internet BOOTP requests so that the options can
+    be copied across to the DHCPDISCOVER if required.
+Admin:
+  Header export required by Internet 5.21 and IPConfig 0.15
+  Requires Internet 5.21.
+  Requires TCPIPLibs 5.11.
+  Requires IPConfig 0.15.
+  Add module after all other expansion card networking modules and
+    any attempt to BOOTP will be transparently upgraded to DHCP.
+
+
+Version 0.01. Tagged as 'DHCP-0_01'
+@
+text
+@d296 1
+a296 1
+	        d->xid = (u_long) di;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d291 3
+@
+
+
+1.1.1.1
+log
+@  Fully functional DHCP client.
+Detail:
+  Implements the Dynamic Host Configuration Protocol (RFC2131 and RFC2132)
+  This module usurps the Internet module's implementation of BOOTP in order
+    to use the superior DHCP protocol.
+Admin:
+  Requires Internet 5.20 or later.
+    (RiscOS/Sources/Networking/AUN/Internet  tag: Internet-5_20)
+  Requires TCPIPLibs 5.09 or later.
+    (RiscOS/Sources/Libs/TCPIPLibs  tag: TCPIPLibs-5_09)
+  
+
+Tagged as DHCP-0_00
+
+@
+text
+@@

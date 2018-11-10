@@ -1,0 +1,1193 @@
+head	4.4;
+access;
+symbols
+	SprExtend-1_83:4.4
+	SprExtend-1_82:4.4
+	SprExtend-1_81:4.4
+	SprExtend-1_80:4.4
+	SprExtend-1_79:4.4
+	SprExtend-1_78:4.4
+	SprExtend-1_77:4.4
+	SprExtend-1_76:4.4
+	SprExtend-1_75:4.4
+	SprExtend-1_74:4.4
+	SprExtend-1_73:4.4
+	SprExtend-1_72:4.4
+	SprExtend-1_71-nocfsi:4.4
+	SprExtend-1_71:4.4
+	SprExtend-1_70-tracef:4.4
+	SprExtend-1_70-headers:4.3
+	SprExtend-1_70:4.3
+	SprExtend-1_69:4.3
+	SprExtend-1_68:4.3
+	SprExtend-1_67:4.3
+	SprExtend-1_66:4.3
+	SprExtend-1_65:4.3
+	SprExtend-1_64:4.3
+	SprExtend-1_63:4.3
+	SprExtend-1_62:4.3
+	SprExtend-1_61:4.3
+	SprExtend-1_60:4.2
+	SprExtend-1_59:4.2
+	SprExtend-1_58:4.2
+	SprExtend-1_57:4.2
+	SprExtend-1_56:4.2
+	SprExtend-1_55:4.2
+	SprExtend-1_54:4.1
+	SprExtend-1_53:4.1
+	SprExtend-1_52:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.4
+date	2016.05.21.13.37.18;	author rool;	state Exp;
+branches;
+next	4.3;
+commitid	TvdqzFBJfCe7Wl7z;
+
+4.3
+date	2014.03.04.20.45.06;	author jlee;	state Exp;
+branches;
+next	4.2;
+commitid	6KWofF44yd1Fjqrx;
+
+4.2
+date	2013.10.07.00.39.09;	author jlee;	state Exp;
+branches;
+next	4.1;
+commitid	HcUKy3PafwqToi8x;
+
+4.1
+date	2013.08.06.23.16.23;	author jlee;	state Exp;
+branches;
+next	;
+commitid	z9XOph7zDZQ2Ur0x;
+
+
+desc
+@@
+
+
+4.4
+log
+@Replace tracef debug calls
+Detail:
+  Change tracef() to use the double brackets trick rather than _ for , substitution
+Admin:
+  Debug build built, but not tested. Non debug build functions as before.
+  Submission for the JPEG bounty.
+  Tagged as SprExtend-1_70-tracef
+@
+text
+@/* Copyright 2013 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**************************************************************************
+*                                                                         *
+*    Overall construction of the X loop.                                  *
+*                                                                         *
+**************************************************************************/
+
+static void sprtrans_readpixormask(asm_workspace *wp, workspace *ws)
+/* Read pixel or mask from [r_inptr, r_inoffset] into r_pixel */
+{
+  if(wp->save_inlog2bpp < 3)
+  {
+    ins(ws, LDRB(R(r_pixel), R(r_inptr)) | INDEX_LSR(R(r_inoffset),3-wp->save_inlog2bpp), "LDRB    r_pixel,[r_inptr,r_inoffset,LSR #3-in_l2bpp]");
+    AND(R(r_temp1),R(r_inoffset),IMM(7>>wp->save_inlog2bpp),                              "AND     r_temp1,r_inoffset,#7>>in_l2bpp");
+    if(wp->save_inlog2bpp > 0)
+    {
+      MOV(R(r_temp1),OP2R(R(r_temp1)) | LSLI(wp->save_inlog2bpp),                         "MOV     r_temp1,r_temp1,LSL #in_l2bpp");
+    }
+    MOV(R(r_pixel),OP2R(R(r_pixel)) | LSRR(R(r_temp1)),                                   "MOV     r_pixel,r_pixel,LSR r_temp1");
+    AND(R(r_pixel),R(r_pixel),IMM(ws->in_pixmask),                                        "AND     r_pixel,r_pixel,#in_pixmask");
+  }
+  else if(wp->save_inlog2bpp == 3)
+  {
+    ins(ws, LDRB(R(r_pixel), R(r_inptr)) | INDEX(R(r_inoffset),0),                        "LDRB    r_pixel,[r_inptr,r_inoffset]");
+  }
+  else if(wp->save_inlog2bpp == 4)
+  {
+    if(wp->CPUFlags & CPUFlag_LDRH)
+    {
+      MOV(R(r_pixel),OP2R(R(r_inoffset)) | LSLI(1),                                       "MOV     r_pixel,r_inoffset,LSL #1");
+      ins(ws, 0x019000B0 | (R(r_pixel)<<12) | (R(r_inptr)<<16) | R(r_pixel),              "LDRH    r_pixel,[r_inptr,r_pixel]");
+    }
+    else if(wp->CPUFlags & CPUFlag_NoUnaligned)
+    {
+      ADD(R(r_temp1), R(r_inptr), OP2R(R(r_inoffset)) | LSLI(1),                          "ADD     r_temp1,r_inptr,r_inoffset,LSL #1");
+      ins(ws, LDRB(R(r_pixel), R(r_temp1)) | POSTINC(1),                                  "LDRB    r_pixel,[r_temp1],#1");
+      ins(ws, LDRB(R(r_temp1), R(r_temp1)),                                               "LDRB    r_temp1,[r_temp1]");
+      ORR(R(r_pixel), R(r_pixel), OP2R(R(r_temp1)) | LSLI(8),                             "ORR     r_pixel,r_pixel,r_temp1,LSL #8");
+    }
+    else
+    {
+      ins(ws, LDR(R(r_pixel), R(r_inptr)) | INDEX(R(r_inoffset),1),                       "LDR     r_pixel,[r_inptr,r_inoffset,LSL #1]");
+      MOV(R(r_pixel),OP2R(R(r_pixel)) | LSLI(16),                                         "MOV     r_pixel,r_pixel,LSL #16");
+      MOV(R(r_pixel),OP2R(R(r_pixel)) | LSRI(16),                                         "MOV     r_pixel,r_pixel,LSR #16");
+    }
+  }
+  else
+  {
+    ins(ws, LDR(R(r_pixel), R(r_inptr)) | INDEX(R(r_inoffset),2),                         "LDR     r_pixel,[r_inptr,r_inoffset,LSL #2]");
+  }
+}
+
+static void sprtrans_plotaction(asm_workspace *wp, workspace *ws)
+/* Combine r_outword and r_outmask to create the final screen word in r_outword */
+{
+  if(!TRANSMASK)
+  {
+    comment(ws,"GCOL action handling");
+    if(!ws->gcol)
+    {
+      if(ws->regnames.r_outmask.regno != -1)
+      {
+        /* Read screen word if mask not all 1's */
+        CMN(R(r_outmask),IMM(1),                              "CMN     r_outmask,#1");
+        ins(ws, LDR(R(r_inoffset),R(r_outptr)) | NE,          "LDRNE   r_inoffset,[r_outptr]");
+        AND(R(r_outword),R(r_outword),OP2R(R(r_outmask)),     "AND     r_outword,r_outword,r_outmask");
+        BIC(R(r_inoffset),R(r_inoffset),OP2R(R(r_outmask)),   "BIC     r_inoffset,r_inoffset,r_outmask");
+        EOR(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),    "EOR     r_outword,r_inoffset,r_outword");
+      }
+      else
+      {
+        /* Mask is always all 1's! */
+      }
+    }
+    else
+    {
+      /* Always read screen */
+      ins(ws, LDR(R(r_inoffset),R(r_outptr)),                 "LDR     r_inoffset,[r_outptr]");
+      if(ws->regnames.r_outmask.regno != -1)
+      {
+        AND(R(r_outword),R(r_outword),OP2R(R(r_outmask)),     "AND     r_outword,r_outword,r_outmask");
+      }
+      switch(ws->gcol)
+      {
+      case 1: /* OR */
+        ORR(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),    "ORR     r_outword,r_inoffset,r_outword");
+        break;
+      case 2: /* AND */
+        if(ws->regnames.r_outmask.regno != -1)
+        {
+          EOR(R(r_outword),R(r_outword),OP2R(R(r_outmask)),   "EOR     r_outword,r_outword,r_outmask");
+          BIC(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),  "BIC     r_outword,r_inoffset,r_outword");
+        }
+        else
+        {
+          AND(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),  "AND     r_outword,r_inoffset,r_outword");
+        }
+        break;
+      case 3: /* EOR */
+        EOR(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),    "EOR     r_outword,r_inoffset,r_outword");
+        break;
+      case 4: /* invert screen */
+        if(ws->regnames.r_outmask.regno != -1)
+        {
+          EOR(R(r_outword),R(r_inoffset),OP2R(R(r_outmask)),  "EOR     r_outword,r_inoffset,r_outmask");
+        }
+        else
+        {
+          MVN(R(r_outword),OP2R(R(r_inoffset)),               "MVN     r_outword,r_inoffset");
+        }
+        break;
+      case 5: /* Identity */
+        MOV(R(r_outword),OP2R(R(r_inoffset)),                 "MOV     r_outword,r_inoffset");
+        break;
+      case 6: /* AND with NOT colour */
+        BIC(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),    "BIC     r_outword,r_inoffset,r_outword");
+        break;
+      case 7: /* ORR with NOT colour */
+        if(ws->regnames.r_outmask.regno != -1)
+        {
+          EOR(R(r_outword),R(r_outword),OP2R(R(r_outmask)),   "EOR     r_outword,r_outword,r_outmask");
+        }
+        else
+        {
+          MVN(R(r_outword),OP2R(R(r_outword)),                "MVN     r_outword,r_outword");
+        }
+        ORR(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),    "ORR     r_outword,r_inoffset,r_outword");
+        break;
+      }
+    }
+  }
+  else
+  {
+    comment(ws,"Mask plot ECF handling");
+    ins(ws, LDR(R(r_inoffset),R(r_outptr)),                   "LDR     r_inoffset,[r_outptr]");
+    LDR_SP(r_temp1,trns_comp_ecf_ora)
+    LDR_SP(r_outword,trns_comp_ecf_eor)
+    if(ws->regnames.r_outmask.regno != -1)
+    {
+      AND(R(r_temp1),R(r_temp1),OP2R(R(r_outmask)),           "AND     r_temp1,r_temp1,r_outmask");
+      AND(R(r_outword),R(r_outword),OP2R(R(r_outmask)),       "AND     r_outword,r_outword,r_outmask");
+    }
+    ORR(R(r_inoffset),R(r_inoffset),OP2R(R(r_temp1)),         "ORR     r_inoffset,r_inoffset,r_temp1");
+    EOR(R(r_outword),R(r_inoffset),OP2R(R(r_outword)),        "EOR     r_outword,r_inoffset,r_outword");
+  }
+}
+
+static void sprtrans_loop_x(asm_workspace *wp, workspace *ws)
+/* Overall control of the code and outer loop */
+{
+  /* Top of the loop */
+  init_useful_constants(wp, ws);
+
+  /* Fixed registers supplied by the assembler wrapper */
+  RN(r_xsize_spr_left, 0, REGFLAG_INPUT+REGFLAG_XLOOP,  "top 16: xsize. bottom 16: spr_left");
+  RN(r_inptr, 1, REGFLAG_INPUT+REGFLAG_XLOOP+REGFLAG_CONSTANT, "sprite data pointer");
+  RN(r_inoffset, 2, REGFLAG_INPUT+REGFLAG_XLOOP,        "offset (in pixels) into sprite");
+  RN(r_X, 3, REGFLAG_INPUT+REGFLAG_XLOOP,               "X coord in sprite (16.16 fixed point)");
+  RN(r_Y, 4, REGFLAG_INPUT+REGFLAG_XLOOP,               "Y coord in sprite (16.16 fixed point)");
+  RN(r_inc_X_x, 5, REGFLAG_INPUT+REGFLAG_XLOOP+REGFLAG_CONSTANT, "sprite X increment");
+  RN(r_inc_Y_x, 6, REGFLAG_INPUT+REGFLAG_XLOOP+REGFLAG_CONSTANT, "sprite Y increment");
+  RN(r_byte_width, 7, REGFLAG_INPUT+REGFLAG_XLOOP+REGFLAG_CONSTANT, "byte (pixel?) width/stride of sprite rows");
+  RN(r_spr_height_right, 8, REGFLAG_INPUT+REGFLAG_XLOOP+REGFLAG_CONSTANT, "top 16: spr_height. bottom 16: spr_right");
+  RN(r_outptr, 9, REGFLAG_INPUT+REGFLAG_XLOOP,           "current screen ptr");
+  RN(r_out_x, 12, REGFLAG_INPUT+REGFLAG_TEMPORARY,       "screen X coord at start of loop");
+
+  /* Other registers */
+  RN(r_temp1, 12, REGFLAG_TEMPORARY+REGFLAG_PERPIXEL+REGFLAG_XLOOP, "temp");
+  RN(r_pixel, 14, REGFLAG_TEMPORARY+REGFLAG_PERPIXEL+REGFLAG_XLOOP, "current pixel");
+  
+  /* Dynamically allocated registers */
+  /* HACK - manually allocating these as register allocation order means allocate_registers() will typically fail to find a free reg if it's allowed to allocate these by itself */ 
+  if(!DEST_32_BIT)
+  {
+    RN(r_outword, 10, REGFLAG_XLOOP+REGFLAG_INPUT, "current output word"); /* Not really inputs, but initialised during input stage */
+    RN(r_outmask, 11, REGFLAG_XLOOP+REGFLAG_INPUT, "current output mask");
+  }
+  else if(TRANSMASK)
+  {
+    RN(r_outword, 10, REGFLAG_XLOOP, "Output word");
+  }
+  else if(SOURCE_MASK)
+  {
+    RN(r_outword, 10, REGFLAG_XLOOP, "current output word");
+  }
+  else if(wp->blending)
+  {
+    RN(r_outword, 10, REGFLAG_XLOOP+REGFLAG_PERPIXEL, "screen pixel to blend with")
+  }
+
+  /* Work out temporary registers needed by pixel translation code */
+  if(!TRANSMASK)
+  {
+    int need_temps;
+
+    need_temps = translate_pixel_rn(wp,ws,0);
+
+    /* Translation table register
+       TODO - flag this as being available in stack workspace */
+    if(wp->ColourTTR)
+    {
+      RN(r_table,-1,REGFLAG_PERPIXEL+REGFLAG_CONSTANT,"translation table");
+    }
+  
+    blendimpl_rn(wp,ws);
+
+    if(need_temps > 1)
+      RN(r_temp2,-1,REGFLAG_TEMPORARY+REGFLAG_PERPIXEL,"temp");
+  }
+
+  allocate_registers(wp, ws);
+
+  comment(ws,"Initialise some loop registers and exit if zero width row");
+  ins(ws, PUSH | (1<<14),                     "STMFD   sp!,{r14}");
+  CMP(R(r_xsize_spr_left),IMM(1) | IMMROR(16),"CMP     r_xsize_spr_left,#&10000");
+  if(!DEST_32_BIT)
+  {
+    MOV(R(r_outmask),IMM(128) | IMMROR(8),    "MOV     r_outmask,#&80000000");
+  }
+  ins(ws, POP | (1<<15) | LT,                 "LDMLTFD sp!,{pc}");
+
+  reserve_regstackframe(wp, ws);
+
+  ws->compiled_routine_stacked = 16 + ws->regframesize;
+
+  comment(ws,"Get address of lefthand X of screen row");
+
+  if(wp->Log2bpp < 3)
+  {
+    ADD(R(r_outptr), R(r_outptr), OP2R(R(r_out_x)) | LSRI(3-wp->Log2bpp), "ADD     r_outptr,r_outptr,r_out_x, LSR #3-out_l2bpp  ; byte pointer of screen pixel");
+  }
+  else
+  {
+    ADD(R(r_outptr), R(r_outptr), OP2R(R(r_out_x)) | LSLI(wp->Log2bpp-3), "ADD     r_out_ptr,r_outptr,r_out_x, LSL #out_l2bpp-3 ; byte pointer of screen pixel");
+  }
+  
+  if(!DEST_32_BIT)
+  {
+    if(wp->Log2bpp > 0)
+    {
+      MOV(R(r_out_x), OP2R(R(r_out_x)) | LSLI(wp->Log2bpp),            "MOV     r_out_x,r_out_x, LSL #out_l2bpp");
+    }
+    BIC(R(r_outptr), R(r_outptr), IMM(3),                              "BIC     r_outptr,r_outptr,#3                         ; align pointer");
+    AND(R(r_out_x), R(r_out_x), IMM((31>>wp->Log2bpp)<<wp->Log2bpp),   "AND     r_out_x,r_out_x,#(31>>out_l2bpp)<<out_l2bpp  ; bit offset in screen word");
+  
+    if(wp->blending)
+    {
+      ins(ws, LDR(R(r_outword),R(r_outptr)),                           "LDR     r_outword,[r_outptr]                         ; initial screen word for blending");
+    }  
+
+    comment(ws,"Shift start words (pixel and mask) according to pixel offset");
+    MOV(R(r_outmask), OP2R(R(r_outmask)) | LSRR(R(r_out_x)),           "MOV     r_outmask,r_outmask, LSR r_out_x");
+    if(wp->blending)
+    {
+      MOV(R(r_outword), OP2R(R(r_outword)) | LSRR(R(r_out_x)),         "MOV     r_outword,r_outword, LSR r_out_x");
+    }
+  }
+
+  /* Save out input regs and mark as unavailable */
+  switch_bank(wp, ws, REGFLAG_INPUT, 0);
+
+  /* Initialise registers */
+
+  comment(ws, "Load up initial values of per-pixel variables");
+  begin_init_bank(wp, ws, REGFLAG_PERPIXEL);
+  if(wp->blending || ((wp->TTRType == TTRType_ColourMap) && (wp->BPP <= 8)))
+  {
+    LDR_SP(wp, trns_asm_workspace); /* R12 needed by blend init code */
+  }
+  blendimpl_init(wp, ws);
+  if((ws->regnames.r_translucency.regno != -1) && (ws->regnames.r_translucency.regno != 12))
+  {
+    LDR_WP(r_translucency,trns_flags2);
+    if(wp->CPUFlags & CPUFlag_T2)
+    {
+      UBFX(R(r_translucency),R(r_translucency),4,8,0,           "UBFX    r_translucency,r_translucency,#4,#8");
+    }
+    else
+    {
+      MOV(R(r_translucency),OP2R(R(r_translucency)) | LSRI(4),  "MOV     r_translucency,r_translucency,LSR #4");
+      AND(R(r_translucency),R(r_translucency),IMM(255),         "AND     r_translucency,r_translucency,#255");
+    }
+    RSB(R(r_translucency),R(r_translucency),IMM(1) | IMMROR(24),"RSB     r_translucency,r_translucency,#256 ; Convert translucency to alpha");
+  }
+  if(!TRANSMASK && wp->ColourTTR)
+  {
+    LDR_SP(r_table,trns_comp_spr_ttr)
+  }
+  dither_expansion_init(wp,ws);
+  end_init_bank(wp, ws, REGFLAG_PERPIXEL);
+
+  /* Load up the X loop regs */
+  switch_bank(wp, ws, 0, REGFLAG_XLOOP);
+
+  /* Main loop */
+  DEFINE_LABEL(loop_x_enter,          "Main loop start");
+
+  comment(ws,"Get sprite pointers for current pixel");
+
+  MOV(R(r_inoffset),OP2R(R(r_Y)) | ASRI(16) | S,             "MOVS    r_inoffset,r_Y,ASR #16                       ; sprite Y coord");
+  MOV(R(r_temp1),OP2R(R(r_spr_height_right)) | LSRI(16),     "MOV     r_temp1,r_spr_height_right,LSR #16           ; get sprite height");
+  MOV(R(r_inoffset),IMM(0) | MI,                             "MOVMI   r_inoffset,#0                                ; clamp Y to 0");
+  CMP(R(r_temp1),OP2R(R(r_Y)) | ASRI(16),                    "CMP     r_temp1,r_Y,ASR #16                          ; Y beyond sprite height?");
+  if(SOURCE_TRICKYMASK)
+  {
+    LDR_SP(r_pixel,trns_comp_spr_mask_width)
+  }
+  SUB(R(r_inoffset),R(r_temp1),IMM(1) | LE,                  "SUBLE   r_inoffset,r_temp1,#1                        ; clamp Y to sprite height");
+  if(SOURCE_TRICKYMASK)
+  {
+    MUL(R(r_pixel),R(r_inoffset),R(r_pixel),0,               "MUL     r_pixel,r_inoffset,r_pixel                   ; offset of 1bpp/8bpp mask row");
+  }
+  CMP(R(r_X),OP2R(R(r_xsize_spr_left)) | LSLI(16),           "CMP     r_X,r_xsize_spr_left,LSL #16                 ; X off left edge of sprite?");
+  MOV(R(r_temp1),OP2R(R(r_X)),                               "MOV     r_temp1,r_X                                  ; sprite X coord");
+  if(!TRANSMASK || !SOURCE_TRICKYMASK) /* Sprite offset not needed if we're only reading the 1bpp/8bpp mask */
+  {
+    MUL(R(r_inoffset),R(r_byte_width),R(r_inoffset),0,       "MUL     r_inoffset,r_byte_width,r_inoffset           ; offset of sprite row");
+  }
+  MOV(R(r_temp1),OP2R(R(r_xsize_spr_left)) | LSLI(16) | LT,  "MOVLT   r_temp1,r_xsize_spr_left,LSL #16             ; clamp X to sprite left edge");
+  CMP(R(r_X),OP2R(R(r_spr_height_right)) | LSLI(16),         "CMP     r_X,r_spr_height_right,LSL #16               ; X off right edge of sprite?");
+  MOV(R(r_temp1),OP2R(R(r_spr_height_right)) | LSLI(16) | GE,"MOVGE   r_temp1,r_spr_height_right,LSL #16");
+  SUB(R(r_temp1),R(r_temp1),IMM(1) | GE,                     "SUBGE   r_temp1,r_temp1,#1                           ; clamp X to sprite right");
+  if(SOURCE_TRICKYMASK)
+  {
+    ADD(R(r_pixel),R(r_pixel),OP2R(R(r_temp1)) | LSRI(16),   "ADD     r_pixel,r_pixel,r_temp1,LSR #16              ; final mask offset");
+  }
+  if(!TRANSMASK || !SOURCE_TRICKYMASK)
+  {
+    ADD(R(r_inoffset),R(r_inoffset),OP2R(R(r_temp1)) | LSRI(16),"ADD     r_inoffset,r_inoffset,r_temp1,LSR #16        ; final sprite offset");
+  }
+  
+  if(!TRANSMASK)
+  {
+    if(SOURCE_TRICKYMASK)
+    {
+      /* Preserve mask offset */
+      STR_SP(r_pixel,trns_comp_mask_offset)
+    }
+    
+    comment(ws,"Load sprite pixel");
+    sprtrans_readpixormask(wp,ws);
+    comment(ws,"r_pixel is now a source pixel");
+
+    /* Translate */
+    translate_pixel(wp,ws);
+
+    if(!DEST_32_BIT)
+    {
+      comment(ws,"Merge into output word");
+      MOV(R(r_outword),OP2R(R(r_outword)) | LSRI(1<<wp->Log2bpp),                 "MOV     r_outword,r_outword,LSR #1<<out_l2bpp");
+      MOV(R(r_outmask),OP2R(R(r_outmask)) | LSRI(1<<wp->Log2bpp) | S,             "MOVS    r_outmask,r_outmask,LSR #1<<out_l2bpp");
+      ORR(R(r_outword),R(r_outword),OP2R(R(r_pixel)) | LSLI(32-(1<<wp->Log2bpp)), "ORR     r_outword,r_outword,r_pixel,LSL #32-(1<<out_l2bpp)");
+    }
+    else if(SOURCE_MASK || wp->blending)
+    {
+      /* Protect r_pixel being overwritten by mask read */
+      MOV(R(r_outword),OP2R(R(r_pixel)),                                          "MOV     r_outword,r_pixel");
+    }
+    else
+    {
+      /* Make r_outword == r_pixel to simplify GCOL handling */
+      RN(r_outword,ws->regnames.r_pixel.regno,REGFLAG_USED,"Output word (== r_pixel)");
+    }
+  }
+  else if(!DEST_32_BIT)
+  {
+    MOV(R(r_outword),OP2R(R(r_outword)) | LSRI(1<<wp->Log2bpp),                   "MOV     r_outword,r_outword,LSR #1<<out_l2bpp");
+    MOV(R(r_outmask),OP2R(R(r_outmask)) | LSRI(1<<wp->Log2bpp) | S,               "MOVS    r_outmask,r_outmask,LSR #1<<out_l2bpp");
+  }
+
+  /* If we have a mask, and GCOL action says we should use it, do so */
+  if(SOURCE_MASK)
+  {
+    int mask_l2bpp;
+    if(SOURCE_BPPMASK)
+    {
+      comment(ws,"Read 1bpp mask");
+      if(!TRANSMASK)
+      {
+        /* Recover mask offset stashed earlier */
+        LDR_SP(r_pixel,trns_comp_mask_offset)
+      }
+      LDR_SP(r_temp1,trns_comp_mask_base)
+      ins(ws, LDRB(R(r_inoffset),R(r_temp1)) | INDEX_LSR(R(r_pixel),3),            "LDRB    r_inoffset,[r_temp1,r_pixel,LSR #3]");
+      AND(R(r_pixel),R(r_pixel),IMM(7),                                            "AND     r_pixel,r_pixel,#7");
+      MOV(R(r_pixel),OP2R(R(r_inoffset)) | LSRR(R(r_pixel)),                       "MOV     r_pixel,r_inoffset,LSR r_pixel");
+      mask_l2bpp = 0;
+    }
+    else if(SOURCE_ALPHAMASK)
+    {
+      comment(ws,"Read 8bpp mask");
+      if(!TRANSMASK)
+      {
+        /* Recover mask offset stashed earlier */
+        LDR_SP(r_pixel,trns_comp_mask_offset)
+      }
+      LDR_SP(r_temp1,trns_comp_mask_base)
+      ins(ws, LDRB(R(r_pixel),R(r_temp1)) | INDEX(R(r_pixel),0),                "LDRB    r_pixel,[r_temp1,r_pixel]");
+      mask_l2bpp = 3;
+    }
+    else
+    {
+      comment(ws,"Read old style mask");
+      LDR_SP(r_pixel,trns_comp_spr_masko) /* TODO keep resident if possible (e.g. TRANSMASK) */
+      ADD(R(r_inoffset),R(r_inoffset),OP2R(R(r_pixel)),                            "ADD     r_inoffset,r_inoffset,r_pixel");
+      sprtrans_readpixormask(wp,ws);
+      mask_l2bpp = wp->save_inlog2bpp;
+    }
+
+    /* Merge into r_outmask */
+    if(!DEST_32_BIT)
+    {
+      comment(ws,"Merge into output mask");
+      if((mask_l2bpp == wp->Log2bpp) && !SOURCE_ALPHAMASK)
+      {
+        ORR(R(r_outmask),R(r_outmask),OP2R(R(r_pixel)) | LSLI(32-(1<<wp->Log2bpp)), "ORR     r_outmask,r_outmask,r_pixel,LSL #32-(1<<out_l2bpp)");
+      }
+      else
+      {
+        /* BPP mask has garbage in upper bits, other masks have been masked correctly */
+        if(SOURCE_BPPMASK)
+        {
+          TST(R(r_pixel),IMM(1),                                                    "TST     r_pixel,#1");
+        }
+        else
+        {
+          TEQ(R(r_pixel),IMM(0),                                                    "TEQ     r_pixel,#0");
+        }
+        if(wp->Log2bpp < 4)
+          ORR(R(r_outmask),R(r_outmask),IMM(255 & ~(255 >> wp->BPP)) | IMMROR(8) | NE, "ORRNE   r_outmask,r_outmask,#&FF000000 :AND: :NOT: (&FF000000 >> out_bpp)");
+        else if(wp->CPUFlags & CPUFlag_T2)
+        {
+          MOVT(R(r_outmask),IMM16(0xffff) | NE,                                     "MOVTNE  r_outmask,#&ffff");
+        }
+        else
+        {
+          ORR(R(r_outmask),R(r_outmask),IMM(255) | IMMROR(8) | NE,                  "ORRNE   r_outmask,r_outmask,#&FF000000");
+          ORR(R(r_outmask),R(r_outmask),IMM(255) | IMMROR(16) | NE,                 "ORRNE   r_outmask,r_outmask,#&00FF0000");
+        }
+      }
+    }
+    else
+    {
+      /* Make r_outmask == r_pixel to simplify plot action handling */
+      RN(r_outmask,ws->regnames.r_pixel.regno,REGFLAG_USED,"Output mask (== r_pixel)");
+      if(SOURCE_BPPMASK)
+      {
+        AND(R(r_pixel),R(r_pixel),IMM(1) | S,                                       "ANDS    r_pixel,r_pixel,#1");
+      }
+      else
+      {
+        TEQ(R(r_pixel),IMM(0),                                                      "TEQ     r_pixel,#0");
+      }
+      MVN(R(r_pixel),IMM(0) | NE,                                                   "MVNNE   r_pixel,#0");
+    }
+  }
+  else if(!DEST_32_BIT)
+  {
+    /* No mask, just set the relevant bits in r_outmask */
+    if(wp->Log2bpp < 4)
+      ORR(R(r_outmask),R(r_outmask),IMM(255 & ~(255 >> wp->BPP)) | IMMROR(8),       "ORR     r_outmask,r_outmask,#&FF000000 :AND: :NOT: (&FF000000 >> out_bpp)");
+    else if(wp->CPUFlags & CPUFlag_T2)
+    {
+      MOVT(R(r_outmask), IMM16(0xffff), "MOVT    r_outmask,#&ffff");
+    }
+    else
+    {
+      ORR(R(r_outmask),R(r_outmask),IMM(255) | IMMROR(8),                         "ORR     r_outmask,r_outmask,#&FF000000");
+      ORR(R(r_outmask),R(r_outmask),IMM(255) | IMMROR(16),                        "ORR     r_outmask,r_outmask,#&00FF0000");
+    }
+  }
+
+  /* Skip plot action if not at end of word */
+  if(!DEST_32_BIT)
+  {
+    branch(ws, B | CC, L(loop_x_exit), "BCC     loop_x_exit");
+  }
+
+  sprtrans_plotaction(wp,ws);
+
+  comment(ws,"Store screen pixel");          
+  ins(ws, STR(R(r_outword),R(r_outptr)) | POSTINC(4),         "STR     r_outword,[r_outptr],#4");
+  if(!DEST_32_BIT)
+  {
+    if(wp->blending)
+    {
+      /* Load word of screen pixels for blending, but only if more pixels remain (avoids potential read off end of screen memory) */
+      CMP(R(r_xsize_spr_left),IMM(2) | IMMROR(16),            "CMP     r_xsize_spr_left,#&20000");
+    }
+    MOV(R(r_outmask),IMM(128) | IMMROR(8),                    "MOV     r_outmask,#&80000000");
+    if(wp->blending)
+    {
+      ins(ws, LDR(R(r_outword),R(r_outptr)) | GE,             "LDRGE   r_outword,[r_outptr] ; Load next screen word for blending");
+    }  
+  }
+
+  DEFINE_LABEL(loop_x_exit,"Main loop end");
+  comment(ws,"Move to next pixel");
+  SUB(R(r_xsize_spr_left),R(r_xsize_spr_left),IMM(1) | IMMROR(16),  "SUB     r_xsize_spr_left,r_xsize_spr_left,#&10000");
+  ADD(R(r_X),R(r_X),OP2R(R(r_inc_X_x)),                             "ADD     r_X,r_X,r_inc_X_x");
+  CMP(R(r_xsize_spr_left),IMM(1) | IMMROR(16),                      "CMP     r_xsize_spr_left,#&10000");
+  ADD(R(r_Y),R(r_Y),OP2R(R(r_inc_Y_x)),                             "ADD     r_Y,r_Y,r_inc_Y_y");
+  branch(ws, B | GE, L(loop_x_enter),                               "BGE     loop_x_enter");
+
+  comment(ws,"Finished row");
+  if(!DEST_32_BIT)
+  {
+    CMP(R(r_outmask),IMM(128)|IMMROR(8),                            "CMP     r_outmask,#&80000000");
+    discard_regstackframe(wp, ws);
+    ins(ws, POP | (1<<15) | EQ,                                     "LDMEQFD sp!,{pc}");
+    /* Loop until we have a full word of data */
+    DEFINE_LABEL(x_misaligned,"Misaligned end word loop");
+    MOV(R(r_outmask),OP2R(R(r_outmask)) | LSRI(1<<wp->Log2bpp) | S, "MOVS    r_outmask,r_outmask,LSR #1<<out_l2bpp ; (2)");
+    MOV(R(r_outword),OP2R(R(r_outword)) | LSRI(1<<wp->Log2bpp),     "MOV     r_outword,r_outword,LSR #1<<out_l2bpp ; (2)");
+    branch(ws, B | CC, L(x_misaligned),                             "BCC     x_misaligned");
+    /* Perform plot action */
+    sprtrans_plotaction(wp,ws);
+    comment(ws,"Store last word");
+    ins(ws, STR(R(r_outword),R(r_outptr)),                          "STR     r_outword,[r_outptr]");
+  }
+  else
+  {
+    discard_regstackframe(wp, ws);
+  }
+  ins(ws, POP | (1<<15),                                            "LDM     sp!,{pc}");
+}
+
+/**************************************************************************
+*                                                                         *
+*    The main compiler entry points.                                      *
+*                                                                         *
+**************************************************************************/
+
+static blitter sprtrans_find_or_compile_code(asm_workspace *wp, workspace *ws)
+{
+  code_buffer *p;
+  int key_word;
+
+  key_word = get_key_word(wp,ws);
+
+  dprintf(("", "Searching for compiled code for key_word=%x\n", key_word));
+  FOR_EACH_BUFFER(p)
+    if (  p->key_word == key_word
+       )
+     {
+       dprintf(("", "Found existing compiled code in buffer %x.\n", p));
+
+       return (blitter)p->code;
+     }
+  p = &ws->buffers[ws->build_buffer];
+  p->key_word = -1; /* Not set unless we complete the compilation - see below */
+  dprintf(("", "Compiler initialised for buffer at %x.\n", p));
+  compile_buffer_init(wp, ws);
+
+  /* Now we actually do the compile */
+  sprtrans_loop_x(wp, ws);
+
+  compile_buffer_done(ws);
+  p->key_word = key_word;
+
+  /* Just did some dynamic code generation so flush the I cache */
+  _swix(OS_SynchroniseCodeAreas, _IN(0) | _IN(1) | _IN(2), 1,
+        (int)ws->compile_base, (int)ws->compile_base + ((BUFSIZE - 1 /* Inclusive */) * sizeof(int)));
+
+  return (blitter)ws->compile_base;
+}
+
+blitter sprtrans_compiler(asm_workspace *wp, workspace *ws, workspace *ws_end, int gcol)
+/* Main entrypoint from the assembler */
+{
+  blitter             result;
+  int                 i,j;
+
+  dprintf(("", "wp=%x ws=%x ws_end=%x.\n", wp, ws, ws_end));
+  dprintf(("", "Size of assembler workspace: %i.\n", ((char*)ws) - ((char*)wp)));
+  dprintf(("", "Size of C workspace: %i.\n", ((char*)ws_end) - ((char*)ws)));
+  assert(ws_end > ws, ERROR_FATAL);
+  check_workspace(ws);
+#ifdef DEBUG
+  dump_asm_workspace(wp);
+#endif  
+
+  ws->gcol = gcol & 7;
+  if(!(gcol & 8))
+  {
+    ws->masktype = MaskType_None;
+  }
+  else if(wp->save_mode & 0x80000000)
+  {
+    ws->masktype = MaskType_8bpp;
+  }
+  else if(wp->save_mode & (15<<27))
+  {
+    ws->masktype = MaskType_1bpp;
+  }
+  else
+  {
+    ws->masktype = MaskType_Old;
+  }
+  ws->odither = FALSE;  
+  dprintf(("", "gcol=%i (& 7 = %i)       %t32. GCOL action - 0 for plot, 1..7 for various others.\n", gcol, gcol & 7));
+  dprintf(("", "masktype=%i              %t32. Mask type - 0=none, 1=old, 2=1bpp, 3=8bpp alpha.\n", ws->masktype));
+
+  /* JPEG not supported yet */
+  assert(!wp->is_it_jpeg, ERROR_FATAL);
+
+  ws->out_pixelformat = compute_pixelformat(wp->ncolour,wp->modeflags,wp->Log2bpp);
+  
+  ws->in_pixelformat = compute_pixelformat(wp->save_inncolour,wp->save_inmodeflags,wp->save_inlog2bpp);
+
+  /* If input data >=32bpp (including JPEG), assume ColourTTR index values are 15bpp
+     Else assume ColourTTR index values are same as source pixels, minus alpha
+     The table format is validated by preparettr, so these assumptions should be valid */
+  if(wp->TTRType != TTRType_None)
+  {
+    if((wp->TTRType & ~TTRType_Optional) == TTRType_ColourMap)
+      ws->ColourTTRFormat = pick_colourmap_format(wp,ws,ws->in_pixelformat,ws->out_pixelformat);
+    else if(wp->save_inlog2bpp >= 5)
+      ws->ColourTTRFormat = PixelFormat_15bpp;
+    else
+      ws->ColourTTRFormat = (PixelFormat) (ws->in_pixelformat & ~PixelFormat_Alpha);
+  }
+
+  BOOL use_sprite_palette = FALSE;
+  ws->blendimpl = compute_blendimpl(wp,ws,&use_sprite_palette);
+
+  blendimpl_gettables(wp,ws,use_sprite_palette);
+  dprintf(("", "blendimpl=%i             %t32. Blending implementation - 0=none, 1=blendtable, 2=inversetable, 3=true, 4=blendtables.\n", ws->blendimpl));
+
+  /* Calibration tables not supported */
+  assert(!wp->cal_table, ERROR_FATAL);
+
+  /* Precise handling of double-pixel modes by the surrounding code is still unclear to me!
+   * When it enters this code bpc!=bpp can still be the case, but it seems that the actual
+   * value of bpc is best ignored, it has all been frigged into the scale factors. Avoid
+   * this issue for now, but note that we must set the values back afterwards because they
+   * can be reused on the next sprite plot, if the source sprite mode word is the same.
+   */
+  i = wp->BPC;
+  j = wp->save_inlog2bpc;
+  wp->BPC = wp->BPP;
+  wp->save_inlog2bpc = wp->save_inlog2bpp;
+  result = sprtrans_find_or_compile_code(wp, ws);
+  wp->BPC = i;
+  wp->save_inlog2bpc = j;
+
+  return result;
+}
+@
+
+
+4.3
+log
+@Update to work with new "32K+" colour translation tables
+Detail:
+  Sources/SWIs, Sources/SprExtend, Sources/SprOp, c/PutScaled, c/sprtrans, h/putscaled - Cache the sprite NColour value in the save_* workspace
+  Sources/SprOp - Update preparettr to perform extra validation on 32K-style translation tables (old "32K." or new "32K+"). Although we could potentially accept any format table, to cut down on the number of plotter combinations we currently require that the table matches the format that ColourTrans will create when given the source sprite.
+  c/PutScaled, c/sprtrans - Update comments relating to determining input format of TTRType_32K tables
+Admin:
+  Tested on BB-xM
+  Requires Colours-1_89
+
+
+Version 1.61. Tagged as 'SprExtend-1_61'
+@
+text
+@d555 1
+a555 2
+  tracef("Searching for compiled code for key_word=%x\n" _
+    key_word);
+d560 1
+a560 1
+       tracef("Found existing compiled code in buffer %x.\n" _ p);
+d566 1
+a566 1
+  tracef("Compiler initialised for buffer at %x.\n" _ p);
+d588 3
+a590 3
+  tracef("wp=%x ws=%x ws_end=%x.\n" _ wp _ ws _ ws_end);
+  tracef("Size of assembler workspace: %i.\n" _ ((char*)ws) - ((char*)wp));
+  tracef("Size of C workspace: %i.\n" _ ((char*)ws_end) - ((char*)ws));
+d593 3
+a595 1
+  IFDEBUG(dump_asm_workspace(wp);)
+d615 2
+a616 2
+  tracef("gcol=%i (& 7 = %i)       %t32. GCOL action - 0 for plot, 1..7 for various others.\n" _ gcol _ gcol & 7);
+  tracef("masktype=%i              %t32. Mask type - 0=none, 1=old, 2=1bpp, 3=8bpp alpha.\n" _ ws->masktype);
+d642 1
+a642 1
+  tracef("blendimpl=%i             %t32. Blending implementation - 0=none, 1=blendtable, 2=inversetable, 3=true, 4=blendtables.\n" _ ws->blendimpl);
+@
+
+
+4.2
+log
+@Add support for blended sprite & JPEG rendering - alpha masks, alpha channels, and translucency
+Detail:
+  This big set of changes adds support for the following user-facing APIs, as per ROL's specs:
+  - OS_SpriteOp 52 (PutSpriteScaled) colour mapping, translucency blending, and alpha mask/alpha channel blending
+  - OS_SpriteOp 56 (PutSpriteTransformed) colour mapping, translucency blending, and alpha mask/alpha channel blending
+  - JPEG_Plot[File]Scaled colourmapping & translucency blending
+  - JPEG_Plot[File]Transformed colourmapping & translucency blending
+  Sources/CFSI-JPEG, Sources/PutScaled:
+  - Added exit_oserror exit routine for use by C code.
+  - For SpriteExtend this allows the C code to cause OS_SpriteOp to exit with a given OS error block.
+  - For CFSI-JPEG the error block is returned and ERROR_FATAL is returned to ChangeFSI.
+  Sources/CSupport:
+  - Add definitions for some error codes (matches existing definitions from h/commondefs)
+  Sources/PutScaled:
+  - Stripped out code to look for identity translation tables; now handled by preparettr routine in Sources/SprOp
+  Sources/SWIs, Hdr/SprExtend:
+  - JPEG SWIs updated to add support for alpha-blended and colour mapped JPEG rendering, following ROL's APIs
+  Sources/SprExtend:
+  - Stripped out lots of old build flags which haven't been touched in years.
+  - Strip out assembler SprTrans code generator.
+  - Add new definitions needed for blending & colour mapping.
+  Sources/SprOp:
+  - Updated PutScaled frontend to deal with blending and colour mapping.
+  - Disabled code which was bodging coordinates when dealing with double-pixel modes - it seems to cause a few issues, and the code generator mostly had proper double-pixel support anyway.
+  - Translation table verification and fiddling code rewritten and consolidated into the preparettr routine. C code is now explicitly told what table type is in use and whether it can safely be ignored in favour of using the sprite palette.
+  - Removed code from CheckSpriteArea which was deliberately throwing an error upon seeing alpha-masked sprites; I think the bug that was hiding has been fixed now
+  Sources/SprTrans
+  - Removed the assembler version of the code generator.
+  - Updated to add support for blending and colour mapping
+  c/PutScaled:
+  - Old test code removed.
+  - Updated to add support for blending & colour mapping
+  - Assorted bugs fixed.
+  - A few extra architecture-specific optimisations added.
+  - Some workspace setup code moved to c/asmcore to allow sharing with SprTrans.
+  c/asmcore:
+  - Register allocation code rewritten. Instead of allocating on a first-come, first-served basis, the code now builds a list of which logical registers are needed (and which 'banks' they fall into) and then attempts to allocate them in a more intelligent manner. It still has some failings (e.g. reusing R12 as a general purpose register is currently impossible) but it's a lot more flexible and reliable than the old code.
+  - Core pixel transformation code updated to add support for blending & colour mapping
+  - Added some extra architecture-specific optimisations
+  c/rojpeg:
+  - JPEG option handling updated to avoid trashing any colour mapping descriptor that may have been passed in
+  c/sprtrans:
+  - Updated to add support for blending & colour mapping
+  c/tracing:
+  - Debug assert messages now show filename as well as line number
+  h/commondefs:
+  - Removed old #define's that related to old assembler switches.
+  h/putscaled:
+  - Workspace definition updated to match assembler version.
+  - SprTrans stack workspace structure moved here from c/sprtrans
+Admin:
+  Tested on BB-xM plotting all major sprite & JPEG types into all modes with all major options
+
+
+Version 1.55. Tagged as 'SprExtend-1_55'
+@
+text
+@d622 1
+a622 6
+  {
+    /* Pull apart the sprite mode word to deduce our pixel format value */
+    int in_ncolour;
+    _swix(OS_ReadModeVariable,_INR(0,1)|_OUT(2),wp->save_mode,VduExt_NColour,&in_ncolour);
+    ws->in_pixelformat = compute_pixelformat(in_ncolour,wp->save_inmodeflags,wp->save_inlog2bpp);
+  }
+d624 1
+a624 1
+  /* Fudge - if input data >=32bpp (including JPEG), assume ColourTTR index values are 15bpp
+d626 1
+a626 1
+     Really the assembler code should tell us what format it is */
+@
+
+
+4.1
+log
+@Add support for new sprite types & screen modes
+Detail:
+  Makefile - Updated to fix a couple of dependency issues and to make c/asmcore the main C file, not c/putscaled
+  Sources/PutScaled - Add a utility routine that's used by the C code to get information about pixel formats
+  Sources/SprAdjSize - Add support for wide masks & RISC OS 5 style sprite mode words
+  Sources/SprExtend - Tidy up workspace by removing lots of unused bits and moving other bits within sight of the C code. Add flag to control whether C or assembler version of SprTrans is used. Query kernel for ECFYOffset/ECHShift locations instead of using hardcoded values in putscaled code. Add fix for garbage debug strings in softloaded debug versions of the module.
+  Sources/SprOp - Add support for wide masks & RISC OS 5 style sprite mode words. Update makepalette16bpp to cope with all the new 16bpp modes. Flag_* -> ModeFlag_* renaming. Move some translation table handling code into a new routine, 'preparettr'. Update checktrans/converttrans to deal with new pixel formats.
+  Sources/SprTrans - If the C version of SprTrans is enabled, disable all of these assembler bits except for the outer loop which steps over each row of the screen
+  Sources/jdcolor - Updated to deal with new pixel formats. 16bpp conversion code split off into new file, Sources/jdcolor16.
+  Sources/jdcolor16 - New file containing the guts of the YUV -> 16bpp conversion code. Gets included multiple times with different options to generate the different conversion routines (code is too big for a macro).
+  c/asmcore - New file containing lots of common code ripped out of c/PutScaled - e.g. workspace definition, main functions for register assignment & instruction generation, and code for pixel format conversion. Pixel format conversion code rewritten to cope with new pixel formats, and code buffer key word generation rewritten to fix a couple of bugs (e.g. some issues with dithering options were observed)
+  c/PutScaled - Ripped out lots of code that's now in c/asmcore. Now just deals with things that are PutScaled-specific, e.g. main plotter loop containing pixel read/write code. Code extended to cope with new pixel formats
+  c/rojpeg, h/jinclude, h/jpegdata - Code extended to cope with new 16bpp conversion routines
+  c/sprtrans - New C implementation of the core per-row transformed sprite plotting code generator. Allows reuse of the extensive pixel conversion code in c/asmcore, and allows for better code generation than the assembler original.
+  h/putscaled - Worksapce definition updated to match assembler version
+Admin:
+  Tested on BB-xM, plotting lots of different sprites in lots of different modes
+  Plotting of wide mask sprites not supported yet
+  C version of YUV -> 16bpp code currently only deals with traditional &BGR 555 pixel format - code is aware of this and will do conversion to desired format if applicable (although quality may be reduced)
+  Part of an implementation of the Extended Framebuffer Format spec:
+  http://www.riscosopen.org/wiki/documentation/show/Extended%20Framebuffer%20Format%20Specification
+
+
+Version 1.52. Tagged as 'SprExtend-1_52'
+@
+text
+@a15 32
+#if 1
+
+/* Stack workspace */
+typedef struct
+{
+  int trns_spr_xcoords[4];           /* #       16      ;       Four x coordinates */
+  int trns_spr_ycoords[4];           /* #       16      ;       Four y coordinates */
+  int trns_comp_spr_left;            /* #       4       ;       Sprite left hand edge (bottom 16 bits) */
+  int trns_comp_spr_start;           /* #       4       ;       Sprite start (accounting for internal coord block top) */
+  int trns_comp_spr_byte_width;      /* #       4       ;       Sprite byte width << (3-sprite bpp) */
+  int trns_comp_spr_height;          /* #       4       ;       Sprite height (top 16 bits) and right hand edge (bottom 16) */
+  int trns_comp_spr_ttr;             /* #       4       ;       Translation table (if required) */
+  int trns_comp_spr_masko;           /* #       4       ;       Sprite mask offset from image << (3-sprite bpp) */
+  int trns_comp_ecf_ora;             /* #       4       ;       ECF OR word */
+  int trns_comp_ecf_eor;             /* #       4       ;       ECF EOR word */
+  int trns_codebuffer;               /* #       4       ;       Pointer to codebuffer */
+  int trns_spr_X_x0_y;               /* #       4       ;       Sprite X,Y at top coordinate of area */
+  int trns_spr_Y_x0_y;               /* #       4       ;            in 16.16 fixed point */
+  int trns_spr_inc_X_x;              /* #       4       ;       Sprite increments */
+  int trns_spr_inc_Y_x;              /* #       4       ;          ( change induced by single */
+  int trns_spr_inc_Y_y;              /* #       4       ;            increments in screen x,y on */
+  int trns_spr_inc_X_y;              /* #       4       ;            sprite X,Y ) */
+  int trns_spr_lineptr;              /* #       4       ;       Line to output onto */
+  int trns_spr_edgeblock[6*4];       /* #       6*4*4   ;       Edge blocks, in format as below */
+  int trns_spr_edgeblock_end[6];     /* #       4*6     ;        -1, to denote end of edge block */
+  int trns_ecf_ptr;                  /* #       4       ;       Ecf pointer */
+  int trns_masking_word;             /* #       4       ;       Masking word for > eight bit per pixel */
+  int trns_comp_mask_offset;         /* #       4       ;       used to point at 1bpp mask data */
+  int trns_comp_spr_mask_width;      /* #       4       ;       1bpp mask equivalent of spr_width */
+  int trns_comp_mask_base;           /* #       4       ;       1bpp mask adjustment to mask data */
+} stack_ws;
+
+d34 1
+a34 1
+    AND(R(r_pixel),R(r_pixel),IMM((1<<(1<<wp->save_inlog2bpp))-1),                        "AND     r_pixel,r_pixel,#(1<<(1<<in_l2bpp))-1");
+d44 9
+a52 2
+      MOV(R(r_pixel),OP2R(R(r_inoffset)) | LSLI(1),                                          "MOV     r_pixel,r_inoffset,LSL #1");
+      ins(ws, 0x019000B0 | (R(r_pixel)<<12) | (R(r_inptr)<<16) | R(r_pixel),                 "LDRH    r_pixel,[r_inptr,r_pixel]");
+a164 5
+#ifdef DEBUG
+  char a[256];
+  char b[256];
+#endif
+
+d166 1
+a166 5
+  newline();
+
+  /* Various useful constants */
+  tracef("%t20.in_l2bpp  *     %i %t68; log base 2 of bits per input pixel (2)\n" _ wp->save_inlog2bpp);
+  tracef("%t20.out_l2bpp *     %i %t68; log base 2 of bits per output pixel (2)\n" _ wp->Log2bpp);
+d169 11
+a179 11
+  RN(r_xsize_spr_left, 0,   "top 16: xsize. bottom 16: spr_left");
+  RN(r_inptr, 1,            "sprite data pointer");
+  RN(r_inoffset, 2,         "offset (in pixels) into sprite");
+  RN(r_X, 3,                "X coord in sprite (16.16 fixed point)");
+  RN(r_Y, 4,                "Y coord in sprite (16.16 fixed point)");
+  RN(r_inc_X_x, 5,          "sprite X increment");
+  RN(r_inc_Y_x, 6,          "sprite Y increment");
+  RN(r_byte_width, 7,       "byte (pixel?) width/stride of sprite rows");
+  RN(r_spr_height_right, 8, "top 16: spr_height. bottom 16: spr_right");
+  RN(r_outptr, 9,           "current screen ptr");
+  RN(r_out_x, 12,           "screen X coord at start of loop");
+d182 2
+a183 2
+  RN(r_temp1, 12,           "temp");
+  RN(r_pixel, 14,           "current pixel");
+d186 1
+a186 1
+  ws->next_free_reg = 10;
+d189 6
+a194 3
+    RN(r_outword, -1, "current output word");
+    RN(r_outmask, -1, "current output mask");
+    ws->next_free_reg = 0;
+d196 1
+a196 1
+  else if(!TRANSMASK && SOURCE_MASK)
+d198 1
+a198 1
+    RN(r_outword, -1, "current output word");
+d200 1
+a200 2
+
+  if(TRANSMASK)
+d202 1
+a202 3
+    /* r_outword needed */
+    if(ws->regnames.r_outword.regno == -1)
+      RN(r_outword,-1,"Output word");
+a210 2
+    if(ws->next_free_reg == 12)
+      ws->next_free_reg = 0;
+d212 3
+a214 2
+    /* Translation table register */
+    if(wp->trns_palette || wp->ColourTTR)
+d216 1
+a216 7
+      int regno = -1;
+      /* If we've run out of registers, but translate_pixel doesn't need any temporaries, use r_temp1 to store the table pointer. We'll have to load the pointer for each pixel, but at least we won't have to temporarily push things onto the stack. */
+      if((ws->next_free_reg < 10) && !need_temps)
+        regno = ws->regnames.r_temp1.regno;       
+      RN(r_table,regno,"translation table");
+      if(ws->next_free_reg == 12)
+        ws->next_free_reg = 0;
+d219 2
+d222 1
+a222 3
+      RN(r_temp2,-1,"temp");
+    if(ws->next_free_reg == 12)
+      ws->next_free_reg = 0;
+d225 1
+a225 4
+  /* Work out how many registers we've overflowed by */
+  int overflow = 0;
+  if(ws->next_free_reg < 10)
+    overflow = ws->next_free_reg;
+d229 1
+d232 1
+a232 1
+    MOV(R(r_outword),IMM(128) | IMMROR(8),    "MOV     r_outword,#&80000000");
+d234 1
+a234 6
+  CMP(R(r_xsize_spr_left),IMM(0),             "CMP     r_xsize_spr_left,#0");
+  if(!DEST_32_BIT)
+  {
+    MOV(R(r_outmask),IMM(0),                  "MOV     r_outmask,#0");
+  }
+  ins(ws, POP | (1<<15) | LE,                 "LDMLEFD sp!,{pc}");
+d236 1
+a236 1
+  ws->compiled_routine_stacked = 16;
+d238 1
+a238 27
+  /* Can we set up the pixel expansion mask here, or do we need to do it for each pixel? */
+  BOOL setup_expansion_each_time = 0;
+  if(ws->regnames.r_expansionmask.regno != -1)
+  {
+    if(ws->regnames.r_expansionmask.regno >= 10)
+    {
+      dither_expansion_init(wp,ws);
+    }
+    else
+    {
+      setup_expansion_each_time = 1;
+    }
+  }
+
+  /* Can we set up the TTR pointer here, or do we need to do it for each pixel? */
+  BOOL setup_ttr_each_time = 0;
+  if(!TRANSMASK && (wp->trns_palette || wp->ColourTTR))
+  {
+    if((ws->regnames.r_table.regno >= 10) && (ws->regnames.r_table.regno != ws->regnames.r_temp1.regno))
+    {
+      LDR_SP(r_table,trns_comp_spr_ttr)
+    }
+    else
+    {
+      setup_ttr_each_time = 1;
+    }
+  }
+d259 5
+d266 36
+a301 1
+    MOV(R(r_outword), OP2R(R(r_outword)) | LSRR(R(r_out_x)),           "MOV     r_outword,r_outword, LSR r_out_x"); 
+d303 5
+d318 1
+a318 1
+  if(SOURCE_BPPMASK)
+d323 1
+a323 1
+  if(SOURCE_BPPMASK)
+d325 1
+a325 1
+    MUL(R(r_pixel),R(r_inoffset),R(r_pixel),0,               "MUL     r_pixel,r_inoffset,r_pixel                   ; offset of 1bpp mask row");
+d329 1
+a329 1
+  if(!TRANSMASK || !SOURCE_BPPMASK) /* Sprite offset not needed if we're only reading the 1bpp mask */
+d337 1
+a337 1
+  if(SOURCE_BPPMASK)
+d341 1
+a341 1
+  if(!TRANSMASK || !SOURCE_BPPMASK)
+d348 1
+a348 1
+    if(SOURCE_BPPMASK)
+a357 19
+    /* Push some registers if we've overflowed */
+    if(overflow)
+    {
+      IFDEBUG(ldm_reg_list(ws,b,(1<<overflow)-1,0);)
+      IFDEBUG(do_sprintf(a,"STMFD   sp!,{%s}",b);)
+      ins(ws, PUSH | (1<<overflow)-1,  a);
+      ws->compiled_routine_stacked += overflow<<2;
+    }
+
+    /* Set up any registers needed for expansion */
+    if(setup_expansion_each_time)
+    {
+      dither_expansion_init(wp,ws);
+    }
+    if(setup_ttr_each_time)
+    {
+      LDR_SP(r_table,trns_comp_spr_ttr)
+    }
+
+a360 8
+    /* Restore pushed registers */
+    if(overflow)
+    {
+      IFDEBUG(do_sprintf(a,"LDMFD   sp!,{%s}",b);)
+      ins(ws, POP | (1<<overflow)-1, a);
+      ws->compiled_routine_stacked -= overflow<<2;
+    }
+
+d364 2
+a365 2
+      MOV(R(r_outword),OP2R(R(r_outword)) | LSRI(1<<wp->Log2bpp) | S,             "MOVS    r_outword,r_outword,LSR #1<<out_l2bpp");
+      MOV(R(r_outmask),OP2R(R(r_outmask)) | LSRI(1<<wp->Log2bpp),                 "MOV     r_outmask,r_outmask,LSR #1<<out_l2bpp");
+d368 1
+a368 1
+    else if(SOURCE_MASK)
+d376 1
+a376 1
+      RN(r_outword,ws->regnames.r_pixel.regno,"Output word (== r_pixel)");
+d381 2
+a382 2
+    MOV(R(r_outword),OP2R(R(r_outword)) | LSRI(1<<wp->Log2bpp) | S,               "MOVS    r_outword,r_outword,LSR #1<<out_l2bpp");
+    MOV(R(r_outmask),OP2R(R(r_outmask)) | LSRI(1<<wp->Log2bpp),                   "MOV     r_outmask,r_outmask,LSR #1<<out_l2bpp");
+d403 12
+d428 1
+a428 1
+      if(mask_l2bpp == wp->Log2bpp)
+d434 1
+d444 5
+a448 1
+          ORR(R(r_outmask),R(r_outmask),IMM(255 & ~(255 >> (1<<wp->Log2bpp))) | IMMROR(8) | NE, "ORRNE   r_outmask,r_outmask,#&FF000000 :AND: :NOT: (&FF000000 >> (1<<out_l2bpp))");
+d459 6
+a464 2
+      RN(r_outmask,ws->regnames.r_pixel.regno,"Output mask (== r_pixel)");
+      if(mask_l2bpp != 5)
+a466 1
+        MVN(R(r_pixel),IMM(0) | NE,                                                 "MVNNE   r_pixel,#0");
+d468 1
+d475 5
+a479 1
+      ORR(R(r_outmask),R(r_outmask),IMM(255 & ~(255 >> (1<<wp->Log2bpp))) | IMMROR(8), "ORR     r_outmask,r_outmask,#&FF000000 :AND: :NOT: (&FF000000 >> (1<<out_l2bpp))");
+d499 10
+a508 1
+    MOV(R(r_outword),IMM(128) | IMMROR(8),                    "MOV     r_outword,#&80000000");
+d522 2
+a523 1
+    CMP(R(r_outword),IMM(128)|IMMROR(8),                            "CMP     r_outword,#&80000000");
+d527 2
+a528 2
+    MOV(R(r_outword),OP2R(R(r_outword)) | LSRI(1<<wp->Log2bpp) | S, "MOVS    r_outword,r_outword,LSR #1<<out_l2bpp ; (2)");
+    MOV(R(r_outmask),OP2R(R(r_outmask)) | LSRI(1<<wp->Log2bpp),     "MOV     r_outmask,r_outmask,LSR #1<<out_l2bpp ; (2)");
+d535 4
+d597 16
+a612 2
+  ws->masked = (gcol & 8) != 0;
+  ws->mask1bpp = ws->masked & (((wp->save_mode) >> 27) != SpriteType_Old);
+d615 1
+a615 2
+  tracef("masked=%s                %t32. whether to use mask.\n" _ whether(ws->masked));
+  tracef("1bpp mask=%s             %t32. whether mask is new format.\n" _ whether(ws->mask1bpp));
+d624 1
+a624 2
+    int in_modeflags,in_ncolour;
+    _swix(OS_ReadModeVariable,_INR(0,1)|_OUT(2),wp->save_mode,VduExt_ModeFlags,&in_modeflags);
+d626 1
+a626 1
+    ws->in_pixelformat = compute_pixelformat(in_ncolour,in_modeflags,wp->save_inlog2bpp);
+d632 1
+a632 1
+  if(wp->ColourTTR != 0)
+d634 3
+a636 1
+    if(wp->save_inlog2bpp >= 5)
+d639 1
+a639 1
+      ws->ColourTTRFormat = ws->in_pixelformat & ~PixelFormat_Alpha;
+d642 5
+a646 2
+  ws->pixel_expansion_mask = ws->pixel_expansion_shift = 0;
+  ws->pixel_expansion_in = ws->pixel_expansion_out = NULL;
+a650 3
+  /* If using a palette, ignore any translation table */
+  if (wp->trns_palette != 0) wp->ColourTTR = 0;
+
+a666 1
+#endif
+@
+

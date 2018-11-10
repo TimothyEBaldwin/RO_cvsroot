@@ -1,0 +1,541 @@
+head	1.10;
+access;
+symbols
+	SCSISoftUSB-0_25-1:1.10
+	SCSISoftUSB-0_25:1.10
+	SCSISoftUSB-0_24:1.10
+	SCSISoftUSB-0_23:1.9
+	SCSISoftUSB-0_22:1.9
+	SCSISoftUSB-0_21:1.9
+	SCSISoftUSB-0_20:1.9
+	SCSISoftUSB-0_19:1.9
+	SCSISoftUSB-0_18:1.8
+	SCSISoftUSB-0_17:1.8
+	SCSISoftUSB-0_16:1.8
+	SCSISoftUSB-0_15:1.7
+	SCSISoftUSB-0_14:1.7
+	SCSISoftUSB-0_13:1.6
+	SCSISoftUSB-0_12:1.6
+	SCSISoftUSB-0_11:1.5
+	SCSISoftUSB-0_10:1.4
+	SCSISoftUSB-0_09:1.4
+	SCSISoftUSB-0_08:1.4
+	SCSISoftUSB-0_07:1.4
+	SCSISoftUSB-0_06:1.3
+	SCSISoftUSB-0_05:1.2
+	SCSISoftUSB-0_04:1.2
+	SCSISoftUSB-0_03:1.2
+	SCSISoftUSB-0_02:1.2
+	SCSISoftUSB-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.10
+date	2018.07.01.15.10.29;	author jballance;	state Exp;
+branches;
+next	1.9;
+commitid	ZD5QQ5eGMub5GrIA;
+
+1.9
+date	2014.08.12.18.56.57;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	Z3rtnR0QMQ6Hx6Mx;
+
+1.8
+date	2012.06.03.14.25.59;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	tugyl8mcBbH3Lg7w;
+
+1.7
+date	2011.07.24.22.09.38;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	hW9XzNMbX8MQrPsv;
+
+1.6
+date	2010.04.22.20.25.20;	author jlee;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2009.10.22.01.19.58;	author jlee;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2005.06.24.21.03.12;	author jballance;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2005.03.05.00.44.42;	author jballance;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2003.05.23.18.37.56;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2003.05.14.16.49.27;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2003.05.14.16.49.27;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.10
+log
+@  Tuned previous commit and resolved potential interlock issue
+Detail:
+  More precise detection of sense status error condition, and blocked
+  reentrancy possible condition at start of Glue_Tick().
+  Previous fix didn't always fix offending device.
+Admin:
+  Tested on iMx6
+
+Version 0.24. Tagged as 'SCSISoftUSB-0_24'
+@
+text
+@/* Copyright 2003 Tematic Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#if !defined(SCSISOFTUSB_GLOBAL_H) /* file used if not already included */
+#define SCSISOFTUSB_GLOBAL_H
+/*****************************************************************************
+* $Id: global,v 1.9 2014/08/12 18:56:57 jlee Exp $
+* $Name: HEAD $
+*
+* Author(s):  Ben Avison
+* Project(s): 
+*
+* ----------------------------------------------------------------------------
+* Purpose: Global variables
+*
+* ----------------------------------------------------------------------------
+* History: See source control system log
+*
+*****************************************************************************/
+
+
+/*****************************************************************************
+* Include header files
+*****************************************************************************/
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "tboxlibs/toolbox.h"
+
+
+/*****************************************************************************
+* Scope limiting
+* if LIMITED_SCOPE is defined, then the module will only recognise
+*  a limited subset of devices instead of anything which responds
+*****************************************************************************/
+//#define LIMITED_SCOPE 1
+
+/*****************************************************************************
+* MACROS
+*****************************************************************************/
+#ifndef IGNORE
+#define IGNORE(x) do { (void)(x); } while(0)
+#endif
+
+#ifndef MIN
+#define MIN(x,y) ((x)<(y)?(x):(y))
+#endif
+
+#ifndef MAX
+#define MAX(x,y) ((x)>(y)?(x):(y))
+#endif
+
+#ifndef RETURN_ERROR
+#define RETURN_ERROR(error_returning_statement) \
+  { \
+    _kernel_oserror *returnerror_error = (error_returning_statement); \
+    if (returnerror_error != NULL) \
+    { \
+      return returnerror_error; \
+    } \
+  }
+#endif
+
+#define RTSTACK_SIZE 2048
+
+/*****************************************************************************
+* New type definitions
+*****************************************************************************/
+typedef struct
+{
+  char *start;
+  size_t length;
+}
+scatter_entry_t;
+
+typedef struct
+{
+  uint32_t handle;              /* FileSwitch handle */
+  uint32_t buffer;              /* BufferManager internal buffer ID */
+  uint32_t buffer_handle;       /* Buffer handle, as used by the upcalls */
+  uint32_t devicedriverstreamhandle;
+  bool write;                   /* direction */
+  struct my_usb_device *device; /* for getting back to device handle */
+  uint16_t maxpacket;           /* max packet size */
+}
+pipe_block_t;
+
+typedef struct my_usb_device
+{
+  uint32_t padding; /* to get from quad-word alignment to start of RMA block */
+  
+  struct my_usb_device *next;
+  
+  bool dying;
+  bool registered;
+  
+  uint8_t interface;
+  uint8_t alternate;
+  uint8_t subclass;
+  uint8_t protocol;
+  uint8_t bulk_in_endpoint;
+  uint8_t bulk_out_endpoint;
+  uint8_t interrupt_endpoint;
+  uint16_t bulk_in_maxpacketsize;
+  uint16_t bulk_out_maxpacketsize;
+  uint16_t interrupt_maxpacketsize;
+  uint16_t vendor;
+  uint16_t product;
+  uint32_t block_size;
+  
+  uint8_t maxlun;
+  
+  char devicefs_name[20];
+  
+  uint32_t scsi_driver_handle;
+  
+  void *softc;
+  
+  uint32_t current_fill;  
+  pipe_block_t *current_pipe;
+  pipe_block_t pipe[3 /* == UMASS_NEP */];
+  scatter_entry_t fake_list;         /* for making a scatter list when there wan't one */
+  
+  struct my_usb_device *next_ticker; /* list of devices to poll from TickerV */
+  uint32_t status;                   /* actually the usbd_status value */
+  bool command_active;               /* active at any phase */
+  bool ticker_semaphore;             /* paranoid ticker re-entrancy semaphore */
+  bool background_transfer_active;   /* active and at a phase involving a bulk pipe */
+  bool is_capacity;                  /* True if we're processing a CAPACITY command */
+  bool is_sensestatus;               /* True if we're processing a SENSE STATUS command */
+  scatter_entry_t *orig_scatterlist; /* scatterlist pointer st start of background xfer */
+  size_t orig_transferlength;        /* to-do count at start of background xfer */
+  scatter_entry_t *curr_scatterlist; /* working scatterlist pointer */
+  size_t curr_offset;                /* offset into first entry in working scatterlist */
+  size_t curr_transferlength;        /* working to-do count */
+  size_t curr_padding;               /* how many padding bytes there are in this transfer */
+  
+  void (*callback)(void);    /* callback to SCSIDriver */
+  void *callback_pw;         /* private word (R5) for the above */
+  void *callback_wp;         /* workspace pointer (R12) for the above */
+  _kernel_oserror *callback_error;
+  uint32_t callback_status_byte;
+  size_t callback_not_transferred;
+}
+my_usb_device_t;
+
+typedef struct
+{
+  uint32_t flags;
+  uint32_t *pollword;
+  uint32_t timeout;
+} rtsupport_routine_result;
+
+/*****************************************************************************
+* Constants
+*****************************************************************************/
+enum
+{
+  data_NONE  = 0 << 24,  /* By happy coincidence, these are the same */
+  data_READ  = 1 << 24,  /* as the symbols used for the same purpose */
+  data_WRITE = 2 << 24   /* by the BSD code (except for the shift).  */
+};
+
+typedef enum
+{
+  callback_NONE,
+  callback_TickerV,
+  callback_RTSupport
+} callback_type;
+
+
+/*****************************************************************************
+* Global variables
+*****************************************************************************/
+extern void *global_PrivateWord; /* so we don't have to worry about passing pw around */
+extern MessagesFD global_MessageFD; /* message file descriptor */
+extern my_usb_device_t *global_DeviceList; /* list of usb device info */
+extern my_usb_device_t *global_TickerList; /* list of devices using TickerV/RTSupport */
+extern bool global_UseRTSupport; /* Use RTSupport module for scheduling, not TickerV */
+extern int global_RTSupportPollword; /* RTSupport pollword */
+extern int global_RTSupportHandle; /* RTSupport handle */
+extern callback_type global_CallbackType; /* Type of our registered callback, if any */
+extern uint32_t global_PopUpDelay; /* Delay before SCSIFS gets told about new devices */ 
+#ifdef UMASS_DEBUG
+extern char *states[];
+#endif
+/*****************************************************************************
+* Function prototypes
+*****************************************************************************/
+
+
+#endif  /* end of sentry #ifdef */
+/*****************************************************************************
+* END OF FILE
+*****************************************************************************/
+@
+
+
+1.9
+log
+@Fixes and improvements to SCSI request padding
+Detail:
+  In order to keep block-based SCSI devices happy, the data transfer length must be a multiple of the block size. Unfortunately the RISC OS SCSI API considers the act of padding requests out to the correct size to be a driver problem rather than a client problem, and the USB SCSI spec doesn't provide a guaranteed way for a host to determine the correct transfer length for a command which has failed.
+  To cope with this SCSISoftUSB contains some code to pad block read/write transfer lengths out to a multiple of the USB packet size. For high-speed USB devices using standard 512 byte sector sizes this works fine, but for low-speed devices or devices with less common block sizes it falls short.
+  To rectify this SCSISoftUSB now listens out for any CAPACITY commands which are sent to the device and peeks at the result to determine the correct block size to use. Except for rare cases where the client takes a random guess at the block size this should allow SCSISoftUSB to get the correct block size itself without having to implement lots of extra logic to deal with devices being slow to initialise, etc.
+  Additionally the padding code has been rewritten to ensure writes are padded with nulls (previously would read off the end of the supplied source data), and excess read bytes are discarded (previously would write off the end of the destination buffer)
+  File changes: c/glue, h/global
+Admin:
+  Tested on Raspberry Pi
+  USB2 devices forced to run at USB1 speed now behave themselves during non-sector sized filecore ops
+
+
+Version 0.19. Tagged as 'SCSISoftUSB-0_19'
+@
+text
+@d18 1
+a18 1
+* $Id: global,v 1.8 2012/06/03 14:25:59 jlee Exp $
+d141 1
+@
+
+
+1.8
+log
+@Fix temporary RMA corruption while inside RTSupport routine
+Detail:
+  Previously the RTSupport routine would execute in SYS mode, and use assembler veneers to make direct calls to the buffer manager.
+  Despite being against the buffer manager spec (only IRQ or SVC should be used, according to PRM 5a), the buffer manager was coping with SYS mode calls fine. However the buffer manager would call DeviceFS, and DeviceFS would then call USBDriver, entering the module via one of CMHG's generic veneers.
+  These veneers attempt to switch to SVC mode on entry, but they do so by only interacting with the bottom two bits of the PSR - so the CPU was remaining in SYS mode.
+  Although this isn't a problem in and of itself, immediately after the mode change comes some code to set up the static relocation offsets at the SVC stack limit.
+  This is done by aligning the stack pointer to a MB boundary. If we were in SVC mode this would be fine, but since we're still in SYS mode we're using a stack that was allocated by SCSISoftUSB and isn't aligned to a boundary at all; thus resulting in two words of RMA being swapped out with something completely different while the USBDriver code executes.
+  With RTSupport in ROM this will most likely end up being the first two words of the heap - which is enough to stop OS_Module from manipulating the heap (the heap manager will see it as corrupt), but without causing any lasting damage.
+  To solve this issue we now run the entire routine in SVC mode, using the MB-aligned SVC stack that RTSupport provides for us.
+  File changes:
+  c/global, c/cmodule, h/global - Get rid of the SYS mode stack since we no longer need it
+  c/glue, h/glue - Extern RTSupportWrapper so it can be called from the assembler veneer. Tweak RT_Register parameters to pass in the relocation offsets (and no SYS stack)
+  s/asm, h/asm - Added asm_RTSupportWrapper to get us into and out of SVC mode around the call to RTSupportWrapper. Also sets up our stack limit & relocation offsets within the SVC stack.
+Admin:
+  Tested in BCM2835 ROM
+
+
+Version 0.16. Tagged as 'SCSISoftUSB-0_16'
+@
+text
+@d18 1
+a18 1
+* $Id: global,v 1.7 2011/07/24 22:09:38 jlee Exp $
+d120 1
+d140 1
+d146 1
+@
+
+
+1.7
+log
+@Fix null pointer access
+Detail:
+  c/glue - Not all operations make use of device->current_pipe, but glue_DoCommand was accessing the pipe pointer regardless of whether the maxpacket value was needed or not. This causes the code to fail if zero page is relocated.
+  c/global, c/glue, c/module, c/umass, c/umass_quirks, cmhg/modhdr, h/asm, h/global, h/glue, h/resmess, h/umass_quirks, h/umassvar, s/asm - CVS has decided to update all the $Name$ tags. Not entirely sure why, but it probably won't hurt.
+Admin:
+  Tested on rev C2 BB.
+
+
+Version 0.14. Tagged as 'SCSISoftUSB-0_14'
+@
+text
+@d18 1
+a18 1
+* $Id: global,v 1.6 2010/04/22 20:25:20 jlee Exp $
+a187 1
+extern _kernel_stack_chunk *global_RTSupportStack; /* RTSupport stack chunk */
+@
+
+
+1.6
+log
+@Make SCSISoftUSB's 'PopUpDelay' configurable, improve robustness of device registration
+Detail:
+  c/global, c/module, cmhg/header, h/global - The new command *SCSISoftUSB_PopUpDelay can now be used to control the popup delay value. Additionally, no delay is used if outside the desktop.
+  Makefile, Resources/UK/Messages - Added resources file containing text for the new * command
+  c/module, cmhg/header - Devices are now registered with SCSISwitch from a callback instead of from a ticker event. This ensures the registration won't fail due to insufficient RMA space (e.g. as is often the case for devices detected during OMAP ROM initialisation)
+Admin:
+  Tested in ROM on rev C2 beagleboard, and in RAM on Iyonix.
+  Messages file needs translating!
+
+
+Version 0.12. Tagged as 'SCSISoftUSB-0_12'
+@
+text
+@d18 1
+a18 1
+* $Id: global,v 1.5 2009/10/22 01:19:58 jlee Exp $
+@
+
+
+1.5
+log
+@Update SCSISoftUSB to use RTSupport where possible, for much better USB performance
+Detail:
+  On initialisation SCSISoftUSB now checks if a suitable version of the RTSupport module is loaded (0.05 or above), and if so, will use RTSupport in preference to TickerV to schedule USB transfers. When combined with tweaked DeviceFS buffer thresholds and some extra code to listen out for buffer filling/emptying upcalls, this allows for significant performance improvements for USB 2.0 devices.
+  If at any point RTSupport becomes unavailable or the RT_Register SWI fails (or if a suitable version of RTSupport is not present) the code will (potentially temporarily) fall back to using TickerV to ensure the filesystem remains functional.
+Admin:
+  Tested on RISC OS 5.15 rev C2 beagleboard & RISC OS 5.12 Iyonix with & without RTSupport 0.05.
+
+
+Version 0.11. Tagged as 'SCSISoftUSB-0_11'
+@
+text
+@d18 1
+a18 1
+* $Id: global,v 1.4 2005/06/24 21:03:12 jballance Exp $
+d191 1
+@
+
+
+1.4
+log
+@	Extend device coverage and better startup
+Detail:
+	now checks any mass storage device for usability .. nolonger
+	restricts to types 8-5 and 8-6
+	delays scsi registration for 2 seconds beyond point where
+	module has finished initialising (overcomes issue seen with some
+	devices that fail an inquiry command if sent immediately after
+	device is enabled)
+Admin:
+	castle added IP. tested locally. now a release candidate to
+	be checked via the beta software site.
+
+
+Version 0.07. Tagged as 'SCSISoftUSB-0_07'
+@
+text
+@d18 2
+a19 2
+* $Id: global,v 1.3 2005/03/05 00:44:42 jballance Exp $
+* $Name: SCSISoftUSB-0_06 $
+d75 1
+d91 1
+d154 6
+d171 7
+d185 6
+a190 1
+extern my_usb_device_t *global_TickerList; /* list of devices using TickerV */
+@
+
+
+1.3
+log
+@   	Numerous updates to improve working.
+	Re-synced with NetBSD mass storage
+	Added part sector fill/ignore needed by SCSIFS
+
+Detail:
+Admin:  tested at castle.. to go to beta site.. Castle added IP
+
+
+Version 0.06. Tagged as 'SCSISoftUSB-0_06'
+@
+text
+@d18 2
+a19 2
+* $Id: global,v 1.2 2003/05/23 18:37:56 bavison Exp $
+* $Name: SCSISoftUSB-0_05 $
+d43 7
+d104 1
+@
+
+
+1.2
+log
+@  Various changes to get it up to a releasable standard.
+Detail:
+  * Unplugging of devices is now reliable.
+  * Stall handling now works (requires USBDriver 0.17).
+  * We now do max LUN checking, since devices don't seem to do it reliably
+    themselves.
+  * Unknown SCSI driver handler reason codes now return an error.
+  * Scatter list handling improvements - eg individual transfers can now be
+    bigger than the DeviceFS buffer size (accounting for the last.
+Admin:
+  Tested with various mass storage devices.
+
+Version 0.02. Tagged as 'SCSISoftUSB-0_02'
+@
+text
+@d18 2
+a19 2
+* $Id: global,v 1.1.1.1 2003/05/14 16:49:27 bavison Exp $
+* $Name:  $
+d119 1
+d163 3
+a165 2
+
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 1
+a18 1
+* $Id:  $
+d95 2
+@
+
+
+1.1.1.1
+log
+@Initial import of SCSISoftUSB, a driver for USB mass storage devices that
+use a SCSI command set over bulk-only or control-bulk-interrupt protocols.
+@
+text
+@@

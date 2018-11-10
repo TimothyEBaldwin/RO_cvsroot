@@ -1,0 +1,589 @@
+head	4.3;
+access;
+symbols
+	SCInter-0_27:4.3
+	dellis_autobuild_BaseSW:4.3
+	SCInter-0_26:4.3
+	sbrodie_sedwards_16Mar2000:4.3
+	SCInter-0_25:4.3
+	SCInter-0_24:4.3
+	wturner_scinter2:1.1.2.2
+	wturner_scinter1:1.1.2.2
+	SCInter-0_23:4.3
+	SCInter-0_22:4.2
+	SCInter-0_21:4.1
+	dcotton_autobuild_BaseSW:4.3
+	dcotton_scinter_MPTInitialBuild:1.1.2.2
+	SCInter-0_20:4.1
+	SCInter-0_19:4.1
+	SCInter-0_18:4.1
+	Spin_merge:1.1.2.2
+	SCInter-0_17-1_1_2_5:1.1.2.2
+	SCInter-0_17-1_1_2_4:1.1.2.2
+	SCInter-0_17-1_1_2_3:1.1.2.1
+	SCInter-0_17-1_1_2_2:1.1.2.1
+	Spinner:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	99.11.17.08.49.27;	author dcotton;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	99.11.16.13.35.30;	author dcotton;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	98.12.11.19.10.14;	author smiddle;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.11.24.12.13.24;	author apirozek;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	98.11.24.12.13.24;	author apirozek;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	98.12.03.14.30.52;	author apirozek;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@	Added a little more debugging.
+Detail:
+	Added more debugging, especially to the SWI handling routines.
+Admin:
+	Tested as a debugging softload and in a Funai 4 build.
+
+Version 0.23. Tagged as 'SCInter-0_23'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/************************************************************************/
+/*                  Copyright 1998 Acorn Computers Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Acorn Computers. It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Acorn Computers. All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+
+/*
+ * provide functions for processing records
+ *
+ * Modification History
+ *---------------------
+ *
+ * 18-Nov-98  AJP,  Created.
+ *
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include "kernel.h"
+#include "swis.h"
+#include "module.h"
+#include "irqs.h"
+#include "header.h"
+#include "records.h"
+
+#include "Debuglib/Debuglib.h"
+
+/* variables for minijis cards */
+int  minijis_current  =0;  /* current record being read */
+int  minijis_currentw =0;  /* current record being written */
+int  minijis_records  =0;  /* number of records on card */
+int  minijis_offset   =0;  /* offset into user buffer */
+char minijis_buff [ 1024]; /* tmp buffer for card data */
+char tmpr[28];
+
+/******************************************************************************/
+void memfill ( char *mem, int len, char c)
+{
+  int n;
+
+  for ( n=0; n<len; n++)
+    mem [ n] =c;
+}
+
+/******************************************************************************
+  reorder a buffer so that its written in reverse order
+  parameters: buff   - buffer to convert
+              reclen - length of 1 record
+              recs   - total number of records
+     returns:
+ ******************************************************************************/
+void reorder_buff ( char *buff, int reclen, int recs)
+{
+  int head =0, tail =recs -1;
+
+  dprintf(("", "reorder_buff()\n"));
+
+  while (( head !=tail) && ( head <tail))
+  {
+    memcpy ( tmpr, buff +( head *reclen), reclen);
+    memcpy ( buff +( head *reclen), buff +( tail *reclen), reclen);
+    memcpy ( buff +( tail *reclen), tmpr, reclen);
+    head ++;
+    tail --;
+  }
+}
+
+/******************************************************************************
+  convert user buffer to card buffer format
+  parameters: userb - buffer to convert
+              ulen  - user buffer length
+              cardb - buffer ready for card writing
+              clen  - card buffer length
+              recs  - number of records on card
+     returns:
+ ******************************************************************************/
+void buff_to_records ( char *userb, int ulen, char *cardb, int clen, int recs)
+{
+  int n, userbo =0;  /* user buffer read offset */
+
+  dprintf(("", "buff_to_records()\n"));
+
+  /* fill card buffer with 0xff */
+  for ( n=0; n<clen; n++)
+    cardb [ n]=FILL_CHAR;
+
+  for ( n =0; n<recs; n++)
+  {
+    *(cardb +(n*27))   =0;
+    *(cardb +(n*27)+1) =25;
+
+    if ( userbo <ulen)
+    {
+      memcpy ( cardb +((n*27)+2), userb+userbo, ulen-userbo <25?ulen-userbo:25);
+      userbo +=ulen -userbo <25?ulen -userbo:25;
+    }
+  }
+}
+
+/******************************************************************************
+ convert card buffer to user buffer format
+  parameters: userb - buffer to convert
+              cardb - buffer ready for card writing
+              recs  - number of records on card
+     returns:
+ ******************************************************************************/
+void records_to_buff ( char *userb, char *cardb, int recs)
+{
+  int n, userbo =0;  /* user buffer read offset */
+
+  dprintf(("", "records_to_buff()\n"));
+
+  for ( n =0; n<recs; n++)
+  {
+    memcpy ( userb +userbo, cardb +((n*27)+2), 25);
+    userbo +=25;
+  }
+}
+
+/******************************************************************************/
+/* display the contents of a buffer */
+void print_rec ( char *buff)
+{
+#ifdef DEBUGLIB
+  int i,n =0;
+
+  dprintf(("", "print_rec(): Tag: %x ", buff [(n*27)]));
+  dprintf(("", "print_rec(): Len: %d ", buff [(n*27)+1]));
+  dprintf(("", "print_rec(): Data: "));
+  for ( i =2; i<27; i++)
+  {
+    if (( buff [(n*27)+i]>=32) && ( buff [(n*27)+i]<127))
+    {
+      dprintf(("", "%c", buff [(n*27)+i]));
+    }
+    else
+    {
+      dprintf(("", "[%x]", buff [(n*27)+i]));
+    }
+  }
+  dprintf(("", "\n"));
+  #endif
+}
+
+/******************************************************************************/
+/* display the contents of a buffer */
+void print_buff ( char *buff, int recs)
+{
+  #ifdef DEBUGLIB
+  int i,n;
+
+  for ( n=0; n<recs; n++)
+  {
+    dprintf(("", "Tag: %x ", buff [(n*27)]));
+    dprintf(("", "Len: %d ", buff [(n*27)+1]));
+    dprintf(("", "Data: "));
+    for ( i =2; i<27; i++)
+    {
+      if (( buff [(n*27)+i]>=32) && ( buff [(n*27)+i]<127))
+      {
+        dprintf(("", "%c", buff [(n*27)+i]));
+      }
+      else
+      {
+        dprintf(("", "[%x]", buff [(n*27)+i]));
+      }
+    }
+    dprintf(("", "\n"));
+  }
+  dprintf(("", "\n"));
+  #endif
+}
+@
+
+
+4.2
+log
+@	Changed the component to use srccommit.
+Detail:
+	This component would not build with the latest version of RemoteDB as
+the names used have been changed. Have used this opportunity to alter the
+component to use DebugLib. There have been no functionality changes.
+	Default output mechanism is to zip disc.
+	Altered the makefile to use Stripdepend.
+Admin:
+	Tested as a softload on a Funai 4 build and actually in a Funai 4
+build.
+
+Version 0.22. Tagged as 'SCInter-0_22'
+@
+text
+@d75 2
+a78 2
+
+
+d98 3
+a100 2
+  int n,
+      userbo =0;  /* user buffer read offset */
+d128 3
+a130 2
+  int n,
+      userbo =0;  /* user buffer read offset */
+a138 1
+#ifdef DEBUGLIB
+d143 1
+d161 1
+d168 1
+d190 1
+a191 1
+#endif
+@
+
+
+4.1
+log
+@Moved to trunk.
+
+Version 0.18. Tagged as 'SCInter-0_18'
+@
+text
+@d45 2
+d137 1
+a137 1
+#ifdef debug
+d144 3
+a146 3
+  printf ( "Tag: %x ", buff [(n*27)]);
+  printf ( "Len: %d ", buff [(n*27)+1]);
+  printf ( "Data: ");
+d150 3
+a152 1
+      printf ( "%c", buff [(n*27)+i]);
+d154 3
+a156 1
+      printf ( "[%x]", buff [(n*27)+i]);
+d158 1
+a158 1
+  printf ( "\n");
+d169 3
+a171 3
+    printf ( "Tag: %x ", buff [(n*27)]);
+    printf ( "Len: %d ", buff [(n*27)+1]);
+    printf ( "Data: ");
+d175 3
+a177 1
+        printf ( "%c", buff [(n*27)+i]);
+d179 3
+a181 1
+        printf ( "[%x]", buff [(n*27)+i]);
+d183 1
+a183 1
+    printf ( "\n");
+d185 1
+a185 1
+  printf ( "\n");
+@
+
+
+1.1
+log
+@file records was initially added on branch Spinner.
+@
+text
+@d1 177
+@
+
+
+1.1.2.1
+log
+@Modified to work with Funai3 T=1 cards
+
+Version 0.17, 1.1.2.2. Tagged as 'SCInter-0_17-1_1_2_2'
+@
+text
+@a0 190
+/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/************************************************************************/
+/*                  Copyright 1996 Acorn Computers Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Acorn Computers. It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Acorn Computers. All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+
+/*
+ * provide functions for processing records
+ *
+ * Modification History
+ *---------------------
+ *
+ * 18-Nov-98  AJP,  Created.
+ *
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include "kernel.h"
+#include "swis.h"
+#include "module.h"
+#include "irqs.h"
+#include "header.h"
+#include "records.h"
+
+/* variables for minijis cards */
+int  minijis_current  =0;  /* current record being read */
+int  minijis_currentw =0;  /* current record being written */
+int  minijis_records  =0;  /* number of records on card */
+int  minijis_offset   =0;  /* offset into user buffer */
+char minijis_buff [ 1024]; /* tmp buffer for card data */
+char tmpr[28];
+
+/******************************************************************************
+ copy an array
+  parameters: dest - destination buff
+              src  - source buffer
+              len  - number of bytes to copy
+     returns:
+ ******************************************************************************/
+void bcpy ( char *dest, char *src, int len)
+{
+  int n;
+
+  for ( n=0; n<len; n++)
+    dest [ n] =src [ n];
+}
+
+/******************************************************************************/
+void memfill ( char *mem, int len, char c)
+{
+  int n;
+
+  for ( n=0; n<len; n++)
+    mem [ n] =c;
+}
+
+/******************************************************************************
+  reorder a buffer so that its written in reverse order
+  parameters: buff   - buffer to convert
+              reclen - length of 1 record
+              recs   - total number of records
+     returns:
+ ******************************************************************************/
+void reorder_buff ( char *buff, int reclen, int recs)
+{
+  int head =0, tail =recs -1;
+
+  while (( head !=tail) && ( head <tail))
+  {
+    bcpy ( tmpr, buff +( head *reclen), reclen);
+    bcpy ( buff +( head *reclen), buff +( tail *reclen), reclen);
+    bcpy ( buff +( tail *reclen), tmpr, reclen);
+    head ++;
+    tail --;
+  }
+}
+
+/******************************************************************************
+  convert user buffer to card buffer format
+  parameters: userb - buffer to convert
+              ulen  - user buffer length
+              cardb - buffer ready for card writing
+              clen  - card buffer length
+              recs  - number of records on card
+     returns:
+ ******************************************************************************/
+void buff_to_records ( char *userb, int ulen, char *cardb, int clen, int recs)
+{
+  int n,
+      userbo =0;  /* user buffer read offset */
+
+  /* fill card buffer with 0xff */
+  for ( n=0; n<clen; n++)
+    cardb [ n]=FILL_CHAR;
+
+  for ( n =0; n<recs; n++)
+  {
+    *(cardb +(n*27))   =0;
+    *(cardb +(n*27)+1) =25;
+
+    if ( userbo <ulen)
+    {
+      bcpy ( cardb +((n*27)+2), userb+userbo, ulen -userbo <25?ulen -userbo:25);
+      userbo +=ulen -userbo <25?ulen -userbo:25;
+    }
+  }
+}
+
+/******************************************************************************
+ convert card buffer to user buffer format
+  parameters: userb - buffer to convert
+              cardb - buffer ready for card writing
+              recs  - number of records on card
+     returns:
+ ******************************************************************************/
+void records_to_buff ( char *userb, char *cardb, int recs)
+{
+  int n,
+      userbo =0;  /* user buffer read offset */
+
+  for ( n =0; n<recs; n++)
+  {
+    bcpy ( userb +userbo, cardb +((n*27)+2), 25);
+    userbo +=25;
+  }
+}
+
+#ifdef debug
+/******************************************************************************/
+/* display the contents of a buffer */
+void print_rec ( char *buff)
+{
+  int i,n =0;
+
+  printf ( "Tag: %x ", buff [(n*27)]);
+  printf ( "Len: %d ", buff [(n*27)+1]);
+  printf ( "Data: ");
+  for ( i =2; i<27; i++)
+  {
+    if (( buff [(n*27)+i]>=32) && ( buff [(n*27)+i]<127))
+      printf ( "%c", buff [(n*27)+i]);
+    else
+      printf ( "[%x]", buff [(n*27)+i]);
+  }
+  printf ( "\n");
+}
+
+/******************************************************************************/
+/* display the contents of a buffer */
+void print_buff ( char *buff, int recs)
+{
+  int i,n;
+
+  for ( n=0; n<recs; n++)
+  {
+    printf ( "Tag: %x ", buff [(n*27)]);
+    printf ( "Len: %d ", buff [(n*27)+1]);
+    printf ( "Data: ");
+    for ( i =2; i<27; i++)
+    {
+      if (( buff [(n*27)+i]>=32) && ( buff [(n*27)+i]<127))
+        printf ( "%c", buff [(n*27)+i]);
+      else
+        printf ( "[%x]", buff [(n*27)+i]);
+    }
+    printf ( "\n");
+  }
+  printf ( "\n");
+}
+#endif
+@
+
+
+1.1.2.2
+log
+@Tidyied up a bit
+
+Version 0.17, 1.1.2.4. Tagged as 'SCInter-0_17-1_1_2_4'
+@
+text
+@d16 1
+a16 1
+/*                  Copyright 1998 Acorn Computers Ltd                  */
+d53 15
+d90 3
+a92 5
+
+
+    memcpy ( tmpr, buff +( head *reclen), reclen);
+    memcpy ( buff +( head *reclen), buff +( tail *reclen), reclen);
+    memcpy ( buff +( tail *reclen), tmpr, reclen);
+d123 1
+a123 1
+      memcpy ( cardb +((n*27)+2), userb+userbo, ulen-userbo <25?ulen-userbo:25);
+d143 1
+a143 1
+    memcpy ( userb +userbo, cardb +((n*27)+2), 25);
+@

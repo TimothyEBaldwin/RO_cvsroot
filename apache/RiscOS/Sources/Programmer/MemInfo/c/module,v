@@ -1,0 +1,941 @@
+head	1.7;
+access;
+symbols
+	MemInfo-0_10:1.7
+	MemInfo-0_09:1.7
+	MemInfo-0_08:1.6
+	MemInfo-0_07:1.5
+	dellis_autobuild_BaseSW:1.4
+	sbrodie_sedwards_16Mar2000:1.4
+	dcotton_autobuild_BaseSW:1.4
+	MemInfo-0_06:1.4
+	MemInfo-0_05:1.3
+	MemInfo-0_04:1.3
+	MemInfo-0_03:1.2
+	nicke_MemInfo_0_02:1.1
+	afrost_NC2_Generic:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2005.04.19.15.54.55;	author srevill;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2004.07.02.11.06.54;	author bavison;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2004.05.12.15.40.58;	author kbracey;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.04.30.15.38.10;	author kbracey;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.10.28.13.04.25;	author smiddle;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.09.14.13.34.59;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.11.20.17.10.30;	author rbuckley;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@  Bug fix to DA list outputting.
+Detail:
+  Assumed DA name string was zero-terminated when it can in fact be
+  ctrl-terminated. Caused output of junk for some areas.
+Admin:
+  Tested on STB (ROM 5.0.5, baseline 512). Fixes bug #219
+
+Version 0.09. Tagged as 'MemInfo-0_09'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/************************************************************************/
+/*                  Copyright 1997 Acorn Computers Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Acorn Computers. It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Acorn Computers. All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "swis.h"
+#include "module.h"
+#include "header.h"
+
+#define STATUS_FILE "<Wimp$ScrapDir>.mem/html"
+#define STATUS_URL  "file:/<Wimp$ScrapDir>/mem.html"
+#define ENV_VAR	    "Alias$URLOpenCLI_MemInfo"
+#define ENV_VAL	    "MemInfo_HTML %*0"
+
+typedef enum {Text,HTML} style_t;
+
+/*
+ * module housekeeping globals
+ */
+void   *workspace_pointer = NULL;
+ERROR_STRUCT(NO_FILE,"Could not open status file.");
+
+_kernel_oserror *
+url_open(char *url)
+{
+  _kernel_swi_regs reg;
+  _kernel_oserror *err=NULL;
+  char msg_block[256];
+  int n;
+
+  n = strlen(url);
+  n = n>236?236:n;
+  memset(msg_block, 0, 256);
+
+  *(int *)msg_block = 256;
+  *(int *)(msg_block + 16) = 0x4af80; /* Message_URL */
+  strncpy(msg_block + 20, url, n);
+
+  reg.r[0] = 0;
+  reg.r[1] = (int)msg_block;
+  reg.r[2] = 0;
+  reg.r[3] = 0;
+  reg.r[4] = 0;
+  reg.r[5] = 0;
+
+  ERR_RETURN(err,_kernel_swi(TaskModule_SendMessage, &reg, &reg));
+
+  return(NULL);
+}
+
+static char *get_name_cr(const char *in)
+{
+    char *out;
+    int i, len;
+
+    for (i = 0; in[i] >= ' '; i++)
+	/* do nothing */;
+    len = i;
+
+    out = malloc(len + 1);
+    if (out)
+    {
+	for (i = 0; i < len; i++)
+	    out[i] = in[i];
+	out[i] = 0;
+    }
+
+    return out;
+}
+
+_kernel_oserror *
+display_memory_info(style_t style)
+{
+  _kernel_oserror *err=NULL;
+  _kernel_swi_regs reg;
+  FILE *f=NULL;
+  int area,size,max_size,lba;
+  char desc[26];
+  char *term;
+  char utctime[8];
+  char lcltime[256];
+  int total_mem, da_total, app_total, misc_total;
+  int da_page_contrib;
+  int page_exact;
+
+  *(int *)utctime = 3; 		/* reason code 3, read RTC */
+  reg.r[0] = 14;
+  reg.r[1] = (int)utctime;
+  _kernel_swi(OS_Word, &reg, &reg);
+
+  reg.r[0] = 1;			/* always in english */
+  reg.r[1] = (int)utctime;
+  reg.r[2] = (int)lcltime;
+  reg.r[3] = 256;
+  _kernel_swi(Territory_ConvertStandardDateAndTime, &reg, &reg);
+
+  if (style == HTML) {
+    if((f = fopen(STATUS_FILE, "w"))==NULL) {
+      return (ERROR(NO_FILE));
+    }
+
+    fprintf(f,"<html><head>");
+    fprintf(f,"<title>Memory distribution</title>");
+    fprintf(f,"</head><body BGCOLOR=\"#ffffff\">\n");
+    fprintf(f,"<center><p><h1>Memory distribution</h1></p>\n");
+
+    fprintf(f,"<p><b>Time:</b>%s<p>\n",lcltime);
+
+    fprintf(f,"<p><table border=1 width=\"70%%\">\n");
+    fprintf(f,"<tr><th>Dynamic area<th>Size&nbsp;(K)<th>Max size<th>Address\n");
+  } else {
+    printf("  Dynamic area             Size (K) Max size Address\n");
+    printf("  ------------             -------- -------- -------\n");
+  }
+
+  /* get total mem */
+  ERR_GOTO(err, _kernel_swi(OS_ReadMemMapInfo,&reg,&reg));
+  total_mem = reg.r[0] * reg.r[1];
+
+  da_total = 0;
+  da_page_contrib = 0;
+
+  reg.r[0] = 3; 	/* enumerate dynamic areas */
+  reg.r[1] = -1; 	/* start */
+  ERR_GOTO(err,_kernel_swi(OS_DynamicArea,&reg,&reg));
+  area = reg.r[1];
+  while (area != -1) {
+    reg.r[0] = 2;	/* info */
+    reg.r[1] = area;
+    ERR_GOTO(err,_kernel_swi(OS_DynamicArea,&reg,&reg));
+    size = reg.r[2];
+    lba  = reg.r[3];
+    max_size = reg.r[5];
+
+    /* Copy the DA name string into our buffer */
+    (void) memcpy(desc, (char *)reg.r[8], 25);
+
+    /* Ensure that the string is zero-terminated */
+    desc[25] = '\0';
+    term     = desc;
+    while (*term > 31) term++;
+    *term    = '\0';
+
+    da_total += size;
+    if ((int)lba >= 96*1024*1024)
+	da_page_contrib += max_size;
+    else if ((int)lba + max_size > 96*1024*1024)
+	da_page_contrib += (int)lba + max_size - 96*1024*1024;
+
+    if (style == HTML) {
+      fprintf(f,"<tr><td>%s<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+    	desc,size/1024, max_size/1024, lba);
+    } else {
+      printf("  %-25s %6d    %6d &%08X\n",desc,size/1024, max_size/1024, lba);
+    }
+    reg.r[0] = 3; 	/* enumerate dynamic areas */
+    reg.r[1] = area;
+    ERR_GOTO(err,_kernel_swi(OS_DynamicArea,&reg,&reg));
+    area = reg.r[1];
+  }
+
+  /* */
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(1<<8), &lba, &max_size, &size);
+    if (err) lba = 0x01f00000, max_size = size = 32*1024;
+
+    if (style == HTML) {
+      fprintf(f,"<tr><td>Cursor/System/Sound<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+        size/1024, max_size/1024, lba);
+    } else {
+      printf("  %-25s %6d    %6d &%08X\n","Cursor/System/Sound",size/1024, max_size/1024, lba);
+    }
+    misc_total = size/1024;
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(9<<8), &lba, &max_size, &size);
+    if (!err)
+    {
+      if (style == HTML) {
+        fprintf(f,"<tr><td>HAL workspace<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+          size/1024, max_size/1024, lba);
+      } else {
+        printf("  %-25s %6d    %6d &%08X\n","HAL workspace",size/1024, max_size/1024, lba);
+      }
+      misc_total += size/1024;
+    }
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(11<<8), &lba, &max_size, &size);
+    if (!err)
+    {
+      if (style == HTML) {
+        fprintf(f,"<tr><td>HAL DMA workspace<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+          size/1024, max_size/1024, lba);
+      } else {
+        printf("  %-25s %6d    %6d &%08X\n","HAL DMA workspace",size/1024, max_size/1024, lba);
+      }
+      misc_total += size/1024;
+    }
+
+    if (style == HTML) {
+      fprintf(f,"<tr><td>System workspace<td align=\"right\">32<td align=\"right\">32<td align=\"right\">&00000000\n");
+    } else {
+      printf("  %-25s %6d    %6d &%08X\n","System workspace",32,32,0);
+    }
+    misc_total += 32;
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(10<<8), &lba, &max_size, &size);
+    if (!err) {
+      if (style == HTML) {
+        fprintf(f,"<tr><td>Kernel buffers<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+          size/1024, max_size/1024, lba);
+      } else {
+        printf("  %-25s %6d    %6d &%08X\n","Kernel buffers",size/1024, max_size/1024, lba);
+      }
+      misc_total += size/1024;
+    }
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(3<<8), &lba, &max_size, &size);
+    if (err) lba = 0x01c00000, max_size = size = 8*1024;
+
+    if (style == HTML) {
+      fprintf(f,"<tr><td>SVC stack<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+        size/1024, max_size/1024, lba);
+    } else {
+      printf("  %-25s %6d    %6d &%08X\n","SVC stack",size/1024, max_size/1024, lba);
+    }
+    misc_total += size/1024;
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(2<<8), &lba, &max_size, &size);
+    if (!err) {
+      if (style == HTML) {
+        fprintf(f,"<tr><td>IRQ stack<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+          size/1024, max_size/1024, lba);
+      } else {
+        printf("  %-25s %6d    %6d &%08X\n","IRQ stack",size/1024, max_size/1024, lba);
+      }
+      misc_total += size/1024;
+    }
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(4<<8), &lba, &max_size, &size);
+    if (!err) {
+      if (style == HTML) {
+        fprintf(f,"<tr><td>ABT stack<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+          size/1024, max_size/1024, lba);
+      } else {
+        printf("  %-25s %6d    %6d &%08X\n","ABT stack",size/1024, max_size/1024, lba);
+      }
+      misc_total += size/1024;
+    }
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(5<<8), &lba, &max_size, &size);
+    if (err) lba = 0x01e00000, max_size = size = 8*1024;
+
+    if (style == HTML) {
+      fprintf(f,"<tr><td>UND stack<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+        size/1024, max_size/1024, lba);
+    } else {
+      printf("  %-25s %6d    %6d &%08X\n","UND stack",size/1024, max_size/1024, lba);
+    }
+    misc_total += size/1024;
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(6<<8), &lba, &max_size, &size);
+    if (err) {
+      size = total_mem/512;
+      size = (size + 4095) &~ 4095;
+      lba = 0x01e02000;
+    }
+    if (style == HTML) {
+      fprintf(f,"<tr><td>Soft CAM map<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n", size/1024, size/1024, lba);
+    } else {
+      printf("  %-25s %6d    %6d &%08X\n","Soft CAM map",size/1024,size/1024,lba);
+    }
+
+    misc_total += size/1024;
+
+    err = _swix(OS_Memory, _IN(0)|_OUTR(1,3), 16+(8<<8), &lba, &max_size, &size); /* L2PT */
+    if (!err) {
+      page_exact = 1;
+      size += 16*1024; max_size += 16*1024; /* Assume we know L1PT */
+    } else {
+      page_exact = 0;
+      lba = 0x02c00000;
+      max_size = 4*1024*1024;
+      _swix(OS_Byte, _INR(0,2) | _OUT(1), 129, 0, 255, &size);
+      if (size < 0xA7)
+        size = 96*1024;
+      else if (size == 0xA7)
+        size = 96*1024 - 28*1024 + (total_mem > 28*1024*1024 ? 28*1024 : total_mem/1024);
+      else
+        size = -1;
+
+      if (size != -1) {
+	size += da_page_contrib/1024;
+	size = (size + 4095) &~ 4095;
+      }
+    }
+
+    if (size == -1)
+    {
+	if (style == HTML) {
+	    fprintf(f,"<tr><td>Page tables<td align=\"right\">Unknown<td align=\"right\">Unknown<td align=\"right\">0x02c00000\n");
+	} else {
+	    printf("  %-25s Unknown   Unknown &%08X\n","Page tables",lba);
+	}
+    }
+    else
+    {
+	if (style == HTML) {
+	    fprintf(f,"<tr><td>Page tables<td align=\"right\">%s%d<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+	      page_exact?"":"&gt;= ",size/1024, max_size/1024, lba);
+	} else {
+	    printf("  %-22s %s %6d    %6d &%08X\n","Page tables",page_exact?"  ":">=",size/1024,max_size/1024,lba);
+	}
+
+	misc_total += size/1024;
+    }
+
+#if 0
+  /* application space */
+  reg.r[0] = -1;
+  ERR_GOTO(err,_kernel_swi(OS_ReadDynamicArea,&reg,&reg));
+  lba = reg.r[0];
+  size = reg.r[1];
+  if (style == HTML) {
+    fprintf(f,"<tr><td><br>Current application<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+     size/1024,lba);
+    fprintf(f,"</table><p>\n");
+  } else {
+    printf("\n  %-25s %6d    &%08X\n","Current application",size/1024,lba);
+  }
+#endif
+
+  /* tasks */
+  app_total = 0;
+
+  if (style == HTML) {
+    fprintf(f,"<tr><th>Task<th>Size&nbsp;(K)<th>Handle\n");
+  } else {
+    printf("\n  Task                     Size (K)   Handle\n");
+    printf(  "  ----                     --------   ------\n");
+  }
+
+  {
+      int context = 0;
+      int buffer[64];
+
+      do
+      {
+	  int *end_ptr;
+	  int *ptr;
+
+	  err = _swix(TaskManager_EnumerateTasks, _INR(0,2) | _OUTR(0,1),
+		      context, buffer, sizeof(buffer),
+		      &context, &end_ptr);
+
+	  if (err && err->errnum == 0x1E6)
+	  {
+	      if (style == HTML) {
+		  fprintf(f,"<tr><td colspan=3>TaskManager not available\n");
+	      } else {
+		  printf("  TaskManager not available\n");
+	      }
+
+	      err = NULL;
+	      break; /* taskmanager not fitted */
+	  }
+
+	  for (ptr = buffer; ptr < end_ptr; ptr += 4)
+	  {
+	      char *name = get_name_cr( (const char *)ptr[1] );
+
+	      if (style == HTML) {
+		  fprintf(f,"<tr><td>%s<td align=\"right\">%d<td align=\"right\">&amp;%08X\n",
+			  name, ptr[2]/1024, ptr[0]);
+	      } else {
+		  printf("  %-25s %6d    &%08X\n", name, ptr[2]/1024, ptr[0]);
+	      }
+
+	      app_total += ptr[2];
+
+	      free(name);
+	  }
+      }
+      while (context >= 0);
+  }
+
+  if (style == HTML)
+    fprintf(f,"</table></center><p><div align=right>\n");
+
+  /* get total of the DA's */
+  if (style == HTML) {
+      fprintf(f,"<p>Total dynamic areas %dK<p>\n",da_total/1024);
+  } else {
+      printf("\n  Total dynamic areas %dK\n",da_total/1024);
+  }
+
+  if (style == HTML) {
+      fprintf(f,"Total tasks %dK<p>\n",app_total/1024);
+  } else {
+      printf("  Total tasks %dK\n",app_total/1024);
+  }
+
+  if (style == HTML) {
+    fprintf(f,"Total system workspace %dK<p>\n", misc_total);
+  } else {
+    printf("  Total system workspace %dK\n", misc_total);
+  }
+
+  if (style == HTML) {
+    fprintf(f,"Missing memory %s%dK<p>\n",
+      page_exact ? "" : "(probably in page tables) ", (total_mem - da_total - app_total)/1024 - misc_total);
+  } else {
+    printf("  Missing memory %s%dK\n",
+      page_exact ? "" : "(probably in page tables) ", (total_mem - da_total - app_total)/1024 - misc_total);
+  }
+
+  /* get total box memory */
+  if (style == HTML) {
+    fprintf(f,"Total memory %dK<p>\n",total_mem/1024);
+  } else {
+    printf("  Total memory %dK\n",total_mem/1024);
+  }
+
+#if 1
+  _swix(Wimp_SlotSize, _INR(0,1) | _OUT(2), -1, -1, &size);
+  if (style == HTML) {
+      fprintf(f,"Total free memory %dK<p>",size/1024);
+  } else {
+      printf("  Total free memory %dK\n",size/1024);
+  }
+#else
+  /* get total free memory */
+  reg.r[0] = 5;		/* shrinkable reason code */
+  reg.r[1] = -1;	/* all */
+  if (_kernel_swi(OS_DynamicArea,&reg,&reg)==NULL) {
+    size = reg.r[2];
+    if (style == HTML) {
+      fprintf(f,"Total free memory %dK<p>",size/1024);
+    } else {
+      printf("  Total free memory %dK\n",size/1024);
+    }
+  } else {
+    if (style == HTML) {
+      fprintf(f,"Total free memory info not available on this platform<p>\n");
+    } else {
+      printf("  Total free memory info not available on this platform\n");
+    }
+  }
+#endif
+
+  if (style == HTML) {
+    fprintf(f,"</div><center><a href=\"meminfo:\">Reload</a></center>\n");
+    fprintf(f,"</body></html>\n");
+    fclose(f);
+    url_open(STATUS_URL);
+  }
+
+exit_gracefully:
+  if (f) {
+    fclose(f);
+  }
+
+  return (err);
+}
+
+
+/*
+ * module finalise
+ */
+_kernel_oserror *
+module_finalise(int fatal, int podule, void *pw)
+{
+  _kernel_oserror *err = NULL;
+  _kernel_swi_regs reg;
+
+  /* remove variable before exiting */
+  reg.r[0] = (int)ENV_VAR;
+  reg.r[1] = NULL;
+  reg.r[2] = -1;
+  reg.r[3] = 0;
+  reg.r[4] = 0;
+  ERR_RETURN(err,_kernel_swi(OS_SetVarVal,&reg,&reg));
+
+  return (NULL);
+}
+/*
+ * module initialise
+ */
+_kernel_oserror *
+module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+  _kernel_oserror *err = NULL;
+  workspace_pointer = pw;
+
+  /* set variable for browser to use */
+  ERR_RETURN(err,_kernel_setenv(ENV_VAR,ENV_VAL));
+
+  return (NULL);
+}
+
+_kernel_oserror *
+module_cmd_handler(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+  _kernel_oserror *err = NULL;
+
+  switch (cmd_no) {
+    case CMD_MemInfo_HTML :
+      ERR_RETURN(err,display_memory_info(HTML));
+      break;
+    case CMD_MemInfo_Text :
+      ERR_RETURN(err,display_memory_info(Text));
+      break;
+  }
+  return (NULL);
+}
+@
+
+
+1.6
+log
+@Total free memory size report now uses upper-case 'K'.
+Added stripdepnd to MkClean.
+
+Version 0.08. Tagged as 'MemInfo-0_08'
+@
+text
+@d99 2
+a100 1
+  char *desc;
+d155 9
+a163 1
+    desc = (char *)reg.r[8];
+@
+
+
+1.5
+log
+@Added support for RISC OS 5 (using new OS_Memory 16 call).
+Tidied up output a little.
+
+Version 0.07. Tagged as 'MemInfo-0_07'
+@
+text
+@d437 1
+a437 1
+      fprintf(f,"Total free memory %dk<p>",size/1024);
+d439 1
+a439 1
+      printf("  Total free memory %dk\n",size/1024);
+d448 1
+a448 1
+      fprintf(f,"Total free memory %dk<p>",size/1024);
+d450 1
+a450 1
+      printf("  Total free memory %dk\n",size/1024);
+@
+
+
+1.4
+log
+@Replaced the somewhat dubious usage of an undocumented feature of OS_SetEnv
+to get the total memory of the machine with a call to the much shinier and
+fluffier OS_ReadMemMapInfo. The call to OS_SetEnv was actually bugged and
+ended up corrupting the Kernel's record of how big the application slot was.
+
+Version 0.06. Tagged as 'MemInfo-0_06'
+@
+text
+@d98 1
+a98 1
+  int area,size,lba;
+d104 1
+d130 1
+a130 1
+    fprintf(f,"<tr><th>Dynamic area<th>Size (k)<th>Max size<th>Address\n");
+d132 1
+a132 1
+    printf("  Dynamic area             Size (k) Max size Address\n");
+a147 1
+    int max_size;
+d163 1
+a163 1
+      fprintf(f,"<tr><td>%s<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">0x%08x\n",
+d166 1
+a166 1
+      printf("  %-25s %6d    %6d 0x%08x\n",desc,size/1024, max_size/1024, lba);
+d175 3
+d179 2
+a180 1
+      fprintf(f,"<tr><td>Cursor/System/Sound<td align=\"right\">32<td align=\"right\">32<td align=\"right\">0x01f00000\n");
+d182 26
+a207 1
+      printf("  %-25s %6d    %6d 0x%08x\n","Cursor/System/Sound",32,32,0x01f00000);
+d211 1
+a211 1
+      fprintf(f,"<tr><td>System workspace<td align=\"right\">32<td align=\"right\">32<td align=\"right\">0x00000000\n");
+d213 1
+a213 1
+      printf("  %-25s %6d    %6d 0x%08x\n","System workspace",32,32,0);
+d215 15
+d232 2
+a233 1
+      fprintf(f,"<tr><td>SVC stack<td align=\"right\">8<td align=\"right\">8<td align=\"right\">0x01c00000\n");
+d235 13
+a247 1
+      printf("  %-25s %6d    %6d 0x%08x\n","SVC stack",8,8,0x01c00000);
+d250 14
+d265 2
+a266 1
+      fprintf(f,"<tr><td>UND stack<td align=\"right\">8<td align=\"right\">8<td align=\"right\">0x01e00000\n");
+d268 1
+a268 1
+      printf("  %-25s %6d    %6d 0x%08x\n","UND stack",8,8,0x01e00000);
+d270 1
+d272 6
+a277 4
+    misc_total = 32 + 32 + 8 + 8;
+
+    size = total_mem/512;
+    size = (size + 4095) &~ 4095;
+d279 1
+a279 1
+      fprintf(f,"<tr><td>Soft CAM map<td align=\"right\">%d<td align=\"right\">%d<td align=\"right\">0x01e02000\n", size/1024, size/1024);
+d281 1
+a281 1
+      printf("  %-25s %6d    %6d 0x%08x\n","Soft CAM map",size/1024,size/1024,0x01e02000);
+d286 21
+a306 7
+    _swix(OS_Byte, _INR(0,2) | _OUT(1), 129, 0, 255, &size);
+    if (size < 0xA7)
+	size = 96*1024;
+    else if (size == 0xA7)
+	size = 96*1024 - 28*1024 + (total_mem > 28*1024*1024 ? 28*1024 : total_mem/1024);
+    else
+	size = -1;
+d313 1
+a313 1
+	    printf("  %-25s Unknown   Unknown 0x%08x\n","Page tables",0x02c00000);
+a317 3
+	size += da_page_contrib/1024;
+	size = (size + 4095) &~ 4095;
+
+d319 2
+a320 1
+	    fprintf(f,"<tr><td>Page tables<td align=\"right\">&gt;= %d<td align=\"right\">4096<td align=\"right\">0x02c00000\n", size/1024);
+d322 1
+a322 1
+	    printf("  %-22s >= %6d    %6d 0x%08x\n","Page tables",size/1024,4096,0x02c00000);
+d335 1
+a335 1
+    fprintf(f,"<tr><td><br>Current application<td align=\"right\">%d<td align=\"right\">0x%08x\n",
+d339 1
+a339 1
+    printf("\n  %-25s %6d    0x%08x\n","Current application",size/1024,lba);
+d347 1
+a347 1
+    fprintf(f,"<tr><th>Task<th>Size (k)<th>Handle\n");
+d349 1
+a349 1
+    printf("\n  Task                     Size (k)   Handle\n");
+d383 1
+a383 1
+		  fprintf(f,"<tr><td>%s<td align=\"right\">%d<td align=\"right\">0x%08x\n",
+d386 1
+a386 1
+		  printf("  %-25s %6d    0x%08x\n", name, ptr[2]/1024, ptr[0]);
+d420 2
+a421 1
+    fprintf(f,"Missing memory (probably in page tables) %dK<p>\n",(total_mem - da_total - app_total)/1024 - misc_total);
+d423 2
+a424 1
+    printf("  Missing memory (probably in page tables) %dK\n",(total_mem - da_total - app_total)/1024 - misc_total);
+@
+
+
+1.3
+log
+@Updated to fill in much more information about memory used
+in the box. Should now mostly add up. Also uses the task manager
+if it is about to get task information.
+
+Version 0.04. Tagged as 'MemInfo-0_04'
+@
+text
+@d136 2
+a137 3
+  reg.r[0] = 0;
+  ERR_GOTO(err,_kernel_swi(OS_SetEnv,&reg,&reg));
+  total_mem = reg.r[2];
+d141 1
+a141 1
+  
+d180 1
+a180 1
+  
+d186 1
+a186 1
+  
+d231 1
+a231 1
+	
+d240 1
+a240 1
+  
+d255 1
+a255 1
+  
+d265 1
+a265 1
+  
+d274 1
+a274 1
+	  
+d286 1
+a286 1
+	      
+d312 1
+a312 1
+  
+d325 1
+a325 1
+  
+@
+
+
+1.2
+log
+@Fixed for CMHG 5.16.
+Modified to use Link 5.08.
+
+Version 0.03. Tagged as 'MemInfo-0_03'
+@
+text
+@d33 1
+a33 1
+#define ENV_VAR	    "Alias$URLOpen_MemInfo"
+d72 20
+d102 2
+d110 1
+a110 1
+  reg.r[0] = -1;
+d124 1
+a124 1
+    fprintf(f,"<p><center><h1>Memory distribution</h1></p>\n");
+d129 1
+a129 1
+    fprintf(f,"<tr><th>Dynamic area<th>Size (k)<th>Address\n");
+d131 2
+a132 2
+    printf("  Dynamic area             Size (k)   Address\n");
+    printf("  ------------             --------   -------\n");
+d135 8
+d148 1
+d154 1
+d157 6
+d164 2
+a165 2
+      fprintf(f,"<tr><td>%s<td align=\"right\">%d<td align=\"right\">0x%07x\n",
+    	desc,size/1024,lba);
+d167 1
+a167 1
+      printf("  %-25s %6d    0x%07x\n",desc,size/1024,lba);
+d175 68
+d249 1
+a249 1
+    fprintf(f,"<tr><td>Current application<td align=\"right\">%d<td align=\"right\">0x%07x\n",
+d253 84
+a336 1
+    printf("  %-25s %6d    0x%07x\n","Current application",size/1024,lba);
+a339 3
+  reg.r[0] = 0;
+  ERR_GOTO(err,_kernel_swi(OS_SetEnv,&reg,&reg));
+  size = reg.r[2];
+d341 1
+a341 1
+    fprintf(f,"<p>Total memory %dMb<p>\n",size/1024/1024);
+d343 1
+a343 1
+    printf("\n  Total memory %dMb\n",size/1024/1024);
+d346 8
+d362 1
+a362 1
+      printf("  Total free memory %dk",size/1024);
+d371 1
+a371 1
+
+d374 1
+a374 1
+    fprintf(f,"<a href=\"meminfo:\">Reload</a></center>\n");
+@
+
+
+1.1
+log
+@Added for first time.
+@
+text
+@d68 1
+a68 1
+    
+d82 1
+a82 1
+  
+d98 1
+a98 1
+  
+d103 1
+a103 1
+    
+d105 1
+a105 1
+    
+d112 1
+a112 1
+    
+d124 1
+a124 1
+    
+d136 1
+a136 1
+  
+d149 1
+a149 1
+  
+d157 1
+a157 1
+    printf("\n  Total memory %dMb\n",size/1024/1024);  
+d174 1
+a174 1
+      printf("  Total free memory info not available on this platform\n");  
+d185 2
+a186 2
+  
+exit_gracefully:  
+d190 1
+a190 1
+  
+d211 1
+a211 1
+  
+d218 1
+a218 1
+module_initialise(char *cmd_tail, int podule_base, void *pw)
+d230 1
+a230 1
+module_cmd_handler(char *arg_string, int argc, int cmd_no, void *pw)
+d233 1
+a233 1
+  
+@

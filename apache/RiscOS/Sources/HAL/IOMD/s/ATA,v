@@ -1,0 +1,475 @@
+head	1.5;
+access;
+symbols
+	IOMD-0_36:1.5
+	SMP:1.5.0.2
+	SMP_bp:1.5
+	IOMD-0_35:1.5
+	IOMD-0_34:1.5
+	IOMD-0_33:1.4
+	IOMD-0_32:1.4
+	IOMD-0_31:1.4
+	IOMD-0_30:1.4
+	IOMD-0_29:1.4
+	IOMD-0_28:1.4
+	IOMD-0_27:1.4
+	IOMD-0_26:1.4
+	IOMD-0_25:1.4
+	IOMD-0_24:1.3
+	IOMD-0_23:1.3
+	IOMD-0_22:1.3
+	IOMD-0_20:1.3
+	IOMD-0_19:1.3
+	IOMD-0_18:1.3
+	IOMD-0_17:1.3
+	IOMD-0_16:1.3
+	IOMD-0_15:1.3
+	IOMD-0_14:1.3
+	IOMD-0_13:1.3
+	IOMD-0_12:1.3
+	IOMD-0_11:1.3
+	IOMD-0_10:1.2
+	IOMD-0_09:1.1
+	IOMD-0_08:1.1
+	IOMD-0_07:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2016.01.05.21.52.59;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	ivRNyzwriH1I5NPy;
+
+1.4
+date	2013.03.28.21.48.44;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	4NAwCJkLkDe3DBJw;
+
+1.3
+date	2012.02.25.17.16.39;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	Dn81wPJ3GobPSyUv;
+
+1.2
+date	2011.07.18.22.35.07;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	wVUi11YAueRAM3sv;
+
+1.1
+date	2010.12.02.20.28.07;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Declare the presence of an IDE controller
+ATA.s:
+  Refactor to report a PATA IDE controller. Delete lots of junk left over from copying this from the Tungsten HAL.
+Boot.s:
+  Init the ATA device.
+  Report a HAL platform name string for OS_ReadSysInfo 9,7.
+Tested on a Risc PC.
+
+Version 0.34. Tagged as 'IOMD-0_34'
+@
+text
+@; Copyright 2010 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+
+        GET     Hdr:OSEntries
+        GET     Hdr:HALEntries
+        GET     Hdr:HALDevice
+        GET     Hdr:IDEDevice
+
+        GET     hdr.StaticWS
+
+        AREA    |Asm$$Code|, CODE, READONLY, PIC
+
+        EXPORT  IDEDevice_Init
+        IMPORT  memcpy
+
+                   ^ 0
+                   # HALDevice_IDESize  ; Public bits
+IDEDeviceHAL_SB    # 4
+IDEDevice_IDE_Size # 0
+
+IDEDevice_Init
+        Push    "lr"
+        ADRL    a1, IDEDeviceStruct
+        ADR     a2, IDEDeviceTemplate
+        MOV     a3, #IDEDevice_IDE_Size
+        BL      memcpy
+
+        STR     sb, [a1, #IDEDeviceHAL_SB]
+
+        MOV     a2, a1
+        MOV     a1, #0                  ; No flags
+        CallOS  OS_AddDevice
+        Pull    "pc"
+
+IDEDeviceTemplate
+        ; Public interface
+        DCW     HALDeviceType_ExpCtl + HALDeviceExpCtl_IDE
+        DCW     HALDeviceID_IDE_SMC37C66x
+        DCD     HALDeviceBus_Sys + HALDeviceSysBus_OPEN
+        DCD     &0000                   ; API version - 0.0
+        DCD     IDEDeviceDesc
+        DCD     0                       ; Address - N/A
+        %       12                      ; Reserved
+        DCD     IDE_Activate
+        DCD     IDE_Deactivate
+        DCD     IDE_Reset
+        DCD     IDE_Sleep
+        DCD     -1                      ; Device
+        DCD     0                       ; TestIRQ cannot be called
+        %       8
+        ; Specifics for an IDE controller
+        DCD     IDE_CableID
+        DCD     IDE_ControllerInfo
+        DCD     IDE_SetModes
+        ASSERT  (.-IDEDeviceTemplate) = HALDevice_IDESize
+        ; Controller's private data from here onwards
+        DCD     0                       ; Copy of HAL's SB
+        ASSERT  (.-IDEDeviceTemplate) = IDEDevice_IDE_Size
+        ASSERT  ?IDEDeviceStruct = IDEDevice_IDE_Size
+
+IDEDeviceDesc
+        DCB     "SMSC 37C665 IDE controller", 0
+        ALIGN
+
+IDE_Activate
+        MOV     a1, #1
+IDE_Deactivate
+IDE_Reset
+        MOV     pc, lr
+
+IDE_Sleep
+        MOV     a1, #0
+        MOV     pc, lr
+
+; size_t ControllerInfo(struct idedevice *ide,
+;                       int bus, union atainfo *info, size_t buflen)
+IDE_ControllerInfo
+        CMP     a2, #1                  ; bus limit
+        MOVHS   a1, #0
+        MOVHS   pc, lr
+
+        Push    "a3,a4,v1-v5,sb,lr"
+        LDR     sb, [a1, #IDEDeviceHAL_SB]
+        MOV     v5, a2                  ; v5 = Controller number
+
+        SUB     sp, sp, #12*4           ; construct on stack
+        MOV     v1, sp
+
+        MOV     a1, #2_1000             ; no 32-bit PIO, no 48-bit DMA
+        STR     a1, [v1], #4
+
+
+        ; Read command block address
+        LDR     a1, C710_Address
+        ADD     a1, a1, #0x00007c0
+
+        STR     a1, [v1], #4
+
+        ; Read control block address
+        LDR     a1, C710_Address
+        ADD     a1, a1, #0x0000fd0
+        STR     a1, [v1], #4
+
+        ; Read bus master address
+        MOV     a1, #0
+
+        STR     a1, [v1], #4
+
+        TEQ     v5, #0
+        MOV     a1, #9
+        MOV     a2, #2_1            ; PIO modes 0
+        MOV     a3, #0xff           ; No Multiword DMA modes
+        MOV     a4, #0xff           ; No Ultra DMA modes
+        STMIA   v1!, {a1-a4}
+
+        MOV     a1, #0xffffffff
+        MOV     a2, a1
+        MOV     a3, a1
+        MOV     a4, a1
+        STMIA   v1!, {a1-a4}
+
+        LDMIA   v1!, {a1,a3}            ; caller's buffer + length
+        CMP     a3, #12*4
+        MOVHI   a3, #12*4
+        MOV     a2, sp
+
+cplp    LDRB    v2,[a2],#1              ; copy in as much as possible
+        STRB    v2,[a1],#1
+        SUBS    a3,a3,#1
+        BNE     cplp
+
+        MOV     sp, v1
+
+        MOV     a1, #12*4               ; say how much we gave them
+        Pull    "v1-v5,sb,pc"
+
+; void SetModes(struct idedevice *ide,
+;               int bus, struct atamode *dev0, struct atamode *dev1)
+IDE_SetModes ROUT
+        CMP     a2, #1                  ; bus count
+        MOVHS   pc, lr
+
+        MOV     a1, #0xffffff00
+        ORRS    a3, a3, a3
+        STRNE   a1, [a3,#4]
+        ORRS    a4, a4, a4
+        STRNE   a1, [a4,#4]
+
+        MOV     pc, lr
+
+; bool CableID(struct idedevice *ide, int bus)
+IDE_CableID ROUT
+        MOV     a1, #0                  ; sensing unavailable
+        MOV     pc, lr
+
+        END
+@
+
+
+1.4
+log
+@Add Kinetic support
+Detail:
+  hdr/IOMD - Add definitions for the interesting bits of the Kinetic memory map
+  hdr/StaticWS - Add an extra flag to workspace for whether we're running on a Kinetic
+  s/Top - Add debug options for ignoring DRAM & ignoring the Kinetic card. Update startup code to add Kinetic card + SDRAM detection. Current code makes no attempt to configure the SDRAM timings and assumes the correct settings have been set via the DIP switches.
+  s/Boot - Update HAL_CleanerSpace, HAL_PhysInfo & HAL_InitDevices to cope with running on a Kinetic.
+  s/Post - Update POST routine register usage. Add experimental (disabled) code to not count a "SDRAM+VRAM but no DRAM" situation as a POST failure. The OS will boot in that configuration, but lack of DMA capable memory is troublesome.
+  s/ATA - Adjust the flags returned by HAL_ATAControllerInfo to match the comments. Although the old flags were technically wrong, this had no effect on function as the lack of DMA support meant they were never acted on by ADFS.
+Admin:
+  Tested in ROM softload on Kinetic RiscPC, and in RPCEmu
+  Note that if a Kinetic card is fitted, the IOMD DMA HAL devices won't be registered with the OS, as DMAManager isn't yet ready to cope with the possibility of DMA-incapable memory.
+
+
+Version 0.25. Tagged as 'IOMD-0_25'
+@
+text
+@a17 2
+        GET     Hdr:Machine.<Machine>
+        GET     Hdr:ImageSize.<ImageSize>
+d21 2
+d28 2
+a29 4
+        EXPORT  ATA_Init
+        EXPORT  HAL_ATAControllerInfo
+        EXPORT  HAL_ATASetModes
+        EXPORT  HAL_ATACableID
+d31 11
+a41 2
+ATA_Init
+        Push    "v1,v2,lr"
+d43 1
+a43 1
+        Pull    "v1,v2,pc"
+d45 49
+a93 2
+HAL_ATAControllerInfo
+        CMP     a1, #1
+d97 3
+a99 2
+        Push    "a2,a3,v1-v5,lr"
+        MOV     v5, a1                  ; v5 = Controller number
+d150 1
+a150 1
+        Pull    "v1-v5,pc"
+d152 4
+a155 4
+        ALIGN
+
+HAL_ATASetModes
+        CMP     a1, #1
+d158 1
+a158 5
+        Push    "v1-v5,lr"
+
+        MOV     v1, #0xffffff00
+        ORRS    a2, a2, a2
+        STRNE   v1, [a2,#4]
+d160 3
+a162 1
+        STRNE   v1, [a3,#4]
+d164 1
+a164 19
+        Pull    "v1-v5,pc"
+
+; Data timings are shared between PIO and multiword DMA, so need to select
+; timings that meet both the PIO and DMA requirements.
+
+;      Pulse time,recovery time (33MHz clocks)
+PIO_Data_Table
+        =       8,12    ; 240ns,360ns = 600ns cycle
+        =       5,8     ; 150ns,240ns = 390ns cycle (standard=383ns)
+        =       4,4     ; 120ns,120ns = 240ns cycle
+        =       3,3     ; 90ns,90ns   = 180ns cycle
+        =       3,1     ; 90ns,30ns   = 120ns cycle
+        ALIGN
+
+DMA_Data_Table
+        =       8,8     ; 240ns,240ns = 480ns cycle
+        =       3,2     ; 90ns,60ns   = 150ns cycle
+        =       3,1     ; 90ns,30ns   = 120ns cycle
+        ALIGN
+d166 3
+a168 15
+; Register values for PIO modes (no clash with DMA, so use raw)
+PIO_Reg_Table
+        =       &0C     ; 240ns,360ns = 600ns cycle (ATA spec says 290ns
+        =       &05     ; 240ns,150ns = 390ns cycle  pulse for modes 0-2
+        =       &03     ; 240ns,90ns  = 330ns cycle  but controller can't
+        =       &33     ; 90ns,90ns   = 180ns cycle  go that high)
+        =       &31     ; 90ns,30ns   = 120ns cycle
+        ALIGN
+
+PIO_Addr_Table
+        =       &03, &02, &01, &01, &01
+        ALIGN
+
+HAL_ATACableID
+        MOV     a1, #0
+a170 1
+
+@
+
+
+1.3
+log
+@Rewrite Makefile & RAM setup code. Remove/tidy other scripts. Add support for compressed ROMs, keyboard scan, HAL_Reset, HAL_MonitorLeadID and HAL_PhysInfo.
+Detail:
+  Makefile, MkClean,fd7, MkRom,fd7 - Rewritten
+  CopyIt,feb, CopyIt2,feb, CopyItKB,feb, GlueIt,feb, aif, bin, gpa, o - Deleted obsolete files/folders
+  s/Boot, s/Top - Moved image entry point from s/Boot to s/Top, to match other HALs. Rewritten RAM setup code to avoid poking dangerous registers during softloads, and to hopefully fix problems people have been having with some memory configurations.
+  c/cbits - C code for use during RAM initialisation. Examines the detected RAM banks to work out the optimal physical RAM layout and where to relocate the ROM image, taking into account any ROM compression.
+  s/ATA - Convert tabs to spaces for consistency. Fix conditional MOV pc,lr in HAL_ATACableID.
+  s/Boot - Added HAL_PhysInfo implementation, based around pre-HAL kernel code. Added HAL_Reset implementation, using similar code to the softload tool to disable the MMU and restart the ROM. Convert tabs to spaces for consistency.
+  s/Video, hdr/StaticWS - Added HAL_MonitorLeadID implementation, based around pre-HAL kernel code. Retab Video_init.
+  s/KbdScan, hdr/StaticWS - Added HAL_KbdScan_* implementation, based around pre-HAL kernel code.
+  s/NVRAM - Convert tabs to spaces for consistency
+  hdr/Copro15ops - ARMv3/v4 cache/TLB macros for use during HAL_Reset
+  hdr/IOMD - New header to pull together all the physical memory map definitions
+Admin:
+  Tested in IOMD ROM softload on RiscPC, plus as 'real' ROM under RPCEmu
+  New RAM setup code may be a bit buggy still
+
+
+Version 0.11. Tagged as 'IOMD-0_11'
+@
+text
+@a38 1
+        CMP     a1, #-1
+d49 1
+a49 1
+        MOV     a1, #2_0010             ; no 32-bit PIO, no 48-bit DMA
+@
+
+
+1.2
+log
+@Fix HAL_ControllerAddress clashing with OS_Memory 9
+Detail:
+  s/Boot - Changed the 82C710/SuperIO/SMC37C665/whatever to be controller #34 instead of controller #6. This stops it clashing with the tube ULA allocation, and matches the controller number that ROL are using.
+  s/ATA - Use C710_Address instead of a hardcoded offset from IOMD_Address
+Admin:
+  Tested in ROM softload on RiscPC
+
+
+Version 0.10. Tagged as 'IOMD-0_10'
+@
+text
+@d24 1
+a24 1
+        GET	hdr.StaticWS
+a27 3
+
+        ;IMPORT  memcpy
+
+d55 2
+a56 2
+	LDR	a1, C710_Address
+	ADD	a1, a1,	#0x00007c0
+d61 2
+a62 2
+	LDR	a1, C710_Address
+	ADD	a1, a1, #0x0000fd0
+d77 4
+a80 4
+	MOV	a1, #0xffffffff
+	MOV	a2, a1
+	MOV	a3, a1
+	MOV	a4, a1
+d88 4
+a91 5
+cplp    LDRB	v2,[a2],#1
+	STRB	v2,[a1],#1
+	SUBS	a3,a3,#1
+	BNE	cplp
+       ; BL      memcpy                  ; copy in as much as possible
+d106 1
+a106 1
+	MOV	v1, #0xffffff00
+d108 3
+a110 3
+	STRNE	v1, [a2,#4]
+	ORRS    a3, a3, a3
+	STRNE	v1, [a3,#4]
+d147 1
+a147 1
+        MOVHS   pc, lr
+@
+
+
+1.1
+log
+@  Added RPCEmu support
+Detail:
+  Not supplied
+Admin:
+  Changes by Tom Walker
+
+Version 0.07. Tagged as 'IOMD-0_07'
+@
+text
+@d58 1
+a58 1
+	LDR	a1, IOMD_Address
+a59 2
+	ADD	a1, a1, #0x0010000
+	SUB	a1, a1, #0x0200000
+d64 1
+a64 1
+	LDR	a1, IOMD_Address
+a65 2
+	ADD	a1, a1, #0x0010000
+	SUB	a1, a1, #0x0200000
+@
+

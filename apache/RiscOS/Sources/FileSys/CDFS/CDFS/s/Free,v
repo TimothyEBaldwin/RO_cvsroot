@@ -1,0 +1,364 @@
+head	4.5;
+access;
+symbols
+	CDFS-2_63:4.5
+	CDFS-2_62:4.5
+	CDFS-2_61:4.5
+	CDFS-2_60:4.4
+	CDFS-2_59:4.4
+	CDFS-2_58:4.4
+	CDFS-2_57:4.4
+	CDFS-2_56:4.3
+	CDFS-2_55:4.3
+	CDFS-2_54:4.3
+	CDFS-2_53:4.3
+	CDFS-2_52:4.2
+	CDFS-2_51:4.1
+	CDFS-2_50:4.1
+	CDFS-2_49:4.1
+	CDFS-2_48:4.1
+	RO_5_07:4.1
+	CDFS-2_47:4.1
+	CDFS-2_46:4.1
+	CDFS-2_45:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.5
+date	2013.08.15.14.25.03;	author rsprowson;	state Exp;
+branches;
+next	4.4;
+commitid	5ab0m7C1cVfMFy1x;
+
+4.4
+date	2013.03.29.11.04.32;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+commitid	LFLy3SDDryC52GJw;
+
+4.3
+date	2012.04.21.21.56.37;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	LsBEkd8YV89lDM1w;
+
+4.2
+date	2012.04.14.11.10.11;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+commitid	uK3bJtKbkWCvhP0w;
+
+4.1
+date	2002.11.26.17.24.30;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.5
+log
+@Add support for Joliet format CD-ROMs
+hdr/Hashes
+s/Directory
+s/EntryFile
+s/FileMan
+s/Filer
+s/Free
+ - mass search and replace of lots of poorly named definitions, removing unused ones, creating implicit ones
+hdr/MyMacros
+ - shuffle some registers in ConvertToArchyDate to save one temporary so it can be used for something else
+ - moved ReplaceBadCharacters here
+hdr/Options
+ - extra debug option
+s/DiscOp
+ - add Joliet, rename buffer indicies per hdr/Hashes
+ - the fallback filetype assignment (when neither the ARCHIMEDES system extension nor MimeMap can help) can now be overridden by setting CDFS$DefaultType (which defaults to &FFD)
+s/SWI
+ - remove DAT<->MPEG mapping from the internal mapping table
+s/Variables
+ - trim out unused SWI_buffer reservation
+
+Tested with valid ISO/Joliet/RockRidge supported combinations, documented in Docs/Combos, and accompanying test ISO images now stored there.
+Tested with CD-I format disc 'Jigsaw' from Britannica.
+Tested with High Sierra format disc 'Kings Quest V'.
+Tested with photo CD sampler from Kodak.
+
+Version 2.61. Tagged as 'CDFS-2_61'
+@
+text
+@; Copyright 2002 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+; Support code for the Free module
+;
+
+
+
+Free_Entry
+        TEQ     r0, #FreeReason_ComparePath
+        BEQ     Free_ComparePath ; special fast case
+
+        CMP     r0, #0
+        CMPNE   r0, #FreeReason_GetSpace64 + 1
+        Pull    "pc", HS        ; unsupported reason code
+
+        Pull    "r14"
+        PushAllWithReturnFrame
+
+        MOV     r1, #1          ; need a leading ':' character
+        LDRB    r0, [r3]
+        TEQ     r0, #':'        ; already has a leading ':'?
+        ADDEQ   r3, r3, #1
+01      LDRB    r0, [r3], #1
+        CMP     r0, #' '
+        ADDHI   r1, r1, #1
+        BHI     %BT01
+
+        LDR     r3, [sp, #3*4]
+        ADD     r2, r1, #1+3
+        BIC     r2, r2, #3
+        SUB     sp, sp, r2      ; make space on the stack for a copy of the device
+
+        MOV     lr, sp
+        LDRB    r0, [r3]
+        TEQ     r0, #':'
+        MOVNE   r0, #':'
+        STRNEB  r0, [lr], #1
+        SUBNE   r1, r1, #1
+02      SUBS    r1, r1, #1
+        LDRPLB  r0, [r3], #1
+        STRPLB  r0, [lr], #1
+        BPL     %BT02
+        MOV     r0, #0
+        STRB    r0, [lr]
+
+        MOV     r0, sp
+        BL      FindDriveNumber ; r1 = drive
+        ADD     sp, sp, r2      ; junk copy of device name
+        BVS     ErrorExit
+
+        MOV     r6, r1          ; r6 = drive number
+        LDMIA   sp, {r0-r3}     ; get original registers back
+
+        TEQ     r0, #FreeReason_GetName
+        BEQ     Free_GetName
+        TEQ     r0, #FreeReason_GetSpace
+        BEQ     Free_GetSpace
+;        TEQ     r0, #FreeReason_ComparePath
+;        BEQ     Free_ComparePath
+        TEQ     r0, #FreeReason_GetSpace64
+        BEQ     Free_GetSpace64
+
+        PullAllFromFrameAndExit
+
+;-----------------------------------------------------------------------
+; Free_GetName
+;
+; Put the name of the drive specified in r6 into the buffer at r2
+;
+Free_GetName ROUT
+        MOV     r3, r2          ; keep buffer pointer safe
+        MOV     r0, r6
+        BL      TestKnowDisc    ; r1 -> buffer for disc
+        BVS     ErrorExit
+        MOV     r0, #0
+        ADD     r1, r1, #DiscBuff_DiscName
+10      LDRB    r2, [r1], #1
+        ADD     r0, r0, #1
+        CMP     r2, #' '
+        STRHIB  r2, [r3], #1
+        BHI     %BT10
+        MOV     r2, #0
+        STRB    r2, [r3]        ; null-terminate just in case
+
+        PullAllFromFrameAndExit AL, 1
+
+;-----------------------------------------------------------------------
+; Free_GetSpace
+;
+; Put the free space on the drive specified in r6 into the buffer at r2
+;
+Free_GetSpace ROUT
+        BL      Free_GetSpace_Common
+        BVS     ErrorExit
+        TEQ     r1, #0
+        MOVNE   r0, #-1         ; use big number if doesn't fit in a word
+        MOV     r3, #0
+        MOV     lr, r0
+        STMIA   r2, {r0,r3,lr}  ; store disc size, free space, used space
+        PullAllFromFrameAndExit
+
+;-----------------------------------------------------------------------
+; Free_GetSpace64
+;
+; Put the free space on the drive specified in r6 into the buffer at r2
+;
+Free_GetSpace64 ROUT
+        BL      Free_GetSpace_Common
+        BVS     ErrorExit
+        MOV     r3, #0
+        MOV     r6, #0
+        MOV     r7, r0
+        MOV     lr, r1
+        STMIA   r2, {r0-r3,r6-r7,lr} ; store disc size, free space, used space
+        PullAllFromFrameAndExit
+
+Free_GetSpace_Common
+; On entry, r6 = drive
+; On exit,  r0,r1 are lsw,msw of disc size, r3,r7 corrupt
+        Push    "r14"
+        MOV     r0, r6
+        BL      PreConvertDriveNumberToDeviceID
+
+        SUBVC   sp, sp, #8
+        MOVVC   r0, #LBAFormat
+        MOVVC   r1, sp
+        SWIVC   XCD_DiscUsed
+        BVS     ErrorExit       ; flattens stack
+
+        Pull    "r1,r3"
+
+        MOV     r14, r1, LSL #16
+        MOV     r1, r1, LSR #16 ; r1 = mshw of block count
+        MOV     r0, r14, LSR #16 ; r0 = lshw of block count
+
+        MUL     r14, r1, r3
+        MUL     r0, r3, r0
+        MOV     r1, r14, LSR #16
+        ADDS    r0, r0, r14, LSL #16
+        ADC     r1, r1, #0
+        Pull    "pc"
+
+;-------------------------------------------------------------------------
+; Free_ComparePath
+;
+; Since we're a read-only filing system, we never need to update
+;
+Free_ComparePath ROUT
+        CMP     pc, #0
+        Pull    "pc"
+
+        END
+@
+
+
+4.4
+log
+@Fixes for ISO format DVDs
+The report for *CDDEVICES didn't line up properly for media > 999MB.
+Tentative fix for DVDs formatted with directories placed above the 4GB boundary.
+
+DiscOp.s: Preshift the directory block offset so it doesn't overflow for a DVD.
+Filer.s/Free.s: Use LBA definition instead of 0.
+Misc.s: Rework capacity display to handle up to 9999MB. Note, unlike OS_ConvertFileSize which rounds at 4096MB to 4GB we always express the result in MB.
+
+Tested with a selection of CDs and DVDs from 10MB to 4800MB, all line up nicely.
+The reporter of the directory issue, Steffen Huber, has been unable to test this change in time, but it should be low risk.
+
+Version 2.57. Tagged as 'CDFS-2_57'
+@
+text
+@d89 1
+a89 1
+        ADD     r1, r1, #DISCNAMEOFFSETINABUFFER
+@
+
+
+4.3
+log
+@Resolve the 32 assembler warnings
+Mostly by swapping STASH/GRAB for Push/Pull macros.
+Inlined the module header rather than defining it in a header file.
+Renamed "Debug" macro to "DebugInline" to avoid clash with similarly named macro.
+
+Version 2.53. Tagged as 'CDFS-2_53'
+@
+text
+@d138 1
+a138 1
+        MOVVC   r0, #0          ; LBA addressing mode
+@
+
+
+4.2
+log
+@Remove conflicting definitions from Hdr:Free
+Requires Free-0_41. Not tagged.
+
+Version 2.51. Not tagged
+@
+text
+@d27 1
+a27 1
+        GRAB    "pc", HS        ; unsupported reason code
+d29 2
+a30 2
+        GRAB    r14
+        STASHALL
+d76 1
+a76 1
+        GRABALLANDRETURN
+d98 1
+a98 1
+        GRABALLANDRETURNRESULTS 1
+d113 1
+a113 1
+        GRABALLANDRETURN
+d128 1
+a128 1
+        GRABALLANDRETURN
+d133 1
+a133 1
+        STASH   "r14"
+d143 1
+a143 1
+        GRAB    "r1,r3"
+d154 1
+a154 1
+        GRAB    "pc"
+d163 1
+a163 1
+        GRAB    "pc"
+@
+
+
+4.1
+log
+@  Nice new features.
+Detail:
+  * Reenabled BootFromCD option, and finished it off (so FSFunc_ReadBoot
+    returns 2 (Run) to match the enforced action on booting); booting
+    command line changed to "Run $.!BOOT"
+  * Added 32-bit and 64-bit ReadFreeSpace FSFunc entries
+  * Added support for interfacing with the Free module (so *ShowFree -FS CDFS
+    now works)
+  * Added missing * in syntax messags for *Lock and *Unlock
+Admin:
+  Tested on Tungsten.
+
+Version 2.45. Tagged as 'CDFS-2_45'
+@
+text
+@a18 4
+FreeReason_GetName     *  1
+FreeReason_GetSpace    *  2
+FreeReason_ComparePath *  3
+FreeReason_GetSpace64  *  4
+@
+

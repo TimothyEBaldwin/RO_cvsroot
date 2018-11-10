@@ -1,0 +1,425 @@
+head	1.7;
+access;
+symbols
+	Unicode-0_63:1.7
+	Unicode-0_62:1.7
+	Unicode-0_61:1.7
+	Unicode-0_60:1.7
+	Unicode-0_59:1.6
+	Unicode-0_58:1.6
+	Unicode-0_57:1.6
+	Unicode-0_56:1.6
+	Unicode-0_55:1.6
+	Unicode-0_54:1.6
+	RO_5_07:1.5
+	Unicode-0_53:1.5
+	Unicode-0_52:1.5
+	Unicode-0_51:1.5
+	Unicode-0_50:1.5
+	Unicode-0_49:1.5
+	Unicode-0_48:1.5
+	Unicode-0_47:1.5
+	Unicode-0_46:1.4
+	Unicode-0_45:1.3
+	dellis_autobuild_BaseSW:1.2
+	sbrodie_sedwards_16Mar2000:1.2
+	Unicode-0_44:1.2
+	dcotton_autobuild_BaseSW:1.4
+	Unicode-0_43:1.2
+	Unicode-0_42:1.2
+	Unicode-0_41:1.2
+	Unicode-0_40:1.1
+	Unicode-0_39:1.1
+	Unicode-0_38:1.1
+	Unicode-0_37:1.1
+	Unicode-0_36:1.1
+	Unicode-0_35:1.1
+	Unicode-0_34:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2013.01.06.22.32.08;	author jbell;	state Exp;
+branches;
+next	1.6;
+commitid	mXR1bDbpHeiotczw;
+
+1.6
+date	2005.08.25.11.57.08;	author kbracey;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2002.06.10.15.08.35;	author sbrodie;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.10.13.10.38.05;	author jberanek;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.10.05.14.46.35;	author jberanek;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.09.13.09.55.45;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.11.17.01.18;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Add encoding_read_in_multibyte_sequence API.
+Detail:
+  The new API allows the client to determine if a read codec has run
+  out of input in the middle of a multibyte sequence. This permits a
+  client to distinguish between the two cases in which no output
+  character is generated:
+
+    a) insufficient input has been provided to complete an output character
+    b) the input consisted of a complete multibyte sequence which generates
+       no output (e.g. an ISO-2022 shift sequence)
+Admin:
+  Tested using Iconv.
+
+
+Version 0.60. Tagged as 'Unicode-0_60'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* > enc_system.c */
+
+/**************************************************************************/
+/*                                                                        */
+/* Copyright [1997-2000] Pace Micro Technology PLC.  All rights reserved. */
+/*                                                                        */
+/* The copyright in this material is owned by Pace Micro Technology PLC   */
+/* ("Pace").  This material is regarded as a highly confidential trade    */
+/* secret of Pace.  It may not be reproduced, used, sold or in any        */
+/* other way exploited or transferred to any third party without the      */
+/* prior written permission of Pace.                                      */
+/**************************************************************************/
+
+#include <stdlib.h>
+
+#include "encpriv.h"
+
+#include "enc_utf8.h"
+#include "enc_system.h"
+
+typedef struct System_Encoding
+{
+    UTF8_Encoding ue;
+    char is_utf8;
+    const UCS4 *lookup;
+} System_Encoding;
+
+
+/*
+ * Routines for current system alphabet
+ * Number: 4999
+ * Names: x-System
+ *        x-Current
+ */
+
+static int system_reset(Encoding *e, int for_encoding)
+{
+    System_Encoding *se = (System_Encoding *) e;
+    int alphabet = encoding_current_alphabet();
+
+    if (enc_utf8.reset)
+        enc_utf8.reset(e, for_encoding);
+
+    if (alphabet == 111)
+    {
+        e->read = enc_utf8.read;
+        e->read_in_multibyte_sequence = enc_utf8.read_in_multibyte_sequence;
+        e->write = enc_utf8.write;
+    }
+    else
+    {
+        e->read = enc_system.read;
+        e->read_in_multibyte_sequence = enc_system.read_in_multibyte_sequence;
+        e->write = enc_system.write;
+        se->lookup = encoding_alphabet_ucs_table(alphabet);
+    }
+
+    return 1;
+}
+
+static unsigned int system_read(EncodingPriv *e,
+        		        encoding_read_callback_fn ucs_out,
+                                const unsigned char *s,
+                                unsigned int n,
+                                void *handle)
+{
+    System_Encoding *se = (System_Encoding *) e;
+    unsigned int count;
+
+    for (count = n; count; count--)
+    {
+        unsigned char c = *s++;
+        UCS4 u;
+
+        if (se->lookup)
+            u = se->lookup[(unsigned int)c];
+        else
+            u = c;
+
+        if (u == NULL_UCS4)
+            u = 0xFFFD;
+
+        if (ucs_out)
+            if (ucs_out(handle, u))
+            {
+                /* Character has been used, so ensure its counted */
+                count--;
+                break;
+            }
+    }
+
+    return n - count;
+}
+
+static int system_read_in_multibyte_sequence(EncodingPriv *e)
+{
+    return 0;
+
+    NOT_USED(e);
+}
+
+static int system_write(EncodingPriv *e, UCS4 u, unsigned char **s, int *bufsize)
+{
+    System_Encoding *se = (System_Encoding *) e;
+    int i, c = -1;
+
+    if (u == NULL_UCS4)
+	return 0;
+
+    if ( --(*bufsize) < 0 || !s)
+	return 0;
+
+retry:
+
+    if (se->lookup)
+    {
+        for (i = 0; i < 256; i++)
+            if (se->lookup[i] == u)
+            {
+                c = i;
+                break;
+            }
+    }
+    else if (u < 0x100)
+    {
+        c = u;
+    }
+
+    if (c == -1)
+    {
+        if (e->for_encoding == encoding_WRITE_STRICT)
+	    return -1;
+        else if (u == 0x0110)
+        {
+            u = 0x00D0;
+            goto retry;
+        }
+        else
+            c = '?';
+    }
+
+    (*s)[0] = c;
+    (*s)++;
+    return 1;
+}
+
+static void system_delete(EncodingPriv *e)
+{
+    if (enc_utf8.delete_enc)
+        enc_utf8.delete_enc(e);
+}
+
+EncodingPriv enc_system =
+{
+    system_read,
+    system_read_in_multibyte_sequence,
+    system_reset,
+    sizeof(System_Encoding) - sizeof(EncodingPriv),
+    system_delete,
+    0,
+    system_write,
+    0,
+    0,
+    0
+};
+@
+
+
+1.6
+log
+@* Added support for ISO 6937:2001, and the variant with Euro used by DVB.
+  (This isn't integrated with ISO 2022 processing though - it's standalone).
+* Added a Dstroke -> Eth second-attempt conversion in various write routines,
+  primarily for ISO 6937 -> Latin1 conversion (ISO 6937 unifies them).
+
+Version 0.54. Tagged as 'Unicode-0_54'
+@
+text
+@d61 1
+d67 1
+d109 7
+d170 1
+@
+
+
+1.5
+log
+@  Merge of bug fixes from NCBrowser tree.
+Detail:
+  Buffer overrun fixed; some buffer counting problems fixed too.  There is
+    now helpful initialisation and tidyup routines you can call too (called
+    encoding_initialise and encoding_tidyup)
+Admin:
+  I've built this with cc 5.45 in basic build environment - it built OK.
+  This source code now matches that in NCBrowser 5.28.
+
+
+Version 0.47. Tagged as 'Unicode-0_47'
+@
+text
+@d118 2
+d138 5
+@
+
+
+1.4
+log
+@  More syncronisation with Unicode lib in branched tree
+Detail:
+  Added some changes from Unicode lib in branched tree.  All basically
+   type changes.  This appears to be because other compilers are
+   more picky about types than armcc.
+
+Admin:
+  Will add 0.46 VersionNum file into branched tree, and all will be
+   syncronised fully.
+
+
+Version 0.46. Tagged as 'Unicode-0_46'
+@
+text
+@d74 1
+a74 1
+          		        encoding_read_callback_fn ucs_out,
+d97 3
+d101 1
+@
+
+
+1.3
+log
+@  Copyright message changes + changes from branch + Unified
+   branched/non-branched builds
+Detail:
+  Copyright messages changed from E-14 to Pace throughout, filename
+   placed at top of file throughout, instead of in just some files.
+
+  Merged branch's fixes into our code base, plus made it possible to
+   get nice debug output in branched tree, and vfprintf() to stderr in
+   RISC OS tree.  Exactly same source used in branched tree now (apart
+   from OS specific files riscos.c and unix.c moving into layers
+   directory structure).
+
+Admin:
+  Built for branched, both Unix and RISC OS.
+  Built in RISC OS tree, and compiled into TextConv.
+
+
+Version 0.45. Tagged as 'Unicode-0_45'
+@
+text
+@d75 1
+a75 1
+                                const char *s,
+d84 1
+a84 1
+        char c = *s++;
+d103 1
+a103 1
+static int system_write(EncodingPriv *e, UCS4 u, char **s, int *bufsize)
+@
+
+
+1.2
+log
+@SCSU encoder made aware of SIP (Supplementary Plane for Unified CJK Ideographs).
+UTF-8 encoder handles out-of-space conditions correctly.
+ISO 2022 encoder/decoder doesn't try to load table 7E (the null table).
+encoding_new() does identify a null MIME string with auto-detect Japanese.
+UnicodeData 3.0.0 imported.
+
+Version 0.41. Tagged as 'Unicode-0_41'
+@
+text
+@d15 12
+a26 9
+/************************************************************************/
+/*                  Copyright 1997-1999 Element 14 Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Element 14 Ltd.  It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Element 14 Ltd.  All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+d88 1
+a88 1
+            u = se->lookup[c];
+d154 4
+a157 1
+    system_write
+@
+
+
+1.1
+log
+@Implemented SCSU and UTF-7.
+Added encoding_set_flags().
+Proper handling of byte order marks in UTF-16 and UCS-4.
+Fixed UTF-16 surrogate writing.
+Adjusted various MIME charset identifiers.
+Incorporated latest Unicode Character Database (2.1.8).
+Added "current system alphabet" encoding.
+Created "TextConv" command line character set conversion utility.
+
+Version 0.34. Tagged as 'Unicode-0_34'
+@
+text
+@d15 10
+@

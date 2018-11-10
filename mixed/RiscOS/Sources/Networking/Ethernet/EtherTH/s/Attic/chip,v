@@ -1,0 +1,1910 @@
+head	1.3;
+access;
+symbols
+	EtherTH-0_25:1.2
+	EtherTH-0_24:1.1.1.1
+	EtherTH-0_23:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2017.03.11.00.12.59;	author jballance;	state dead;
+branches;
+next	1.2;
+commitid	EKCvCR7DacKJ24Jz;
+
+1.2
+date	2017.01.20.01.38.45;	author jballance;	state Exp;
+branches;
+next	1.1;
+commitid	3lTPDaiEJQlR7ECz;
+
+1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+1.1.1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+
+desc
+@@
+
+
+1.3
+log
+@    Convert to C based component with import of re-written module form Colin Granville
+Detail:
+Admin:
+    tested in iMx6
+
+Version 0.26. Tagged as 'EtherTH-0_26'
+@
+text
+@; Copyright 2016 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+
+
+
+
+;       chip specific routines
+
+; Read Phy registers through the MII interface
+; on entry:
+;    wp-> modules private word
+;    r1 = phy number
+;    r2 = phy register
+; on exit
+;    r0 = register contents, or -1 if timed out
+EtherTHMIIPhyRead
+        Entry   "r1, r2, r3, r4, r8, r9"
+        ldr     r4, ChipBase                    ; point to ethernet chip
+; DebugRegNCR r1, "PhyRD num "
+; DebugReg r2, "PhyRD register "
+;       ldr     r0, [r4, #HW_ENET_EIR_ADDR]
+;        tst    r0, #BIT_ENET_EIR_MII
+        ldr     r3, =&60020000                 ; frame read, start, and turnaround bits
+        orr     r1, r3, r1, lsl #BIT_ENET_MMFR_PA
+        orr     r1, r1, r2, lsl #BIT_ENET_MMFR_RA
+; DebugReg r2, "PhyRD register "
+        mov     r2, #100                        ; 100 uS max wait
+        mov     r0, #BIT_ENET_EIR_MII
+        str     r0, [r4, #HW_ENET_EIR_ADDR]     ; clear any pending MII bit
+        str     r1, [r4, #HW_ENET_MMFR_ADDR]    ; write out the read command
+
+1       ldr     r0, [r4, #HW_ENET_EIR_ADDR]     ; check the response
+        tst     r0, #BIT_ENET_EIR_MII
+        beq     %ft11                           ; lets us do debug print
+        mov     r0, #BIT_ENET_EIR_MII
+        str     r0, [r4, #HW_ENET_EIR_ADDR]     ; clear pending MII bit
+        ldr     r0, [r4, #HW_ENET_MMFR_ADDR]    ; read data
+        mov     r0, r0, lsl #16
+        mov     r0, r0, lsr #16                 ; clear top bits
+; DebugReg r0, "          Read "
+        EXIT
+11
+        mov     r0, #1                          ; 1uS delay
+        bl      HAL_CounterDelay
+        subs    r2, r2, #1
+        bge     %bt1
+        mov     r0, #BIT_ENET_EIR_MII
+        str     r0, [r4, #HW_ENET_EIR_ADDR]     ; clear any pending MII bit
+        mov     r0, r2                          ; if we get here, return -1
+; DebugReg r0, "PhyRd exit fail "
+        EXIT
+
+; on entry:
+;    wp-> modules private word
+;    r1 = phy number
+;    r2 = phy register
+;    r3 = data to write
+; on exit
+;    r0 = 0, or -1 if timed out
+EtherTHMIIPhyWrite
+        Entry   "r1, r2, r3, r4, r8, r9"
+; DebugReg r2, "PhyWr register "
+; DebugReg r3, "PhyWr     data "
+        ldr     r4, ChipBase                    ; point to ethernet chip
+;       ldr     r0, [r4, #HW_ENET_EIR_ADDR]
+;        tst    r0, #BIT_ENET_EIR_MII
+;        mov    r0, #BIT_ENET_EIR_MII
+;       str     r0, [r4, #HW_ENET_EIR_ADDR]     ; clear any pending MII bit
+        ldr     lr, =&50020000                 ; frame write, start, and turnaround bits
+        orr     r1, lr, r1, lsl #BIT_ENET_MMFR_PA
+        orr     r1, r1, r2, lsl #BIT_ENET_MMFR_RA
+        mov     r3, r3, lsl #16
+        orr     r1, r1, r3, lsr #16                     ; clear top bits
+        mov     r2, #100                        ; 100 uS max wait
+        mov     r0, #BIT_ENET_EIR_MII
+        str     r0, [r4, #HW_ENET_EIR_ADDR]     ; clear any pending MII bit
+        str     r1, [r4, #HW_ENET_MMFR_ADDR]    ; write out the write command
+
+1       ldr     r0, [r4, #HW_ENET_EIR_ADDR]     ; check the response
+        tst     r0, #BIT_ENET_EIR_MII
+        movne   r0, #BIT_ENET_EIR_MII
+        strne   r0, [r4, #HW_ENET_EIR_ADDR]     ; clear pending MII bit
+        movne   r0, #0                          ; good exit
+        EXIT    NE
+        mov     r0, #1                          ; 1uS delay
+        bl      HAL_CounterDelay
+        subs    r2, r2, #1
+        bge     %bt1
+        mov     r0, #BIT_ENET_EIR_MII
+        str     r0, [r4, #HW_ENET_EIR_ADDR]     ; clear any pending MII bit
+        mov     r0, r2                          ; if we get here, return -1
+; DebugReg r0, "PhyWr exit fail "
+        EXIT
+;
+; identify connected phy and return its ID
+; on entry
+;    wp-> modules private word
+;    r1 = phy address (0 or 1)
+; on exit
+;    r0 =  -1 if phy not located, else 0 if OK
+; takes speed, duplex, autoneg from the default settings in ram
+PhyInit
+        Entry   "r2, r3, r4, r8, r9"
+; first hardware reset the phy chip
+        ldr     r4, ChipBase
+        ldr     r2, = PhyRstOffset
+        ldr     r0, [r4, r2]
+        bic     r0, r0, #PhyResetBit
+        str     r0, [r4, r2]
+        mov     r0, #1000                        ; 1000uS delay
+        bl      HAL_CounterDelay
+        ldr     r0, [r4, r2]
+        orr     r0, r0, #PhyResetBit
+        str     r0, [r4, r2]
+        mov     r0, #1000                        ; 100uS delay
+        bl      HAL_CounterDelay
+
+; first lets see what we can find
+; DebugReg r1, "Phy addr "
+        mov     r2, #PHY_IDENTIFY_1
+        bl      EtherTHMIIPhyRead
+        cmn     r0, #1
+        EXIT    EQ                              ; -1 reply
+        mov     r3, r0, lsl #16
+        mov     r2, #PHY_IDENTIFY_2
+        bl      EtherTHMIIPhyRead
+        cmn     r0, #1
+        EXIT    EQ                              ; -1 reply
+        mov     r0, r0, lsl #16
+        orrne   r0, r3, r0, lsr #16             ; combine
+        bic     r0, r0, #&f
+; DebugReg r0, "Phy ID found "
+        str     r0, PhyIDFound
+; reset the phy
+        mov     r2, #PHY_CTRL_REG
+        bl      EtherTHMIIPhyRead
+; DebugReg r0, "Phy rd1a "
+        cmn     r0, #1
+        EXIT    EQ                              ; -1 reply
+; DebugReg r0, "Phy rd1 "
+        orr     r3, r0, #PHY_CTRL_RESET
+        mov     r2, #PHY_CTRL_REG
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #PHY_CTRL_REG
+4       bl      EtherTHMIIPhyRead
+        cmn     r0, #1
+        EXIT    EQ                              ; -1 reply (16 bit)
+        tst     r0, #PHY_CTRL_RESET             ; reset bit still set?
+; DebugReg r0, "Phy rd2 "
+        bne     %bt4
+        orr     r3, r0, #PHY_CTRL_FULL_DPLX +PHY_CTRL_AUTO_NEG
+        mov     r2, #PHY_CTRL_REG
+        bl      EtherTHMIIPhyWrite
+; now device specific init
+        ldr     r0, PhyIDFound
+; DebugReg r0, "Phy rd3 "
+        adr     r3, KnownPhyType
+        adr     lr, MorePhyInit
+1       ldr     r2, [r3]
+        teq     r2, r0
+        ldreq   r3, [r3, #4]
+2       addeq   pc, pc, r3
+        adds    r2, r2, #1
+        addne   r3, r3, #8
+        bne     %bt1
+; OOPS.. Phy not known about
+; DebugReg r0, "Phy ID not recognised "
+        mvn     r0,  #0                 ; make it -1 for failure
+        EXIT                            ; and exit
+
+MorePhyInit
+; DebugReg r1, "Phy ID now running "
+; compute and remember phy irq bit location
+; hardware specific bodge
+;!!!!!
+        ldr     r3, =(&2188000-&209c008)        ; offset to GPIO1 pas status reg
+        sub     r4, r4, r3
+        str     r4, PhyIrqAddr
+        mov     r0, #0                          ; flag OK
+        EXIT
+; PHYs we know something about
+KnownPhyType
+        DCD     PHY_LAN8700_ID
+        DCD     Init_PHY_LAN8700-8-%bt2
+        DCD     PHY_LAN8720_ID
+        DCD     Init_PHY_LAN872-8-%bt2
+        DCD     PHY_AR8031_ID
+        DCD     Init_PHY_AR8031-8-%bt2
+        DCD     PHY_KSZ9021RN_ID
+        DCD     Init_PHY_KSZ9021RN-8-%bt2
+        DCD     -1                     ; -1 for list end
+; r1 = phy number (0 or 1)
+Init_PHY_LAN8700
+        Entry
+; DebugReg r0, "Phy ID LAN8700 found "
+        EXIT
+; r1 = phy number (0 or 1)
+Init_PHY_LAN872
+        Entry
+; DebugReg r0, "Phy ID LAN872 found "
+        EXIT
+; r1 = phy number (0 or 1)
+Init_PHY_KSZ9021RN
+        Entry
+; DebugReg r0, "Phy ID KSZ9021RN found "
+        mov     r2, #&09
+        mov     r3, #&1c00
+        bl      EtherTHMIIPhyWrite
+        ; r0 = 0 if ok
+        mov     r2, #&0b
+        ldr     r3, =&8105
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #&0c
+        mov     r3, #&00
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #&0b
+        ldr     r3, =&8104
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #&0c
+        ldr     r3, =&f0f0
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #&0b
+        ldr     r3, =&104
+        bl      EtherTHMIIPhyWrite
+        EXIT
+; r1 = phy number (0 or 1)
+Init_PHY_AR8031
+        Entry
+; DebugTX "AR8031 Phy found "
+        mov     r2, #PHY_CHIP_CONF
+        mov     r3, #&8400              ; force copper mode
+        bl      EtherTHMIIPhyWrite
+        ldrb    r3, EN_Speed
+        ldrb    lr, EN_Duplex
+        add     r3, r3, lr, lsl #2
+;  DebugReg r3,"Sp_Dup_to set "
+        mov     lr, r3
+        ; default it to auto
+        ldr     r3, = PHY_CTRL_AUTO_NEG+PHY_CTRL_FULL_DPLX+PHY_CTRL_1000M
+        ; now check the fixed settings
+        teq     lr, #&5
+        moveq   r3, #PHY_CTRL_10M
+        teq     lr, #&6
+        moveq   r3, #PHY_CTRL_100M
+        teq     lr, #&7
+        moveq   r3, #PHY_CTRL_1000M
+        teq     lr, #&9
+        moveq   r3, #PHY_CTRL_10M+PHY_CTRL_FULL_DPLX
+        teq     lr, #&a
+        moveq   r3, #PHY_CTRL_100M+PHY_CTRL_FULL_DPLX
+        teq     lr, #&b
+        moveq   r3, #PHY_CTRL_1000M+PHY_CTRL_FULL_DPLX
+;  DebugReg r3,"setting phy_ctrl to "
+
+        mov     r2, #PHY_CTRL_REG
+        bl      EtherTHMIIPhyWrite
+
+        ldr     r3, =&01e0              ; phy autoneg_adv reg default
+                                        ; (10base + 100base full and half duplex)
+        mov     r2, #PHY_AUTONEGADV_REG
+        bl      EtherTHMIIPhyWrite
+        ldr     r3, =&2001              ; phy nextpagetx reg default
+        mov     r2, #PHY_NEXTPAGETX_REG
+        bl      EtherTHMIIPhyWrite
+        ldr     r3, =&0300              ; (1000base full and half duplex)
+        mov     r2, #PHY_GB_CTRL_REG
+        bl      EtherTHMIIPhyWrite
+        ldr     r3, =&066               ; (auto xover all modes.. etc)
+        mov     r2, #PHY_SP_CTRL_REG
+        bl      EtherTHMIIPhyWrite
+
+        mov     r2, #PHY_STATUS_REG     ; reg (why??)
+        bl      EtherTHMIIPhyRead
+; DebugRegNCR r0, "phy status-"
+; DebugReg r1, "phy-"
+; set phy to output a 125MHz clock on the clk25m line to the mac
+        mov     r2, #PHY_MMD_ACC_CTRL_REG
+        mov     r3, #&07                ; address mmd device 7
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #PHY_MMD_ACC_DATA_REG
+        ldr     r3, =&8016              ; set address to 8016 CLK25MClk_Sel
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #PHY_MMD_ACC_CTRL_REG
+        ldr     r3, =&4007              ; mmd device 7 set for data, no post incr
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #PHY_MMD_ACC_DATA_REG
+        bl      EtherTHMIIPhyRead
+        bic     r0, r0, #&1c            ; clear speed bits
+        orr     r3, r0, #&18            ; 125MHzOP from local pll source
+        mov     r2, #PHY_MMD_ACC_DATA_REG
+        bl      EtherTHMIIPhyWrite     ; and write back modified
+; bl    EtherTHMIIPhyRead
+; DebugReg r0, "SpeedPhyRead "
+; introduce a tx clk delay
+        mov     r2, #PHY_DBG_OFFSET            ; debug port look at reg
+        mov     r3, #PHY_DBG_SERDES_REG        ; 5
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #PHY_DBG_DATA              ; read it
+        bl      EtherTHMIIPhyRead
+        cmn     r0, #1
+        EXIT    EQ                              ; -1 reply
+        orr     r3, r0, #&100                   ; enable 2ns clock delay
+        mov     r2, #PHY_DBG_DATA               ; write it
+        bl      EtherTHMIIPhyWrite
+
+        mov     r2, #PHY_STATUS_REG     ; reg (why??)
+        bl      EtherTHMIIPhyRead
+; DebugRegNCR r1, "Phy-"
+; DebugReg r0, "status-"
+
+        mov     r2, #PHY_INT_SRC_REG            ; reg (why??)
+        bl      EtherTHMIIPhyRead
+; DebugRegNCR r0, "phy irq init status-"
+; enable the phy link_success irq
+        mov     r2, #PHY_INT_EN_REG
+        mov     r3, #(3<<10) + (3<<14) + (3<<7)
+;       ldr     r3, =&fffe                      ; almost all irqs in phy
+        bl      EtherTHMIIPhyWrite
+        mov     r2, #PHY_INT_EN_REG
+        bl      EtherTHMIIPhyRead
+; DebugReg r0, " Enable bits set- "
+        mov     r2, #PHY_INT_SRC_REG            ; clear any phy irq that be there
+        bl      EtherTHMIIPhyRead
+; DebugReg r0, " INT Status ..at end "
+
+        EXIT
+
+;ChkPhyInt
+;       Entry   "r0-r3"
+;       adrl    r2, EtherTHDevice
+;        ldr    r2, [r2, #HALDevice_ENET_IRQTAddr]
+;        ldr    r2, [r2]        ; read the irq active register
+; DebugRegNCR r2, "phyirqpin-"
+;
+;       EXIT
+
+; Read Phy status
+; r1 = phy number
+ReadPhyStatus
+        Entry
+        ldr     r0, PhyIDFound
+        adr     r3, KnownPhyTypeStatus
+        adr     lr, MorePhyStatus
+1       ldr     r2, [r3]
+        teq     r2, r0
+        ldreq   r3, [r3, #4]
+2       addeq   pc, pc, r3
+        adds    r2, r2, #1
+        addne   r3, r3, #8
+        bne     %bt1
+; OOPS.. Phy not known about
+; DebugReg r0, "Phy ID  not recognised "
+        sub     r0, r2, #1              ; make it -1
+        EXIT                            ; and exit
+
+; Configure Phy speed and duplex
+;
+; r4 = Unit (only unit 0 ATM)
+; r5 = speed. 0=Auto, 1=10, 2 = 100, 3 = 1000
+; r6 = 1 if speed specific and half duplex or 2 if full
+;
+PhySpDupCfg
+        Entry   "r12"
+        ldr     r12, [r12]
+; DebugReg r4, "Unit "
+; DebugReg r5, "Speed "
+        strb    r5, EN_Speed
+; DebugReg r6, "duplex "
+        strb    r6, EN_Duplex
+
+        adrl    r2, EtherTHDevice
+        ldr     r1, HAL_SB
+        mov     r0, #0                  ; disable
+        adr     lr, %ft2
+        ldr     pc, [r2, #HALDevice_ENET_Phy_IRQ_En]
+2       add     r1, r4, #1              ; get phy num
+        bl      PhyInit
+        adrl    r2, EtherTHDevice
+        ldr     r1, HAL_SB
+        mov     r0, #1                  ; enable phy irq
+        adr     lr, %ft2
+        ldr     pc, [r2, #HALDevice_ENET_Phy_IRQ_En]
+2
+
+
+
+
+;2
+;       mov     r2, #PHY_SP_STATUS_REG
+;        bl     EtherTHMIIPhyRead
+;        cmn    r0, #1          ; eq if failed
+;        beq    %ft1            ; failed
+;; DebugReg r0, "Phystatus "
+;        tst    r0, #PHY_SP_STATUS_SPSET
+;        beq    %bt2
+;       and     r0, r0, #PHY_SP_STATUS_SPMASK
+;       teq     r0, #PHY_SP_STATUS_1GB  ; gigabit link?
+;       ldr     r4, ChipBase
+;       ldr     r0, [r4, #HW_ENET_ECR_ADDR]
+;       bic     r0, r0, #1<<5   ; gigabit set bit
+;       orreq   r0, r0, #1<<5
+;       str     r0, [r4, #HW_ENET_ECR_ADDR]
+; DebugReg r0, "ECR Set for yes/no GB "
+;1
+
+        EXIT
+
+;
+
+
+MorePhyStatus
+        EXIT
+; PHYs we know something about
+KnownPhyTypeStatus
+        DCD     PHY_LAN8700_ID
+        DCD     Status_PHY_LAN8700-8-%bt2
+        DCD     PHY_LAN8720_ID
+        DCD     Status_PHY_LAN872-8-%bt2
+        DCD     PHY_AR8031_ID
+        DCD     Status_PHY_AR8031-8-%bt2
+        DCD     PHY_KSZ9021RN_ID
+        DCD     Status_PHY_KSZ9021RN-8-%bt2
+        DCD     -1                     ; -1 for list end
+
+
+Status_PHY_LAN8700
+        Entry
+; DebugReg r1, "LAN8700 status unit "
+        EXIT
+Status_PHY_LAN872
+        Entry
+; DebugReg r1, "LAN872 status unit "
+        EXIT
+Status_PHY_AR8031
+        Entry
+; DebugReg r1, "AR8031 status unit "
+        EXIT
+Status_PHY_KSZ9021RN
+        Entry
+; DebugReg r1, "KSZ9021RN status unit "
+        EXIT
+
+        LTORG
+
+
+; Initialise ethernet chip
+; on entry
+;    wp-> modules private word
+;    r1 = phy address (0 or 1)???
+; on exit
+;
+ChipInit
+        Entry   "r0, r1, r2, r3, r4, r5, r8, r9, r12"
+; first ensure chip is disabled
+        bl      SilenceChip                     ; returns r4->chip
+
+; claim RAM for the rx and tx buffer chains and for tx queue
+
+        mov     r0, #PCIRAMSize
+        mov     r1, #&20                        ; buffer alignment
+        mov     r2, #0                          ; no mem addressing constraint
+; DebugReg r0, "circbuf_rq size  "
+        str     r2, CircBuf_Log                 ; logical address
+        str     r2, CircBuf_Phys                ; physical address
+        swi     XPCI_RAMAlloc
+        EXIT    VS                              ; claim failed
+; DebugReg r0, "circbuf_Log  "
+; DebugReg r1, "circbuf_Phys "
+
+        str     r0, CircBuf_Log                 ; logical address
+        str     r1, CircBuf_Phys                ; physical address
+        sub     r2, r0, r1
+        str     r2, CircBuf_Phy2Log             ; remember difference
+        ldr     r3, = RXPktStore
+        add     r3, r3, r0
+        str     r3, RxBufferOffset              ; remember address of start
+; DebugReg r3, "rxb logical "
+                                                ; of logical tx buffer space
+        ldr     r3, = TXPktStore
+        add     r3, r3, r0
+        str     r3, TxBufferOffset              ; remember address of start
+                                                ; of logical tx buffer space
+; DebugReg r3, "txb logical "
+; now initialise these descriptors
+; tx first
+; the loop is created, but all descriptors are left as not ready
+; thus transmitter wont be worried that there is no data
+        str     r1, [r4, #HW_ENET_TDSR_ADDR]    ; base of tx desc ring
+        mov     r2, #0
+        str     r2, TXQueueP                    ; no queued tx stuff
+        str     r2, FirstTXBufOfst              ; remember first unused tx buffer offset
+        str     r2, FirstRXBufOfst              ; remember first unused rx buffer offset
+        str     r0, StartTXBuf                  ; remember base of list
+        add     r2, r0, #(EnetBufDescSize*EnetTXBufs)
+        str     r2, StartRXBuf                  ; remember base of list
+        ldr     r2, =0 + (EnetBDtxLast<<16)
+        ldr     r5, CircBuf_Phy2Log             ; remember difference
+        sub     r3, r3, r5                      ; compute physical txbuffer addresses
+; DebugReg r5, "phy2log "
+; DebugReg r3, "txb phys "
+        mov     r5, #EnetTXBufs
+1       subs    r5, r5, #1
+        orreq   r2, r2, #EnetBDtxWrap<<16
+        str     r2, [r0, #EnetBDLen]
+        str     r3, [r0, #EnetBDPtr]
+        add     r1, r1, #EnetBufDescSize
+        add     r0, r0, #EnetBufDescSize
+        add     r3, r3, #ENET_TxBufMax
+        bne     %bt1                            ; fill out all the tx descs
+
+; rx next .. buffers follow on immediately
+        adrl    r8, RXBufMbuf                   ; store of mbuf segments
+; DebugReg r8, "RXMbufpBuf "
+        sub     r8, r8, r0                      ; compute offset between them
+        str     r8, Desc2Mbufp                  ; remember
+; DebugReg r8, "Desc2Mbufp "
+        str     r1, [r4, #HW_ENET_RDSR_ADDR]    ; base of rx desc ring
+        mov     r5, #EnetRXBufs
+        ldr     r2, =0 + (EnetBDrxMty<<16)
+2       subs    r5, r5, #1
+        orreq   r2, r2, #EnetBDrxWrap<<16
+        str     r2, [r0, #EnetBDLen]
+        str     r3, [r0, #EnetBDPtr]
+        add     r1, r1, #EnetBufDescSize
+        add     r0, r0, #EnetBufDescSize
+        add     r3, r3, #ENET_RxBufMax
+        bne     %bt2                            ; fill out all the rx descs
+
+; the loop is created, but all descriptors are left as not empty
+; thus receiver wont be worried that there is nowhere to put data
+        mov     r3, #0
+        str     r3, LastTXBDUsed                ; init last address to be completed
+; DebugReg r3, "stored last used desc addr "
+; DebugReg r12,"using r12 "
+        str     r3, TXMBRelease                 ; no free list
+        mov     r5, #EnetRXBufs
+        adrl    r8, RXBufMbuf                   ; store of mbuf segments
+2       subs    r5, r5, #1
+        str     r3, [r8, #EnetBDLen]    ; and store the null pointer first wrd
+        str     r3, [r8, #EnetBDPtr]    ; and store the null pointer 2nd word
+        add     r8, r8, #EnetBufDescSize
+        bgt     %bt2                            ; fill out all the rx mbps
+
+
+        ldr     r1, [sp, #4]                    ; recover r1 (r1) off stack
+
+        ldr     lr, =ENET_Max_FL
+        str     lr, RXMaxFL
+
+        ldr     r0, [r4, #HW_ENET_RCR_ADDR]
+
+        ldr     lr, =&3f + (&3ff*BIT_ENET_RCR_MAX_FL)
+        bic     r0, r0, lr
+
+        ldr     lr, =ENET_Max_FL*BIT_ENET_RCR_MAX_FL
+        orr     r0, r0, lr                      ; max fl to place
+
+        orr     r0, r0, #(BIT_ENET_RCR_RGMII_EN)+(BIT_ENET_RCR_FCE)+(BIT_ENET_RCR_MII) ;+(BIT_ENET_RCR_PROM)
+        ; should end up 100 baset mode
+        str     r0, [r4, #HW_ENET_RCR_ADDR]
+        ldr     r0, [r4, #HW_ENET_TCR_ADDR]
+        orr     r0, r0, #(BIT_ENET_TCR_FDEN )
+        bic     r0, r0, #(BIT_ENET_TCR_CRCFWD + BIT_ENET_TCR_ADDSEL+ BIT_ENET_TCR_ADDINS )
+        bic     r0, r0, #(BIT_ENET_TCR_GTS + BIT_ENET_TCR_TFC_PAUSE)
+        str     r0, [r4, #HW_ENET_TCR_ADDR]
+
+; turn on diagnostic stats
+        ldr     r0, [r4, #HW_ENET_MIBC_ADDR]
+        bic     r0, r0, #(1<<BIT_ENET_MIBC_DIS)
+        str     r0, [r4, #HW_ENET_MIBC_ADDR]
+        ldr     r3, =EnetPauseLen +(EnetInterPkt<<16)
+        ldr     r2, =EnetRxSecFull+(EnetRxAmty<<8)+(EnetRxAfull<<16)+(EnetRxSecMty<<24)
+        bl      SetThresholds
+        mov     r0, #&100                       ; tx store and forward enable,
+                                                ; whole frame to fifo before tx
+;        mov    r0, #&24                        ; tx store and forward disable,
+                                                ; &600 bytes before mac start
+        str     r0, [r4, #HW_ENET_TFWR_ADDR]
+        mov     r0, #&0                         ; (* 8 bytes) (0=never)
+        str     r0, [r4, #HW_ENET_TSEM_ADDR]    ; tx section empty
+        mov     r0, #&4                         ; min for AEM is 4
+        str     r0, [r4, #HW_ENET_TAEM_ADDR]    ; tx almost empty
+        mov     r0, #&4                         ; min 4 (*8) bytes space to full
+        str     r0, [r4, #HW_ENET_TAFL_ADDR]    ; tx almost full
+        mov     r0, #1                          ; tx shift 16 bit
+        str     r0, [r4, #HW_ENET_TACC_ADDR]    ; set
+        ldr     r0, =ENET_Max_FL                ; rx max truncate length
+        str     r0, [r4, #HW_ENET_FTRL_ADDR]    ; set
+
+
+        mov     r0, #0
+        str     r0, [r4, #HW_ENET_IAUR_ADDR]
+        str     r0, [r4, #HW_ENET_IALR_ADDR]
+        str     r0, [r4, #HW_ENET_GAUR_ADDR]
+        str     r0, [r4, #HW_ENET_GALR_ADDR]
+
+        mov     r0, #BIT_ENET_RACC_SHIFT16      ; ask 2 xtra bytes to get payload word alignment
+                                                ; + BIT_ENET_RACC_PADREM
+        str     r0, [r4, #HW_ENET_RACC_ADDR]
+
+        adrl    r0, dib_enetaddr
+        ldrb    r2, [r0, #3]
+        ldrb    r1, [r0, #2]
+        orr     r2, r2, r1, lsl #8
+        ldrb    r1, [r0, #1]
+        orr     r2, r2, r1, lsl #16
+        ldrb    r1, [r0, #0]
+        orr     r2, r2, r1, lsl #24
+        str     r2, [r4, #HW_ENET_PALR_ADDR]
+; DebugReg r2, "dibeth lo "
+
+        ldrb    r2, [r0, #4]
+        mov     r2, r2, lsl #24
+        ldrb    r1, [r0, #5]
+        orr     r2, r2, r1, lsl #16
+        str     r2, [r4, #HW_ENET_PAUR_ADDR]
+; DebugReg r2, "dibeth hi "
+
+
+        ldr     r0, =499999
+        ldr     r1, ChipClock
+; DebugReg r1, "Clock from hald "
+        add     r1, r1, r0
+        ldr     r0, =5000000
+        bl      udivide
+; DebugReg r0, "resultant Clock  "
+
+        ldr     r1, [r4, #HW_ENET_MSCR_ADDR]
+        bic     r1, r1, #&7e
+        orr     r1, r1, r0, lsl #1
+        str     r1, [r4, #HW_ENET_MSCR_ADDR]
+
+        adrl    r1, EtherTHDevice
+        ldr     r0, [r1, #HALDevice_ENET_Phy_Device]
+        orr     r0, r0, #1<<31          ; pass to other possible claimants
+        adr     r1, EtherTH_PhyIRQHandler
+        mov     r2, r12
+        swi     XOS_ClaimDeviceVector
+        EXIT    VS
+        adrl    r1, EtherTHDevice
+        ldr     r0, [r1, #HALDevice_ENET_Phy_Device]
+        mov     r8, #0
+        mov     r9, #EntryNo_HAL_IRQEnable
+        Push    "r1-r3"
+        swi     XOS_Hardware
+        Pull    "r1-r3"
+;  claim the IRQ vector
+
+
+
+        adrl    r1, EtherTHDevice
+        ldr     r0, [r1, #HALDevice_Device]
+        orr     r0, r0, #1<<31          ; pass to other possible claimants
+        adrl    r1, EtherTH_IRQHandler
+        mov     r2, r12
+        swi     XOS_ClaimDeviceVector
+        EXIT    VS
+
+        adrl    r1, EtherTHDevice
+        ldr     r0, [r1, #HALDevice_Device]
+        mov     r8, #0
+        mov     r9, #EntryNo_HAL_IRQEnable
+        Push    "r1-r3"
+        swi     XOS_Hardware
+        Pull    "r1-r3"
+        ldr     r0, =BIT_ENET_EIR_TXF+BIT_ENET_EIR_RXF
+        str     r0, [r4, #HW_ENET_EIMR_ADDR]    ; enable tx and rx irqs
+
+; set buffer descriptors needs doing. descriptors OK.. no data bufs though
+;        mov    r0, #0                          ; flag to scan all from 0 round
+;       mov     r1, #EnetRXBufs                 ; fill all bufs
+;       str     r1, LastRXBDRead                ; huge, so it rolls around
+;       bl      RefillRXMbufs                   ; get/replace mbufs for all buffer descriptors
+        ldr     r0, =(ENET_RxBufMax - RxDataAlign)
+        str     r0, [r4, #HW_ENET_MRBR_ADDR]    ; set total max rx buffersize to
+                                                ; ethernet max packet
+
+; initialise the frame claim buffer space
+        adrl    r5, FrameClIEEE
+        mov     r1, #ClaimBufSize*(MaxClaimedFrames+1)
+        mov     r0, #0
+10      subs    r1, r1, #4
+        strge   r0, [r5, r1]
+        bgt     %bt10
+; now link the MaxClaimedFrames of claim bufs to the free list
+        mov     r1, #MaxClaimedFrames
+        adrl    r2, FrameClaims
+        adrl    r3, FrameClaimsFree
+11      str     r2, [r3]
+        mov     r3, r2
+        add     r2, r2, #ClaimBufSize
+        subs    r1, r1, #1
+        bgt     %bt11
+        str     r1, [r3]                        ; terminate list with a null
+
+        mov     r2, #10                         ; up tp 10 goes at initting...
+2       mov     r1, #EtherTHPhyNum
+        bl      PhyInit
+; DebugReg r0, "Phy initted"
+        cmn     r0, #1                          ; -1 exit?
+        bne     %ft1
+        subs    r2, r2, #1
+        bgt     %bt2                            ; have another go
+
+1
+; then finally etheren needs setting
+        mov     r0, #BIT_ENET_ECR_ETHEREN+BIT_ENET_ECR_BYTESWP
+        str     r0, [r4, #HW_ENET_ECR_ADDR]     ; enable the device
+; and write the receive trigger register to set the enable bit
+        mov     r5, #HW_ENET_RDAR_GO
+        str     r5, [r4, #HW_ENET_RDAR_ADDR]    ; trigger chip to receive
+
+; now enable phy irqs
+        mov     r0, #1
+        adrl    r2, EtherTHDevice
+        ldr     r1, HAL_SB
+        adr     lr, %ft1
+        ldr     pc, [r2, #HALDevice_ENET_Phy_IRQ_Clear]
+1
+        adrl    r2, EtherTHDevice
+        ldr     r1, HAL_SB
+        mov     r0, #1                  ; enable
+        adr     lr, %ft2
+        ldr     pc, [r2, #HALDevice_ENET_Phy_IRQ_En]
+2
+        EXIT
+
+;
+; r2 = RSFL  << 0
+;    + RAEM  << 8
+;    + RAFL  << 16
+;    + RSEM  << 24
+; r3 = PauseDuration
+;    + TIPG  << 16
+SetThresholds
+        Entry   "r0,r1,r4"
+        ldr     r4, ChipBase                    ; point to ethernet chip
+        and     r0, r2, #&ff                    ; (* 8 bytes) (0 = whole thing)
+        str     r0, [r4, #HW_ENET_RSFL_ADDR]    ; rx section full
+        mov     r0, r2, lsr #8
+        and     r0, r0, #&ff                    ; (* 8 bytes)
+        str     r0, [r4, #HW_ENET_RAEM_ADDR]    ; rx almost empty
+        mov     r0, r2, lsr #16
+        and     r0, r0, #&ff                    ; (* 8 bytes)
+        str     r0, [r4, #HW_ENET_RAFL_ADDR]    ; rx almost full
+        mov     r0, r2, lsr #24
+        and     r0, r0, #&ff                    ; (* 8 bytes)
+        str     r0, [r4, #HW_ENET_RSEM_ADDR]    ; rx section empty
+        mov     r0, r3, lsr #16
+        and     r0, r0, #&1f                    ; min 8, max 27
+        str     r0, [r4, #HW_ENET_TIPG_ADDR]    ; set
+        mov     r0, r3, lsl #16
+        mov     r0, r0, lsr #16
+        str     r0, [r4, #HW_ENET_OPD_ADDR]     ; * 512bit periods
+        EXIT
+GetThresholds
+        Entry   "r0,r1,r4"
+        ldr     r4, ChipBase                    ; point to ethernet chip
+        ldr     r2, [r4, #HW_ENET_RSEM_ADDR]    ; rx section empty
+        ldr     r0, [r4, #HW_ENET_RAFL_ADDR]    ; rx almost full
+        orr     r2, r0, r2, lsl #8
+        ldr     r0, [r4, #HW_ENET_RAEM_ADDR]    ; rx almost empty
+        orr     r2, r0, r2, lsl #8
+        ldr     r0, [r4, #HW_ENET_RSFL_ADDR]    ; rx section full
+        orr     r2, r0, r2, lsl #8
+        ldr     r3, [r4, #HW_ENET_OPD_ADDR]     ; * 512bit periods
+        bic     r3, r3, #&10000                 ; clear the opcode bit
+        ldr     r0, [r4, #HW_ENET_TIPG_ADDR]    ;
+        orr     r3, r3, r0, lsl #16
+        EXIT
+        LTORG
+
+; get a free claim buf
+; on entry r12-> PWP
+; on exit r0->FrameClaimBuf or null if none available
+GetFrameClaimBuf
+        Entry   "r1, r2, r3"
+        adrl    r1, FrameClaimsFree
+        ldr     r0, [r1]                        ; any there?
+; DebugReg r0, "gfb r0 "
+        teq     r0, #0                          ; yes if NE
+        ldrne   r3, [r0]                        ; get its next ptr
+        strne   r3, [r1]                        ; hook that at head of freelist
+        movne   r3, #0
+        strne   r3, [r0]                        ; null the next ptr of this buf
+; now add it to the used list
+        adrl    r1, FrameClaimsUsed
+        ldr     r2, [r1]                        ; any there?
+        str     r0, [r1]                        ; put this at head
+        strne   r2, [r0]                        ; link the rest
+        EXIT
+
+; return a used claim buf
+; on entry r12-> PWP
+; on entry r0->FrameClaimBuf to be freed
+FreeFrameClaimBuf
+        Entry   "r1, r2, r3"
+        adrl    r1, FrameClaimsUsed
+1       ldr     r2, [r1]
+        teq     r2, #0
+        EXIT    EQ                              ; it wasnt used
+        teq     r2, r0                          ; our buf?
+        movne   r1, r2
+        bne     %bt1
+; r1-> preceeding buf address
+        ldr     r2, [r0]
+        str     r2, [r1]
+; put this at head of free list
+        adrl    r1, FrameClaimsFree
+        ldr     r2, [r1]                        ; any there?
+        str     r0, [r1]                        ; put this at head
+        strne   r2, [r0]                        ; link the rest
+        EXIT
+
+; brute force silence the ethernet chip to avoid possible activity
+; as we enter reset
+ChipKillFromService
+        Entry   "r0, r1, r2, r4, r12"
+        ldr     r12, [r12]
+        ldr     r4, ChipBase                    ; point to ethernet chip
+        mov     r0, #BIT_ENET_ECR_RESET
+        str     r0, [r4, #HW_ENET_ECR_ADDR]     ; reset chip
+        adrl    r2, EtherTHDevice
+        ldr     r1, HAL_SB
+        mov     r0, #0                  ; disable
+        adr     lr, %ft2
+        ldr     pc, [r2, #HALDevice_ENET_Phy_IRQ_En]
+2
+        EXIT
+
+; ensure chip is reset, and return r4/r4=ChipBase
+SilenceChip
+        Entry   "r1, r2, r8, r9"
+        adrl    r2, EtherTHDevice
+        ldr     r1, HAL_SB
+        mov     r0, #0                  ; disable
+        adr     lr, %ft2
+        ldr     pc, [r2, #HALDevice_ENET_Phy_IRQ_En]
+2
+;       adrl    r2, EtherTHDevice
+        ldr     r0, [r2, #HALDevice_ENET_Phy_Device]
+        mov     r8, #0
+        mov     r9, #EntryNo_HAL_IRQDisable
+        Push    "r1-r3"
+        swi     XOS_Hardware
+        Pull    "r1-r3"
+
+;       adrl    r2, EtherTHDevice
+        ldr     r0, [r2, #HALDevice_ENET_Phy_Device]
+        orr     r0, r0, #1<<31          ; pass to other possible claimants
+        adr     r1, EtherTH_PhyIRQHandler
+        mov     r2, r12
+        swi     XOS_ReleaseDeviceVector
+
+        adrl    r1, EtherTHDevice
+        ldr     r0, [r1, #HALDevice_Device]
+        mov     r8, #0
+        mov     r9, #EntryNo_HAL_IRQDisable
+        Push    "r1-r3"
+        swi     XOS_Hardware
+        Pull    "r1-r3"
+
+        adrl    r1, EtherTHDevice
+        ldr     r0, [r1, #HALDevice_Device]
+        orr     r0, r0, #1<<31          ; pass to other possible claimants
+        adr     r1, EtherTH_IRQHandler
+        mov     r2, r12
+        swi     XOS_ReleaseDeviceVector
+
+        ldr     r4, ChipBase                    ; point to ethernet chip
+        mov     r0, #BIT_ENET_ECR_RESET
+        str     r0, [r4, #HW_ENET_ECR_ADDR]     ; reset chip
+
+1       mov     r0, #2                          ; 2uS delay
+        bl      HAL_CounterDelay
+        ldr     r0, [r4, #HW_ENET_ECR_ADDR]
+        tst     r0, #BIT_ENET_ECR_RESET
+        bne     %bt1                            ; wait till acknowledged
+
+        mov     r0, #0                          ; mask all IRQs
+        str     r0, [r4, #HW_ENET_EIMR_ADDR]
+        sub     r0, r0, #1
+        str     r0, [r4, #HW_ENET_EIR_ADDR]     ; and flush any IRQ bits set
+        EXIT
+
+;Turn off ethernet chip, and release any resources claimed
+; specifically for the chip
+ChipKill
+        Entry   "r0, r1, r2, r3, r4, r5, r9,r12"
+; switch chip off
+        bl      SilenceChip
+
+; free off any MBufs in use
+        adrl    r4, RXBufMbuf                   ; store of mbuf segments
+        mov     r5, #EnetRXBufs+1               ; +1 allows for the tx chain too
+        mov     r1, #0
+        mov     r2, #0
+; adrl  r3, TXMBRelease                 ; anything mbufs pending on tx?
+; DebugReg r3, "TXMBRelease "
+; DebugReg r12, "r12 "
+        ldr     r1, TXMBRelease                 ; anything mbufs pending on tx?
+; DebugReg r1, "tx stuff? "
+        b       %ft3
+1       ldr     r1, [r4], #8
+; DebugReg r3, "read "
+; DebugReg r1, "r1 "
+; DebugReg r2, "          r2 "
+3
+; DebugReg r1, "Mbufs to release "
+        mov     r9, r12                 ; preserve r12/ip- free call corrupts it
+        teq     r1, #0
+        ldrne   r0, MBufSession         ;  is what we define against
+        adrne   lr, %ft22
+        ldrne   pc, [r0, #freem-mbufctlstruct]   ; free any left over mbufs
+22      mov     r12, r9
+        subs    r5, r5, #1
+        bgt     %bt1
+
+; get rid of our extra storage
+        ldr     r0, CircBuf_Log                 ; logical address
+; DebugReg r0, "Freeing PCI ram "
+        teq     r0, #0
+        swine   XPCI_RAMFree                    ; free any ram claimed
+
+        EXIT
+
+;
+EtherTH_PhyIRQHandler                           ; don't corrupt R0,R3 if
+        adrl    r2, EtherTHDevice
+        ldr     r1, [r2, #HALDevice_ENET_Phy_IRQTMask]
+        ldr     r2, [r2, #HALDevice_ENET_Phy_IRQTAddr]
+        ldr     r2, [r2]        ; read the irq active register
+        ands    r1, r2, r1      ;
+        moveq   pc, lr          ; not us, hand on
+;
+; active irq routine
+        MSR     CPSR_c, #I32_bit + SVC32_mode   ; svce mode irq off
+        DMB
+        Push    "r0-r4,r8-r9,lr"        ; inc svce mode lr
+; r2 = irq reg contents,
+; r1 = irqactive bits
+; DebugReg r1, "PhyIRQ---"
+        adrl    r3, EtherTHDevice
+        ldr     r0, [r3, #HALDevice_ENET_Phy_IRQTAddr]
+        str     r1, [r0]        ; acknowledge those active bits
+
+        ldr     r0, [r3, #HALDevice_ENET_Phy_Device]
+        mov     r8, #0                          ; 0 = call routine in r9
+        mov     r9, #EntryNo_HAL_IRQClear
+        Push    "r1-r3"
+        swi     XOS_Hardware
+        Pull    "r1-r3"
+; bl ChkPhyInt
+        mov     r1, #1          ; we've only got 1 phy here
+        mov     r2, #PHY_INT_SRC_REG
+        bl      EtherTHMIIPhyRead
+; DebugRegNCR r0, "PhyIRQrqbits "
+        cmn     r0, #1          ; eq if failed
+        beq     phyirqdone
+
+;       mov     r3, r0
+;        bl     EtherTHMIIPhyWrite      ; to acknowledge in phy?
+;       tst     r0, #1<<10              ; link up irq?
+;       EXIT    EQ
+        mov     r1, #1          ; we've only got 1 phy here
+        mov     r2, #PHY_SP_STATUS_REG
+        bl      EtherTHMIIPhyRead
+        cmn     r0, #1          ; eq if failed
+        beq     phyirqdone      ; failed
+; DebugReg r0, "Phystatusr "
+;       tst     r0, #1<<15      ; gigabit link?
+        and     r0, r0, #PHY_SP_STATUS_SPMASK
+; DebugReg r0, "Phystatusr2 "
+        teq     r0, #PHY_SP_STATUS_1GB
+        ldr     r4, ChipBase
+        ldr     r0, [r4, #HW_ENET_ECR_ADDR]
+        bic     r0, r0, #1<<5   ; gigabit set bit
+        orreq   r0, r0, #1<<5
+        str     r0, [r4, #HW_ENET_ECR_ADDR]
+; DebugReg r0, "PhyIRQSet ECR "
+phyirqdone
+
+; DebugTX "PhyIRQ-end"
+
+        Pull    "r0-r4,r8-r9,lr"           ; regs + svce mode lr
+        DMB
+        MSR     CPSR_c, #I32_bit + IRQ32_mode       ; back to irq32 mode
+        Pull    "pc"
+
+;
+EtherTH_IRQHandler
+        ldr     r1, ChipBase                    ; point to ethernet chip
+        ldr     r2, [r1, #HW_ENET_EIR_ADDR]     ; don't corrupt R0,R3 if
+        teq     r2, #0                          ; passing on
+        moveq   pc, lr                          ; not this irq src .. pass it on
+        MSR     CPSR_c, #I32_bit + SVC32_mode   ; svce mode irq off
+        DMB
+        Push    "r0, r4,r5,r6,r7,r8, r9, lr"   ; inc svce mode lr
+        mov     r4, r1
+        ldr     r3, [r4, #HW_ENET_EIMR_ADDR]    ; as we are in enet irq
+        mov     r5, #0
+        str     r5, [r4, #HW_ENET_EIMR_ADDR]    ; dont let anu more irqs in for now
+        str     r3, EthIRQMask
+; acknowledge the irq
+        adrl    r1, EtherTHDevice
+        ldr     r0, [r1, #HALDevice_Device]
+        Push    "r2,r12"
+        ldr     r9, HAL_SB
+        mov     lr, pc
+        ldr     pc, HAL_IRQClear_p              ; n.b. r0-r3 corrupted
+        Pull    "r2,r12"
+;        mov     r8, #0                          ; 0 = call routine in r9
+;        mov     r9, #EntryNo_HAL_IRQClear
+;       Push    "r1-r3"
+;        swi     XOS_Hardware
+;       Pull    "r1-r3"
+; at this point r2 = EIR contents
+; r3 = EIMR value in use
+1       ands    r2, r2, r3                      ; only clear irqs that can
+        beq     EthIrqDone                      ; its not interrupting
+        MSR     CPSR_c, # SVC32_mode            ; svce mode irq on again
+
+; we've got an acceptable irq ... process it
+; r2 = active irq bits
+EthIrqNotDone
+        str     r2, [r4, #HW_ENET_EIR_ADDR]     ; clear all active irq bits
+; dispatch the interrupts
+; bl ChkPhyInt
+        tst     r2, #BIT_ENET_EIR_TXF
+        blne    ENET_EIR_TX
+;       tst     r2, #BIT_ENET_EIR_TXB
+;       blne    ENET_EIR_TXB
+;       tst     r2, #BIT_ENET_EIR_BABR
+;       blne    ENET_EIR_BABR
+;       tst     r2, #1BIT_ENET_EIR_BABT
+;       blne    ENET_EIR_BABT
+;       tst     r2, #BIT_ENET_EIR_GRA
+;       blne    ENET_EIR_GRA
+        tst     r2, #BIT_ENET_EIR_RXF
+        blne    ENET_EIR_RX
+;       tst     r2, #BIT_ENET_EIR_RXB
+;       blne    ENET_EIR_RXB
+;       tst     r2, #BIT_ENET_EIR_MII
+;       blne    ENET_EIR_MII
+;       tst     r2, #BIT_ENET_EIR_EBERR
+;       blne    ENET_EIR_EBERR
+;       tst     r2, #BIT_ENET_EIR_LC
+;       blne    ENET_EIR_LC
+;       tst     r2, #BIT_ENET_EIR_RL
+;       blne    ENET_EIR_RL
+;       tst     r2, #1BIT_ENET_EIR_UN
+;       blne    ENET_EIR_UN
+;       tst     r2, #BIT_ENET_EIR_PLR
+;       blne    ENET_EIR_PLR
+;       tst     r2, #BIT_ENET_EIR_WAKEUP
+;       blne    ENET_EIR_WAKEUP
+;       tst     r2, #BIT_ENET_EIR_TS_AVAIL
+;       blne    ENET_EIR_TS_AVAIL
+;       tst     r2, #BIT_ENET_EIR_TS_TIMER
+;       blne    ENET_EIR_TS_TIMER
+
+; check for more interrupts
+        ldr     r3, EthIRQMask
+        ldr     r2, [r4, #HW_ENET_EIR_ADDR]     ;
+
+; at this point r2 = EIR contents
+; r3 = EIMR value in use
+        ands    r2, r2, r3                      ; only check irqs that can
+        bne     EthIrqNotDone                   ; its  interrupting
+; at this point r3 = mask register contents to restore
+EthIrqDone
+        MSR     CPSR_c, #I32_bit + SVC32_mode   ; svce mode irq off again
+        str     r3, [r4, #HW_ENET_EIMR_ADDR]    ; let it interrupt again
+        DMB
+        Pull    "r0,r4,r5,r6,r7,r8,r9,lr"       ; regs + svce mode lr
+        MSR     CPSR_c, #I32_bit + IRQ32_mode   ; back to irq32 mode
+        Pull    "pc"
+
+
+; IRQ handler routines
+ENET_EIR_TX
+        Entry   "r2, ip"
+; DebugReg r2, "ENET_EIR_TXF/B irq bits "
+        ldr     r0, LastTXBDUsed        ; recover last used descr
+; DebugReg r0, "LastTXBDUsed "
+        ldr     r0, [r0, #EnetBDLen]
+; DebugReg r0, "tx at irq descr flags there "
+        tst     r0, #EnetBDtxRdy<<16
+        EXIT    NE                      ; not reached yet
+        mrs     r7, CPSR
+        bic     r1, r7, #I32_bit
+        msr     CPSR_c, r1              ; irqs off if on
+        ldr     r1, TXMBRelease
+        mov     r0, #0
+        str     r0, TXMBRelease
+        msr     CPSR_c, r7              ; previous irq state
+        teq     r1, #0
+        beq     %ft22
+; DebugReg r1, "tx free chain "
+        ldr     r0, MBufSession         ;  is what we define against
+        adr     lr, %ft22
+        ldr     pc, [r0, #freem-mbufctlstruct]                ; free the mbuf
+22
+; Debug Reg r0, "free addr done "
+        EXIT
+;
+; Ethernet frame interrupt
+ENET_EIR_RX
+        Entry   "r0-r12"
+; buffers are filled by chip sequentially from where last filled.
+; to simplify, check whole buffer loop from start.
+        mov     r6, #0                  ; buffer number
+        ldr     r2, StartRXBuf          ; descriptors
+        mov     r0, #BIT_ENET_EIR_RXF       ; flush this rx frame irq
+        str     r0, [r4, #HW_ENET_EIR_ADDR] ;
+
+checkrxdescloop
+        DMB                             ; to be sure ALL is synced/available
+        ldr     r0, [r2, #EnetBDLen]    ; length and flags (in first word)
+        tst     r0, #EnetBDrxMty<<16    ; check flags
+        beq     gotadesc                ; buffer has been used by chip
+
+loopcheck
+        add     r6, r6, #1              ; next buffer
+        add     r2, r2, #EnetBufDescSize; and next descriptor
+        cmp     r6, #EnetRXBufs         ;
+        blt     checkrxdescloop
+
+; empirical tests suggest a delay of around 120uS here is beneficial. I wonder
+; what else we could do instead of just killing time???
+        mov     r0, #120                ; 120uS delay
+        bl      HAL_CounterDelay
+        DMB_Write                       ; ensure descriptor writes complete
+        mov     r0, #HW_ENET_RDAR_GO    ; done .. restart receiver
+        str     r0, [r4, #HW_ENET_RDAR_ADDR];
+        EXIT
+
+gotadesc
+; this buffer has been filled
+; check if frame is claimed.. if not, just reset the buffer available bit
+; ..1 get frame type
+        ldr     r9, [r2, #EnetBDPtr]
+        ldr     lr, CircBuf_Phy2Log
+        add     r9, r9, lr              ; rxbuffer logical address
+
+        ldr     r9, [r9, #12]           ; type etc in top 2 bytes
+        and     r10, r9, #&ff0000
+        mov     r9, r9, lsr #24
+        add     r9, r9, r10, lsr #8
+; DebugRegNCR r9, " rxfr "
+; 2.. now is it claimed?
+; r9 is frame type/size
+        ldr     lr, RXMaxFL
+        cmp     r9, lr                  ; ieee frame, or type
+        bgt     %ft15                   ; not an IEEE frame
+; 3.. check claim on ieee frame
+        adrl    r11, FrameClIEEE
+        ldr     r10, [r11, #FrameClHandler]
+        teq     r10, #0
+        beq     fullbufabandon          ; not needed
+; check claim conditions IEEE
+        b       checkclaim              ; go check claim conditions
+
+; 4.. its a type field .. see if we have a claimant
+; once a FrameClType = 0, then we've got to the end of the list
+15      adrl    r11, FrameClaimsUsed
+18      ldr     r11, [r11]
+        teq     r11, #0                 ; end of list
+        beq     fullbufabandon          ; abandon
+        ldr     r10, [r11, #FrameClType]
+        teq     r10, r9
+        bne     %bt18                   ; its not our frame type
+
+checkclaim
+; 5.. found our frame type, .. check conditons
+; r11 -> claim buffer
+; r9  =  frame type
+; r1  -> mbuf
+; r0 = flags word.. preserve if not claimed
+; r2 -> relevant rx descriptor address
+; r2, r4, r6 preserve
+; derive claim flags
+; assuming rx pkt is error free, check BC and MC bits
+        mov     r10, #0                 ; set for specific level
+        tst     r0, #EnetBDrxBC<<16     ; broadcast?
+        movne   r10, #1
+        tst     r0, #EnetBDrxMC<<16     ; Multicast?
+        movne   r10, #2
+; DebugReg r10, "addr level got "
+; claimed.. capture it
+; DebugReg r0, "Claimed "
+; r11 -> claimbuf wanting it
+; r0 = descriptor flags word
+; r2 -> relevant rx descriptor address
+; preserve r2,  r4, r6, r7
+; build header info, correct mbuf ptr, and launch back
+        mov     r3, r0
+        ldr     r1, [r2, #EnetBDLen]
+        mov     r1, r1, lsl #16
+        mov     r1, r1, lsr #16
+ [ (16-RxDataAlign)<>0
+        sub     r1, r1, #16-RxDataAlign ; actual length required for the data
+                                        ; + allowance for alignment poss done
+                                        ; in claim routine
+ ]
+        bl      ClaimRXBufferChain      ; returns r0=logical addr, r1=physical
+        mov     r1, r0
+        mov     r0, r3
+        teq     r1, #0                  ; valid pointer returned?
+        beq     panicabandon            ; no mbuf ptr OOPS!
+
+; DebugReg r1, "mbp-got "
+        Push    "r2, r6"
+        ldr     r3, [r2, #EnetBDPtr]
+        ldr     lr, CircBuf_Phy2Log
+        add     r3, r3, lr              ; rxbuffer logical address
+        add     r3, r3, #2              ; skip first 2 bytes as align16
+; now build the header mbuf
+        ldr     r10, [r1, #mbdoffset-mbufstruct]    ; header data buffer
+        add     r10, r10, r1            ; packet data buffer
+        mov     lr, #0
+        str     lr, [r10, #RXHPtr-RXHdr]
+        str     lr, [r10, #RXHTag-RXHdr]
+        str     lr, [r10, #RXHDest+4-RXHdr]    ; last 2 bytes padded to null
+        str     lr, [r10, #RXHErrl-RXHdr]
+        ldrb    lr, [r3], #1            ; copy dest address
+        ldrb    r5, [r3], #1
+        orr     lr, lr, r5, lsl #8
+        ldrb    r5, [r3], #1
+        orr     lr, lr, r5, lsl #16
+        ldrb    r5, [r3], #1
+        orr     lr, lr, r5, lsl #24
+        str     lr, [r10, #RXHDest-RXHdr]
+        str     lr, LastDestAddr
+        ldrb    lr, [r3], #1            ; copy Dest address
+        ldrb    r5, [r3], #1            ;
+        orr     lr, lr, r5, lsl #8
+        str     lr, [r10, #RXHDest+4-RXHdr]
+        str     lr, LastDestAddr+4
+        ldrb    lr, [r3], #1            ; copy src address
+        ldrb    r5, [r3], #1
+        orr     lr, lr, r5, lsl #8
+        ldrb    r5, [r3], #1
+        orr     lr, lr, r5, lsl #16
+        ldrb    r5, [r3], #1
+        orr     lr, lr, r5, lsl #24
+        str     lr, [r10, #RXHSrce-RXHdr]
+        str     lr, LastSrcAddr
+        ldrb    lr, [r3], #1            ; copy srce address
+        ldrb    r5, [r3], #1            ;
+        orr     lr, lr, r5, lsl #8
+        str     lr, [r10, #RXHSrce+4-RXHdr]
+        str     lr, LastSrcAddr+4
+        ldrb    lr, [r3], #1            ; copy frame type
+        ldrb    r5, [r3], #1
+        orr     r5, r5, lr, lsl #8
+        str     r5, [r10, #RXHFrame-RXHdr]
+;; DebugReg r5, "frame "
+;       tst     r0, #EnetBDrxBC<<16     ; broadcast?
+;       adrne   r5, bcaddr
+;       bne     %ft45                   ; copy destination as broadcast
+;       tst     r0, #EnetBDrxMC<<16     ; Multicast?
+;        adreq  r5, dib_enetaddr        ; no.. specifically us.. so our address
+;        adrne  r5, bcaddr              ; multicast.. put in broadcast ATM
+;45      ldr    lr, [r5]
+;       str     lr, [r10, #RXHDest-RXHdr]
+;       ldr     lr, [r5, #4]
+;       str     lr, [r10, #RXHDest+4-RXHdr]
+
+; mbuf chain in r1.. give to protocol module
+; DebugRegNCR r1, "mbp sent "
+        mov     r5, r1
+        ldr     r1, [r5, #mbnextptr-mbufstruct]
+        ldr     r3, [r2, #EnetBDPtr]
+        ldr     lr, CircBuf_Phy2Log
+        add     r3, r3, lr              ; rxbuffer logical address
+        add     r3, r3, #16             ; bypass the header
+; DebugRegNCR r3, "rxblog "
+        ldr     r2, [r2, #EnetBDLen]
+        mov     r2, r2, lsl #16
+        mov     r2, r2, lsr #16
+        sub     r2, r2, #16
+; DebugReg r2, "len "
+        str     r2, [r1, #mbdlen-mbufstruct]
+        mov     r6, ip
+        DMB
+        ldr     r0, MBufSession         ;  is what we define against
+        adr     lr, %ft22
+        ldr     pc, [r0, #import-mbufctlstruct]  ; import mbuf content to packet
+22
+        mov     ip, r6
+        mov     r1, r5
+        adrl    r0, MyDIB
+        adr     lr, %ft44
+        ldr     r12, [r11, #FrameClPWP]
+        ldr     pc, [r11, #FrameClHandler]
+44      mov     ip, r6
+        Pull    "r2, r6"
+
+        mov     lr, #EnetBDrxWrap<<16
+        ldr     r0, [r2, #EnetBDLen]    ; flags (in first word)
+        and     r0, r0, lr
+        orr     r0, r0, #EnetBDrxMty<<16; turn back on again
+        str     r0, [r2, #EnetBDLen]    ; flags (in first word)
+        b       loopcheck               ; check the rest
+
+; OOPS.. out of mbfs
+panicabandon
+ DebugRegNCR r2, " null mbufp "
+ DebugRegNCR r6, " offset "
+ DebugTX "PANIC PANIC  "
+
+;
+; not claimed.. or no mbuf.. ignore it and reenable the buffer
+; data length field is written by mac, only
+fullbufabandon
+; put rxbuf back in use
+        mov     lr, #EnetBDrxWrap<<16
+        ldr     r0, [r2, #EnetBDLen]    ; flags (in first word)
+        and     r0, r0, lr
+        orr     r0, r0, #EnetBDrxMty<<16; turn back on again
+        str     r0, [r2, #EnetBDLen]    ; flags (in first word)
+        ldr     r0, DroppedRxFrames
+        add     r0, r0, #1
+        str     r0, DroppedRxFrames
+        b       loopcheck
+
+bcaddr  DCD     &ffffffff               ; broadcast address, for simplicity
+        DCD     &0000ffff
+
+
+
+
+
+
+;ENET_EIR_BABR
+;       Entry
+; DebugTX "ENET_EIR_BABR"
+;       EXIT
+;ENET_EIR_BABT
+;       Entry
+; DebugTX "ENET_EIR_BAB"
+;       EXIT
+;ENET_EIR_GRA
+;       Entry
+; DebugTX "ENET_EIR_GR"
+;       EXIT
+;ENET_EIR_RXB
+;       Entry
+; DebugTX "ENET_EIR_RXB"
+;       EXIT
+ENET_EIR_MII
+        Entry
+; DebugTX "ENET_EIR_MII"
+        EXIT
+;ENET_EIR_EBERR
+;       Entry
+; DebugTX "ENET_EIR_EBERR"
+;       EXIT
+;ENET_EIR_LC
+;       Entry
+; DebugTX "ENET_EIR_LC"
+;       EXIT
+;ENET_EIR_RL
+;       Entry
+; DebugTX "ENET_EIR_RL"
+;       EXIT
+;ENET_EIR_UN
+;       Entry
+; DebugTX "ENET_EIR_UN"
+;       EXIT
+;ENET_EIR_PLR
+;       Entry
+; DebugTX "ENET_EIR_PLR"
+;       EXIT
+;ENET_EIR_WAKEUP
+;       Entry
+; DebugTX "ENET_EIR_WAKEUP"
+;       EXIT
+;ENET_EIR_TS_AVAIL
+;       Entry
+; DebugTX "ENET_EIR_TS_AVAIL"
+;       EXIT
+;ENET_EIR_TS_TIMER
+;       Entry
+; DebugTX "ENET_EIR_TS_TIMER"
+;       EXIT
+
+
+
+
+
+
+; unsigned divide routine, lifted from clib
+udivide
+; Unsigned divide of r1 by r0: returns quotient in r0, remainder in r1
+        Entry   "r2,ip"
+        MOV     r2, #0
+        RSBS    ip, r0, r1, LSR #3
+        BCC     u_sh2
+        RSBS    ip, r0, r1, LSR #8
+        BCC     u_sh7
+        MOV     r0, r0, LSL #8
+        ORR     r2, r2, #&FF000000
+        RSBS    ip, r0, r1, LSR #4
+        BCC     u_sh3
+        RSBS    ip, r0, r1, LSR #8
+        BCC     u_sh7
+        MOV     r0, r0, LSL #8
+        ORR     r2, r2, #&00FF0000
+        RSBS    ip, r0, r1, LSR #8
+        MOVCS   r0, r0, LSL #8
+        ORRCS   r2, r2, #&0000FF00
+        RSBS    ip, r0, r1, LSR #4
+        BCC     u_sh3
+        RSBS    ip, r0, #0
+        BCS     dividebyzero
+u_loop  MOVCS   r0, r0, LSR #8
+u_sh7   RSBS    ip, r0, r1, LSR #7
+        SUBCS   r1, r1, r0, LSL #7
+        ADC     r2, r2, r2
+u_sh6   RSBS    ip, r0, r1, LSR #6
+        SUBCS   r1, r1, r0, LSL #6
+        ADC     r2, r2, r2
+u_sh5   RSBS    ip, r0, r1, LSR #5
+        SUBCS   r1, r1, r0, LSL #5
+        ADC     r2, r2, r2
+u_sh4   RSBS    ip, r0, r1, LSR #4
+        SUBCS   r1, r1, r0, LSL #4
+        ADC     r2, r2, r2
+u_sh3   RSBS    ip, r0, r1, LSR #3
+        SUBCS   r1, r1, r0, LSL #3
+        ADC     r2, r2, r2
+u_sh2   RSBS    ip, r0, r1, LSR #2
+        SUBCS   r1, r1, r0, LSL #2
+        ADC     r2, r2, r2
+u_sh1   RSBS    ip, r0, r1, LSR #1
+        SUBCS   r1, r1, r0, LSL #1
+        ADC     r2, r2, r2
+u_sh0   RSBS    ip, r0, r1
+        SUBCS   r1, r1, r0
+        ADCS    r2, r2, r2
+        BCS     u_loop
+        MOV     r0, r2
+        EXIT
+dividebyzero                            ; for our use .. not really trapping divide by zero
+        mov     r0, #0
+        mov     r1, #0
+        EXIT
+
+; Build up packet for transmission
+; On entry
+; r0 = flags  bit 0 = 0 - use interfaces h/w address
+;                     1 - use r5 address as source
+;             bit 1 = 0 - driver assumes ownership of mbufs
+;                     1 - protocol module keeps mbuf ownership
+; r1 = unit
+; r2 = frame type
+; r3 = mbuf chain pointer
+; additional mbuf chains for packets passed in via list pointer
+; r4 = destination h/w address (byte aligned)
+; r5 = source h/w address (byte aligned) if applicable
+; r12= base of module ram
+; returns r3=0 if successfully queued
+QueueForTX
+        Entry   "r0, r1, r2, r4, r5, r6, r7, r8, r9, r10, r11, ip"
+; assume by now we've isolated the stuff for the unit in r1
+        ldr     r7, FirstTXBufOfst      ; counts 0 .. n-1
+        ldr     r9, StartTXBuf
+        add     r9, r9, r7, lsl #3      ; 8 bytes / 2 words per descriptor
+        ldr     r8, [r9, #EnetBDLen]
+        tst     r8, #(EnetBDtxRdy)<<16  ; buffer free?
+        EXIT    NE
+        mov     r8, r3                  ; remember the mbuf start pointer
+        tst     r0, #1<<1               ; releasable mbuf
+        movne   r8, #0                  ; no.. squash mbuf ptr
+; read packet buffer address
+        ldr     r10, [r9, #EnetBDPtr]   ; physical address
+        ldr     lr, CircBuf_Phy2Log
+        add     r10, r10, lr            ; get buffer physical address
+; first build a header buffer and put in place
+
+        ldmia   r4, {r4, r6}            ; get dest address
+        adrl    r5, LastDestAddr
+        stmia   r5, {r4, r6}
+        strb    r4, [r10, #2]           ; dest address bigendian
+        mov     r4, r4, lsr #8
+        strb    r4, [r10, #3]
+        mov     r4, r4, lsr #8
+        strb    r4, [r10, #4]
+        mov     r4, r4, lsr #8
+        strb    r4, [r10, #5]
+        strb    r6, [r10, #6]
+        mov     r6, r6, lsr #8
+        strb    r6, [r10, #7]
+        tst     r0, #1<<0               ; src addresss supplied
+        adreql  r5, dib_enetaddr        ; no
+        ldmia   r5, {r5, r6}
+        strb    r5, [r10, #8]           ; srce address bigendian
+        mov     r5, r5, lsr #8
+        strb    r5, [r10, #9]
+        mov     r5, r5, lsr #8
+        strb    r5, [r10, #10]
+        mov     r5, r5, lsr #8
+        strb    r5, [r10, #11]
+        strb    r6, [r10, #12]
+        mov     r6, r6, lsr #8
+        strb    r6, [r10, #13]
+        mov     r2, r2, ror #8         ; frame type bigendian
+        strb    r2, [r10, #14]
+        mov     r2, r2, ror #24
+        strb    r2, [r10, #15]
+        mov     r11, #EnetPktHdrSize+2  ; (+2 for alignment to word at hdr end)
+        add     r10, r10, r11
+; ldr r5,[r10, #-16]
+; DebugRegNCR r5, "Hdr "
+; ldr r5,[r10, #-12]
+; DebugRegNCR r5, ":"
+; ldr r5,[r10, #-8]
+; DebugRegNCR r5, ":"
+; ldr r5,[r10, #-4]
+; DebugReg r5, ""
+; now loop around the mbuf data copying it to the buffer.
+; r10 -> start location in packet
+; r11  = current packet length (i.e. header + offset)
+; r9  -> descriptor we are using
+; r8  -> mbuf chain ptr if releasable
+; r7   = current buffer offset number
+; r3  -> head of mbuf chain
+
+        mov     r5, r3
+        mov     r6, ip
+        mov     r1, r3
+        ldr     r0, MBufSession         ;  is what we define against
+        adr     lr, %ft33
+        ldr     pc, [r0, #count_bytes-mbufctlstruct]  ; export mbuf content to packet
+33
+; now r0 = total tx byte count
+; DebugReg r0, "mb is bytes: "
+        ldr     r2, =ENET_MTU
+        cmp     r0, r2
+        movle   r2, r0
+        add     r11, r11, r2            ; remember length to tx
+; DebugRegNCR r11, "t-"
+        mov     r1, r3
+        mov     r3, r10
+        mov     ip, r6
+        ldr     r0, MBufSession         ;  is what we define against
+        adr     lr, %ft22
+        ldr     pc, [r0, #export-mbufctlstruct]  ; export mbuf content to packet
+22
+        mov     ip, r6
+        mov     r3, r5
+
+        ldr     r4, [r9, #EnetBDLen]    ; get length and current flags
+        ldr     r3,  =(&ffff+(EnetBDtxRdy+EnetBDtxLast+EnetBDtxTC+EnetBDtxABC+EnetBDt01+EnetBDt02)<<16)
+        bic     r4, r4, r3              ; clear most flags, and byte count
+                                        ; we'll have an NE condtion after the header has gone through
+        orr     r4, r4, r11             ; combine length to place
+        tst     r4, #EnetBDtxWrap<<16
+        movne   r7, #0
+        addeq   r7, r7, #1
+        str     r7, FirstTXBufOfst      ; remember first free buf
+                                        ; .. counts 0 .. n-1
+; DebugByteReg r7,"E-"
+; remember r4, needed later
+        movs    r1, r8                  ; recover mb pointer
+        beq     %ft45                   ; eq = dont free buffer
+        mov     r11, ip                 ; ip gets corrupted, so preserve
+; DebugReg r1, "tx free chain "
+        ldr     r0, MBufSession         ;  is what we define against
+        adr     lr, %ft44
+        ldr     pc, [r0, #freem-mbufctlstruct]                ; free the mbuf
+44
+        mov     ip, r11
+45
+
+        orr     r4, r4, #(EnetBDtxLast+EnetBDtxTC+EnetBDtxRdy)<<16
+        str     r4, [r9, #EnetBDLen]    ; put length and current flags
+; DebugReg r4, "set descr"
+        str     r9, LastTXBDUsed        ; (for irq) last descr to be filled
+        DMB_Write                       ; ensure descriptor write complete
+
+        ldr     r4, ChipBase            ; point to ethernet chip
+        mov     r5, #HW_ENET_TDAR_GO
+        str     r5, [r4, #HW_ENET_TDAR_ADDR] ; trigger chip to use this stuff
+        mov     r3, #0                  ; show chain was used
+        EXIT
+
+
+
+
+; r0=0 for stats supported, 1 for actual stats
+; r1 = unit (ignored.. we have just 1)
+; r2= buffer for all stats
+ReportStats
+        Entry   "r0-r7"
+        tst     r0, #1
+        beq     ReturnSupported
+        mov     r7, r2
+        ldr     r4, ChipBase
+        add     r4, r4, #&200
+        ;general stats
+        mov     r1, #1          ; we've only got 1 phy here
+        mov     r2, #PHY_SP_STATUS_REG
+        bl      EtherTHMIIPhyRead
+; DebugReg r0, "Phy Status "
+        cmn     r0, #1
+        beq     %ft1            ; failed timeout
+        and     lr, r0, #PHY_SP_STATUS_SPMASK   ; speed bits
+        teq     lr, #PHY_SP_STATUS_10MB
+        moveq   r3, #3                  ; 10 base t
+        teq     lr, #PHY_SP_STATUS_100MB
+        moveq   r3, #12                 ; 100 base tx
+        teq     lr, #PHY_SP_STATUS_1GB
+        moveq   r3, #21                 ; 1000 base tx
+        strb    r3, [r7, #0]            ; link current type
+
+        mov     r3, #1<<0               ; interface good
+        orr     r3, r3, #1<<1           ; interface active
+        ; bits 2,3 highest receive frame claim made atm
+        ldr     r2, FrameClIEEE
+        movs    r1, r2
+        ldrne   r1, [r2, #FrameClFlags]
+        and     r5, r1, #&f<<8          ; isolate claim level
+        ldr     r2, FrameClaims
+2       teq     r2, #0
+        beq     %ft3
+        ldr     r1, [r2, #FrameClFlags]
+        and     r1, r1, #&f<<8          ; isolate claim level
+        cmp     r1, r5
+        movgt   r5, r1                  ; higher level in use
+        ldr     r2, [r2, #FrameClaimNext]
+        b       %bt2                    ; more claims to check
+3       orr     r3, r3, r5, lsr #8-2
+        and     lr, r0, #PHY_SP_STATUS_DUPMASK  ; duplex bits
+        teq     lr, #PHY_SP_STATUS_FullD
+        orreq   r3, r3, #1<<4           ; duplex state
+        strb    r3, [r7, #1]            ; link status
+        tst     r0, #1<<1               ; link polarity?
+        moveq   r3, #1                  ; polarity ok
+        movne   r3, #0                  ; polarity inverted
+        strb    r3, [r7, #2]            ; link polarity
+        mov     r3, #0
+        strb    r3, [r7, #3]            ; set to 0
+1
+        mov     r0, #0
+        ldr     r3, [r4, #&24]          ; tx collisions
+        str     r3, [r7, #4]            ; link failures ?????
+        str     r3, [r7, #8]            ; network collisions
+        ; tx stats
+        str     r3, [r7, #12]           ; collisions
+        ldr     r3, [r4, #&60]          ;
+        str     r3, [r7, #16]           ; excess collisions
+        str     r0, [r7, #20]           ; heartbeat failures
+        str     r0, [r7, #24]           ; not listening
+        ldr     r3, [r4, #&04]          ;
+        str     r3, [r7, #28]           ; tx frames
+        ldr     r3, [r4, #&44]          ;
+        str     r3, [r7, #32]           ; tx bytes
+        ldr     r3, [r4, #&10]          ; crc/align errors ?????
+        str     r3, [r7, #36]           ; tx general errors
+        adrl    r0, LastDestAddr
+        ldmia   r0, {r2, r3}
+        str     r2, [r7, #40]
+        bic     r3, r3, #&ff<<16
+        bic     r3, r3, #&ff<<24
+        str     r3, [r7, #44]
+        ; rx stats
+        ldr     r3, [r4, #&d0]          ;
+        str     r3, [r7, #48]           ; crc failure
+        ldr     r3, [r4, #&d4]          ;
+        str     r3, [r7, #52]           ; frame alignment errors
+        ldr     r3, [r4, #&c8]          ;
+        str     r3, [r7, #56]           ; dropped frames
+        ldr     r3, [r4, #&94]          ;
+        str     r3, [r7, #60]           ; runt frames
+        ldr     r3, [r4, #&98]          ;
+        str     r3, [r7, #64]           ; overlong frames
+        ldr     r3, [r4, #&a0]          ;
+        str     r3, [r7, #68]           ; jabbers
+        str     r3, [r7, #72]           ; late events
+        ldr     r3, DroppedRxFrames
+        str     r3, [r7, #76]           ; unwanted frames
+        ldr     r3, [r4, #&84]          ;
+        str     r3, [r7, #80]           ; rx frames
+        ldr     r3, [r4, #&e0]          ;
+        str     r3, [r7, #84]           ; rx bytes
+        ldr     r3, [r4, #&90]          ;
+        str     r3, [r7, #88]           ; rx general errors ?????
+        adrl    r0, LastSrcAddr
+        ldmia   r0, {r2, r3}
+        str     r2, [r7, #92]
+        bic     r3, r3, #&ff<<16
+        bic     r3, r3, #&ff<<24
+        str     r3, [r7, #96]
+        EXIT
+ReturnSupported
+        mvn     r3, #0
+        mov     r4, #0
+        ;general stats
+        strb    r3, [r2], #1            ; link type
+        strb    r3, [r2], #1            ; link status
+        strb    r3, [r2], #1            ; link polarity
+        strb    r4, [r2], #1            ; set to 0
+        str     r3, [r2], #4            ; link failures
+        str     r3, [r2], #4            ; network collisions
+        ; tx stats
+        str     r3, [r2], #4            ; collisions
+        str     r3, [r2], #4            ; excess collisions
+        str     r3, [r2], #4            ; heartbeat failures
+        str     r3, [r2], #4            ; not listening
+        str     r3, [r2], #4            ; tx frames
+        str     r3, [r2], #4            ; tx bytes
+        str     r3, [r2], #4            ; tx general errors
+        str     r3, [r2], #4            ; last dest address (6+2)
+        str     r3, [r2], #4            ; last dest address  rest
+        strb    r4, [r2, #-1]
+        strb    r4, [r2, #-2]
+        ; rx stats
+        str     r3, [r2], #4            ; crc failure
+        str     r3, [r2], #4            ; frame alignment errors
+        str     r3, [r2], #4            ; dropped frames
+        str     r3, [r2], #4            ; runt frames
+        str     r3, [r2], #4            ; overlong frames
+        str     r3, [r2], #4            ; jabbers
+        str     r3, [r2], #4            ; late events
+        str     r3, [r2], #4            ; unwanted frames
+        str     r3, [r2], #4            ; rx frames
+        str     r3, [r2], #4            ; rx bytes
+        str     r3, [r2], #4            ; rx general errors
+        str     r3, [r2], #4            ; last srce address (6+2)
+        str     r3, [r2], #4            ; last srce address  rest
+        strb    r4, [r2, #-1]
+        strb    r4, [r2, #-2]
+        EXIT
+ [ Debug
+DebugPrintRegisters        Entry   "r0-r4"
+        ldr     r4, ChipBase            ; point to ethernet chip
+        ScreenTX "Registers: "
+        ldr     r0, [r4, #HW_ENET_EIR_ADDR]
+        ScreenRegNCR r0, "EIR:  "
+        ldr     r0, [r4, #HW_ENET_EIMR_ADDR]
+        ScreenRegNCR r0, "EIMR: "
+        ldr     r0, [r4, #HW_ENET_RDAR_ADDR]
+        ScreenRegNCR r0, "RDAR: "
+        ldr     r0, [r4, #HW_ENET_TDAR_ADDR]
+        ScreenReg    r0, "TDAR: "
+
+        ldr     r0, [r4, #HW_ENET_MMFR_ADDR]
+        ScreenRegNCR r0, "MMFR: "
+        ldr     r0, [r4, #HW_ENET_ECR_ADDR]
+        ScreenRegNCR r0, "ECR:  "
+        ldr     r0, [r4, #HW_ENET_RDSR_ADDR]
+        ScreenRegNCR r0, "RDSR: "
+        ldr     r0, [r4, #HW_ENET_TDSR_ADDR]
+        ScreenReg    r0, "TDSR: "
+
+        ldr     r0, [r4, #HW_ENET_RCR_ADDR]
+        ScreenRegNCR r0, "RCR:  "
+        ldr     r0, [r4, #HW_ENET_TCR_ADDR]
+        ScreenRegNCR r0, "TCR:  "
+        ldr     r0, [r4, #HW_ENET_MIBC_ADDR]
+        ScreenRegNCR r0, "MIBC: "
+        ldr     r0, [r4, #HW_ENET_MRBR_ADDR]
+        ScreenReg    r0, "MRBR: "
+
+        ldr     r0, [r4, #HW_ENET_OPD_ADDR]
+        ScreenReg r0, "OPD:  "
+        ldr     r1, StartRXBuf
+        ldr     r2, Desc2Mbufp
+        add     r2, r1, r2
+        mov     r3, #16
+11
+        ldmia   r2!,{r0, r1}
+        ScreenRegNCR r0,""
+        ScreenReg    r1,""
+        subs    r3, r3, #1
+        bgt    %bt11
+
+        EXIT
+ ]
+
+; call the hal counter delay routine
+; delay in r0 in uS
+HAL_CounterDelay ROUT
+        Entry   "r0-r3,r9,r12"
+        ldr     r9, HAL_SB
+        mov     lr, pc
+        ldr     pc, HAL_CounterDelay_p
+        EXIT
+
+
+
+
+        END
+@
+
+
+1.2
+log
+@  Added SWI to expose receive fifo thresholds and flow control parameters
+Detail:
+Admin:
+
+
+Version 0.25. Tagged as 'EtherTH-0_25'
+@
+text
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d584 3
+a586 2
+        ldr     r0, =&1fff0                     ; pause duration
+        str     r0, [r4, #HW_ENET_OPD_ADDR]
+d588 1
+a588 1
+                                                ; whoe frame to fifo before tx
+d590 1
+a590 1
+                                                ; &600 bytes before mac startstart
+a591 8
+        mov     r0, #&0                         ; (* 8 bytes) (0 = whole thing)
+        str     r0, [r4, #HW_ENET_RSFL_ADDR]    ; rx section full
+        mov     r0, #&6                         ; (* 8 bytes)
+        str     r0, [r4, #HW_ENET_RAEM_ADDR]    ; rx almost empty
+        mov     r0, #&4                         ; (* 8 bytes)
+        str     r0, [r4, #HW_ENET_RAFL_ADDR]    ; rx almost full
+        mov     r0, #&4                         ; (* 8 bytes)
+        str     r0, [r4, #HW_ENET_RSEM_ADDR]    ; rx section empty
+d741 43
+@
+
+
+1.1.1.1
+log
+@   Initial import of EtherTH module
+@
+text
+@@

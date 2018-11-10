@@ -1,0 +1,1082 @@
+head	1.4;
+access;
+symbols
+	Browse-2_16:1.4
+	Browse-2_15:1.4
+	Browse-2_14:1.4
+	Browse-2_13:1.4
+	Browse-2_12:1.4
+	Browse-2_11:1.4
+	Browse-2_10:1.4
+	Browse-2_09:1.4
+	ahodgkin_208_i4_2:1.4
+	ahodgkin_208_i4:1.2
+	ahodgkin_208_i3:1.2
+	ahodgkin_208_i2:1.2
+	ahodgkin_208_i1:1.2
+	ahodgkin_207release:1.2
+	ahodgkin_206release:1.2
+	ahodgkin_205release:1.1
+	ahodgkin_204release:1.1
+	ahodgkin_202release:1.1
+	ahodgkin_201release:1.1
+	ahodgkin_200release:1.1
+	ahodgkin_133beta:1.1
+	ahodgkin_132beta:1.1
+	ahodgkin_131beta:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2000.11.14.08.45.05;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.05.31.15.58.26;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.07.09.10.27.00;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.02.02.13.20.22;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    About.c                                           */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Compile an HTML 'About' page which describes      */
+/*          available plug-ins.                               */
+/*                                                            */
+/* Author:  A.D.Hodgkinson, including various functions from  */
+/*          source by Piers Wombwell.                         */
+/*                                                            */
+/* History: 29-Jan-1998 (ADH): Adaptation complete.           */
+/*          25-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <tboxlibs/flex.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include <tboxlibs/toolbox.h>
+#include <tboxlibs/window.h>
+#include <tboxlibs/gadgets.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+/* Local statics and definitions */
+
+#define FLAGS_IMAGE (1u<<0)
+
+static struct _abouts
+{
+  char           * dirname;
+
+  unsigned int     count;
+  unsigned int     flags;
+  unsigned int     width;
+  unsigned int     height;
+
+  struct _abouts * next;
+
+} * abouts = NULL;
+
+/* Static function prototypes */
+
+static void   about_free_abouts    (void);
+static char * about_html_fname     (const char * dirname, unsigned int count, unsigned int width, unsigned int height);
+static int    about_copy_info_file (char ** output, int output_size, const char * dirname, unsigned int count);
+
+/**************************************************************/
+/* about_free_abouts()                                        */
+/*                                                            */
+/* Free all of the temporary structures used to compile the   */
+/* About page.                                                */
+/**************************************************************/
+
+static void about_free_abouts(void)
+{
+  struct _abouts * next;
+
+  if (abouts)
+  {
+    while (abouts)
+    {
+      next = abouts->next;
+
+      free(abouts->dirname);
+      free(abouts);
+
+      abouts = next;
+    }
+  }
+}
+
+/**************************************************************/
+/* about_html_fname()                                         */
+/*                                                            */
+/* Creates a URL to point to an About item logo.              */
+/*                                                            */
+/* Parameters: Directory to look in;                          */
+/*                                                            */
+/*             Number of the file;                            */
+/*                                                            */
+/*             Item width;                                    */
+/*                                                            */
+/*             Item height (the last two form part of the     */
+/*             filename).                                     */
+/*                                                            */
+/* Returns:    Pointer to the URL in a *global* malloc block  */
+/*             - if you need a local copy before calling the  */
+/*             function again, you must take it there and     */
+/*             then.                                          */
+/**************************************************************/
+
+static char * about_html_fname(const char * dirname, unsigned int count,
+                               unsigned int width, unsigned int height)
+{
+  static char * fname = NULL;
+  char        * s;
+  int           len;
+
+  if (fname) free(fname);
+  fname = NULL;
+
+  if (width == 0 && height == 0)
+  {
+    len = strlen(dirname) + sizeof("file:/.00");
+
+    fname = malloc(len);
+    if (!fname) return "";
+
+    sprintf(fname, "file:/%s.%02d", dirname, count);
+  }
+  else
+  {
+    len = strlen(dirname) + sizeof("file:/.0000000000");
+
+    fname = malloc(len);
+    if (!fname) return "";
+
+    sprintf(fname, "file:/%s.%02d%04d%04d", dirname, count, width, height);
+  }
+
+  if (fname && *fname)
+  {
+    for (s = fname + sizeof("file:/"); *s != '\0'; s++)
+    {
+      if (*s == '.')
+      *s = '/';
+    }
+  }
+
+  return fname;
+}
+
+/**************************************************************/
+/* about_copy_info_file                                       */
+/*                                                            */
+/* Copy the 'About' info file into the given flex block.      */
+/*                                                            */
+/* Parameters: Pointer to the flex block;                     */
+/*                                                            */
+/*             Size of the block so far;                      */
+/*                                                            */
+/*             Name of the directory to look in;              */
+/*                                                            */
+/*             Number of the 'About' file to read (will cope  */
+/*             with just 'About' rather than 'AboutXX').      */
+/*                                                            */
+/* Returns:    Size of block after addition of the file.      */
+/**************************************************************/
+
+static int about_copy_info_file(char ** output, int output_size,
+                                const char * dirname, unsigned int count)
+{
+  FILE * input;
+  char   fname[Limits_OS_Pathname];
+  int    length;
+  int    old_state;
+
+  /* Write 'AboutXX' as a leafname if it'll fit */
+
+  if (strlen(dirname) + sizeof(".About00") <= sizeof(fname))
+  {
+    sprintf(fname, "%s.About%02d", dirname, count);
+  }
+  else return output_size;
+
+  /* Try to open it */
+
+  input = fopen(fname, "r");
+
+  /* If this fails, write just 'About' (we know it'll fit */
+  /* if 'AboutXX' did!)                                   */
+
+  if (input == NULL && count == 0)
+  {
+    sprintf(fname, "%s.About", dirname);
+    input = fopen(fname, "r");
+  }
+
+  /* If this fails, bail out */
+
+  if (input == NULL) return output_size;
+
+  fseek(input, 0L, SEEK_END);
+  length = (int) ftell(input);
+  rewind(input);
+
+  /* Try to get the amount of memory the file requires */
+
+  if (flex_extend((void **) output, output_size + length + 1) != 1) /* + 1 for the terminator */
+  {
+    fclose(input);
+    return output_size;
+  }
+
+  /* Read the file, zero terminate it in the block, and close the file */
+
+  old_state = flex_set_budge(0);
+
+  fread(*output + output_size, length, 1, input);
+  *(*output + output_size + length) = '\0';
+
+  flex_set_budge(old_state);
+
+  fclose(input);
+
+  /* Return the original size plus the added data */
+
+  return output_size + length;
+}
+
+/**************************************************************/
+/* about_build_page()                                         */
+/*                                                            */
+/* Builds an 'About' page enumerating Plug-Ins to a given     */
+/* flex anchor.                                               */
+/*                                                            */
+/* There may already be data in the flex block, or not. If    */
+/* the function bails out due to lack of memory or some other */
+/* error, the flex block won't be freed and may have been     */
+/* added to.                                                  */
+/*                                                            */
+/* Parameters: The flex anchor (as a void **).                */
+/**************************************************************/
+
+_kernel_oserror * about_build_page(void ** block)
+{
+  _kernel_swi_regs   regs; /* OS_ReadVarVal doesn't work with _swix */
+
+  struct _abouts   * about;
+
+  int                plugin_count = -1;
+  int                max_width    = 0;
+  int                output_size  = 0;
+  int                len;
+  int                start;
+
+  if (!block) return NULL;
+
+  regs.r[3] = 0; /* Count */
+
+  do
+  {
+    plugin_count++;
+
+    regs.r[0] = (int) "Plugin$About_*";
+
+    regs.r[1] = NULL; /* No buffer                  */
+    regs.r[2] = -1;   /* Verify whether it exists   */
+    regs.r[4] = 0;    /* Returned unexpanded string */
+
+    _kernel_swi(OS_ReadVarVal, &regs, &regs);
+
+    if (regs.r[2] != 0)
+    {
+      /* Got directory name - let's enumerate About files... */
+
+      char leafname[Limits_OS_Pathname];
+      int  nobjs, index = 0;
+
+      while (index != -1)
+      {
+        /* Read full info on the one 'About[XX]' file in */
+        /* the directory.                                */
+
+        if (
+             _swix(OS_GBPB,
+                   _INR(0,6) | _OUTR(3,4),
+
+                   12,
+                   getenv((const char*) regs.r[3]),
+                   leafname,
+                   1,
+                   index,
+                   sizeof(leafname),
+                   "About*",
+
+                   &nobjs, /* No. objects read so far */
+                   &index) /* Where to continue       */
+           )
+           break;
+
+        /* Loop round again if we didn't get anything this time */
+
+        if (nobjs == 0) continue;
+
+        /* Build an 'about' structure for the entry */
+
+        about = malloc(sizeof(struct _abouts));
+
+        if (!about)
+        {
+          about_free_abouts();
+
+          return make_no_cont_memory_error(12);
+        }
+
+        about->dirname = malloc(~regs.r[2] + 1);
+
+        if (!about->dirname)
+        {
+          about_free_abouts();
+
+          return make_no_cont_memory_error(12);
+        }
+
+        /* Read the expanded path into the buffer */
+
+        _kernel_getenv((const char *) regs.r[3],
+                       about->dirname,
+                       (unsigned int) ~regs.r[2] + 1);
+
+        /* We may have an 'About' file or an 'AboutXX' file. 24 is the */
+        /* offset of the filename into the buffer filled in by OS_GBPB */
+
+        if (!strcmp(leafname + 24, "About")) about->count = 0;
+        else                                 about->count = atoi(leafname + 24 + sizeof("About"));
+
+        about->flags = 0;
+        about->next  = abouts;
+        abouts       = about;
+      }
+    }
+  }
+  while (regs.r[2] != 0);
+
+  {
+    char leafname[Limits_OS_Pathname];
+    int  nobjs, index = 0;
+
+    /* Now do the same as above, but this time look for */
+    /* just an About page for the browser itself.       */
+    /*                                                  */
+    /* Doing this last means it appears at the top of   */
+    /* the About page...                                */
+
+    while (index != -1)
+    {
+      if (
+           _swix(OS_GBPB,
+                 _INR(0,6) | _OUTR(3,4),
+
+                 12,
+                 lookup_control("AboutAt:About:Browse",0,0),
+                 leafname,
+                 1,
+                 index,
+                 sizeof(leafname),
+                 "About*",
+
+                 &nobjs,
+                 &index)
+         )
+         break;
+
+      if (nobjs == 0) continue;
+
+      about = malloc(sizeof(struct _abouts));
+
+      if (!about)
+      {
+        about_free_abouts();
+        return make_no_cont_memory_error(12);
+      }
+
+      about->dirname = malloc(strlen(lookup_control("AboutAt:About:Browse",0,0)) + 1);
+
+      if (!about->dirname)
+      {
+        about_free_abouts();
+        return make_no_cont_memory_error(12);
+      }
+
+      strcpy(about->dirname, lookup_control("AboutAt:About:Browse",0,0));
+
+      if (!strcmp(leafname + 24, "About")) about->count = 0;
+      else                                 about->count = atoi(leafname + 24 + sizeof("About"));
+
+      about->flags = 0;
+      about->next  = abouts;
+      abouts       = about;
+    }
+  }
+
+  /* Now we've got all the 'About' files, we can look for the logos */
+
+  for (about = abouts; about != NULL; about = about->next)
+  {
+    char leafname[Limits_OS_Pathname];
+    int  nobjs, index = 0;
+
+    while (index != -1)
+    {
+      sprintf(leafname, "%02d*", about->count);
+
+      /* Similar to the above code, only the files are */
+      /* identified as 'XXWWWWHHHH' (Ws = width, Hs =  */
+      /* height).                                      */
+
+      if (
+           _swix(OS_GBPB,
+                 _INR(0,6) | _OUTR(3,4),
+                 12,
+
+                 about->dirname,
+                 leafname,
+                 1,
+                 index,
+                 sizeof(leafname),
+                 leafname,
+
+                 &nobjs,
+                 &index)
+         )
+         break;
+
+      if (index == -1) break;
+      if (nobjs == 0)  continue;
+
+      /* Check if leafname is just two digits long, and therefore */
+      /* has no width and height                                  */
+
+      if (strlen(leafname + 24) == 2)
+      {
+        about->width = about->height = 0;
+        about->flags = FLAGS_IMAGE;
+
+        break;
+      }
+
+      /* Break up leafname into width & height */
+
+      strncpy(leafname, leafname + 24 + 2, 4);
+      leafname[5] = '\0';
+      about->width = atoi(leafname);
+
+      strncpy(leafname, leafname + 24 + 6, 4);
+      leafname[5] = '\0';
+      about->height = atoi(leafname);
+
+      if (about->width > max_width)
+      max_width = about->width;
+
+      /* We now have the sprite widths. Mark About object as good */
+
+      about->flags = FLAGS_IMAGE;
+    }
+  }
+
+  /* Build the HTML - first the header */
+
+  output_size = strlen(lookup_token("pabouthdr",1,0)) + 1;
+
+  {
+    int success;
+
+    if (!*block) start   = 0,
+                 success = flex_alloc (block, output_size);
+
+    else         start   = flex_size  (block),
+                 success = flex_extend(block, start + output_size);
+
+    if (!success) goto panic;
+
+    sprintf(((char *) *block) + start, tokens);
+
+    output_size += start - 1; /* (Next item should overwrite the terminator) */
+  }
+
+  /* Next the browser's own entry. We need to substitute one a Messages */
+  /* file entry into another Messages file entry, so some juggling      */
+  /* about of buffers is needed - we'll store the string to substitute  */
+  /* at block + output_size, compile the final string above this, then  */
+  /* move the final string down into place.                             */
+
+  len  = strlen(lookup_token("paboutbrw",1,0)) + 1;
+  len += strlen(lookup_token("Version",  1,0)) * 2 + 1;
+
+  if (!flex_extend(block, output_size + len)) goto panic;
+
+  sprintf(((char *) *block) + output_size, tokens);
+
+  len = strlen(tokens) + 1;
+  sprintf(((char *) *block) + output_size + len,
+          lookup_token("paboutbrw",1,0),
+          ((char *) *block) + output_size);
+
+  memmove(((char *) *block) + output_size,
+          ((char *) *block) + output_size + len,
+          strlen(((char *) *block) + output_size + len) + 1);
+
+  output_size = start + strlen(((char *) *block) + start);
+
+  /* Now the individual items */
+
+  for (about = abouts; about != NULL; about = about->next)
+  {
+    if (!(about->flags & FLAGS_IMAGE))
+    {
+      len = strlen(lookup_token("paboutpl1",1,0)) + 1;
+
+      if (!flex_extend(block, output_size + len)) goto panic;
+
+      sprintf(((char *) *block) + output_size,
+              tokens);
+
+      output_size = start + strlen(((char *) *block) + start);
+    }
+    else if (about->width == 0 && about->height == 0)
+    {
+      len = strlen(about_html_fname(about->dirname, about->count, 0, 0)) +
+            strlen(lookup_token("paboutpl2",1,0)) + 1;
+
+      if (!flex_extend(block, output_size + len)) goto panic;
+
+      sprintf(((char *) *block) + output_size,
+              tokens,
+              about_html_fname(about->dirname, about->count, 0, 0));
+
+      output_size = start + strlen(((char *) *block) + start);
+    }
+    else
+    {
+      len = strlen(about_html_fname(about->dirname,
+                                    about->count,
+                                    about->width,
+                                    about->height)) +
+            4                                       + /* Width and height are 4 characters or less as numbers, */
+            4                                       + /* due to the way the filenames encode them.             */
+            strlen(lookup_token("paboutpl3",1,0)) + 1;
+
+      if (!flex_extend(block, output_size + len)) goto panic;
+
+      sprintf(((char *) *block) + output_size,
+              tokens,
+              about_html_fname(about->dirname,
+                               about->count,
+                               about->width,
+                               about->height),
+              about->width,
+              about->height);
+
+      output_size = start + strlen(((char *) *block) + start);
+    }
+
+    /* Copy in HTML About file */
+
+    output_size = about_copy_info_file((char **) block,
+                                       output_size,
+                                       about->dirname,
+                                       about->count);
+
+    /* Write the item footer if there's another item */
+    /* to come after this one                        */
+
+    if (about->next)
+    {
+      len = strlen(lookup_token("paboutift",1,0)) + 1;
+
+      if (!flex_extend(block, output_size + len)) goto panic;
+
+      sprintf(((char *) *block) + output_size, tokens);
+
+      output_size = start + strlen(((char *) *block) + start);
+    }
+  }
+
+  /* Write the page footer; then we're finished */
+
+  len = strlen(lookup_token("paboutpft",1,0)) + 1;
+
+  if (!flex_extend(block, output_size + len)) goto panic;
+
+  sprintf(((char *) *block) + output_size, tokens);
+
+  output_size = start + strlen(((char *) *block) + start);
+
+  /* Ensure the block is clipped to exactly the right size (we're */
+  /* building HTML, so it shouldn't have a zero terminator!)      */
+
+  if (!flex_extend(block, output_size)) goto panic;
+
+  /* Clean up and exit without error */
+
+  about_free_abouts();
+
+  return NULL;
+
+panic:
+
+  /* Clean up and exit with an error */
+
+  about_free_abouts();
+
+  /* This was *almost* certainly the error...! */
+
+  return make_no_cont_memory_error(12);
+}
+@
+
+
+1.3
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a46 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.2
+log
+@Check-in of Browse v2.06; using very small log file to try and avoid
+CVS crashing. Some of the Resources may well be out of date due to CVS
+locks being in place after earlier server-end core dumps, which I can't
+remove myself.
+
+I'll try and check one file in at the end with the full change log so
+people know what's happened (it's reached about 16K...) - I'll make
+that the TaskObey file '!All' in the top level directory. So for the
+full log, look for the changes on this file.
+@
+text
+@d15 14
+a28 11
+/***************************************************/
+/* File   : About.c                                */
+/*                                                 */
+/* Purpose: Compile an HTML 'About' page which     */
+/*          describes available Plug-Ins.          */
+/*                                                 */
+/* Author : Piers Wombwell                         */
+/*          This source adapted by A.D.Hodgkinson  */
+/*                                                 */
+/* History: 30-Jan-98: Adaptation complete (ADH)   */
+/***************************************************/
+d34 2
+a35 2
+#include "kernel.h"
+#include "swis.h"
+d37 1
+a37 1
+#include "flex.h"
+d39 12
+a50 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a51 5
+#include "toolbox.h"
+#include "window.h"
+#include "gadgets.h"
+
+#include "svcprint.h"
+d78 6
+a83 6
+/*************************************************/
+/* about_free_abouts()                           */
+/*                                               */
+/* Free all of the temporary structures used to  */
+/* compile the About page.                       */
+/*************************************************/
+d103 19
+a121 20
+/*************************************************/
+/* about_html_fname()                            */
+/*                                               */
+/* Creates a URL to point to an About item logo. */
+/*                                               */
+/* Parameters: Directory to look in;             */
+/*                                               */
+/*             Number of the file;               */
+/*                                               */
+/*             Item width;                       */
+/*                                               */
+/*             Item height (the last two form    */
+/*             part of the filename).            */
+/*                                               */
+/* Returns:    Pointer to the URL in a *global*  */
+/*             malloc block - if you need a      */
+/*             local copy before calling the     */
+/*             function again, you must take it  */
+/*             there and then.                   */
+/*************************************************/
+d164 16
+a179 19
+/*************************************************/
+/* about_copy_info_file                          */
+/*                                               */
+/* Copy the 'About' info file into the given     */
+/* flex block.                                   */
+/*                                               */
+/* Parameters: Pointer to the flex block;        */
+/*                                               */
+/*             Size of the block so far;         */
+/*                                               */
+/*             Name of the directory to look in; */
+/*                                               */
+/*             Number of the 'About' file to     */
+/*             read (will cope with just 'About' */
+/*             rather than 'AboutXX').           */
+/*                                               */
+/* Returns:    Size of block after addition of   */
+/*             the file.                         */
+/*************************************************/
+d242 13
+a254 13
+/*************************************************/
+/* about_build_page()                            */
+/*                                               */
+/* Builds an 'About' page enumerating Plug-Ins   */
+/* to a given flex anchor.                       */
+/*                                               */
+/* There may already be data in the flex block,  */
+/* or not. If the function bails out due to lack */
+/* of memory or some other error, the flex block */
+/* won't be freed and may have been added to.    */
+/*                                               */
+/* Parameters: The flex anchor (as a void **).   */
+/*************************************************/
+@
+
+
+1.1
+log
+@Machine hung during last check-in; trying again... Apologies for sending
+out such a huge log message *twice*.
+
+Check for WindowManager 3.97 and ensure Unicode$Path is set in all
+!Run[D] files, don't set the Alias$@@PrintType_FF4 variable, and updated
+Customer build ROM obey file variants. Various other changes to
+the Run files for new module versions, updated paths to support
+new positions of choices, hotlist and histories (see later), etc.
+
+!Sprites[22] files hold small !app icons for some variants, and
+an ic_browse sprite. Some variants now have a Sprites and Sprites22
+file instead of just Sprites, with the former containing various
+mode 12 or 15 specific sprites.
+
+Text files dragged to the URL writable are treated as ANT URL files. This
+relies on URLBarWrit (Toolbars.h) being a unique ID, which it should be,
+but beware of the Hotlist and Choices numberspaces...
+
+INPUT TYPE=BUTTON supported. Form items without a FORM tag are now shown
+(as MSIE 4, but not NN 4).
+
+'*', '-', '@@', '_' and '.' are not escaped when submitting forms now. The
+Web interface to the IMDb now works.
+
+INPUT TYPE=HIDDEN items will not affect the line height anymore - so
+http://www.hotmail.com/ now has correctly aligned writable icons, for
+example. Similarly, TAG_FORM and TAG_FORM_END items could push up
+line height and don't anymore.
+
+HRs with a specified pixel width will now influence the size of a table
+cell (they didn't before).
+
+BRs now checked by tagno field when the browser needs to know something
+was an actual BR tag rather than just a line break signal, and by the
+style bit entry when only the indication of a line break is required.
+
+Table widths of 0 or 0% are ignored.
+
+Trace.c updated to report height and background fields in a table_stream.
+
+fm_putsl() writes a terminator into the string; the Forms.c routines were
+calling this for displaying INPUT TYPE=PASSWORD fields using the FE_PassCode
+literal string (a line of stars). This write into a read only data area
+would make the debugger fault the access. A local char array is now used
+instead, to get round this (note the use of var[]=literal rather than
+var[sizeof(literal)]; strcpy(var, literal) due to some weird compiler bug
+that copies the wrong thing into 'var' under some (undefined...)
+circumstances).
+
+Text areas don't scroll back to the top line when clicked in anymore;
+single line writables don't scroll back to the left either. When
+reentering a text area from 'above', the caret appears at the top line
+rather than 'somewhere further down'...
+
+ARROWS_MOVE_OUT compile time option at the top of Forms.c defines whether
+you must press Tab/Shift+Tab to move between writable fields in forms or
+if up/down will drop out of them, though if keyboard control is on this
+is enforced (or you get trapped inside the form!).
+
+urlutils_filetype_from_url now uses MimeMap module.
+
+If fetcher is told a page is text, it'll check for a filename extension and
+may choose to use this instead (e.g. it may find it's HTML instead). This
+is to try and get around duff servers... (e.g. http://www.batalarms.co.uk/).
+
+Save dialogues shouldn't flicker when options that don't change the
+filetype are selected (before, the draggable sprite was always reset for
+each selection). Noticed the erroneous setting of a static variable in
+SaveFile.c by a call to this by SaveObject.c, and so added a flag to
+savefile_set_filetype to deal with this - would have been possible to get
+the wrong filetype sent to applications or at best the wrong filetype
+sprite in the dialogue without that.
+
+The caret shouldn't jump out of a form back to the URL writable if the page
+reformats now.
+
+Table background colours now supported (as in the colour you see in the
+border space if the cellspacing is large enough; this is as in MSIE, not
+as in Navigator). Drawfile output routines updated accordingly.
+
+Corrected erroneous use of wimpt_dx() / wimpt_dy() in a couple of places
+in Images.c, which meant that (say) 1x1 images didn't work correctly in
+medium resolution display modes.
+
+Now have support for save as text (component ID and event 0x12) and save
+as Draw (component ID and event 0x13) buttons. Dubious conditions for
+greying and ungreying the print, save source and view source buttons and
+menu options sorted out as part of implementing the same for the two new
+buttons; added greying out of their associated menu items in passing.
+
+Turned kerning on in draw file objects (does mean a rather heinous
+increase in file size, but this is the only way to ensure the draw file
+matches the visible page).
+
+Comments before functions in SaveDraw.c are now complete and up to date.
+
+Image and visit histories now generate a crude hash number to speed up
+searching for items. It does give a speed increase, though it's a
+disappointingly small one.
+
+Issue of left/right margins and cellpaddings sorted out. Now have
+redraw_left/right_margin for finding out the basic gap you must leave.
+redraw_left/right_gap then gives any extra indentation for LI, BLOCKQUOTE
+or whatever. The last two can be subtracted from the display width to
+get an available page width for any section of text. Note that
+redraw_left_gap replaces redraw_margin. The redraw_start_x function
+uses the above to work out where a line's left hand edge should be,
+taking account of left/right/centre alignment. HRs have been fixed now
+(they were quite broken in v1.30, I think) based on this new model and
+the behaviour of MSIE/NN 4.
+
+Fixed width of cells with no contents - cell padding values wouldn't
+have worked properly as the reformatter returns 0 rather than the left
+hand margin size if given no stream.
+
+Removed FM_Absolute flags for Font_Paint (spotted by DBrown) - sets bit
+2, which is reserved...?
+
+IMG width and height in % terms now works correctly; a % of available
+width (after margins and indents) or height on the main page or for
+a table cell, if the image lies in one. Because of the chicken-and-egg
+problem with the latter, the cell must specify a width and/or height
+for things to work properly. If this is not done, you'll usually end
+up with a 1:1 scaled image (as in Navigator 4, rather than ending up
+with no image or even no cell (!), as in MSIE 4).
+
+HEIGHT attribute on a TABLE tag is supported, but only in a crude
+fashion; the extra height (if there is any) is distributed over the
+rows in a linear fashion. This is probably all you have to do in
+practice, but I haven't checked. To maintain a notion of min/max
+height as well as width would of course require a great deal more
+work...
+
+If using client pull to reload a page with a fragment ('...#name')
+specified, then the reload wouldn't work on the same page; it'd just
+jump to the fragment position. This won't happen if b->reloading is
+set now (so works in conjunction with client pull on the same page
+forcing a non-cached fetch). Similarly, if POSTing to such a URL,
+a fetch will proceed (both these fixes done originally for
+http://jupiter.beseen.com/chat/rooms/g/1678/).
+
+browser_inherit split to browser_inherit and browser_inherit_post_data;
+the code for the latter didn't clear any post_data in the child before
+copying from the parent either, and could cause flex errors (now fixed).
+
+Res file for Ursula ('Desktop' Browse) build tweaked - bits in the
+font choices dialogue renamed, and button bar rearranged to hold the
+new Save As Draw button. Other builds have had Save As Draw and
+Save As Text buttons added, or not, depending upon availability of
+suitable sprites, required UI simplicity, etc.
+
+Now have:
+
+  Browse$ChoicesFile
+  Browse$ControlsFile
+  Browse$ChoicesSave
+  Browse$ControlsSave
+
+(the last two are new) for loading and saving of the Choices or Controls
+files. If unset, <App$Dir>.Choices or <App$Dir>.Controls will be set.
+E.g., you could set Browse$ChoicesFile to be:
+
+  <App$Dir>.Choices,Choices:WWW.(app).Choices
+
+for loading and
+
+  <Choices$Write>.WWW.(app).Choices
+
+for saving. (The browser never saves Controls at the moment, so the
+relevant variable above isn't effectively implemented, but could be
+in future). Similarly, to support asymetric loading/saving of the Hotlist,
+there are HotlistSave, HistorySave and ImageHistorySave entries in Choices
+to complement HotlistPath, HistoryPath and ImageHistoryPath (which are used
+for loading). save_save_choices will create directories as needed to obtain
+the given path (and has also been fixed in various areas that hadn't been
+tested out until now; e.g. zero termination of the AppName$ChoicesFile
+variable expansion...). !Run[D] files updated appropriately.
+
+Table widthing code rewritten. Slower, but a lot better on the whole.
+Still has some problems - still needs a final 'make sure nothing is
+below minimum width' scan, which it should be possible to do without.
+No time to fix this at present!
+
+The reformatter will now 'glue together' an LI token followed by any
+non-LI token; so a bullet point followed by an item should not be able to
+have a line break inserted after the bullet because of very tight width
+constraints (it could before - yuk...).
+
+'about:' brings up a page about the browser and any Plug-Ins, as with
+Navigator (for example).
+
+URI files support titles, as per spec. version 8. Saving a current
+location to the Hotlist will thus give a sensible title now (unless
+you're in a frame, so there's no title to get...). Of course, v1.00
+files without a title still work.
+
+Note that NOBR is *not* supported in this build and this combined with
+the new table widther may cause problems on some sites (e.g. Microsoft's
+home page!).
+@
+text
+@d164 1
+a164 1
+/* Paramters: Pointer to the flex block;         */
+d166 1
+a166 1
+/*            Size of the block so far;          */
+d168 1
+a168 1
+/*            Name of the directory to look in;  */
+d170 3
+a172 3
+/*            Number of the 'About' file to      */
+/*            read (will cope with just 'About'  */
+/*            rather than 'AboutXX').            */
+d174 2
+a175 2
+/* Returns:   Size of block after addition of    */
+/*            the file.                          */
+d310 1
+a310 2
+        /* We may have nothing left to read (index == -1) */
+        /* or have read no object this time               */
+d312 1
+a312 2
+        if (index == -1) break;
+        if (nobjs == 0)  continue;
+d340 2
+a341 1
+        /* We may have an 'About' file or an 'AboutXX' file */
+d354 58
+d580 2
+a581 1
+    /* Write the item footer */
+d583 3
+a585 1
+    len = strlen(lookup_token("paboutift",1,0)) + 1;
+d587 1
+a587 1
+    if (!flex_extend(block, output_size + len)) goto panic;
+d589 1
+a589 1
+    sprintf(((char *) *block) + output_size, tokens);
+d591 2
+a592 1
+    output_size = start + strlen(((char *) *block) + start);
+@

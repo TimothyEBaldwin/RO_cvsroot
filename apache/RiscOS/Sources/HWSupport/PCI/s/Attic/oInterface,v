@@ -1,0 +1,657 @@
+head	1.2;
+access;
+symbols
+	RO_5_07:1.2
+	PCI-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2002.11.14.20.29.27;	author rsprowson;	state dead;
+branches;
+next	1.1;
+
+1.1
+date	2002.11.13.21.30.44;	author kbracey;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2002.11.13.21.30.44;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@Removed unused HelpTokens
+Removed unused oInterface
+Implemented PCI_MemoryRead,PCI_MemoryWrite,PCI_EnumerateFunctions.
+Resync'd docs with implementation,tidied them up,and expanded some of
+the descriptions.
+Swapped a couple of BHS for BHI so that PCI_FindByXXX can find the last
+thing in the list now.
+Added new service calls to lookup name and vendor strings.
+Added vendor string reason to ReadInfo.
+Now *PCIDEVICES and *PCIINFO report the vendor string and description if
+available,else default to the class code.
+
+Version 0.02. Tagged as 'PCI-0_02'
+@
+text
+@; Copyright 2002 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+ SUBT => PCI.Interface
+
+        OPT     OptPage
+
+SWINameTable
+ModuleTitle
+        =       "PCI", 0
+        =       "ReadID", 0
+        =       "ReadHeader", 0
+        =       "ReturnNumber", 0
+        =       "EnumerateFunctions", 0
+        =       "IORead", 0
+        =       "IOWrite", 0
+        =       "MemoryRead", 0
+        =       "MemoryWrite", 0
+        =       "ConfigurationRead", 0
+        =       "ConfigurationWrite", 0
+        =       "HardwareAddress", 0
+        =       "ReadInfo", 0
+        =       "SpecialCycle", 0
+        =       "FindByLocation", 0
+        =       "FindByID", 0
+        =       "FindByClass", 0
+        =       "RAMAlloc", 0
+        =       "RAMFree", 0
+        =       0
+        ALIGN
+
+SWIEntry
+        LDR     wp, [ r12 ]
+        CMP     r11, #( EndOfJumpTable - JumpTable ) / 4
+        ADDCC   pc, pc, r11, LSL #2
+        B       UnknownSWI
+
+JumpTable
+        B       ReadID
+        B       ReadHeader
+        B       ReturnNumber
+        B       UnknownSWI
+        B       UnknownSWI
+        B       UnknownSWI
+        B       UnknownSWI
+        B       UnknownSWI
+        B       ConfigurationRead
+        B       ConfigurationWrite
+        B       HardwareAddress
+        B       ReadInfo
+        B       SpecialCycle
+        B       FindByLocation
+        B       FindByID
+        B       FindByClass
+        B       RAMAlloc
+
+EndOfJumpTable
+
+UnknownSWI
+        Push    "r1, lr"
+        ADRL    Error, ErrorBlock_ModuleBadSWI
+        ADR     r1, ModuleTitle
+        BL      copy_error_one                  ; will set V
+        Pull    "r1, pc"
+
+ValidateHandle
+        Push    "lr"
+        LDR     lr, pci_handles
+        TEQ     r3, #0
+        BEQ     BadHandle
+        CMP     r3, lr
+        LDR     lr, pci_handle_table
+        BHS     BadHandle
+        LDR     r11, [lr, r3, LSL #2]
+        CMP     r11, #-1
+        BEQ     BadHandle
+        Pull    "pc"
+
+BadHandle
+        Pull    "lr"
+        ADRL    r0, ErrorBlock_Channel
+        B       copy_error_zero
+
+BadAccessSize
+        ADRL    r0, ErrorBlock_BadAccessSize
+        B       copy_error_zero
+
+ReadID  ROUT
+        MOV     r10, lr
+        BL      ValidateHandle
+        MOVVS   pc, r10
+        LDR     r0, [r11, #PCIDesc_VendorID]
+        LDR     r1, [r11, #PCIDesc_SubsystemVendorID]
+        MOV     pc, r10
+
+ReadHeader ROUT
+        MOV     r10, lr
+        BL      ValidateHandle
+        MOVVS   pc, r10
+        Push    "r0-r2,r4,r5,r6,r10"
+        MOV     r0, #0
+        MOV     r4, r1
+        MOV     r5, r2
+        MOV     r2, #4
+        MOV     r6, wp
+10      BL      ConfigurationRead       ; corrupts wp
+        MOV     wp, r6
+        BVS     %FT90
+        STR     r1, [r4], #4
+        ADD     r0, r0, #4
+        SUBS    r5, r5, #4
+        BHI     %BT10
+        Pull    "r0-r2,r4,r5,r6,pc"
+90      ADD     sp, sp, #4
+        Pull    "r1,r2,r4,r5,r6,pc"
+
+ReturnNumber ROUT
+        LDR     r0, pci_handles
+        MOV     pc, lr
+
+FindByLocation ROUT
+        LDR     r10, pci_handles
+        LDR     r12, pci_handle_table
+
+        MOV     r3, #0
+10      ADD     r3, r3, #1
+        CMP     r3, r10
+        BHS     NotFound
+        LDR     r11, [r12, r3, LSL #2]
+        CMP     r11, #-1
+        BEQ     %BT10
+        LDRH    r11, [r11, #PCIDesc_DevFn]
+        CMP     r0, r11, LSR #8
+        ANDEQ   r11, r11, #&FF
+        CMPEQ   r1, r11
+        BNE     %BT10
+        MOV     pc, lr
+
+NotFound
+        MOV     r3, #0
+        MOV     pc, lr
+
+FindByID ROUT
+        Push    "lr"
+        LDR     r10, pci_handles
+        LDR     r12, pci_handle_table
+
+10      ADD     r3, r3, #1
+        CMP     r3, r10
+        BHS     %FT90
+        LDR     r11, [r12, r3, LSL #2]
+        CMP     r11, #-1
+        BEQ     %BT10
+        CMP     r0, #-1
+        LDRNEH  r14, [r11, #PCIDesc_VendorID]
+        CMPNE   r0, r14
+        BNE     %BT10
+        CMP     r1, #-1
+        LDRNEH  r14, [r11, #PCIDesc_DeviceID]
+        CMPNE   r1, r14
+        BNE     %BT10
+        CMP     r2, #-1
+        LDRNEH  r14, [r11, #PCIDesc_SubsystemVendorID]
+        CMPNE   r2, r14
+        BNE     %BT10
+        CMP     r4, #-1
+        LDRNEH  r14, [r11, #PCIDesc_SubsystemID]
+        CMPNE   r4, r14
+        BNE     %BT10
+        Pull    "pc"
+90      MOV     r3, #0
+        Pull    "pc"
+
+FindByClass ROUT
+        LDR     r10, pci_handles
+        LDR     r12, pci_handle_table
+
+10      ADD     r3, r3, #1
+        CMP     r3, r10
+        BHS     NotFound
+        LDR     r11, [r12, r3, LSL #2]
+        CMP     r11, #-1
+        BEQ     %BT10
+        LDR     r11, [r11, #PCIDesc_ClassCode]
+        AND     r11, r11, r1
+        CMP     r0, r11
+        BNE     %BT10
+        MOV     pc, lr
+
+ConfigurationRead ROUT
+        Push    "r0,r2,r3,r9,lr"
+        CMP     r3, #0
+        MOVEQ   r1, r0, LSR #8
+        BEQ     %FT10
+        BL      ValidateHandle
+        ADDVS   sp, sp, #4
+        Pull    "r2,r3,r9,pc",VS
+        LDRH    r1, [r11, #PCIDesc_DevFn]
+10      MOV     r10, #0
+        TEQ     r2, #1
+        ADREQ   r10, HAL_PCIReadConfigByte_routine
+        TEQ     r2, #2
+        ADREQ   r10, HAL_PCIReadConfigHalfword_routine
+        TEQ     r2, #4
+        ADREQ   r10, HAL_PCIReadConfigWord_routine
+        TEQ     r10, #0
+        Pull    "r0,r2,r3,r9,lr",EQ
+        BEQ     BadAccessSize
+        AND     r2, r0, #&FF
+        MOV     r0, r1, LSR #8
+        AND     r1, r1, #&FF
+        MOV     lr, pc
+        LDMIA   r10, {r9, pc}                   ; corrupts R0-R3,R12
+        ADDS    r1, r0, #0                      ; clear V
+        Pull    "r0,r2,r3,r9,pc"
+
+ConfigurationWrite
+        Push    "r0-r3,r9,lr"
+        CMP     r3, #0
+        MOVEQ   r14, r0, LSR #8
+        BEQ     %FT10
+        BL      ValidateHandle
+        ADDVS   sp, sp, #4
+        Pull    "r1-r3,r9,pc",VS
+        LDRH    r14, [r11, #PCIDesc_DevFn]
+10      MOV     r10, #0
+        TEQ     r2, #1
+        ADREQ   r10, HAL_PCIWriteConfigByte_routine
+        TEQ     r2, #2
+        ADREQ   r10, HAL_PCIWriteConfigHalfword_routine
+        TEQ     r2, #4
+        ADREQ   r10, HAL_PCIWriteConfigWord_routine
+        TEQ     r10, #0
+        Pull    "r0-r3,r9,lr",EQ
+        BEQ     BadAccessSize
+        MOV     r3, r1
+        AND     r2, r0, #&FF
+        MOV     r0, r14, LSR #8
+        AND     r1, r14, #&FF
+        MOV     lr, pc
+        LDMIA   r10, {r9, pc}                   ; corrupts R0-R3,R12
+        MSR     CPSR_f, #0
+        Pull    "r0-r3,r9,pc"
+
+SpecialCycle ROUT
+        TEQ     r0, #0
+        BEQ     UnknownSWI
+        Push    "r0,r2,r3,lr"
+        MOV     r0, r0, LSL #16
+        ORR     r0, r0, #&FF00
+        MOV     r2, #4
+        MOV     r3, #0
+        BL      ConfigurationWrite
+        STRVS   r0, [sp]
+        Pull    "r0,r2,r3,pc"
+
+; In: nowt
+; Out: R3 = next free handle
+FindFreeHandle  ROUT
+        Push    "r0-r2,lr"
+        ; If no table yet, jump straight to claiming a block
+        LDR     r2, pci_handle_table
+        LDR     r1, pci_handle_table_size
+        TEQ     r2, #0
+        BEQ     %FT20
+
+        ; Search table for a free entry (=-1)
+        MOV     r3, #1
+10      LDR     r14, [r2, r3, LSL #2]
+        CMP     r14, #-1
+        Pull    "r0-r2,pc",EQ
+        ADD     r3, r3, #1
+        CMP     r3, r1
+        BLO     %BT10
+
+        ; Table full - extend it please
+        MOV     r0, #ModHandReason_ExtendBlock
+        MOV     r3, #64*4
+        SWI     XOS_Module
+        BVC     %FT40           ; jump to common code below
+99      ADD     sp, sp, #4
+        Pull    "r1-r2,pc"
+
+        ; Claim initial table
+20      MOV     r0, #ModHandReason_Claim
+        MOV     r3, #64*4
+        SWI     XOS_Module
+        BVS     %99
+
+        ; 64 shiny new slots - update all our pointers
+40      STR     r2, pci_handle_table
+        MOVS    r3, r1
+        ADDEQ   r3, r3, #1
+        ADD     r1, r1, #64
+        STR     r1, pci_handle_table_size
+
+        ; fill in all the new slots with -1
+        MOV     r14, #-1
+        MOV     r0, r3
+        STREQ   r14, [r2, #0]
+50      STR     r14, [r2, r0, LSL #2]
+        ADDS    r0, r0, #1
+        CMP     r0, r1
+        BNE     %BT50
+
+        Pull    "r0-r2,pc"
+
+; ****************************************************************************
+;
+;       HardwareAddress - find (and map in) an address block
+;
+HardwareAddress
+        Push    "r1-r3,lr"
+        MOV     r10, r0
+        BL      ValidateHandle
+        Pull    "r1-r3,pc",VS
+        TEQ     r1, #&100
+        CMPNE   r1, #5
+        BHI     BadAddr
+        TEQ     r1, #&100
+        MOVEQ   r1, #6
+        ADD     r11, r11, #PCIDesc_Addresses
+        ASSERT  PCIAddress_size = 12
+        ADD     r1, r1, r1, LSL #1
+        ADD     r11, r11, r1, LSL #2
+        ASSERT  :INDEX:PCIAddress_Base = 0
+        ASSERT  :INDEX:PCIAddress_Size = 4
+        LDMIA   r11, {r1, r2}
+        CMP     r1, #0
+        BEQ     BadAddr
+        TST     r10, #1:SHL:31
+        BNE     %FT40
+        LDRB    r0, [r11, #PCIAddress_Flags]
+        TST     r0, #1
+        LDREQ   lr, pci_mem_to_phys_offset
+        LDRNE   lr, pci_io_to_phys_offset
+        ADD     r1, r1, lr
+        MOV     r0, #13
+        TST     r10, #1:SHL:4
+        ORRNE   r0, r0, #1:SHL:8
+        SWI     XOS_Memory
+        MOVVC   r4, r3
+40      LDRVCB  r0, [r11, #PCIAddress_Flags]
+90      ADD     sp, sp, #8
+        Pull    "r3,pc"
+
+BadAddr
+        ADRL    r0, ErrorBlock_NoSuchAddr
+        Pull    "r1-r3,lr"
+        B       copy_error_zero
+
+
+;
+; ****************************************************************************
+;
+;       ReadInfo - return various words about PCI devices
+;
+;       On entry
+;         R0  Bitset of required results
+;         R1  Pointer to buffer to receive word aligned word results
+;         R2  Length in bytes of buffer
+;         R3  PCI function number
+;
+;       On exit
+;         R0  Preserved
+;         R1  Preserved, a pointer to results in order (lowest bit number
+;             at the lowest address)
+;         R2  Length of results
+;         R3  Preserved
+;
+;       Bitset in R0, values;
+;
+;         Bit  0 ==> Device/function number
+;         Bit  1 ==> Bus number
+;         Bit  2 ==> Function number of parent bridge (0 if none)
+;         Bit  3 ==> Slot number
+;         Bit  4 ==> Vendor/device ID
+;         Bit  5 ==> Revision ID
+;         Bit  6 ==> Subsystem vendor/subsystem ID
+;         Bit  7 ==> Class code (24 bits)
+;         Bit  8 ==> CMOS address
+;         Bit  9 ==> CMOS size in bytes
+;         Bit 10 ==> Pointer to description (0 for none)
+;         Bit 11 ==> Device vector number
+;         Bit 12 ==> Ethernet address (low 32 bits)
+;         Bit 13 ==> Ethernet address (high 16 bits)
+;         Bit 14 ==> Logical number of the primary DMA channel
+
+ReadInfo ROUT
+        Push    "r0-r6, lr"
+        BL      ValidateHandle
+        BVS     ExitReadInfo
+        LDMIA   sp, { r0, r1, r10 }                     ; Entry values of R0, R1 & R2
+        MOV     r5, #0                                  ; Number of bytes used so far
+        MOV     r6, #-1                                 ; Initialise the bit counter
+ReadInfoLoop
+        BVS     ExitReadInfo
+        INC     r6
+        TEQ     r6, #(ReadInfoTableEnd-ReadInfoTable)/4
+        BEQ     TestRemainingBits
+        ;       R0  = Bitset of things to do
+        ;       R1  = Pointer to the word to write to
+        ;       R3  = Pointer to the podule_node
+        ;       R5  = Number of bytes used so far
+        ;       R6  = The number we are up to 0, 1, 2, 3, 4 ...
+        ;       R10 = Size of the buffer in bytes
+
+        MOV     r14, #1
+        ANDS    r14, r0, r14, LSL r6
+        BEQ     ReadInfoLoop
+        INC     r5, 4
+        CMP     r5, r10
+        BGT     ReadTooMuchInfo
+  [  DebugInterface
+        DREG    r1, "Calling with a data pointer of &"
+  ]
+        CLRV
+        JumpAddress lr, ReadInfoTableEnd, Forward
+        ADD     pc, pc, r6, LSL #2
+        NOP
+ReadInfoTable
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_DevFn
+        B       ReadInfo_DevFn
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_Bus
+        B       ReadInfo_Bus
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_ParentBridge
+        B       ReadInfo_ParentBridge
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_Slot
+        B       ReadInfo_Slot
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_DeviceID
+        B       ReadInfo_DeviceID
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_RevisionID
+        B       ReadInfo_RevisionID
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_SubsystemID
+        B       ReadInfo_SubsystemID
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_ClassCode
+        B       ReadInfo_ClassCode
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_CMOSAddress
+        B       ReadInfo_CMOSAddress
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_CMOSSize
+        B       ReadInfo_CMOSSize
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_Description
+        B       ReadInfo_Description
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_IntDeviceVector
+        B       ReadInfo_IntDeviceVector
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_EthernetAddressLow
+        B       ReadInfo_EthernetLow
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_EthernetAddressHigh
+        B       ReadInfo_EthernetHigh
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_DMA
+        B       ReadInfo_DMA
+        ASSERT  (1 :SHL: ((.-ReadInfoTable)/4)) = PCI_ReadInfo_Addresses
+        B       ReadInfo_Addresses
+
+ReadInfoTableEnd
+  [  DebugInterface
+        BVS     %57
+        DREG    r2, "Data returned is &"
+        B       %58
+57
+        ADD     r14, r0, #4
+        DSTRING r14, "Error from ReadInfo_<thing>: "
+58
+  ]
+        STRVC   r2, [ r1 ], #4
+        B       ReadInfoLoop
+
+
+TestRemainingBits
+  [  DebugInterface
+        DREG    wp, "WP = &"
+  ]
+        MOVS    r0, r0, ASR r6
+        STREQ   r5, [ sp, #8 ]                          ; Poke the exit value of R2
+        BNE     UnexpectedBitsSet
+ExitReadInfo
+        STRVS   r0, [ sp, #0 ]
+        Pull    "r0-r6, pc"
+
+UnexpectedBitsSet
+        ADRL    r0, ErrorBlock_BadRead
+        B       ErrorExitReadInfo
+
+ReadTooMuchInfo
+        ADRL    r0, ErrorCDATBufferOverflow
+ErrorExitReadInfo
+  [  DebugInterface
+        DREG    r0, "Error is at &"
+  ]
+        BL      copy_error_zero
+        B       ExitReadInfo
+
+        ;       Implementation of the various bits, return the value in R2
+
+ReadInfo_DevFn
+        LDRB    r2, [ r11, #PCIDesc_DevFn ]
+        MOV     pc, lr
+
+ReadInfo_Bus
+        LDRB    r2, [ r11, #PCIDesc_Bus ]
+        MOV     pc, lr
+
+ReadInfo_ParentBridge
+ReadInfo_Slot
+        B       UnexpectedBitsSet
+
+ReadInfo_DeviceID
+        LDR     r2, [ r11, #PCIDesc_VendorID ]
+        MOV     pc, lr
+
+ReadInfo_RevisionID
+        LDRB    r2, [ r11, #PCIDesc_RevisionID ]
+        MOV     pc, lr
+
+ReadInfo_SubsystemID
+        LDR     r2, [ r11, #PCIDesc_SubsystemVendorID ]
+        MOV     pc, lr
+
+ReadInfo_ClassCode
+        LDR     r2, [ r11, #PCIDesc_ClassCode ]
+        MOV     pc, lr
+
+ReadInfo_CMOSAddress
+ReadInfo_CMOSSize
+	MOV	r2, #0			; we don't have no CMOS
+        MOV     pc, lr
+
+ReadInfo_IntDeviceVector
+        LDRB    r2, [ r11, #PCIDesc_IntLine ]
+        MOV     pc, lr
+
+ReadInfo_DMA
+        MOV     r2, #-1
+        MOV     pc, lr
+
+ReadInfo_Addresses
+        LDRB    r2, [ r11, #PCIDesc_HeaderType ]
+        TEQ     r2, #0
+        MOVEQ   r2, #6
+        MOVNE   r2, #2
+        MOV     pc, lr
+
+ReadInfo_EthernetLow
+ReadInfo_EthernetHigh
+        ADRL    r0, ErrorBlock_ECNoNet
+        B       copy_error_zero
+
+ReadInfo_Description
+        ;       In:  R11 is a pointer to the PCIDescNode
+        ;       Out: R2 is a pointer to the Description if it exists
+        ;       All other registers preserved
+        Push    "r0-r1,r3-r7,lr"
+        BL      open_message_file
+        BVS     %FT99
+        MOV     r0, #"C"
+        STRB    r0, [sp, #-8]!
+        LDR     r0, [r11, #PCIDesc_ClassCode]
+        ADD     r1, sp, #1
+        MOV     r2, #7
+        SWI     XOS_ConvertHex6
+        BVS     %FT99
+        ADR     r0, message_file_block
+        MOV     r1, sp
+        ADR     r2, name_buffer
+        MOV     r3, #?name_buffer
+        ADD     r4, r0, #1
+        MOV     r5, #0
+        MOV     r6, #0
+        MOV     r7, #0
+        SWI     XMessageTrans_Lookup
+        ADRVS   r2, Nodescyet
+        CLRV
+99      ADD     sp, sp, #8
+        Pull    "r0-r1,r3-r7,pc"
+
+Nodescyet
+        =       "No description yet", 0
+        ALIGN
+
+        END
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@@
+
+
+1.1.1.1
+log
+@Initial import
+@
+text
+@@

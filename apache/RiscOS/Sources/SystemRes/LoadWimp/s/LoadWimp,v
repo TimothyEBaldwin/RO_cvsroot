@@ -1,0 +1,558 @@
+head	1.4;
+access;
+symbols
+	LoadWimp-0_11:1.4
+	LoadWimp-0_10:1.4
+	LoadWimp-0_09:1.3
+	LoadWimp-0_08:1.3
+	LoadWimp-0_07:1.3
+	LoadWimp-0_06:1.3
+	LoadWimp-0_05:1.2
+	LoadWimp-0_04:1.2
+	LoadWimp-0_03:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2014.01.15.21.54.08;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	7Cfd4gU2UHOReglx;
+
+1.3
+date	2012.07.19.18.23.49;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	T3xzjhxcgR2YAcdw;
+
+1.2
+date	2003.07.10.10.36.52;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.08.21.13.40.02;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.08.21.13.40.02;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Build fix
+Hdr:Services moved up above Hdr:Wimp.
+Retagged as LoadWimp-0_10.
+@
+text
+@; Copyright 1998 Acorn Computers Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+; s.LoadWimp
+;
+; Copyright (C) Acorn Computers Ltd.
+;
+; This utility will load a new WindowManager module from System:Modules.Wimp
+; whilst keeping the ResourceFS resources intact.
+;
+; It also loads the code into the RMA and then links it into the module chain
+; to avoid problems with ColourPicker failing to call some Wimp SWIs on callback
+; whilst no WindowManager is in the active module list.
+;
+;
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:Symbols
+        GET     Hdr:System
+        GET     Hdr:Services
+        GET     Hdr:ModHand
+        GET     Hdr:FSNumbers
+        GET     Hdr:HighFSI
+        GET     Hdr:NewErrors
+        GET     Hdr:Proc
+        GET     Hdr:Wimp
+        GET     Hdr:ResourceFS
+        GET     Hdr:EnvNumbers
+        GET     Hdr:OsBytes
+        GET     VersionASM
+
+        AREA    Utility,CODE,PIC,READONLY
+
+        GBLL    directload
+directload      SETL    1=1
+
+        ENTRY
+
+        Entry   "R1-R11"
+
+; Check the version of RISC OS
+        MOV     R0,#OsByte_OSVersionIdentifier
+        MOV     R1,#0
+        MOV     R2,#255
+        SWI     XOS_Byte
+        EXIT    VS
+        MOV     R8,R1
+; Earlier than RISC OS 3.10 is no good.
+        CMP     R8,#&A4
+        BLO     RISCOSTooOld
+        BEQ     RISCOS310
+
+; RISC OS 3.5-3.7 versions of the Wimp will remove the free pool
+; when killed. We need to prevent this, so read the amount of
+; application space currently allocated.
+        MOV     R0,#ApplicationSpaceSize
+        MOV     R1,#0
+        SWI     XOS_ChangeEnvironment
+        EXIT    VS
+        MOV     R7,R1
+        MOV     R6,#0
+        B       LoadWimp
+
+; The RISC OS 3.10 Wimp registers its own Sprites file in ResourceFS.
+; As we want to keep it after the Wimp is killed, get its address
+; so we can reregister it.
+RISCOS310
+        SWI     XWimp_BaseOfSprites
+        EXIT    VS
+        MOV     R6,R0
+        MOV     R7,#0
+
+LoadWimp
+; Discover size of module for initial RMA alloc.  Squeezed modules
+; thought to be OK as kernel will allocate its own block for these.
+        [ :LNOT: directload
+        Push    "r5-r8"
+        MOV     R0,#OSFile_ReadWithType
+        ADR     R1,T_WimpFilename
+        SWI     XOS_File
+        SUBVC   R6,R6,#(FileType_Module :AND: &FF0)
+        TEQVC   R6,#(FileType_Module :AND: &F)
+        Pull    "r5-r8"
+        EXIT    VS
+        BNE     NotAModule
+        MOV     R3,R4
+        MOV     R0,#ModHandReason_Claim
+        SWI     XOS_Module
+        EXIT    VS
+; Load the new WindowManager
+        MOV     R3,#0
+        MOV     R0,#OSFile_Load
+        ADR     R1,T_WimpFilename
+        Push    "r2"
+        SWI     XOS_File
+        Pull    "r2"
+        BVS     FreeR2AndExitVSet
+        ]
+; Now link it into the module chain.  We have claimed a block of memory OK.
+; We rely on the structure of the heap that the word of memory immediately
+; preceding R2 is the length of block allocated.  The PRMs document this.
+InitWimp
+        BL      KillColourPicker
+        [ :LNOT: directload
+        MOV     R0,#ModHandReason_AddArea
+        MOV     R1,R2
+        SWI     XOS_Module
+        BVS     FreeR2AndExitVSet
+        |
+        MOV     r0,#ModHandReason_Load
+        ADR     r1,T_WimpFilename
+        SWI     XOS_Module
+        ]
+        CMP     R8,#&A5
+        BHS     ChangeFreePool
+
+PutBackSprites
+; Reregister the Wimp's Sprites file (and also its Tools file -
+; unnecessary but harmless). 44 is a magic number: the length of the
+; ResourceFS header, including the filename.
+        SUB     R0,R6,#44
+        SWI     XResourceFS_RegisterFiles
+; Ignore errors. On a German (RISC OS 3.19) machine, the Wimp
+; doesn't register its own Sprites file; it's done by a separate
+; module. In this case the SWI will complain that the resources
+; are already registered ("ResourceFS wurden bereits registriert")
+
+; Reinitialise the modules required - clear V first
+        CLRV
+        BL      ReinitColourPicker
+        BLVC    ReinitColourDbox
+; Return
+        CLRV
+        EXIT
+
+ChangeFreePool
+; Check the application space now, then adjust it back to original
+; setting by growing the free pool.
+        MOV     R0,#ApplicationSpaceSize
+        MOV     R1,#0
+        SWI     XOS_ChangeEnvironment
+        EXIT    VS
+        MOV     R0,#6
+        SUB     R1,R1,R7
+        SWI     XOS_ChangeDynamicArea
+        BLVC    ReinitColourPicker
+        BLVC    ReinitColourDbox
+        EXIT
+
+FreeR2AndExitVSet
+; Frees the RMA block allocated in R2 and returns the error held in R0 on entry
+        MOV     R4,R0
+        MOV     R0,#ModHandReason_Free
+        SWI     XOS_Module
+        BL      ReinitColourPicker
+        MOV     R0,R4
+        SETV
+        EXIT
+
+RISCOSTooOld
+        ADR     R0,E_RISCOSTooOld
+        SETV
+        EXIT
+
+NotAModule
+        ADR     R0,E_NotAModule
+        SETV
+        EXIT
+
+KillColourPicker Entry "r0-r12"
+        TEQ     r8, #&A7
+        EXIT    NE
+        ADR     r1, T_ColourPicker
+        MOV     r0, #ModHandReason_Delete
+        SWI     XOS_Module
+        EXIT
+
+ReinitColourPicker Entry "r0-r12"
+        TEQ     r8, #&A7
+        EXIT    NE
+        ADR     r1, T_ColourPicker
+        MOV     r0, #ModHandReason_ReInit
+        SWI     XOS_Module
+        EXIT
+
+ReinitColourDbox Entry "r0-r12"
+; ColourDbox (the Toolbox object module) must only reinitialise if it was alive when
+; all this started - otherwise it may have been unplugged in favour of a yet-to-be-loaded
+; newer version in !System (usually courtesy of UnplugTbox)
+        TEQ     r8, #&A7
+        EXIT    NE
+        ADR     r1, T_ColourDbox
+        MOV     r0, #ModHandReason_LookupName
+        SWI     XOS_Module
+        ADRVC   r1, T_ColourDbox
+        MOVVC   r0, #ModHandReason_ReInit
+        SWIVC   XOS_Module
+        CLRV
+        EXIT
+
+E_RISCOSTooOld
+        &       ErrorNumber_ModuleTooOld ; Error code for "Module %0 too old"
+        =       "This version of the Window Manager requires RISC OS 3.10 or later", 0
+        ALIGN
+E_NotAModule
+        &       ErrorNumber_NotMod       ; Error code for "This is not a relocatable module"
+        =       "This is not a relocatable module", 0
+T_WindowManager
+        =       "WindowManager", 0
+T_ColourPicker
+        =       "ColourPicker", 0
+T_ColourDbox
+        =       "ColourDbox", 0
+        ALIGN
+T_WimpFilename
+        =       "System:Modules.Wimp", 0
+        =       "LoadWimp ", Module_MajorVersion, " ", Module_Date
+        END
+@
+
+
+1.3
+log
+@Archive of LoadWimp resources
+From Acorn universal boot.
+Makefile recreated from fragments.
+Tabs expanded in source code.
+Built, installed, but not tested.
+
+Version 0.06. Tagged as 'LoadWimp-0_06'
+@
+text
+@d32 1
+a39 1
+        GET     Hdr:FileTypes
+a40 1
+        GET     Hdr:Services
+@
+
+
+1.2
+log
+@This was 32-bitted on 22 Oct 2002, but doesn't seem to have been checked in
+until now.
+
+Version 0.04. Tagged as 'LoadWimp-0_04'
+@
+text
+@d28 5
+a32 5
+	GET	Hdr:ListOpts
+	GET	Hdr:Macros
+	GET	Hdr:Symbols
+	GET	Hdr:System
+	GET	Hdr:ModHand
+d36 8
+a43 7
+	GET	Hdr:Proc
+	GET	Hdr:Wimp
+	GET	Hdr:ResourceFS
+	GET	Hdr:FileTypes
+	GET	Hdr:EnvNumbers
+	GET	Hdr:Services
+	GET	VersionASM
+d45 1
+a45 1
+	AREA	Utility,CODE,PIC,READONLY
+d47 2
+a48 2
+	GBLL	directload
+directload 	SETL	1=1
+d50 1
+a50 1
+	ENTRY
+d52 1
+a52 1
+	Entry	"R1-R11"
+d55 6
+a60 6
+	MOV	R0,#129
+	MOV	R1,#0
+	MOV	R2,#255
+	SWI	XOS_Byte
+	EXIT	VS
+	MOV	R8,R1
+d62 3
+a64 3
+	CMP	R8,#&A4
+	BLO	RISCOSTooOld
+	BEQ	RISCOS310
+d69 7
+a75 7
+	MOV	R0,#ApplicationSpaceSize
+	MOV	R1,#0
+	SWI	XOS_ChangeEnvironment
+	EXIT	VS
+	MOV	R7,R1
+	MOV	R6,#0
+	B	LoadWimp
+d81 4
+a84 4
+	SWI	XWimp_BaseOfSprites
+	EXIT	VS
+	MOV	R6,R0
+	MOV	R7,#0
+d89 14
+a102 14
+	[ :LNOT: directload
+	STMFD	sp!, {R5-R8}
+	MOV	R0,#OSFile_ReadWithType
+	ADR	R1,T_WimpFilename
+	SWI	XOS_File
+	SUBVC	R6,R6,#(FileType_Module :AND: &FF0)
+	TEQVC	R6,#(FileType_Module :AND: &F)
+	LDMFD	sp!,{R5-R8}
+	EXIT	VS
+	BNE	NotAModule
+	MOV	R3,R4
+	MOV	R0,#ModHandReason_Claim
+	SWI	XOS_Module
+	EXIT	VS
+d104 8
+a111 8
+	MOV	R3,#0
+	MOV	R0,#OSFile_Load
+	ADR	R1,T_WimpFilename
+	STMFD	sp!,{R2}
+	SWI	XOS_File
+	LDMFD	sp!,{R2}
+	BVS	FreeR2AndExitVSet
+	]
+d116 13
+a128 13
+	BL	KillColourPicker
+	[ :LNOT: directload
+	MOV	R0,#ModHandReason_AddArea
+	MOV	R1,R2
+	SWI	XOS_Module
+	BVS	FreeR2AndExitVSet
+	|
+	MOV	r0,#ModHandReason_Load
+	ADR	r1,T_WimpFilename
+	SWI	XOS_Module
+	]
+	CMP	R8,#&A5
+	BHS	ChangeFreePool
+d134 2
+a135 2
+	SUB	R0,R6,#44
+	SWI	XResourceFS_RegisterFiles
+d142 3
+a144 3
+	CLRV
+	BL	ReinitColourPicker
+	BLVC	ReinitColourDbox
+d147 1
+a147 1
+	EXIT
+d152 10
+a161 10
+	MOV	R0,#ApplicationSpaceSize
+	MOV	R1,#0
+	SWI	XOS_ChangeEnvironment
+	EXIT	VS
+	MOV	R0,#6
+	SUB	R1,R1,R7
+	SWI	XOS_ChangeDynamicArea
+	BLVC	ReinitColourPicker
+	BLVC	ReinitColourDbox
+	EXIT
+d165 7
+a171 7
+	MOV	R4,R0
+	MOV	R0,#ModHandReason_Free
+	SWI	XOS_Module
+	BL	ReinitColourPicker
+	MOV	R0,R4
+	SETV
+	EXIT
+d174 3
+a176 3
+	ADR	R0,E_RISCOSTooOld
+	SETV
+	EXIT
+d179 3
+a181 3
+	ADR	R0,E_NotAModule
+	SETV
+	EXIT
+d184 6
+a189 6
+	TEQ	r8, #&A7
+	EXIT	NE
+	ADR	r1, T_ColourPicker
+	MOV	r0, #ModHandReason_Delete
+	SWI	XOS_Module
+	EXIT
+d192 6
+a197 6
+	TEQ	r8, #&A7
+	EXIT	NE
+	ADR	r1, T_ColourPicker
+	MOV	r0, #ModHandReason_ReInit
+	SWI	XOS_Module
+	EXIT
+d203 10
+a212 10
+	TEQ	r8, #&A7
+	EXIT	NE
+	ADR	r1, T_ColourDbox
+	MOV	r0, #ModHandReason_LookupName
+	SWI	XOS_Module
+	ADRVC	r1, T_ColourDbox
+	MOVVC	r0, #ModHandReason_ReInit
+	SWIVC	XOS_Module
+	CLRV
+	EXIT
+d215 3
+a217 3
+	&	ErrorNumber_ModuleTooOld ; Error code for "Module %0 too old"
+	=	"This version of the Window Manager requires RISC OS 3.10 or later", 0
+	ALIGN
+d219 2
+a220 2
+	&	ErrorNumber_NotMod       ; Error code for "This is not a relocatable module"
+	=	"This is not a relocatable module", 0
+d222 1
+a222 1
+	=	"WindowManager", 0
+d224 1
+a224 1
+	=	"ColourPicker", 0
+d226 2
+a227 2
+	=	"ColourDbox", 0
+	ALIGN
+d229 3
+a231 3
+	=	"System:Modules.Wimp", 0
+	=	"LoadWimp ", Module_MajorVersion, " ", Module_Date
+	END
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d145 2
+a146 1
+	EXITS
+d169 2
+a170 2
+	PullEnv
+	ORRS	PC,LR,#V_bit
+d174 2
+a175 2
+	PullEnv
+	ORRS	PC,LR,#V_bit
+d179 2
+a180 2
+	PullEnv
+	ORRS	PC,LR,#V_bit
+d184 1
+a184 1
+	EXITS	NE
+d188 1
+a188 1
+	EXITS
+d192 1
+a192 1
+	EXITS	NE
+d203 1
+a203 1
+	EXITS	NE
+d210 2
+a211 1
+	EXITS
+@
+
+
+1.1.1.1
+log
+@Initial import of LoadWimp from no previous source control.
+@
+text
+@@

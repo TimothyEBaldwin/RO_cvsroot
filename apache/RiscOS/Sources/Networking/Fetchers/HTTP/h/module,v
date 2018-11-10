@@ -1,0 +1,390 @@
+head	1.5;
+access;
+symbols
+	HTTP-1_00:1.5
+	HTTP-0_99:1.5
+	HTTP-0_98:1.5
+	HTTP-0_97:1.4
+	HTTP-0_96:1.4
+	HTTP-0_95:1.4
+	HTTP-0_94:1.4
+	HTTP-0_93:1.4
+	HTTP-0_92:1.4
+	HTTP-0_91:1.4
+	HTTP-0_90:1.4
+	HTTP-0_89:1.4
+	HTTP-0_88:1.4
+	dcotton_autobuild_BaseSW:1.4
+	HTTP-0_87:1.4
+	HTTP-0_86:1.4
+	HTTP-0_85:1.4
+	HTTP-0_84:1.4
+	HTTP-0_83:1.4
+	sbrodie_HTTP_0_82:1.4
+	sbrodie_HTTP_0_81:1.4
+	sbrodie_HTTP_0_80:1.3
+	sbrodie_HTTP_0_79:1.3
+	sbrodie_HTTP_0_78:1.2
+	sbrodie_HTTP_0_77:1.2
+	sbrodie_HTTP_0_76:1.1.1.1
+	sbrodie_Expresso_final_190298:1.1.1.1
+	sbrodie_HTTP_0_73:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.05.19.09.28.53;	author rool;	state Exp;
+branches;
+next	1.4;
+commitid	RYc3OcNBKyzAaTCA;
+
+1.4
+date	98.04.24.12.10.21;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.03.31.11.05.16;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.03.19.17.37.16;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.01.29.18.32.32;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.01.29.18.32.32;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Finish implementation of head/body/both flags
+Detail:
+  Per Docs/SWIs the flags in R5 (or R2 b8-15) should allow a client to request only the head/body or both, but the implementation was incomplete in places.
+  Where http_write_data_to_client() is called, check what the request was and filter appropriately.
+Admin:
+  Submission from Chris Mahoney.
+
+Version 0.98. Tagged as 'HTTP-0_98'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * HTTP (h.module)
+ *
+ */
+
+#define TRUE		1
+#define FALSE		0
+
+#include "zlib.h"
+
+typedef enum {
+	flags_USER_AGENT_IN_R6 = 1,
+	flags_DATA_LENGTH_IN_R5 = 2,
+	flags_VERBATIM_RESPONSE = 4,  /*Not implemented in anything but FTP*/
+	flags_EXTRA_DATA_IN_FILE = 8,
+	flags_DELETE_DATA_FILE = 16,
+	flags_NO_HEADERS_IN_EXTRA_DATA = 32,
+	flags_USING_HTTPS = (1<<29), /* Internal flag - added by HTTP module only */
+	flags_NO_COOKIES = (1<<30),
+	flags_PROXY = (signed) (1U<<31) /* Added by URL module only */
+} http_start_swi_r0_flags;
+
+/* Structure for remembering headers */
+typedef struct http_header http_header;
+struct http_header {
+	http_header	*next;		/* Link to next member */
+        char		*header;	/* Pointer into text member - is the HTTP header tag */
+        char		*value;		/* Pointer into text member - is the tag value setting */
+        char		text[1];	/* Entire header but ':' and "\r\n" represented by '\0' terminators */
+};
+
+typedef enum {
+	compression_NONE,
+	compression_DEFLATE,
+	compression_GZIP
+} compress_type;
+
+typedef enum {
+        compress_INFLATE,
+        compress_READ_GZIP_HEADER,
+        compress_READ_GZIP_EXTRA,
+        compress_READING_GZIP_EXTRA,
+        compress_READ_GZIP_NAME,
+        compress_READ_GZIP_COMMENT,
+        compress_READ_GZIP_HCRC,
+        compress_READ_GZIP_TRAILER,
+        compress_FINISHED
+} compress_state;
+
+
+typedef struct {
+        int (*s_ioctl)(int /*s*/, unsigned long /*command*/, ...);
+        int (*s_creat)(int /*PF*/, int /*SOCK_*/, int /*proto*/);
+        int (*s_connect)(int /*s*/, const struct sockaddr */*sin*/, int /*sz_sin*/);
+	int (*s_shutdown)(int /*s*/, int /*how*/);
+	int (*s_close)(int /*s*/);
+	int (*s_getsockopt)(int /*s*/, int /*sol*/, int /*var*/, void */*dataout*/, int */*outsize*/);
+	int (*s_write)(int /*s*/, const void */*data*/, size_t /*len*/);
+	int (*s_recv)(int /*s*/, void */*data*/, size_t /*size*/, int /*flags*/);
+} sock_vtbl;
+
+#include <time.h>
+
+typedef struct session {
+	struct		session *next;	/* Pointer to next session */
+	int		done;		/* The state of this session */
+	unsigned int	id;		/* Client handle */
+	int		sd;		/* Socket descriptor */
+	int		server_code;	/* Server response code */
+	int		size;		/* expected size of retrieved object - 0 if unknown */
+	unsigned int	sent;		/* Amount of data sent to the client in total by this module */
+	unsigned int	to_send;	/* Amount of data left to send to server */
+	unsigned int	total_send;	/* Total size of data to send to server */
+	unsigned int	data_wanted;	/* Response parts wanted - 0 for body only, 1 for head only, 2 for both */
+	int		method;		/* HTTP method being used - no idea on representation */
+	char		*data;		/* Client data to be sent to server?? (not sure) */
+	int		data_len;	/* Size of data pointed to by 'data'.  strlen(data) if not known */
+	char		*uri;		/* Specific part of the URI */
+	char		*url;		/* Full URI of the document being fetched */
+	char		*host;		/* Host name of the host being contacted */
+	int		port;		/* Port number of the host being contacted */
+	char		*endhost;	/* Host name of final target host - needed for HTTP/1.1 */
+	int		endport;	/* Port number of final target host */
+	char		*agent;		/* User-Agent string to be sent - NULL to use this module's own ID */
+	char		*fullreq;	/* The complete request part of the HTTP conversation - NULL if not built yet */
+	char		*current_header;/* Used by the header parser when building headers for the client */
+	int		final_pump;	/* When non-zero indicates that this is the final header being pumped out */
+	int		hdrptr;		/* Offset into header */
+	char		*buffer;	/* Internal buffer used by header parser */
+	int		bufptr;		/* Current pointer into header buffer */
+	int		read_status;	/* Set to non-zero once we have processed the first line of the response */
+	int		bufsize;	/* Size of the buffer */
+	int		donehead;	/* Great name! */
+	int		chunking;	/* Flag indicating we are decoding a chunked transfer */
+	int		chunk_bytes;	/* Bytes left in current chunk */
+	int		chunk_state;	/* Used to keep track of our buffer state in the de-chunker */
+        compress_type   compression;    /* What type of Content-Encoding compression is in use */
+        compress_state  compstate;      /* Where is the decompression up to? */
+        unsigned int    compflags;      /* Various flags... */
+        z_stream        zstream;        /* zlib stream structure */
+        Bytef           *compbuf;       /* Temporary buffer to read data into */
+        int             compbufsize;    /* How big is that buffer? */
+	int		wait_interim;	/* Set to non-zero when waiting for a multi-stage response (eg. HTTP/1.1 POST) */
+	int		reused_socket;	/* Set to non-zero when a socket is being re-used on a persistent connection */
+	http_header	*headers;	/* List of headers */
+	time_t		last;		/* Last activity timeout - used to determine HTTP/1.1 wait delays as of v0.51 */
+	int		flags;		/* Caller flags - needed during construction of headers (for cookie flag) */
+	const sock_vtbl	*op;		/* Virtual function call table for socket operations */
+} Session;
+
+
+/*************************************************************/
+/* Found in ^.c.ses_ctrl				     */
+/*************************************************************/
+/* These functions are used to manipulate session control    */
+/* structures; find, create and kill sessions		     */
+/*************************************************************/
+extern Session *find_session(unsigned int id);
+extern Session *new_session(void);
+extern void kill_session(Session */*s*/);
+extern void ses_kill_all(void);
+extern void session_check(void);
+extern void session_init(void);
+
+/*************************************************************/
+/* Found in ^.c.connect					     */
+/*************************************************************/
+/* These functions are used to create a socket, connect it   */
+/* to a remote host, and make it non_blocking		     */
+/*************************************************************/
+extern int opensock(char *name, int port, char *sername, int *state, int fd, Session *ses);
+
+/*************************************************************/
+/* Found in ^.c.module					     */
+/*************************************************************/
+/* The basic module entry points			     */
+/*************************************************************
+extern _kernel_oserror *module_init(char *cmd_fail,int podule_base,void *pw);
+extern _kernel_oserror *module_kill(int fatal, int podule, void *pw);
+extern _kernel_oserror *swi_handler(int swi_no,_kernel_swi_regs *r,void *pw);
+
+*/
+extern _kernel_oserror *return_error(int status_code);
+
+/*************************************************************/
+/* Found in ^.c.start					     */
+/*************************************************************/
+/* Start a HTTP transaction. Connect to the remote host and  */
+/* send the requisit data				     */
+/*************************************************************/
+_kernel_oserror *http_start(_kernel_swi_regs *r);
+_kernel_oserror *https_start(_kernel_swi_regs *r);
+int http_retry_request(Session *ses);
+
+/*************************************************************/
+/* Found in ^.c.stop					     */
+/*************************************************************/
+/* Stop a HTTP transaction. Connect to the remote host and   */
+/* send the requisit data				     */
+/*************************************************************/
+_kernel_oserror *http_stop(_kernel_swi_regs *r);
+_kernel_oserror *https_stop(_kernel_swi_regs *r);
+
+/*************************************************************/
+/* Found in ^.c.readdata				     */
+/*************************************************************/
+/* Routine to read the result back from a HTTP request	     */
+/*************************************************************/
+_kernel_oserror *http_readdata(_kernel_swi_regs *r);
+_kernel_oserror *https_readdata(_kernel_swi_regs *r);
+
+/*************************************************************/
+/* Found in ^.c.status					     */
+/*************************************************************/
+/* Routine to fake a status request back to the URL module   */
+/*************************************************************/
+_kernel_oserror *http_status(_kernel_swi_regs *r);
+_kernel_oserror *https_status(_kernel_swi_regs *r);
+
+/*************************************************************/
+/* Found in ^.c.cookie					     */
+/*************************************************************/
+/* Routines to handle the cookie SWI interfaces		     */
+/*************************************************************/
+_kernel_oserror *enumerate_cookies(_kernel_swi_regs *r);
+_kernel_oserror *consume_cookie(_kernel_swi_regs *r);
+_kernel_oserror *add_cookie(_kernel_swi_regs *r);
+
+/*************************************************************/
+/* Found in ^.c.decompress				     */
+/*************************************************************/
+/* Routines to handle Content-Encoding  		     */
+/*************************************************************/
+int decompress(Session *ses, char *buffer, int bufsize, int toread, int *rawread);
+
+/*************************************************************/
+/* This is the description of the URL module error base and  */
+/* where we are within it. We have 32 error messages that    */
+/* have been allocated to us.				     */
+/*************************************************************/
+#define ERROR_BASE  (0x80de00) /* URL module base */
+#define HTTP_OFFSET (0x000020) /* HTTP module base */
+
+/* This is the size of the internal header buffer.  Blocks of RMA will
+ * be claimed in chunks of this size, and blocks will be extended by
+ * this amount if found to be insufficiently long
+ */
+#define INTERNAL_BUFFER_SIZE	(4096)
+
+
+extern char *module_realloc(void */*ptr*/, size_t /*size*/);
+
+extern void http_free_agent(void);
+@
+
+
+1.4
+log
+@AcornHTTP version 0.81
+
+On the fly decompression now works.  Both deflated and gzipped files
+are handled and will, if the server asks us to, be decompressed on the
+fly during download.  (Chunked compressed downloads are untested)
+@
+text
+@d88 1
+a88 1
+	unsigned int	data_wanted;	/* No idea */
+@
+
+
+1.3
+log
+@Added support for Content-Encoding: gzip and deflate.
+Appears to work on the one server I've found to test against - more
+servers need to be found. Particularly, we need to test unusual gzip
+headers and interaction with chunking.
+@
+text
+@d56 1
+d60 1
+@
+
+
+1.2
+log
+@* https: support infrastructure has been added.  The API calls to the
+  Internet module are now vectored through a look up table so that the
+  calls for an https request are sent via the AcornSSL module.   The HTTP
+  module will only register https: protocol capability with the URL
+  module if the AcornSSL module is present, thus allowing transparent
+  addition of SSL support without requiring an update for the HTTP
+  module.
+
+* There is no encryption code in the HTTP module at all.  It is all
+  confined to the AcornSSL module.
+@
+text
+@d23 2
+d46 16
+d109 6
+d200 7
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d30 1
+d45 11
+d96 1
+d119 1
+a119 2
+extern int make_sock_nonblocking(int fd);
+extern int opensock(char *name, int port, char *sername, int *state, int fd);
+d140 1
+d150 1
+d158 1
+d166 1
+@
+
+
+1.1.1.1
+log
+@Import from SrcFiler of Browser fetchers
+@
+text
+@@

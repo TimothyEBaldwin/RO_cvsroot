@@ -1,0 +1,434 @@
+head	1.6;
+access;
+symbols
+	OMAP5-0_11:1.6
+	OMAP5-0_10-1_5_2_4:1.2.2.3
+	OMAP5-0_10:1.5
+	OMAP5-0_09:1.4
+	OMAP5-0_08:1.3
+	OMAP5-0_07-1_5_2_3:1.2.2.2
+	OMAP5-0_07:1.3
+	OMAP5-0_06-1_5_2_2:1.2.2.1
+	OMAP5-0_06-1_5_2_1:1.2
+	OMAP5-0_06:1.2
+	SMP:1.2.0.2
+	SMP_bp:1.2
+	OMAP5-0_05:1.2
+	OMAP5-0_04:1.2
+	OMAP5-0_03:1.1.1.1
+	OMAP5-0_02:1.1.1.1
+	OMAP5-0_01:1.1.1.1
+	OMAP5-0_00:1.1.1.1
+	wtheiss:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2018.07.07.15.12.08;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	yOjMaSVxBy0IudJA;
+
+1.5
+date	2018.05.12.08.25.21;	author rool;	state Exp;
+branches;
+next	1.4;
+commitid	mzUtPzDn5nJJ2ZBA;
+
+1.4
+date	2018.04.14.09.35.18;	author rool;	state Exp;
+branches;
+next	1.3;
+commitid	QEI2CGYgK5TxkoyA;
+
+1.3
+date	2017.09.09.10.52.14;	author rool;	state Exp;
+branches;
+next	1.2;
+commitid	gZ09Is9AzbNpJv6A;
+
+1.2
+date	2016.04.02.08.14.50;	author rool;	state Exp;
+branches
+	1.2.2.1;
+next	1.1;
+commitid	uOOoqnAKqYVDJ11z;
+
+1.1
+date	2015.11.28.10.02.57;	author rool;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	gLmEYKUnWLDNnQKy;
+
+1.2.2.1
+date	2017.08.12.22.21.51;	author jlee;	state Exp;
+branches;
+next	1.2.2.2;
+commitid	CXdrQgoiV7dNrY2A;
+
+1.2.2.2
+date	2017.09.10.11.40.18;	author jlee;	state Exp;
+branches;
+next	1.2.2.3;
+commitid	JOQqiBe7XS5UXD6A;
+
+1.2.2.3
+date	2018.07.07.14.57.54;	author jlee;	state Exp;
+branches;
+next	;
+commitid	WfYWLcxZnZgPpdJA;
+
+1.1.1.1
+date	2015.11.28.10.02.57;	author rool;	state Exp;
+branches;
+next	;
+commitid	gLmEYKUnWLDNnQKy;
+
+
+desc
+@@
+
+
+1.6
+log
+@Merge SMP branch to trunk
+Detail:
+  Makefile, s/DBell - Add doorbell HAL device implementation, using GIC SGIs
+  hdr/StaticWS, hdr/omap543x - Tidy things up a bit by removing the DebugInterrupts code
+  hdr/irqids543x - Offset all the shared interrupt numbers so that RISC OS IRQs 0-31 are core 0 private, 32-63 core 1 private, 64-223 shared
+  s/Boot - Implement SMP HAL entry points
+  s/Interrupts - Tidy up interrupt handling and implement new HAL IRQ calls
+Admin:
+  Untested
+  Requires Kernel-6_09
+
+
+Version 0.11. Tagged as 'OMAP5-0_11'
+@
+text
+@; Copyright 2015 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+        [       :LNOT: :DEF: __HAL_STATICWS_HDR__
+        GBLL    __HAL_STATICWS_HDR__
+
+        GET     hdr.SDMA
+        GET     hdr.Video
+        GET     hdr.Audio
+        GET     hdr.I2C
+        GET     hdr.board
+        GET     hdr.SR54x
+        GET     hdr.SATA
+        GET     Hdr:SDHCIDevice
+        GET     Hdr:RTCDevice
+        GET     Hdr:BMUDevice
+        GET     Hdr:DBellDevice
+
+sb              RN      9
+
+        MACRO
+        CallOS  $entry, $tailcall
+        ASSERT  $entry <= HighestOSEntry
+ [ "$tailcall"=""
+        MOV     lr, pc
+ |
+   [ "$tailcall"<>"tailcall"
+        ! 0, "Unrecognised parameter to CallOS"
+   ]
+ ]
+        LDR     pc, OSentries + 4*$entry
+        MEND
+
+; Per-SDHCI workspace
+
+                        ^       0
+SDHCIDevice             #       HALDevice_SDHCISize     ; see Hdr:SDHCIDevice
+SDHCISB                 #       4                       ; pointer to HAL workspace for HAL calls
+SDHCISlotInfo           #       HALDeviceSDHCI_SlotInfo_Size ; each of our controllers has just the 1 slot
+SDHCISize               *       :INDEX:@@
+
+MaxSDControllers        *       3 ; IGEPv5 Full Edition and TI OMAP5 UEVM
+
+; Per-BMU workspace
+
+                        ^       0
+BMUDevice               #       HALDevice_BMU_Size      ; see Hdr:BMUDevice
+BMUWS                   #       4                       ; pointer to HAL workspace for HAL calls
+BMUParams               #       4                       ; Per-device params
+BMUkC1                  #       4                       ; calibration constant 1
+BMUkC2                  #       4                       ; calibration constant 2
+BMUSize                 *       :INDEX:@@
+
+; Per-RTC workspace
+
+                        ^       0
+RTCDevice               #       HALDevice_RTC_Size      ; see Hdr:RTCDevice
+RTCDeviceHAL_SB         #       4                       ; pointer to HAL workspace for HAL calls
+RTCSize                 *       :INDEX:@@
+
+                        ^       0,sb
+BoardConfig             #       BoardConfig_Size
+; NOTE: Almost all code assumes the board config is at the start. You have been warned!
+OSheader                #       4
+OSentries               #       4*(HighestOSEntry+1)
+L3_Log                  #       4 ; L3 base logical address
+L4_Per_Log              #       4 ; L4 Per base logical address
+L4_ABE_Log              #       4 ; L4 ABE base logical address
+L4_Core_Log             #       4 ; L4 Core/Wakeup base logical address
+L4_Wakeup_Log           #       4 ; L4 Wakeup base logical address
+MPU_INTC_Log            #       4 ; MPU_INTC logical address
+Timers_Log              #       4 ; Timers logical base address
+L4_CM_CORE_AON_Log      #       4 ; L4_CM_CORE_AON base address
+L4_CM_CORE_Log          #       4 ; L4_CM_CORE base address
+L4_PRM_Log              #       4 ; L4_PRM (Power + Reset Manager) base address
+L4_COUNTER_32K_Log      #       4 ; L4_COUNTER_32K base address
+L4_USBTLL_Log           #       4 ; L4_USB_TLL_HS base address
+L4_USB_Host_Log         #       4 ; L4_USB_HOST_HS base address
+L4_USB_OTG_Log          #       4 ; L4_USB_OTG_SS base address
+GPMC_Regs_Log           #       4 ; GPMC_Regs base address
+sys_clk                 #       4 ; System clock speed in Hz
+Timer_DelayMul          #       4 ; sys_clk/100KHz
+HALInitialised          #       4 ; Flag for whether HAL_Init is done yet
+NVMemoryFound           #       4 ; Size of EEPROM detected (may be 0)
+L4_Display_Log          #       4 ; L4_Display base address
+L4_sDMA_Log             #       4 ; L4_DMA_SYSTEM logical address
+IntSRAM_Log             #       4 ; SRAM logical address
+
+L4_GPIO_Table           #       0 ; Lookup table for GPIO addresses
+L4_GPIO1_Log            #       4 ; L4_GPIO1 base address
+L4_GPIO2_Log            #       4 ; L4_GPIO2 base address
+L4_GPIO3_Log            #       4 ; L4_GPIO3 base address
+L4_GPIO4_Log            #       4 ; L4_GPIO4 base address
+L4_GPIO5_Log            #       4 ; L4_GPIO5 base address
+L4_GPIO6_Log            #       4 ; L4_GPIO6 base address
+L4_GPIO7_Log            #       4 ; L4_GPIO7 base address
+L4_GPIO8_Log            #       4 ; L4_GPIO8 base address
+
+MaxI2CControllers       *       5
+I2C_Table               #       (MaxI2CControllers*I2CBlockSize) ; I2C HW ptrs & transfer states
+
+UARTFCRSoftCopy         #       4
+NCNBWorkspace           #       4 ; Base of ncnb workspace
+NCNBAllocNext           #       4 ; next free address in ncnb workspace
+
+DMAPktSz_Audio          #       4 ; DMA packet size to use for audio transfers (McPDM DL)
+
+SDMAWS                  #       SDMA_WorkspaceSize
+
+VideoDevice             #       Video_DeviceSize
+VideoBoardConfig        #       VideoBoardConfig_Size
+
+AudioWS                 #       Audio_WorkspaceSize
+CPUClkWS                #       SR54x_WorkspaceSize
+NVRAMWS                 #       HALDeviceSize
+RTCWS                   #       RTCSize
+
+SDIOWS                  #       SDHCISize * MaxSDControllers
+BMUWS1                  #       BMUSize
+DBellDevice             #       HALDevice_DBell_Size
+SATAWS                  #       SATA_WorkspaceSize
+
+
+HAL_WsSize              *       :INDEX:@@
+
+        ] ; __HAL_STATICWS_HDR__
+
+        END
+@
+
+
+1.5
+log
+@Add SATA HAL device
+Detail:
+  Add device space, call to initialise, and source for, the on chip AHCI peripheral.
+Admin:
+  Submission from Willi Theiss.
+
+Version 0.10. Tagged as 'OMAP5-0_10'
+@
+text
+@d29 1
+a113 8
+ [ DebugInterrupts
+LastInterrupt_IRQ       #       4 ; Last IRQ, -1 if cleared
+LastInterrupt_FIQ       #       4 ; Last FIQ, -1 if cleared
+  [ ExtraDebugInterrupts
+ExtraDebugIRQEnabled    #       4 ; Nonzero if extra debugging enabled
+  ]
+ ]
+
+d132 1
+@
+
+
+1.4
+log
+@OMAP5 HAL updates and tidying
+Detail:
+  castle.RiscOS.Sources.HAL.OMAP5.s.Boot
+    use BoardType and BoardRevision instead of GPIOType and GPIORevision
+  castle.RiscOS.Sources.HAL.OMAP5.s.GPIO
+    corrected number of available GPIO ports
+  castle.RiscOS.Sources.HAL.OMAP5.s.SDIO
+    use BoardType and BoardRevision instead of GPIOType and GPIORevision
+  castle.RiscOS.Sources.HAL.OMAP5.hdr.board
+    added BoardType and BoardRevision values
+  castle.RiscOS.Sources.HAL.OMAP5.hdr.GPIO
+    removed GPIOType and GPIORevision values
+  castle.RiscOS.Sources.HAL.OMAP5.hdr.Interrupts
+    corrected offset for GICD_SPENDSGIR
+  castle.RiscOS.Sources.HAL.OMAP5.hdr.StaticWS
+    removed unused USBAllocArea
+Admin:
+  Submission from Willi Theiss.
+
+Version 0.09. Tagged as 'OMAP5-0_09'
+@
+text
+@d25 1
+d139 1
+a139 1
+
+@
+
+
+1.3
+log
+@Participate in keyboard scan dependencies
+Detail:
+  Replace keyboard scan code with list of modules that the kernel needs to do the same.
+  Reorder the HALEntries to match Kernel-5_89.
+  Delete unused workspace.
+  Don't link against HAL USB library.
+Admin:
+  Submission for USB bounty.
+
+Version 0.07. Tagged as 'OMAP5-0_07'
+@
+text
+@a139 10
+; align on 16 byte boundary
+                        #       (((:INDEX: @@) + 15) :AND: :NOT: 15) - (:INDEX: @@)
+
+USBAllocAreaSize        *       16*1024
+; With an ordinary setup, about half of this memory gets used.
+; About 3K goes to some big allocs (looks like the bus structs)
+
+USBAllocArea            #       USBAllocAreaSize
+
+
+@
+
+
+1.2
+log
+@Correction to die temperature setup, extra SDIO device declarations
+Detail:
+  hdr/board - added entry BoardConfig_EndOfRAM (for further board differentiation)
+  hdr/SR54x - added CONTROL_BANDGAP_MASK register offset
+  hdr/StaticWS - increased MaxSDControllers for supporting all available devices
+  board.s - initialisation of variable BoardConfig_EndOfRAM
+  SDIO.s - added support for eMMC2 and WLAN_SDIO devices
+  SR54x.s - corrected bit for EOCZ; added initialisation of CONTROL_BANDGAP_MASK
+  Top.s - fill in value for end of SDRAM into BoardConfig variable
+Admin:
+  Submission from Willi Theiss, not tested here.
+
+Version 0.04. Tagged as 'OMAP5-0_04'
+@
+text
+@a24 1
+        GET     <Lib$$Dir>.USB.hdr.usbhal
+a125 2
+USBHAL_WS               #       USBHAL_WS_Size ; USB workspace for keyboard scan
+
+@
+
+
+1.2.2.1
+log
+@Initial SMP support
+Detail:
+  This is essentiall the same changes as OMAP4-0_52-1_52_2_1, except for HAL_SMPStartup, which needs to deal with GIC CPU interface initialisation.
+  s/DBell, Makefile - Implement doorbell device
+  s/Boot - Implement new SMP-related HAL entry points
+  s/Interrupts - Remove DebugInterrupts code to make things easier to follow. Add a couple of macros for mapping IRQ numbers to register bits, tohelp with IRQ number translation. Implement new IRQ-related HAL entry points
+  hdr/irqids543x - Offset the peripheral interrupt numbers to that 0-31 are core 0 private, 32-63 core 1 private, 64+ = peripheral
+  hdr/StaticWS - Remove DebugInterrupts code. Reserve space for doorbell device.
+  hdr/omap543x - Remove DebugInterrupts code. Add definitions for aux core boot registers. Extend address range that gets mapped in for MPU_INTC, to make sure that we also get the aux core boot registers
+Admin:
+  Tested on IGEPv5
+
+
+Version 0.06, 1.5.2.2. Tagged as 'OMAP5-0_06-1_5_2_2'
+@
+text
+@a28 1
+        GET     Hdr:DBellDevice
+d113 8
+a140 1
+DBellDevice             #       HALDevice_DBell_Size
+@
+
+
+1.2.2.2
+log
+@Merge in latest changes from main branch
+
+Version 0.07, 1.5.2.3. Tagged as 'OMAP5-0_07-1_5_2_3'
+@
+text
+@d25 1
+d120 2
+@
+
+
+1.2.2.3
+log
+@Merge in latest changes from HEAD
+
+Version 0.10, 1.5.2.4. Tagged as 'OMAP5-0_10-1_5_2_4'
+@
+text
+@a24 1
+        GET     hdr.SATA
+d132 11
+a142 1
+SATAWS                  #       SATA_WorkspaceSize
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d53 1
+a53 1
+MaxSDControllers        *       2 ; I don't think any platform uses all 3 controllers?
+@
+
+
+1.1.1.1
+log
+@Import of OMAP5 HAL
+Admin:
+  Submission from Willi Theiss
+@
+text
+@@

@@ -1,0 +1,657 @@
+head	1.7;
+access;
+symbols
+	DADebug-0_10:1.7
+	DADebug-0_09:1.6
+	DADebug-0_08:1.5
+	DADebug-0_07:1.4
+	DADebug-0_06:1.3
+	DADebug-0_05:1.2
+	DADebug-0_04:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2016.11.26.13.04.23;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	s2pjngky2s4IGDvz;
+
+1.6
+date	2014.08.29.18.49.04;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	ZLH9i3lfD1j8XhOx;
+
+1.5
+date	2012.06.03.13.56.10;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	TAIWDexN6ObPAg7w;
+
+1.4
+date	2011.05.22.19.47.44;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	rSQ8FkLENLHLGIkv;
+
+1.3
+date	2010.11.25.19.25.49;	author jlee;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2009.07.02.19.28.09;	author jlee;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.02.01.15.45.01;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2001.02.01.15.45.01;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Fix register corruption from SWI DADebug_Print
+Detail:
+  s/DADebug - Fix register corruption in OS_WriteC implementation of DADebug_Print (caused by OS_Byte)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.10. Tagged as 'DADebug-0_10'
+@
+text
+@; Copyright 2001 Pace Micro Technology plc
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; ***********************************
+; ***    C h a n g e   L i s t    ***
+; ***********************************
+
+; Date       Version  Name  Description
+; ----       -------  ----  -----------
+; 24-May-99  0.01     BJGA  Initial version
+; 28-Oct-99  0.02     BJGA  DADWriteC made APCS compliant
+; 30-Mar-00  0.03     BJGA  Checks Escape state during DADPrint
+; 01-Feb-01  0.04     BJGA  32-bit compatible
+; 30-Jun-09  0.05     JL    Support for running from ROM, TickerPrint for keyboardless debugging
+; 25-Nov-10  0.06     JL    Rewrote to store workspace & DADWriteC in the RMA instead of using a OS_Module 11 hack to allow for running from ROM
+
+
+; Compile-time options
+
+        GBLA    DAsize
+DAsize  SETA    400 * 1024                      ; size of dynamic area to use
+
+            GBLL TickerPrint
+TickerPrint SETL {FALSE}     ; TRUE to call *dadprint at 60 second intervals (for tricky bugs where keyboard input isn't possible!)
+
+            GBLL UseHAL
+UseHAL      SETL {FALSE}     ; TRUE to cause *dadprint to use HAL_DebugTX instead of OS_WriteC
+
+            GBLL NoWrap
+NoWrap      SETL {FALSE}     ; TRUE to prevent wrapping of output buffer
+
+; Includes
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:Machine.<Machine>
+        GET     Hdr:Proc
+        GET     Hdr:ModHand
+        GET     VersionASM
+ [ UseHAL
+        GET     Hdr:HALEntries
+ ]
+
+
+; Module header
+                AREA      |DADebug$$Code|, CODE, READONLY, PIC
+
+                ENTRY
+
+Module_BaseAddr
+        &       0; Start
+        &       Initialise - Module_BaseAddr
+        &       Finalise - Module_BaseAddr
+        &       0; Service
+        &       Title - Module_BaseAddr
+        &       Help - Module_BaseAddr
+        &       CommandTable - Module_BaseAddr
+        &       DADebugSWI_Base
+        &       SWIHandler - Module_BaseAddr
+        &       SWITable - Module_BaseAddr
+        &       0 ; SWI decoding code
+        [ {FALSE} ; International_Help <> 0
+        &       MessagesFile - Module_BaseAddr
+        |
+        &       0
+        ]
+        &       ModuleFlags - Module_BaseAddr
+
+Help
+        =       "DADebug", 9, "$Module_MajorVersion ($Module_Date)"
+        [ Module_MinorVersion <> ""
+        =       " $Module_MinorVersion"
+        ]
+        =       0
+Title
+SWITable
+        =       "DADebug", 0
+        =       "GetWriteCAddress", 0
+        =       "Print", 0
+        =       "Reset", 0
+        =       0
+        ALIGN
+
+ModuleFlags
+        [ No32bitCode
+        &       0
+        |
+        &       ModuleFlag_32bit
+        ]
+
+; This bit gets copied into the RMA
+Workspace_Begin
+        & -1 ; ReadPtr
+        & -1 ; WritePtr
+        & -1 ; BufferStart
+        & -1 ; DAnumber
+Workspace_DADWriteC
+; In: R0 = character to insert
+;     R14 = return address
+;     Assumed not in USR mode
+; Out: all registers and flags must be preserved
+        EntryS  "R0-R3"
+        SETPSR  I_bit, R14
+
+        ADR     R14, Workspace_Begin
+        ASSERT  ReadPtr = 0
+        LDMIA   R14, {R1-R3}     ; load ReadPtr, WritePtr, BufferStart
+
+        STRB    R0, [R3, R2]     ; write the byte
+        ADD     R2, R2, #1       ; increment write pointer
+        TEQ     R2, #DAsize      ; with wrap
+        MOVEQ   R2, #0
+
+        TEQ     R1, R2           ; if WritePtr hasn't caught up with ReadPtr
+        STRNE   R2, [R14, #WritePtr] ; just update WritePtr
+      [ :LNOT: NoWrap
+        EXITS   NE, cxsf         ; and exit restoring interrupt state
+
+01      LDRB    R0, [R3, R1]     ; read byte at ReadPtr
+        ADD     R1, R1, #1       ; increment ReadPtr
+        TEQ     R1, #DAsize      ; with wrap
+        MOVEQ   R1, #0
+        TEQ     R0, #10          ; and repeat until we find the next LF
+        TEQNE   R1, R2           ; or until we run back into the WritePtr (!)
+        BNE     %BT01
+
+        STMIA   R14, {R1, R2}    ; update ReadPtr and WritePtr
+      ]
+        EXITS   , cxsf           ; exit restoring interrupt state
+Workspace_End
+
+; Workspace. Contains a copy of the DADWriteC code, to allow DADebug to work from ROM without DADWriteC needing a workspace pointer
+                ^ 0
+ReadPtr         #       4
+WritePtr        #       4
+BufferStart     #       4
+DAnumber        #       4
+DADWriteC       #       Workspace_End-Workspace_DADWriteC
+Workspace_Size  * @@
+
+
+Initialise
+        Entry   "R7-R9"
+        MOV     R0, #6
+        MOV     R3, #Workspace_Size
+        SWI     XOS_Module
+        EXIT    VS
+        STR     R2, [R12]
+        ADR     R0, Workspace_Begin
+        MOV     R1, R2
+01
+        LDR     R4, [R0],#4
+        STR     R4, [R2],#4
+        SUBS    R3, R3, #4
+        BNE     %BT01
+        MOV     R0, #1
+        SWI     XOS_SynchroniseCodeAreas
+        MOV     R9, R1
+        MOV     R0, #0           ; create dynamic area
+        MOV     R1, #-1
+        MOV     R2, #DAsize
+        MOV     R3, #-1
+        MOV     R4, #&80         ; non-draggable
+        MOV     R5, #DAsize
+        MOV     R6, #0
+        MOV     R7, #0
+        ADRL    R8, Title
+        SWI     XOS_DynamicArea
+        EXIT    VS
+        STR     R1, [R9, #DAnumber]
+        STR     R3, [R9, #BufferStart]
+
+        BL      DADReset_Code    ; preserves V (clear)
+ [ TickerPrint
+        MOV     R0, #&1780 ; 60 seconds (ish)
+        ADR     R1, DADPrint_Code
+        MOV     R2, R12
+        SWI     XOS_CallEvery
+ ]
+        EXIT
+
+Finalise
+        Entry
+        LDR     R2, [R12]
+ [ TickerPrint
+        ADR     R0, DADPrint_Code
+        MOV     R1, R12
+        SWI     XOS_RemoveTickerEvent
+ ]
+        MOV     R0, #1 ; remove dynamic area
+        LDR     R1, [R2, #DAnumber]
+        SWI     XOS_DynamicArea
+        MOV     R0, #7
+        SWI     XOS_Module
+        CLRV
+        EXIT
+
+CommandTable
+        Command DADPrint, 0, 0, 0
+        Command DADReset, 0, 0, 0
+        =       0
+
+DADPrint_Help
+        =       "*DADPrint prints all the debug output collected so far.", 13
+DADPrint_Syntax
+        =       27, 1, 0
+        ALIGN
+
+DADPrint_Code
+ [ UseHAL
+        Entry   "r0-r6,r8-r9"
+        MOV     R8, #0
+        MOV     R9, #EntryNo_HAL_DebugTX
+ |
+        Entry   "r0-r2,r4-r6"
+ ]
+        LDR     R14, [R12]
+        ASSERT  ReadPtr = 0
+        LDMIA   R14, {R4-R6}     ; load ReadPtr, WritePtr, BufferStart
+
+01      LDRB    R0, [R6, R4]     ; read a byte
+ [ UseHAL
+        SWI     XOS_Hardware
+ |
+        SWI     XOS_WriteC
+ ]
+        CMN     R0, #0           ; clear C
+        TEQ     R0, #10          ; at the end of each line,
+        SWIEQ   XOS_ReadEscapeState ; check for Escape
+        BCS     %FT02
+        ADD     R4, R4, #1       ; increment read pointer
+        TEQ     R4, #DAsize      ; with wrap
+        MOVEQ   R4, #0
+        TEQ     R4, R5
+        BNE     %BT01            ; and loop until we reach WritePtr
+
+02      MOV     R0, #126
+        SWI     XOS_Byte         ; acknowledge any Escape event
+        ; Note that we don't write anything back
+        CLRV
+        EXIT
+
+DADReset_Help
+        =       "*DADReset clears the store of debug output.", 13
+DADReset_Syntax
+        =       27, 1, 0
+        ALIGN
+
+DADReset_Code
+        Entry   "r12"
+        SETPSR  I_bit, R14,, R2  ; disable interrupts
+
+        LDR     R12, [R12]
+        MOV     R0, #0
+        STR     R0, [R12, #ReadPtr]
+        STR     R0, [R12, #WritePtr]
+
+        ADR     R1, DefaultStartString
+01      LDRB    R0, [R1], #1
+        TEQ     R0, #0
+        MOVNE   LR, PC
+        ADDNE   PC, R12, #DADWriteC ; Preserves flags
+        BNE     %BT01
+
+        RestPSR R2               ; restore interrupt state
+        EXIT                     ; V flag unchanged from entry
+
+DefaultStartString
+        =       "Debug start", 13, 10, 0
+
+SWIHandler ROUT
+        CMP     R11, #(EndOfJumpTable - JumpTable)/4
+        ADDLO   PC, PC, R11, LSL #2
+        B       UnknownSWIError
+JumpTable
+        B       SWIDADebug_GetWriteCAddress
+        B       DADPrint_Code
+        B       DADReset_Code
+EndOfJumpTable
+
+UnknownSWIError
+        MOV     PC, LR           ; don't actually return an error for now
+
+SWIDADebug_GetWriteCAddress
+        LDR     R12, [R12]
+        ADD     R0, R12, #DADWriteC
+        MOV     PC, LR
+        
+Module_End
+
+        END
+@
+
+
+1.6
+log
+@Add option to prevent wrapping of the output buffer
+Detail:
+  s/DADebug - Added a build-time option to prevent wrapping of the output buffer. Once the buffer is full, any new debug output will be lost until *DADReset is issued
+Admin:
+  Tested on BB-xM
+
+
+Version 0.09. Tagged as 'DADebug-0_09'
+@
+text
+@d227 1
+a227 1
+        Entry   "r0,r4-r6"
+a229 1
+DADPrint_SWICode
+@
+
+
+1.5
+log
+@Add SWIs for *DADPrint and *DADReset
+Detail:
+  s/DADebug - Added DADebug_Print and DADebug_Reset SWIs, to provide an alternate way of issuing *DADPrint/*DADReset
+  Doc/DADebug - Updated docs
+Admin:
+  Tested in BCM2835 ROM
+
+
+Version 0.08. Tagged as 'DADebug-0_08'
+@
+text
+@d40 2
+d128 1
+d140 1
+@
+
+
+1.4
+log
+@Update DADebug to support HAL_DebugTX output
+Detail:
+  s/DADebug - The new UseHAL build option will cause DADebug to use HAL_DebugTX for all output instead of OS_WriteC. Useful when you want the DADebug output to be sent to the serial port but don't want to enable the full debug terminal.
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.07. Tagged as 'DADebug-0_07'
+@
+text
+@d89 2
+d226 1
+a280 2
+        Push    "R14"
+        LDR     R12, [R12]
+d286 2
+d291 1
+a291 1
+        Pull    "PC"             ; don't actually return an error for now
+d294 1
+d296 1
+a296 1
+        Pull    "PC"
+@
+
+
+1.3
+log
+@Make DADebug run from ROM properly
+Detail:
+  !MkRom,fd7, Makefile, Doc/DADebug, s/DADebug - Removed the ROMSupport hack and replaced with a new system that allows the module to function immediately after initialisation instead of having to wait for the next callback.
+  The module now uses workspace to store its variables, and the DADWriteC routine is stored as part of that workspace, allowing DADWriteC to function even though it doesn't get passed a workspace pointer.
+Admin:
+  Tested in Iyonix ROM build
+
+
+Version 0.06. Tagged as 'DADebug-0_06'
+@
+text
+@d37 3
+d50 3
+d216 7
+a222 1
+        Entry "r0-r3"
+d225 1
+a225 1
+        LDMIA   R14, {R1-R3}     ; load ReadPtr, WritePtr, BufferStart
+d227 4
+a230 1
+01      LDRB    R0, [R3, R1]     ; read a byte
+d232 1
+d237 4
+a240 4
+        ADD     R1, R1, #1       ; increment read pointer
+        TEQ     R1, #DAsize      ; with wrap
+        MOVEQ   R1, #0
+        TEQ     R1, R2
+@
+
+
+1.2
+log
+@Fix DADebug to build properly with objasm, add initial support for running from ROM
+Detail:
+  Makefile - rewritten using makefile fragments, added ROMSupport option
+  !MkRam, !MkRom - updated to correctly build RAM/ROM versions of module
+  s/DADebug - Added an AREA to keep objasm happy. Added initial, hacky ROM support (compare PC against hardcoded ROM start address & relaunch module from RAM if we think we're in ROM). Added builtin ability to automatically call *DADPrint every 60 seconds, for situations where keyboard input isn't possible
+  Doc/DADebug - Updated with notes about running from ROM
+Admin:
+  Tested on Rev C2 beagleboard
+
+
+Version 0.05. Tagged as 'DADebug-0_05'
+@
+text
+@d26 1
+d93 47
+a139 17
+Initialise
+        Entry   "R7, R8"
+ [ ROMSupport
+        MOV     R0, PC
+  [ HAL32
+        CMP     R0, #&FC000000 ; AKA ROM start for HAL machines
+  |
+        ! 0,"ROM support not implemented for non-HAL32 platforms"
+        ASSERT 0
+  ]
+        BLO     DoInitialise
+        ADR     R0, ROMCallback
+        MOV     R1, #0
+        SWI     XOS_AddCallBack
+        ADRVC   R0, ROMError
+        SETV
+        EXIT
+a140 4
+ROMError
+        DCD 0
+        = "DADebug: Attempting to relaunch from RAM",0
+        ALIGN
+d142 17
+a158 2
+DoInitialise
+ ] ; ROMSupport
+d167 1
+a167 1
+        ADR     R8, Title
+d170 2
+a171 2
+        STR     R1, DAnumber
+        STR     R3, BufferStart
+d177 1
+a177 1
+        MOV     R2, #0
+d184 1
+d187 1
+a187 1
+        MOV     R1, #0
+d191 1
+a191 1
+        LDR     R1, DAnumber
+d193 2
+d211 2
+a212 1
+        ADR     R14, ReadPtr
+d240 1
+a240 1
+        Entry
+d243 1
+d245 2
+a246 2
+        STR     R0, ReadPtr
+        STR     R0, WritePtr
+d251 2
+a252 1
+        BLNE    DADWriteC        ; preserves flags
+d255 1
+a255 1
+        RestPSR R2,, c           ; restore interrupt state
+d263 1
+d275 1
+a275 1
+        ADR     R0, DADWriteC
+a276 53
+
+
+DADWriteC
+; In: R0 = character to insert
+;     R14 = return address
+;     Assumed not in USR mode
+; Out: all registers and flags must be preserved
+        EntryS  "R0-R3"
+        SETPSR  I_bit, R14
+
+        ADR     R14, ReadPtr
+        LDMIA   R14, {R1-R3}     ; load ReadPtr, WritePtr, BufferStart
+
+        STRB    R0, [R3, R2]     ; write the byte
+        ADD     R2, R2, #1       ; increment write pointer
+        TEQ     R2, #DAsize      ; with wrap
+        MOVEQ   R2, #0
+
+        TEQ     R1, R2           ; if WritePtr hasn't caught up with ReadPtr
+        STRNE   R2, WritePtr     ; just update WritePtr
+        EXITS   NE, cxsf         ; and exit restoring interrupt state
+
+01      LDRB    R0, [R3, R1]     ; read byte at ReadPtr
+        ADD     R1, R1, #1       ; increment ReadPtr
+        TEQ     R1, #DAsize      ; with wrap
+        MOVEQ   R1, #0
+        TEQ     R0, #10          ; and repeat until we find the next LF
+        TEQNE   R1, R2           ; or until we run back into the WritePtr (!)
+        BNE     %BT01
+
+        STMIA   R14, {R1, R2}    ; update ReadPtr and WritePtr
+        EXITS   , cxsf           ; exit restoring interrupt state
+
+
+; Workspace - held here so that no workspace pointer is required by DADWriteC
+; Note that this means the module is not ROMmable.
+
+ReadPtr         &       -1
+WritePtr        &       -1
+BufferStart     &       -1
+DAnumber        &       -1
+
+ [ ROMSupport
+; Callback to relocate ourselves to RAM
+; A better solution might be to just relocate DADWriteC & workspace to the RMA - but where's the fun in that?
+ROMCallback
+        Entry   "R0-R2"
+        MOV     R0, #11
+        ADR     R1,Module_BaseAddr
+        MOV     R2, #Module_End-Module_BaseAddr
+        SWI     XOS_Module
+        EXIT
+ ]
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d25 1
+d33 3
+d49 3
+d94 23
+d132 6
+d142 5
+d165 1
+a165 1
+        Entry
+d270 14
+@
+
+
+1.1.1.1
+log
+@  Initial import of DADebug module into CVS.
+Detail:
+  Made the module 32-bit compatible, and decided it was about time it was in
+  CVS, since I've been using it for the last 2 years.
+Admin:
+  There are accompanying tweaks to DebugLib to use this module, but I've not
+  checked those in yet.
+
+Version 0.04. Tagged as 'DADebug-0_04'
+@
+text
+@@

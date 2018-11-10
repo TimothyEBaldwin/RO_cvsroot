@@ -1,0 +1,621 @@
+head	1.5;
+access;
+symbols
+	DWCDriver-0_35:1.5
+	DWCDriver-0_34:1.5
+	DWCDriver-0_33:1.5
+	DWCDriver-0_32:1.4
+	DWCDriver-0_31:1.4
+	DWCDriver-0_30:1.4
+	DWCDriver-0_29:1.4
+	DWCDriver-0_28:1.3
+	DWCDriver-0_27:1.3
+	DWCDriver-0_26:1.3
+	DWCDriver-0_24-1:1.3
+	DWCDriver-0_25:1.3
+	DWCDriver-0_24:1.3
+	DWCDriver-0_23:1.3
+	DWCDriver-0_22:1.3
+	DWCDriver-0_21:1.3
+	DWCDriver-0_20:1.3
+	DWCDriver-0_19:1.3
+	DWCDriver-0_18:1.3
+	DWCDriver-0_17:1.3
+	DWCDriver-0_16:1.3
+	DWCDriver-0_15:1.3
+	DWCDriver-0_14:1.3
+	DWCDriver-0_13:1.3
+	DWCDriver-0_12:1.3
+	DWCDriver-0_11:1.3
+	DWCDriver-0_10:1.3
+	DWCDriver-0_09:1.3
+	DWCDriver-0_08:1.2
+	DWCDriver-0_07:1.1
+	DWCDriver-0_06:1.1
+	DWCDriver-0_05:1.1
+	DWCDriver-0_04:1.1
+	DWCDriver-0_03:1.1
+	DWCDriver-0_02:1.1
+	DWCDriver-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2017.11.25.09.49.31;	author rool;	state Exp;
+branches;
+next	1.4;
+commitid	krukx1U3qlvrUogA;
+
+1.4
+date	2016.12.17.10.22.16;	author rool;	state Exp;
+branches;
+next	1.3;
+commitid	cEIxPCqCTT2e7kyz;
+
+1.3
+date	2012.09.17.16.32.53;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	DXVFy2WJjyak3Ukw;
+
+1.2
+date	2012.08.04.14.31.23;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	znlbEiHiIsNmNefw;
+
+1.1
+date	2012.06.03.15.12.53;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ZZ9X1FvMWAU11h7w;
+
+
+desc
+@@
+
+
+1.5
+log
+@Fix to device descriptor interval handling
+Detail:
+  For high speed interrupt endpoints, and full/high speed isochronous, the bInterval value is held in log2 form. Take this into account.
+  Correct the built in root hub device descriptor similarly - 255 is not valid for a HSHUBSTT (USB 2.0 errata 07-Dec-2000 corrected the mistake on page 412 of the USB 2.0 spec).
+Admin:
+  Based on a submission from Colin Granville, with edits.
+
+Version 0.33. Tagged as 'DWCDriver-0_33'
+@
+text
+@/*
+ * Copyright (c) 2004, 2009 The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Lennart Augustsson (lennart@@augustsson.net), Charles M. Hannum, and
+ * Jeffrey Lee (me@@phlamethrower.co.uk)
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *        This product includes software developed by the NetBSD
+ *        Foundation, Inc. and its contributors.
+ * 4. Neither the name of The NetBSD Foundation nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <stdarg.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include "kernel.h"
+#include "swis.h"
+#include "cmodule.h"
+#include "tboxlibint/messages.h"
+#include "modhead.h"
+
+#include <sys/callout.h>
+#include <sys/queue.h>
+
+#include <machine/bus.h>
+#include <dev/usb/usb.h>
+#include <dev/usb/usbdi.h>
+#include <dev/usb/usbdivar.h>
+
+#include "dwc_os.h"
+#include "dwc_otg_riscos.h"
+
+#include "dwc/driver/dwc_otg_hcd_if.h"
+#include "dwc/driver/dwc_otg_dbg.h"
+#include "dwc/driver/dwc_otg_driver.h"
+
+static const usb_device_descriptor_t softc_devd = {
+	USB_DEVICE_DESCRIPTOR_SIZE,
+	UDESC_DEVICE,		/* type */
+	{0x00, 0x02},		/* USB version */
+	UDCLASS_HUB,		/* class */
+	UDSUBCLASS_HUB,		/* subclass */
+	UDPROTO_HSHUBSTT,	/* protocol */
+	64,			/* max packet */
+	{0},{0},{0x00,0x01},	/* device id */
+	1,2,0,			/* string indicies */
+	1			/* # of configurations */
+};
+
+static const usb_device_qualifier_t softc_odevd = {
+	USB_DEVICE_DESCRIPTOR_SIZE,
+	UDESC_DEVICE_QUALIFIER,	/* type */
+	{0x00, 0x02},		/* USB version */
+	UDCLASS_HUB,		/* class */
+	UDSUBCLASS_HUB,		/* subclass */
+	UDPROTO_FSHUB,		/* protocol */
+	64,			/* max packet */
+	1,			/* # of configurations */
+	0
+};
+
+static const usb_config_descriptor_t softc_confd = {
+	USB_CONFIG_DESCRIPTOR_SIZE,
+	UDESC_CONFIG,
+	{USB_CONFIG_DESCRIPTOR_SIZE +
+	 USB_INTERFACE_DESCRIPTOR_SIZE +
+	 USB_ENDPOINT_DESCRIPTOR_SIZE},
+	1,
+	1,
+	0,
+	UC_SELF_POWERED,
+	0			/* max power */
+};
+
+static const usb_interface_descriptor_t softc_ifcd = {
+	USB_INTERFACE_DESCRIPTOR_SIZE,
+	UDESC_INTERFACE,
+	0,
+	0,
+	1,
+	UICLASS_HUB,
+	UISUBCLASS_HUB,
+	UIPROTO_HSHUBSTT,
+	0
+};
+
+static const usb_endpoint_descriptor_t softc_endpd = {
+	USB_ENDPOINT_DESCRIPTOR_SIZE,
+	UDESC_ENDPOINT,
+	UE_DIR_IN | DWC_SOFTC_INTR_ENDPT,
+	UE_INTERRUPT,
+	{8, 0},			/* max packet */
+	12
+};
+
+static int softc_str(usb_string_descriptor_t* p, int l, char *s)
+{
+	int i;
+
+	if (l == 0)
+		return (0);
+	p->bLength = 2 * strlen(s) + 2;
+	if (l == 1)
+		return (1);
+	p->bDescriptorType = UDESC_STRING;
+	l -= 2;
+	for (i = 0; s[i] && l > 1; i++, l -= 2)
+		USETW2(p->bString[i], 0, s[i]);
+	return (2*i+2);
+}
+
+usbd_status softc_root_ctrl_transfer(usbd_xfer_handle xfer)
+{
+	usbd_status err;
+
+	/* Insert last in queue. */
+	err = usb_insert_transfer(xfer);
+	if (err)
+		return (err);
+
+	/* Pipe isn't running, start first */
+	return (softc_root_ctrl_start(SIMPLEQ_FIRST(&xfer->pipe->queue)));
+}
+
+usbd_status softc_root_ctrl_start(usbd_xfer_handle xfer)
+{
+	dwc_softc_t *sc = (dwc_softc_t *)xfer->pipe->device->bus;
+	usb_device_request_t *req;
+	void *buf = NULL;
+	int s, len, value, index, l, totlen = 0;
+	usb_port_status_t ps;
+	usb_hub_descriptor_t hubd;
+	usb_device_descriptor_t devd;
+	usb_config_descriptor_t confd;
+	usbd_status err;
+	int devctl,power;
+	char name[USB_MAX_STRING_LEN];
+
+#ifdef DIAGNOSTIC
+	if (!(xfer->rqflags & URQ_REQUEST))
+		/* XXX panic */
+		return (USBD_INVAL);
+#endif
+	req = &xfer->request;
+
+        DPRINTFN(4,("softc_root_ctrl_start: type=0x%02x request=%02x\n",
+		    req->bmRequestType, req->bRequest));
+
+	len = UGETW(req->wLength);
+	value = UGETW(req->wValue);
+	index = UGETW(req->wIndex);
+
+	if (len != 0)
+		buf = KERNADDR(&xfer->dmabuf, 0);
+
+#define C(x,y) ((x) | ((y) << 8))
+	switch(C(req->bRequest, req->bmRequestType)) {
+	case C(UR_CLEAR_FEATURE, UT_WRITE_DEVICE):
+	case C(UR_CLEAR_FEATURE, UT_WRITE_INTERFACE):
+	case C(UR_CLEAR_FEATURE, UT_WRITE_ENDPOINT):
+		/*
+		 * DEVICE_REMOTE_WAKEUP and ENDPOINT_HALT are no-ops
+		 * for the integrated root hub.
+		 */
+		break;
+	case C(UR_GET_CONFIG, UT_READ_DEVICE):
+		if (len > 0) {
+			*(u_int8_t *)buf = sc->sc_conf;
+			totlen = 1;
+		}
+		break;
+	case C(UR_GET_DESCRIPTOR, UT_READ_DEVICE):
+                DPRINTFN(8,("softc_root_ctrl_start: wValue=0x%04x\n", value));
+		switch(value >> 8) {
+		case UDESC_DEVICE:
+			if ((value & 0xff) != 0) {
+				err = USBD_IOERROR;
+				goto ret;
+			}
+			devd = softc_devd;
+			USETW(devd.idVendor, sc->sc_id_vendor);
+			totlen = l = min(len, USB_DEVICE_DESCRIPTOR_SIZE);
+#if defined(__CC_NORCROFT) && !defined(DISABLE_PACKED)
+			memcpy(buf, (void*) &devd, l);
+#else
+			memcpy(buf, &devd, l);
+#endif
+			break;
+		/*
+		 * We can't really operate at another speed, but the spec says
+		 * we need this descriptor.
+		 */
+		case UDESC_DEVICE_QUALIFIER:
+			if ((value & 0xff) != 0) {
+				err = USBD_IOERROR;
+				goto ret;
+			}
+			totlen = l = min(len, USB_DEVICE_DESCRIPTOR_SIZE);
+#if defined(__CC_NORCROFT) && !defined(DISABLE_PACKED)
+			memcpy(buf, (void*) &softc_odevd, l);
+#else
+			memcpy(buf, &softc_odevd, l);
+#endif
+			break;
+		/*
+		 * We can't really operate at another speed, but the spec says
+		 * we need this descriptor.
+		 */
+		case UDESC_OTHER_SPEED_CONFIGURATION:
+		case UDESC_CONFIG:
+			if ((value & 0xff) != 0) {
+				err = USBD_IOERROR;
+				goto ret;
+			}
+			confd = softc_confd;
+			confd.bDescriptorType = value >> 8;
+			totlen = l = min(len, USB_CONFIG_DESCRIPTOR_SIZE);
+#if defined(__CC_NORCROFT) && !defined(DISABLE_PACKED)
+			memcpy(buf, (void*) &confd, l);
+#else
+			memcpy(buf, &confd, l);
+#endif
+			buf = (char *)buf + l;
+			len -= l;
+			l = min(len, USB_INTERFACE_DESCRIPTOR_SIZE);
+			totlen += l;
+#if defined(__CC_NORCROFT) && !defined(DISABLE_PACKED)
+			memcpy(buf, (void*) &softc_ifcd, l);
+#else
+			memcpy(buf, &softc_ifcd, l);
+#endif
+			buf = (char *)buf + l;
+			len -= l;
+			l = min(len, USB_ENDPOINT_DESCRIPTOR_SIZE);
+			totlen += l;
+#if defined(__CC_NORCROFT) && !defined(DISABLE_PACKED)
+			memcpy(buf, (void*)&softc_endpd, l);
+#else
+			memcpy(buf, &softc_endpd, l);
+#endif
+			break;
+		case UDESC_STRING:
+			if (len == 0)
+				break;
+			*(u_int8_t *)buf = 0;
+			totlen = 1;
+			switch (value & 0xff) {
+                        case 0: /* Language table */
+                                totlen = softc_str(buf, len, "\001");
+                                break;
+			case 1: /* Vendor */
+				totlen = softc_str(buf, len, sc->sc_vendor);
+				break;
+			case 2: /* Product */
+				value = sizeof(name);
+				messages_file_lookup("RHub", name, &value, 0);
+				totlen = softc_str(buf, len, name);
+				break;
+			}
+			break;
+		default:
+			err = USBD_IOERROR;
+			goto ret;
+		}
+		break;
+	case C(UR_GET_INTERFACE, UT_READ_INTERFACE):
+		if (len > 0) {
+			*(u_int8_t *)buf = 0;
+			totlen = 1;
+		}
+		break;
+	case C(UR_GET_STATUS, UT_READ_DEVICE):
+		if (len > 1) {
+			USETW(((usb_status_t *)buf)->wStatus,UDS_SELF_POWERED);
+			totlen = 2;
+		}
+		break;
+	case C(UR_GET_STATUS, UT_READ_INTERFACE):
+	case C(UR_GET_STATUS, UT_READ_ENDPOINT):
+		if (len > 1) {
+			USETW(((usb_status_t *)buf)->wStatus, 0);
+			totlen = 2;
+		}
+		break;
+	case C(UR_SET_ADDRESS, UT_WRITE_DEVICE):
+		if (value >= USB_MAX_DEVICES) {
+			err = USBD_IOERROR;
+			goto ret;
+		}
+		sc->sc_addr = value;
+		break;
+	case C(UR_SET_CONFIG, UT_WRITE_DEVICE):
+		if (value != 0 && value != 1) {
+			err = USBD_IOERROR;
+			goto ret;
+		}
+		sc->sc_conf = value;
+		break;
+	case C(UR_SET_DESCRIPTOR, UT_WRITE_DEVICE):
+		break;
+	case C(UR_SET_FEATURE, UT_WRITE_DEVICE):
+	case C(UR_SET_FEATURE, UT_WRITE_INTERFACE):
+	case C(UR_SET_FEATURE, UT_WRITE_ENDPOINT):
+		err = USBD_IOERROR;
+		goto ret;
+	case C(UR_SET_INTERFACE, UT_WRITE_INTERFACE):
+		break;
+	case C(UR_SYNCH_FRAME, UT_WRITE_ENDPOINT):
+		break;
+	default:
+		/* All other requests (e.g. hub requests) get sent to DWC layer */
+		s = dwc_otg_hcd_hub_control(sc->dwc_dev.hcd,C(req->bRequest, req->bmRequestType),value,index,buf,len);
+		if(s != 0)
+		{
+			err = USBD_IOERROR;
+			goto ret;
+		}
+		totlen = len; /* DWCTODO - Is this always the right length to return? */
+	}
+	xfer->actlen = totlen;
+	err = USBD_NORMAL_COMPLETION;
+ret:
+	xfer->status = err;
+	s = splusb();
+	usb_transfer_complete(xfer);
+	splx(s);
+	return (USBD_IN_PROGRESS);
+}
+#undef C
+
+void softc_root_ctrl_abort(usbd_xfer_handle xfer)
+{
+	/* Nothing to do, all transfers are synchronous. */
+	NOTUSED(xfer);
+}
+
+void softc_root_ctrl_close(usbd_pipe_handle pipe)
+{
+	DPRINTF(("softc_root_ctrl_close\n"));
+	/* Nothing to do. */
+	NOTUSED(pipe);
+}
+
+void softc_root_ctrl_done(usbd_xfer_handle xfer)
+{
+	xfer->hcpriv = NULL;
+}
+
+usbd_status softc_root_intr_transfer(usbd_xfer_handle xfer)
+{
+	usbd_status err;
+
+	/* Insert last in queue. */
+	err = usb_insert_transfer(xfer);
+	if (err)
+		return (err);
+
+	/* Pipe isn't running, start first */
+	return (softc_root_intr_start(SIMPLEQ_FIRST(&xfer->pipe->queue)));
+}
+
+usbd_status softc_root_intr_start(usbd_xfer_handle xfer)
+{
+	usbd_pipe_handle pipe = xfer->pipe;
+	dwc_softc_t *sc = (dwc_softc_t *)pipe->device->bus;
+
+	sc->sc_intrxfer = xfer;
+
+	return (USBD_IN_PROGRESS);
+}
+
+void softc_root_intr_abort(usbd_xfer_handle xfer)
+{
+	dwc_softc_t *sc = (dwc_softc_t *)xfer->pipe->device->bus;
+	int s;
+
+	if (xfer->pipe->intrxfer == xfer) {
+		DPRINTF(("softc_root_intr_abort: remove\n"));
+		xfer->pipe->intrxfer = NULL;
+	}
+	xfer->status = USBD_CANCELLED;
+	s = splusb();
+	usb_transfer_complete(xfer);
+	splx(s);
+}
+
+void softc_root_intr_close(usbd_pipe_handle pipe)
+{
+	dwc_softc_t *sc = (dwc_softc_t *)pipe->device->bus;
+
+	DPRINTF(("softc_root_intr_close\n"));
+
+	sc->sc_intrxfer = NULL;
+}
+
+void softc_root_intr_done(usbd_xfer_handle xfer)
+{
+	xfer->hcpriv = NULL;
+}
+@
+
+
+1.4
+log
+@Internationalised
+Detail:
+  Add support for standalone messages registration, and actually use the messages rather than just exporting them in ROM builds.
+  Changed to use allocated error bases rather than 0.
+  Sync controller hunting loop with other HC for ease of comparison.
+Admin:
+  Submission for USB bounty.
+  Tested on a Pi 2.
+
+Version 0.29. Tagged as 'DWCDriver-0_29'
+@
+text
+@d118 1
+a118 1
+	255
+@
+
+
+1.3
+log
+@Update to version 3.00 of DWC_otg
+Detail:
+  This big batch of changes brings us in line with rev 70428950df of the Raspberry Pi Linux github.
+  Briefly:
+  * Deleted HTML docs as they're a waste of space
+  * Dropped the SOF fix (which we never used anyway)
+  * Dropped our implementation of the microframe scheduling patch, in favour of their implementation
+  * Updated to version 3.00 of the DWC sources. Hard to tell what useful changes this brings, due to API tweaks resulting in pretty much every file being littered with changes.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  This new version seems like it might be a bit more sensitive to insufficient power supplies. Beware!
+
+
+Version 0.09. Tagged as 'DWCDriver-0_09'
+@
+text
+@d44 1
+d162 1
+d280 3
+a282 1
+				totlen = softc_str(buf, len, "Synopsys DWC OTG root hub");
+@
+
+
+1.2
+log
+@Fix aborts on reset/*rmkill USBDriver
+Detail:
+  c/cmodule, cmhg/modhead - Don't shutdown DWC layer during Service_USBDriver_Dying. Instead, only do it during Service_ModulePostFinal/Service_PreReset(/module finialisation). Also during Service_PreReset, deregister with USBDriver. This ensures we're deregistered with USBDriver before we shut down the DWC layer, and so don't have to worry about receiving events from USBDriver after the DWC layer is shut down.
+  c/dwc_common_riscos, c/dwc_otg_riscos, h/dwc_common_riscos - Improve handling of DWC endpoint disable callbacks. The memory block for the endpoint now has a flag set in its header when a callback is pending, allowing us to avoid double-free situations if both ourselves and the DWC layer decide to free the endpoint.
+  c/softc_root - Correct some debug messages
+  dwc/driver/c/dwc_otg_hcd - Fix qh_list_free to use DWC_LIST_FOREACH_SAFE (as dwc_otg_hcd_qh_remove_and_free will remove entries from the list) - fixes potential double-free if a non-empty list is being freed
+  dwc/driver/c/dwc_otg_hcd_intr - Fix building of debug builds
+Admin:
+  Tested in Pi ROM with high processor vectors
+  Resets and killing/reiniting USBDriver now works properly
+
+
+Version 0.08. Tagged as 'DWCDriver-0_08'
+@
+text
+@d333 1
+a333 1
+		s = dwc_otg_hcd_hub_control(sc->hcd,C(req->bRequest, req->bmRequestType),value,index,buf,len);
+@
+
+
+1.1
+log
+@Add initial version of DWCDriver - USB driver for Synopsys DWC OTG controllers
+Detail:
+  A fairly simple wrapper for Synopsys's open source "DWC_otg" Linux driver, based around a GPL-free version of the DWC_otg 2.90a sources received from the Raspberry Pi foundation.
+  Instead of interfacing with the Linux USB stack a new host interface layer has been implemented to allow it to talk to the standard BSD-derived RISC OS stack.
+  RTSupport is used to provide the threading functionality that the DWC driver relies upon.
+  Interesting files:
+  - c/cmodule, h/cmodule - Main module frontend
+  - c/dwc_common_riscos, h/dwc_common_riscos - Implementation of the OS support layer required by the DWC driver
+  - c/dwc_otg_riscos, h/dwc_otg_riscos - Core code for the BSD driver implementation, driver init/shutdown, and for handling calls from the DWC host driver to us
+  - c/port - Some support functions required by BSD-style code inherited from the other USB drivers
+  - c/softc_device - Code to handle requests from the BSD layer to attached USB devices
+  - c/softc_root - Code to handle requests from the BSD layer to the controller root hub
+  - dwc/doc/* - Original Synopsys release notes & user guide pdfs
+  - dwc/driver/*, dwc/dwc_common_port/* - Synopsys code and documentation. A few tweaks were required to allow it to compile under Norcroft, but otherwise it's functionally equivalent to the original sources.
+Admin:
+  Tested in BCM2835 ROM
+  There are a few loose ends still to tidy up (search for "DWCTODO"), mainly regarding implementation of Isochronous support, but otherwise the driver seems stable enough for daily use.
+
+
+Version 0.01. Tagged as 'DWCDriver-0_01'
+@
+text
+@d360 1
+a360 1
+	DPRINTF(("musb_root_ctrl_close\n"));
+d399 1
+a399 1
+		DPRINTF(("musb_root_intr_abort: remove\n"));
+d412 1
+a412 1
+	DPRINTF(("musb_root_intr_close\n"));
+@
+

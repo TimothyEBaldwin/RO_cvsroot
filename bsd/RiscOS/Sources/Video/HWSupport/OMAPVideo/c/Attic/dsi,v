@@ -1,0 +1,511 @@
+head	1.7;
+access;
+symbols
+	OMAPVideo-0_33:1.6
+	OMAPVideo-0_32:1.6
+	OMAPVideo-0_31:1.6
+	OMAPVideo-0_30:1.6
+	OMAPVideo-0_29:1.6
+	OMAPVideo-0_28:1.6
+	OMAPVideo-0_27:1.6
+	OMAPVideo-0_26:1.6
+	OMAPVideo-0_25:1.6
+	OMAPVideo-0_24:1.6
+	OMAPVideo-0_23:1.6
+	OMAPVideo-0_22:1.6
+	OMAPVideo-0_21:1.6
+	OMAPVideo-0_20:1.6
+	OMAPVideo-0_19:1.5
+	OMAPVideo-0_18:1.4
+	OMAPVideo-0_17:1.4
+	OMAPVideo-0_16:1.4
+	OMAPVideo-0_15:1.4
+	OMAPVideo-0_14:1.4
+	OMAPVideo-0_13:1.4
+	OMAPVideo-0_12:1.3
+	OMAPVideo-0_11:1.3
+	OMAPVideo-0_10:1.3
+	OMAPVideo-0_09:1.3
+	OMAPVideo-0_08:1.3
+	OMAPVideo-0_07:1.3
+	OMAPVideo-0_06:1.2
+	OMAPVideo-0_05:1.2
+	OMAPVideo-0_04:1.2
+	OMAPVideo-0_03:1.2
+	OMAPVideo-0_02:1.1
+	OMAPVideo-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2015.05.17.17.50.09;	author jlee;	state dead;
+branches;
+next	1.6;
+commitid	J3i0xRSaySaJePly;
+
+1.6
+date	2012.05.06.09.20.42;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	Dmkx2IqcO2G8YD3w;
+
+1.5
+date	2012.05.06.09.16.44;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	imAmvVvRmuLKWD3w;
+
+1.4
+date	2011.10.23.21.01.50;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	0rwNv0ztfd3f9wEv;
+
+1.3
+date	2010.09.14.21.12.56;	author jlee;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2010.04.22.20.42.57;	author jlee;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2010.02.28.19.01.15;	author jlee;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include "dsi.h"
+#include "dss.h"
+#include "globals.h"
+#include "regs.h"
+
+#include "DebugLib/DebugLib.h"
+
+#if OMAP==3
+/* TODO - This should be moved somewhere more sensible */
+
+typedef struct
+{
+	uint32_t min,max;
+	uint8_t freqsel;
+} freqsel_range_t;
+
+static const freqsel_range_t freqsel_table[] = {
+	{ 750000,	1000000,	0x3 },
+	{ 1000000,	1250000,	0x4 },
+	{ 1250000,	1500000,	0x5 },
+	{ 1500000,	1750000,	0x6 },
+	{ 1750000,	2100000,	0x7 },
+	{ 7500000,	10000000,	0xB },
+	{ 10000000,	12500000,	0xC },
+	{ 12500000,	15000000,	0xD },
+	{ 15000000,	17500000,	0xE },
+	{ 17500000,	21000000,	0xF },
+	{ 0,		0xFFFFFFFF,	0 } /* List terminator is catch-all for error case */
+};
+
+static uint8_t get_freqsel(uint32_t Fint)
+{
+	const freqsel_range_t *r = freqsel_table;
+	while((Fint < r->min) || (r->max < Fint))
+		r++;
+	return r->freqsel;
+}
+#endif
+
+#ifdef DEBUGLIB
+static const char *cmds[4] = {"OFF","DSI_PLL_ON_HSDIVIDER_OFF","BOTH_ON","BOTH_ON_DSI_COMPLEXIO_OFF"};
+#endif
+
+static void dsi_pll_command(uint32_t cmd)
+{
+#if OMAP==4
+	/* DSI_CLK_CTRL can only be written if DSI_CTRL.IF_EN == 0 */
+	dsi->ctrl &= ~DSI_CTRL_IF_EN;
+#endif
+	dsi->clk_ctrl = (dsi->clk_ctrl & ~DSI_CLK_CTRL_PLL_PWR_CMD_MASK) | (cmd<<DSI_CLK_CTRL_PLL_PWR_CMD_SHIFT);
+	int timeout=1000000;
+	while(((dsi->clk_ctrl & DSI_CLK_CTRL_PLL_PWR_STATUS_MASK)>>DSI_CLK_CTRL_PLL_PWR_STATUS_SHIFT != cmd) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","dsi_pll_command: Timeout waiting for cmd %s; current state %s\n",cmds[cmd],cmds[(dsi->clk_ctrl & DSI_CLK_CTRL_PLL_PWR_STATUS_MASK)>>DSI_CLK_CTRL_PLL_PWR_STATUS_SHIFT]));
+	}
+}
+
+void dsi_pll_program_for_dispc(uint32_t pixel_rate)
+{
+	/* Program the DSI PLL for use by DISPC */
+	if(pixel_rate == dsi_pll_current_pixel_rate)
+		return;
+
+	clock_divider_t div = calculate_dss_clock_divider(pixel_rate);
+
+	dprintf(("","dsi_pll_program_for_dispc: Changing pixel rate from %d to %d\n",dsi_pll_current_pixel_rate,pixel_rate));
+
+#if OMAP==3
+	dprintf(("","REGM=%d REGN=%d REGM3=%d REGM4=%d\n",div.regm,div.regn,div.regm3,div.regm4));
+	/* TODO - Need to reset DSI as per 15.6.3.2.1 p2364? Or at least work out some other correct way of reprogramming it when it's already running */
+
+	/* Set up DSI PLL, as per spruf98d 15.6.3.2.2 p2364 (with some fairly important modifications!) */
+
+	/* 1. Turn on PLL & HSDIVIDER
+	   2. Wait for response */
+#if 0
+	dsi_pll_command(DSI_PLL_PWR_CMD_BOTH_ON_DSI_COMPLEXIO_OFF); /* We don't need the DSI clock, keep it off */
+#else
+	/* Looks like there's a bug/misfeature with DM37x where we need to use BOTH_ON instead of BOTH_ON_DSI_COMPLEXIO_OFF - see http://gitorious.org/beagleboard-validation/linux/commit/547d9d247aa30e471f143f0e6ddad646770ac5c0
+	   Naturally, this problem isn't mentioned in the TRM or errata (not that how to properly use the DSI PLL with DISPC was ever fully explained anywhere anyway). */
+	dsi_pll_command(DSI_PLL_PWR_CMD_BOTH_ON);
+#endif
+
+	/* 3-6. Program configuration1 register (according to spruf98d fig 15-139 (p2318)) */
+	/* TODO - error on invalid */
+	uint32_t config1,config2;
+	config2 = 0; /* We want DSI_PLL_CLKSEL clear so the PLL uses SYS_CLK as its source */
+	/* TODO - Remove assumption that SYS_CLK <32MHz? */
+	config1 = div.regn << DSI_PLL_CONFIGURATION1_DSI_PLL_REGN_SHIFT;
+	config1 |= div.regm << DSI_PLL_CONFIGURATION1_DSI_PLL_REGM_SHIFT;
+	config1 |= div.regm3 << DSI_PLL_CONFIGURATION1_DSS_CLOCK_DIV_SHIFT;
+	config1 |= div.regm4 << DSI_PLL_CONFIGURATION1_DSIPROTO_CLOCK_DIV_SHIFT;
+
+	/* 7. Enable PLLStopMode */
+	config1 |= DSI_PLL_CONFIGURATION1_DSI_PLL_STOPMODE;
+
+	/* 8. Program configuration2 register */
+	/* Calculate Fint so we can get freqsel value */
+	uint32_t Fint = hwconfig->sys_clk/(div.regn+1);
+	dprintf(("","Fint=%d\n",Fint));
+	config2 |= get_freqsel(Fint) << DSI_PLL_CONFIGURATION2_DSI_PLL_FREQSEL_SHIFT;
+	/* Other flags - only REFEN & DSS_CLOCK_EN are needed from the example. However we also use the drift guard, so enable that. */
+	config2 |= DSI_PLL_CONFIGURATION2_DSI_PLL_REFEN | DSI_PLL_CONFIGURATION2_DSS_CLOCK_EN | DSI_PLL_CONFIGURATION2_DSI_PLL_DRIFTGUARDEN;
+
+	/* 9. Select manual mode (and program config1, config2) */
+	dsi_pll->configuration1 = config1;
+	dsi_pll->configuration2 = config2;
+	dsi_pll->control = 0;
+#endif
+#if OMAP==4
+	dprintf(("","REGM=%d REGN=%d REGM4=%d pcd=%d REGMF=%d\n",div.regm,div.regn,div.regm4,div.pcd,div.regmf));
+	/* base init of PLL - do it only once (after complete DSS reset) */
+	if (0 == dsi_pll_current_pixel_rate)
+	{
+		/* check that DSI module is enabled */
+		if (0 == (dsi->ctrl & DSI_CTRL_IF_EN))
+		{
+			/* enable module for getting write access */
+			dsi->ctrl |= DSI_CTRL_IF_EN;
+			/* wait until bit is set */
+			while (0 == (dsi->ctrl & DSI_CTRL_IF_EN))
+			{
+				;
+			}
+		}
+
+		/* SCPClk is required for PLL registers on OMAP4 */
+		dsi->clk_ctrl |= DSI_CLK_CTRL_CIO_CLK_ICG;
+
+		while (!(dsi_pll->status & DSI_PLL_STATUS_DSI_PLLCTRL_RESET_DONE))
+			;
+
+		/* Turn on PLL & HSDIVIDER */
+		dsi_pll_command(DSI_PLL_PWR_CMD_BOTH_ON);
+	}
+
+	/* set manual mode */
+	dsi_pll->control = 0;
+	/* program configuration registers */
+	dsi_pll->configuration1 = (div.regn << DSI_PLL_CONFIGURATION1_DSI_PLL_REGN_SHIFT)
+							| (div.regm << DSI_PLL_CONFIGURATION1_DSI_PLL_REGM_SHIFT)
+							| (div.regm4 << DSI_PLL_CONFIGURATION1_M4_CLOCK_DIV_SHIFT)
+							| DSI_PLL_CONFIGURATION1_DSI_PLL_STOPMODE;
+
+	uint32_t config2 = dsi_pll->configuration2;
+	config2 &= ~(DSI_PLL_CONFIGURATION2_PHY_CLKINEN | DSI_PLL_CONFIGURATION2_M4_CLOCK_EN);
+	config2 |= DSI_PLL_CONFIGURATION2_PLL_REFEN | DSI_PLL_CONFIGURATION2_HSDIVBYPASS;
+	dsi_pll->configuration2 = config2;
+	dsi_pll->configuration4 = (div.regmf & DSI_PLL_CONFIGURATION4_PLL_REGM_F_MASK)
+							| (1 << 18);
+#endif
+	/* 10. Lock */
+	dsi_pll->go = DSI_PLL_GO_DSI_PLL_GO;
+
+	/* 11. Wait for GO bit to clear */
+	int timeout=1000000;
+	while((dsi_pll->go & DSI_PLL_GO_DSI_PLL_GO) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","dsi_pll_program_for_dispc: Timeout waiting for DSI_PLL_GO\n"));
+	}
+
+	/* 12. Wait for PLL to lock */
+	timeout=1000000;
+	while(!(dsi_pll->status & DSI_PLL_STATUS_DSI_PLL_LOCK) && --timeout) {};
+	if(!timeout)
+	{
+		dprintf(("","dsi_pll_program_for_dispc: Timeout waiting for DSI_PLL_LOCK\n"));
+	}
+
+#if OMAP==3
+	/* 13. Turn on PLL & HSDIVIDER - Should already be on? And the rest of the stuff is irrelevant, since we don't use DSI */
+
+	/* TODO - EXPERIMENT - Enable HSDIVIDER in bypass mode, as per HAL code (needs moving to before lock?) */
+//	config2 |= DSI_PLL_CONFIGURATION2_DSI_PLL_HSDIVBYPASS;
+#endif
+#if OMAP==4
+	/* reenable DISPC clock */
+	config2 = dsi_pll->configuration2;
+	config2 &= ~DSI_PLL_CONFIGURATION2_HSDIVBYPASS;
+	config2 |= DSI_PLL_CONFIGURATION2_PHY_CLKINEN | DSI_PLL_CONFIGURATION2_M4_CLOCK_EN;
+	dsi_pll->configuration2 = config2;
+
+	/* set PCD value */
+	dispc->divisor2 = (1 << DISPC_DIVISOR_LCD_SHIFT) | (div.pcd << DISPC_DIVISOR_PCD_SHIFT);
+#endif
+
+	/* Done! */
+	dsi_pll_current_pixel_rate = pixel_rate;
+
+	dprintf(("","dsi_pll_program_for_dispc: Done\n"));
+}
+@
+
+
+1.6
+log
+@Merge of OMAP3 and OMAP4 video driver sources.
+With 85%+ shared code, tracking changes between these two modules was getting complicated, so now this single module will serve both OMAP3 targets and OMAP4.
+At present, the differences are simply selected at compile time with a switch. This may make sense to further rationalise either with tidier macros or run time detection (since the HAL knows which controller is running).
+Tested on OMAP3 in all 8 colour depths,
+Tested by Willi Theiss on OMAP4.
+
+Version 0.20. Tagged as 'OMAPVideo-0_20'
+@
+text
+@@
+
+
+1.5
+log
+@Merge of headers with OMAP4Video
+For the most part, this is just adding "_t" suffixes to all the typedefs.
+The OMAP4 controller registers are in "regs4.h" and OMAP3 in "regs3.h", they are selected between with a compile time switch - hence !MkROM becomes !Ms !MkRom3 and !MkRom4.
+OMAP3 version tested & still works, OMAP4 will not work.
+
+Version 0.19. Tagged as 'OMAPVideo-0_19'
+@
+text
+@d6 1
+a6 1
+ * modification, are permitted provided that the following conditions are met: 
+d15 1
+a15 1
+ * 
+d35 1
+d65 1
+d73 4
+d95 2
+a97 1
+
+d137 20
+d158 22
+d193 1
+a193 1
+	while(!(dsi_pll->status & DSI_PLL_STATUS_DSI_PLL_CLOCK) && --timeout) {};
+d196 1
+a196 1
+		dprintf(("","dsi_pll_program_for_dispc: Timeout waiting for DSI_PLL_CLOCK\n"));
+d199 1
+d204 11
+@
+
+
+1.4
+log
+@Fix black screen on boot issue. Use C99 number types.
+Detail:
+  c/dss - Fixed the cause of the black screens on boot on OMAP3 machines (DM37xx seems fine). It looks like the cause was due to skipping the step where you disable the LCD output before triggering the DSS reset.
+  c/cmodule, c/dispc, c/dss, c/graphicsv, h/globals - Removed code relating to previous attempts to fix the black screen issue
+  c/cmodule, c/dispc, c/dsi, c/dss, c/graphicsv, c/palette, c/regs, c/sdma, c/venc, h/dsi, h/dss, h/globals, h/graphicsv, h/palette, h/regs - Use the C99 number types instead of u32, u16, etc.
+Admin:
+  Tested on rev C2 BB, rev A2 BB-xM
+
+
+Version 0.13. Tagged as 'OMAPVideo-0_13'
+@
+text
+@d37 2
+a38 1
+typedef struct {
+d41 1
+a41 1
+} freqsel_range;
+d43 1
+a43 1
+static const freqsel_range freqsel_table[] = {
+d59 1
+a59 1
+	const freqsel_range *r = freqsel_table;
+d86 1
+a86 1
+	clock_divider div = calculate_dss_clock_divider(pixel_rate);
+@
+
+
+1.3
+log
+@OMAPVideo fixes & tweaks
+Detail:
+  Makefile - now rewritten to use CModule fragment instead of obsolete RAMCModule/ROMCModule fragments
+  c/cmodule - Make *videoregs print out a couple more regs
+  c/dsi - Fix debug output when DSI requests time out. Fix HSDIVIDER not working on AM/DM37x.
+  c/graphicsv - When setting the mode from a VIDC list, add the border values to the porch values to take into account the hardware's inability to emulate VIDC's coloured border facility. Behaviour matches that of NVidia module.
+  h/regs - Add definitions for SMS registers (for display rotation)
+Admin:
+  Tested on rev C2 beagleboard, rev A2 BB-xM (indirectly), rev C1 TouchBook
+
+
+Version 0.07. Tagged as 'OMAPVideo-0_07'
+@
+text
+@d38 2
+a39 2
+	u32 min,max;
+	u8 freqsel;
+d42 1
+a42 1
+freqsel_range freqsel_table[] = {
+d56 1
+a56 1
+u8 get_freqsel(u32 Fint)
+d58 1
+a58 1
+	freqsel_range *r = freqsel_table;
+d68 1
+a68 1
+void dsi_pll_command(u32 cmd)
+d79 1
+a79 1
+void dsi_pll_program_for_dispc(u32 pixel_rate)
+d106 1
+a106 1
+	u32 config1,config2;
+d119 1
+a119 1
+	u32 Fint = hwconfig->sys_clk/(div.regn+1);
+@
+
+
+1.2
+log
+@Assorted OMAPVideo tweaks and fixes
+Detail:
+  c/dispc - Added some WIP code for programming scaling coefficients
+  c/dispc, c/graphicsv - Fixed code to not allow the graphics overlay to be enabled before its DMA address had been set (as was happening on boot)
+  c/dispc - Enable reporting of FIFO underflow & OCPERROR interrupts in debug builds, to help track down bugs
+  c/dispc - Check in some disabled code that was an attempt to fix the IGEP display problems. Code was to force FIFO preload values to 0x100, and to force DISPC_POL_FREQ to 0.
+  c/dsi - Keep the DSI complex I/O clock off
+  c/dsi, c/dss, h/dss, h/regs - rewrote calculate_dss_clock_divider to remove data lane frequency restriction, and to increase speed/accuracy when calculating rates for tricky values like 25.175MHz. Also in another attempt to fix the IGEP issues, it mimics the Linux driver by trying to generate a 48MHz DSI clock.
+  c/dss, c/venc - Tweaked DSS reset & VENC code to make sure VENC clcoks are enabled & disabled at the appropriate times.
+  c/graphicsv - Fix GraphicsV_SetDMAAddress so it works properly no matter what overlay the desktop is on
+  c/venc - A fix to get the PAL test card working, and a fudge to get PAL output working.
+Admin:
+  Tested on rev C2 beagleboard & IGEP.
+  IGEP reported as showing no concrete improvement in display stability :(
+
+
+Version 0.03. Tagged as 'OMAPVideo-0_03'
+@
+text
+@d72 1
+a72 1
+	while(((dsi->clk_ctrl & DSI_CLK_CTRL_PLL_PWR_STATUS_MASK)>>DSI_CLK_CTRL_PLL_PWR_STATUS_SHIFT != cmd) && timeout--) {};
+d96 1
+d98 5
+d135 1
+a135 1
+	while((dsi_pll->go & DSI_PLL_GO_DSI_PLL_GO) && timeout--) {};
+d143 1
+a143 1
+	while(!(dsi_pll->status & DSI_PLL_STATUS_DSI_PLL_CLOCK) && timeout--) {};
+@
+
+
+1.1
+log
+@Add initial version of OMAP video driver module
+Detail:
+  All-new OMAP video driver, written as a module in C.
+  Functionality-wise it's basically the same as the original HAL-based driver, except it provides support for GraphicsV_Render via use of the OMAP SDMA controller, and there's currently no support for GraphicsV_IICOp.
+  However under the hood the module is significantly different, to ensure it can be expanded to expose the full feature set of the video controller once the new GraphicsV API is ready.
+Admin:
+  Tested on rev C2 beagleboard.
+
+
+Version 0.01. Tagged as 'OMAPVideo-0_01'
+@
+text
+@d88 1
+a88 1
+	dprintf(("","REGM=%d REGN=%d\n",div.regm,div.regn));
+d96 1
+a96 1
+	dsi_pll_command(DSI_PLL_PWR_CMD_BOTH_ON);
+d105 2
+a106 6
+	/* REGM3+1 = frequency on data lane/(pixel rate*2)
+	   REGM3+1 = (2*pixel rate*bpp)/(pixel rate*2*lanes) = DSI_BPP/DSI_LANES */
+	lcdconfig *config = &hwconfig->lcd_configs[current_lcd];
+	config1 |= ((config->dsi_bpp/config->dsi_lanes)-1)<<DSI_PLL_CONFIGURATION1_DSS_CLOCK_DIV_SHIFT;
+	/* REGM4 unused, so leave as 0 */
+	config1 |= 7<<DSI_PLL_CONFIGURATION1_DSIPROTO_CLOCK_DIV_SHIFT; /* TODO - EXPERIMENT - Sort out REGM4 */
+@
+

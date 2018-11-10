@@ -1,0 +1,644 @@
+head	1.5;
+access;
+symbols
+	IntKey-0_99:1.5
+	IntKey-0_98-1:1.4
+	IntKey-0_98:1.4
+	IntKey-0_97:1.4
+	IntKey-0_96:1.4
+	IntKey-0_95:1.4
+	IntKey-0_94:1.4
+	IntKey-0_93:1.4
+	IntKey-0_92:1.4
+	IntKey-0_91:1.4
+	IntKey-0_90:1.4
+	RO_5_07:1.4
+	IntKey-0_89:1.4
+	IntKey-0_88:1.4
+	IntKey-0_87:1.4
+	IntKey-0_86:1.4
+	IntKey-0_85:1.4
+	IntKey-0_84:1.4
+	IntKey-0_83:1.4
+	IntKey-0_82:1.4
+	IntKey-0_81:1.4
+	IntKey-0_80:1.4
+	IntKey-0_79:1.3
+	IntKey-0_78:1.3
+	IntKey-0_77:1.3
+	IntKey-0_76:1.3
+	dellis_autobuild_BaseSW:1.3
+	IntKey-0_75:1.3
+	IntKey-0_74:1.3
+	IntKey-0_73:1.3
+	IntKey-0_72:1.3
+	IntKey-0_71:1.3
+	sbrodie_sedwards_16Mar2000:1.3
+	IntKey-0_70:1.3
+	dcotton_autobuild_BaseSW:1.4
+	IntKey-0_69:1.3
+	IntKey-0_68:1.3
+	IntKey-0_67:1.2
+	IntKey-0_66:1.2
+	IntKey-0_65:1.2
+	IntKey-0_64:1.2
+	IntKey-0_63:1.1
+	IntKey-0_62:1.1
+	IntKey-0_61:1.1
+	IntKey-0_60:1.1
+	IntKey-0_59:1.1
+	IntKey-0_58:1.1
+	IntKey-0_57:1.1
+	IntKey-0_56:1.1
+	IntKey-0_55:1.1
+	IntKey-0_54:1.1
+	IntKey-0_53:1.1
+	IntKey-0_52:1.1
+	bavison_Generic_InternationalKeyboard-0_51:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.01.21.09.33.13;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	bZ0A71UCujpfZInA;
+
+1.4
+date	2001.06.14.16.08.37;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.09.16.15.21.41;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.04.27.11.13.16;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.09.01.16.38.26;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Fix ideograph range check and a couple of resource leaks
+unicdata.c: condition changed to match unictype_is_ideograph() in UnicodeLib
+keygen.c: free kb
+keyconvert.c: free memory and close files on exit (the C environment would do this anyway, but this makes it explicit)
+Picked up by static analysis
+  https://www.riscosopen.org/forum/forums/4/topics/9503#posts-72623
+
+Version 0.99. Tagged as 'IntKey-0_99'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#ifndef UNIX
+#include "swis.h"
+#endif
+
+#include "Unicode/iso10646.h"
+#include "unicdata.h"
+
+char keypad_codes[]={
+          0x23, 0x24, 0x25,
+    0x37, 0x38, 0x39, 0x3A,
+    0x48, 0x49, 0x4A, 0x4B,
+    0x5A, 0x5B, 0x5C,
+    0x65,       0x66, 0x67,
+    0
+};
+
+int default_keypad[17][2] = {
+    0x2F, 0x2F,
+    0x2A, 0x2A,
+    0x23, 0x23,
+    0x1E, 0x37,
+    0x8F, 0x38,
+    0x9F, 0x39,
+    0x2D, 0x2D,
+    0x8C, 0x34,
+    -1,   0x35,
+    0x8D, 0x36,
+    0x2B, 0x2B,
+    0x8B, 0x31,
+    0x8E, 0x32,
+    0x9E, 0x33,
+    0xCD, 0x30,
+    0x7F, 0x2E,
+    0x0D, 0x0D
+};
+
+int our_keypad[17][2];
+
+int is_keypad_key(int key)
+{
+    return key != 0 && strchr(keypad_codes, key) != NULL;
+}
+
+const char *dead_latin1[] =
+{
+    "GRAVE ACCENT",
+    "ACUTE ACCENT",
+    "CIRCUMFLEX ACCENT",
+    "TILDE",
+    "DIAERESIS",
+    "RING ABOVE",
+    "CEDILLA"
+};
+
+const char *dead_latin2[] =
+{
+    "OGONEK",
+    "STROKE",
+    "CARON",
+    "ACUTE ACCENT",
+    "CEDILLA",
+    "DOT ABOVE",
+    "CIRCUMFLEX ACCENT",
+    "BREVE",
+    "DIAERESIS",
+    "DOUBLE ACUTE"
+};
+
+const char *dead_latin3[] =
+{
+    "STROKE",
+    "CIRCUMFLEX ACCENT",
+    "DOT ABOVE",
+    "CEDILLA",
+    "BREVE",
+    "GRAVE ACCENT",
+    "ACUTE ACCENT",
+    "DIAERESIS",
+    "TILDE"
+};
+
+const char *dead_latin4[] =
+{
+    "OGONEK",
+    "CEDILLA",
+    "TILDE",
+    "CARON",
+    "MACRON",
+    "STROKE",
+    "DIAERESIS",
+    "RING ABOVE",
+    "ACUTE ACCENT",
+    "DOT ABOVE",
+    "CIRCUMFLEX ACCENT"
+};
+
+const char *dead_welsh[] =
+{
+    "GRAVE ACCENT",
+    "ACUTE ACCENT",
+    "CIRCUMFLEX ACCENT",
+    "TILDE",
+    "DIAERESIS",
+    "RING ABOVE",
+    "CEDILLA"
+};
+
+const char *dead_greek[] =
+{
+    "GREEK TONOS",
+    "GREEK DIALYTIKA",
+    "GREEK DIALYTIKA TONOS"
+};
+
+const int dead_alphabets[] =
+{
+    101, 102, 103, 104, 107, 110, 0
+};
+
+const char **dead_tables[] =
+{
+    dead_latin1, dead_latin2, dead_latin3, dead_latin4, dead_greek, dead_welsh
+};
+
+void error(const char *p)
+{
+    fprintf(stderr, "%s\n", p);
+    exit(1);
+}
+
+void *xmalloc(size_t s)
+{
+    void *ret = malloc(s);
+    if (!ret) error("Out of memory");
+    return ret;
+}
+
+char *read_string(FILE *f)
+{
+    int type = fgetc(f);
+    int len;
+    char *ret;
+
+    if (type != 0) error("Type mismatch");
+    len = fgetc(f);
+
+    ret = xmalloc(len+1);
+    ret[len] = 0;
+    while (len > 0)
+        ret[--len] = fgetc(f);
+
+    return ret;
+}
+
+int read_int(FILE *f)
+{
+    int type = fgetc(f);
+    int ret;
+
+    if (type != 0x40) error("Type mismatch");
+    ret = fgetc(f);
+    ret = (ret << 8) + fgetc(f);
+    ret = (ret << 8) + fgetc(f);
+    ret = (ret << 8) + fgetc(f);
+
+    return ret;
+}
+
+char *function_name(int code, int key, int pos)
+{
+    static char buffer[256];
+    const char *ctrlshift;
+    static const char *ctrlshifttab[] = { "", "SHIFT-", "CTRL-", "CTRL-SHIFT-" };
+
+    ctrlshift = ctrlshifttab[pos & 3];
+
+    if (key==0x00 && code == 27)
+        sprintf(buffer, "FUNCTION KEY %sESCAPE", ctrlshift);
+    else if (key==0x1E && code == 8)
+        sprintf(buffer, "FUNCTION KEY %sBACKSPACE", ctrlshift);
+    else if ((key==0x20 || key == 0x37) && code == 30)
+        sprintf(buffer, "FUNCTION KEY %sHOME", ctrlshift);
+    else if ((key==0x47 || key == 0x67) && code == 13)
+        sprintf(buffer, "FUNCTION KEY %sENTER", ctrlshift);
+    else if (code < 32)
+        sprintf(buffer, "FUNCTION KEY CTRL-%c", "@@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_"[code]);
+    else if (code == 0x7F)
+        sprintf(buffer, "FUNCTION KEY DELETE");
+    else
+    {
+        int shift = code & 0x10;
+        int ctrl = code & 0x20;
+        const char *s;
+        static const char *func[32] =
+        {
+            "PRINT", "F1", "F2", "F3", "F4", "F5", "F6", "F7",
+            "F8", "F9", "BREAK", "END", "LEFT", "RIGHT", "DOWN", "UP",
+            "ACORN", "MENU", "WIDTH", "KANJI", "EISUU", "NO CONVERT", "CONVERT", "KANA",
+            "ALL CANDIDATES", "KANJI NUMBER", "F10", "F11", "F12", "INSERT", "&1CE", "&1CF"
+        };
+        code &= ~0x30;
+        code -= 0x180;
+        if (code >= 0x40) code -= 0x30;
+        s = func[code];
+        if ((key == 0x21 || key == 0x39) && code == 0x0F ||
+            (key == 0x36 || key == 0x5C) && code == 0x0E)
+        {
+            shift ^= 0x10;
+            s = code == 0x0E ? "PAGE DOWN" : "PAGE UP";
+        }
+        sprintf(buffer, "FUNCTION KEY %s%s%s", ctrl ? "CTRL-" : "",
+                                              shift ? "SHIFT-" : "",
+                                              s);
+    }
+    return buffer;
+}
+
+int main(int argc, char **argv)
+{
+    FILE *in, *out;
+    char *cno, *alphabet;
+    int lastkey, flags, i, j, n, alphabet_no, notclaimed, same;
+    const UCS4 *alphabet_table;
+    const char **dead_table;
+
+    if (argc != 3)
+    {
+        fprintf(stderr, "Usage: keyconvert <in-file> <out-file>\n");
+        return 1;
+    }
+
+    load_unidata("UniData");
+
+    in = fopen(argv[1], "r");
+    if (!in)
+    {
+        perror(argv[1]);
+        exit(1);
+    }
+
+    out = fopen(argv[2], "w");
+    if (!out)
+    {
+        fclose(in);
+        perror(argv[2]);
+        exit(1);
+    }
+
+    cno = read_string(in);
+    alphabet = read_string(in);
+    lastkey = read_int(in);
+    flags = read_int(in);
+#ifdef UNIX
+    error("Unable to translate alphabet numbers under UNIX");
+    alphabet_no = -1;
+#else
+    _swix(OS_ServiceCall, _INR(1,3)|_OUT(1)|_OUT(4),
+                          0x43, 1, alphabet,
+                          &notclaimed, &alphabet_no);
+    if (notclaimed) error("Unknown alphabet");
+    _swix(OS_ServiceCall, _INR(1,3)|_OUT(1)|_OUT(4),
+                          0x43, 8, alphabet_no,
+                          &notclaimed, &alphabet_table);
+    if (notclaimed || !alphabet_table) error("Can't find table for alphabet");
+#endif
+
+    dead_table = NULL;
+
+    for (i=0; dead_alphabets[i]; i++)
+        if (dead_alphabets[i] == alphabet_no)
+        {
+            dead_table = dead_tables[i];
+            break;
+        }
+
+    fprintf(out, "# Layout converted by keyconvert\n#\n");
+    fprintf(out, "# Default alphabet: %s\n", alphabet);
+    fprintf(out, "# Extra key 1D %sfitted\n", flags & 2 ? "" : "not ");
+    fprintf(out, "# Extra key 4D %sfitted\n", flags & 1 ? "" : "not ");
+    fprintf(out, "# Extra key 6E %sfitted\n", flags & 8 ? "" : "not ");
+    fprintf(out, "# Enter key in %s position\n", flags & 4 ? "USA" : "UK");
+
+    fprintf(out, "\n$Country %s\n", cno);
+
+    fprintf(out, "\n$Layer 0\n\n");
+
+    for (i=0; i<=lastkey; i++)
+    {
+        int null = 1;
+        for (j=0; j<8; j++)
+        {
+            int code = read_int(in);
+            if (code != -1 || (i==0x01&&j==0x06) || (i==0x02&&j==0x06) || (i==0x0C&&j==0x06) || i==0x34)
+                null = 0;
+        }
+        if (null) continue;
+        if (i >= 0x6B) continue; /* Hard coded hack to strip extra keys from layouts */
+        fseek(in, -8*5L, SEEK_CUR);
+        fprintf(out, "%02X\n", i);
+        for (j=0; j<8; j++)
+        {
+            int code = read_int(in);
+            const char *caps="";
+            if ((code &~ 0xFF) == 0x200)
+            {
+                static const char brack[8][2] = { "[", "]", "<", ">", "{", "}", "(", ")" };
+                code -= 0x200;
+                caps = brack[j];
+            }
+
+            if (i==0x01 && j == 6)
+            {
+                fprintf(out, "SPECIAL KEY DEFAULT KEYBOARD\n");
+                continue;
+            }
+            if (i==0x02 && j == 6)
+            {
+                fprintf(out, "SPECIAL KEY CONFIGURED KEYBOARD\n");
+                continue;
+            }
+            if (i==0x0C && j == 6)
+            {
+                fprintf(out, "SPECIAL KEY DIAL KEYBOARD\n");
+                continue;
+            }
+            if (i==0x34 && j < 4)
+            {
+                fprintf(out, "SPECIAL KEY DELETE\n");
+                continue;
+            }
+
+            if (code == -1)
+                fprintf(out, "-\n");
+            else if (code < 32)
+                fprintf(out, "%s\n", function_name(code, i, j));
+            else if (code == 127)
+                fprintf(out, "FUNCTION KEY CTRL-?\n");
+            else if (code < 0x100)
+                fprintf(out, "%s%s\n", caps, name_from_UCS(alphabet_table[code]));
+            else if (code < 0x180)
+                error("I don't grok codes from &100 to &17F");
+            else if (code < 0x200)
+                fprintf(out, "%s\n", function_name(code, i, j));
+            else if (code >= 0x300 && code <= 0x3FF)
+            {
+                if (!dead_table) error("I don't know the dead keys for this alphabet");
+                fprintf(out, "DEAD KEY %s\n", dead_table[code-0x301]);
+            }
+            else
+                error("Unknown code");
+        }
+    }
+
+    fprintf(out, "\n$EndLayer\n");
+
+    for (n=0,i=0; i<=lastkey; i++)
+    {
+        if (!is_keypad_key(i))
+        {
+            read_int(in); read_int(in);
+            continue;
+        }
+
+        our_keypad[n][0] = read_int(in);
+        our_keypad[n][1] = read_int(in);
+        n++;
+    }
+
+    same = 1;
+    for (n=0; n<17; n++)
+    {
+        for (j=0; j<2; j++)
+        {
+            if (our_keypad[n][j] != default_keypad[n][j])
+                same = 0;
+        }
+    }
+
+    if (!same)
+    {
+        int c0, c1;
+        const char *s;
+        fprintf(out, "\n$Keypad\n");
+        for (n = 0; n<17; n++)
+        {
+            int count;
+            c0 = our_keypad[n][1];
+            c1 = our_keypad[n][0];
+            if (c0 >= 0x80 && c0 <= 0xFF) c0 += 0x100;
+            if (c1 >= 0x80 && c1 <= 0xFF) c1 += 0x100;
+            if (c0 == -1)
+                s = "-";
+            else if (c0 < 32 || c0 == 0x7F || c0 >= 0x180)
+                s = function_name(c0, keypad_codes[n], 0);
+            else
+                s = name_from_UCS(c0);
+
+            fprintf(out, "%s%n", s, &count);
+            if (c0 == c1)
+            {
+                fprintf(out, "\n");
+            }
+            else
+            {
+                if (c1 == -1)
+                   s = "-";
+                else if (c1 < 32 || c1 == 0x7F || c1 >= 0x180)
+                    s = function_name(c1, keypad_codes[n], 0);
+                else
+                    s = name_from_UCS(c1);
+
+                fputc(';', out);
+                while (count < 19)
+                {
+                    fputc(' ', out);
+                    count++;
+                }
+
+                fprintf(out, "%s\n", s);
+            }
+        }
+        fprintf(out, "$EndKeypad\n");
+    }
+
+    /* Tidy up */
+    fclose(in);
+    fclose(out);
+    free(cno);
+    free(alphabet);
+
+    return 0;
+}
+@
+
+
+1.4
+log
+@  Some bugfixes for keygen and keyconvert, discovered by gcc.
+  Temporary GNUmakefile added containing UNIX build system.
+Detail:
+  gcc complained about returning the address of a local variable as
+    a function result in both keygen and keyconvert.  The two variables
+    concerned have now been made static like they should have been.
+    Unlikely to have caused much aggravation, but only through luck.
+  The Keyboard data structure has been updated to explicitly use an
+    unsigned char in some places.  This is necessary for systems on
+    which char is signed by default.
+  The GNUmakefile is a temporary addition until native tool support can
+    be sorted out.  In the xriscos environment, do "make links" and
+    then "make rom" to build the module.  "make clean" will remove all
+    the built stuff and the symbolic links.  Requires access to the
+    exported Unicode library files.  keyconvert is built, but will not
+    work for the obvious reason that it calls SWIs.
+Admin:
+  GNUmakefile will be removed at a later date - it's only temporary.
+  Tested - builds the same module (for Keyboard=All, Machine=Phoebe)
+    byte-identically.
+
+
+Version 0.80. Tagged as 'IntKey-0_80'
+@
+text
+@d261 1
+d272 1
+d338 1
+a338 1
+            if (i==0x0C && j ==6)
+d442 6
+a448 2
+
+
+@
+
+
+1.3
+log
+@Corrected filename reference to UniData.
+
+Version 0.68. Tagged as 'IntKey-0_68'
+@
+text
+@d18 1
+d20 1
+d188 1
+a188 1
+    char buffer[256];
+d269 3
+a271 1
+
+d280 1
+@
+
+
+1.2
+log
+@Moved euro sign to Alt-4 on UK and UK-based layouts. This involved
+moving the vulgar fractions to Alt-7,8,9.
+Double upwards arrow (symbol for Shift on menus) added to assorted layouts,
+as per diagrams. This still won't work in any alphabets other than UTF-8
+because the International module doesn't recognise that character as being
+in the official alphabets.
+
+Version 0.64. Tagged as 'IntKey-0_64'
+@
+text
+@d247 1
+a247 1
+    load_unidata("UniData215");
+@
+
+
+1.1
+log
+@Ursula branch merged.
+
+Complete new keyboard definition system in terms of the UCS. See
+Docs.FileFormat for information.
+@
+text
+@d238 1
+a238 1
+    UCS4 *alphabet_table;
+@

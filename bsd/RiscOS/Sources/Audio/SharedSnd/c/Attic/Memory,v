@@ -1,0 +1,535 @@
+head	1.4;
+access;
+symbols
+	SharedSnd-0_49:1.3
+	bavison_SharedSnd-0_48:1.3
+	SharedSnd-0_48:1.2
+	Spin_merge:1.1.2.2
+	afrost_NC2_Generic:1.1.2.2
+	afrost_Funai01-33:1.1.2.2
+	smiddle_0_43:1.1.2.1
+	Spinner:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2001.06.28.18.11.57;	author bavison;	state dead;
+branches;
+next	1.3;
+
+1.3
+date	2001.01.15.14.04.16;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.11.02.16.36.12;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.11.06.14.18.06;	author smiddle;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	97.11.06.14.18.07;	author smiddle;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	97.11.06.14.44.07;	author smiddle;	state Exp;
+branches;
+next	;
+
+
+desc
+@Files for new SharedSound build
+@
+
+
+1.4
+log
+@  Import of version 1.00 of SharedSound from WSS - this is a merge of
+  RISC OS Ltd, ESP and Pace sources. I've added the Makefile, Mk* and
+  VersionNum files.
+
+Detail (courtesy of WSS):
+  * Incorporates fixes made to 0.58c to fix the callbacks on sound
+    rate changes.
+
+  * Incorporates RISC OS Ltd changes to response to
+    TaskManager_Acknowledgements service.
+
+  * Includes 8 bit Log and PowerWave drivers.
+
+  * Now built with Objasm, not BASIC assembler.
+
+  * SharedSound_HandlerInfo SWI fixed to conform to spec. Also
+    extended to accept r0 = 0 on entry, in which case r0 = number of
+    first registered handler (or 0 for none) on exit; R1-R5 corrupted.
+
+    Therefore the following code enumerates handlers:
+
+    REM Get first handler number.
+    SYS "SharedSound_HandlerInfo",0 TO next% ; flags%
+    REM While no errors, and not finished
+    WHILE (next% <> 0) AND ((flags% AND 1) = 0)
+     SYS"SharedSound_HandlerInfo",next% TO next%,a%,b%,c%,d%,e%
+    ENDWHILE
+
+  * Sends Service_Sound (&54) with reason code 6 (SharedSound Starting)
+    on (callback after) initialisation.
+
+  * Sends Service_Sound (&54) with reason code 7 (SharedSound Dying)
+    on finalisation.
+
+  * Some small optimisations
+
+  * Version bumped to 1.00 (to allow RISC OS Ltd space to make changes
+    to their versions).
+
+  * Table of helpful fill code routines now passed to handlers in R8.
+
+  * SharedSound reinitialises correctly on lower layers reinitialising.
+
+  * More care taken to remove outstanding callbacks on finalise.
+
+  * Dual 26/32 bit version.
+
+Admin:
+  * Not tested by us.
+
+  * 8-bit sound system code is known not to be ROM safe. However, it is
+    currently switched out (see the doLog option in s.Gets).
+
+  * This version *will not work* on a 32-bit system. There are at least two
+    issues with it that I've spotted with a quick glance through the code -
+    the lack of the module flags word, and an unconditional TEQP instruction.
+    This version has been checked in nevertheless as a record of what WSS
+    delivered to us.
+
+Version 1.00. Tagged as 'SharedSnd-1_00'
+@
+text
+@/* Copyright (c) 1995, Expressive Software Projects
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Expressive Software Projects nor the names of its
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+DEFPROCMemory
+LOCAL er$
+er$="Memory"
+PRINT "PROCMemory"
+[OPT I%
+
+
+.memoryStartVal% EQUD memoryStart%
+
+\----
+
+.startMem%
+
+    STMDB R13!,{R14}
+
+    LDR R3,memoryStartVal%
+
+    MOV R0,#6
+    SWI "XOS_Module"
+
+    STR R2,[R12]
+
+    MOVVS R3,#0     \  Flag an error - and dont's start module
+    BVS   startMemX%
+
+    MOV R10,R12     \ Use R10 as tempory private word pointer, for sound installation
+    MOV R12,R2
+    STR R3,[R12,#work_memSize%]
+    STR R10,[R12,#work_privateWord%]
+
+.startMemX%
+
+    LDMIA R13!,{PC}
+
+\ -------------------------------- Workspace routines ------------------------
+
+.initWorkspace%
+
+    STMDB R13!,{R14}
+
+    MOV   R0,#0
+    STR   R0,[R12,#work_currentDriver%] \ No driver installed yet
+
+    STR   R0,[R12,#work_SampleFrequency%]
+    STR   R0,[R12,#work_SamplePeriod%]
+
+    STR   R0,[R12,#work_SoundActive%]   \ No sound currently active
+
+    STR   R0,[R12,#work_ControlWord%]   \ Control word for Replay
+
+    STR   R0,[R12,#work_ImmediateHandlers%]
+    STR   R0,[R12,#work_CallBackHandlers%]
+    STR   R0,[R12,#work_ProcessHandlers%]
+
+    \ .. Initialise handler table by setting handler_Address% entries to 0
+
+    ADD   R0,R12,#work_handlerTable%   \ Position of table
+    MOV   R1,#handlerMax%              \ Number in table
+    MOV   R2,#0
+
+.initWorkHandlerTableLoop%
+
+    STR   R2,[R0,#handler_Address%]    \ Store 0 in handler_Address%
+    ADD   R0,R0,#handlerTableLen%      \ Increment to next table entry
+    SUBS  R1,R1,#1                     \ Decrement count
+    BNE   initWorkHandlerTableLoop%    \ Branch to start of loop
+
+
+    \ .. Initialise driver table by setting driver_Address% entries to 0
+
+    ADD   R0,R12,#work_driverTable%    \ Position of table
+    MOV   R1,#driverMax%               \ Number in table
+    MOV   R2,#0
+
+.initWorkDriverTableLoop%
+
+    STR   R2,[R0,#driver_Address%]     \ Store 0 in handler_Address%
+    ADD   R0,R0,#driverTableLen%       \ Increment to next table entry
+    SUBS  R1,R1,#1                     \ Decrement count
+    BNE   initWorkDriverTableLoop%     \ Branch to start of loop
+
+    MOV   R0,#0
+    STR   R0,[R12,#work_callBack_Active%]
+    STR   R0,[R12,#work_callBack_Count%]
+    STR   R0,[R12,#work_CallBack_BufferFullCount%]
+    STR   R0,[R12,#work_CallBack_CurrentSoundBuffer%]
+    STR   R0,[R12,#work_CallBack_CurrentOutBuffer%]
+
+    MOV   R0,#defaultNumCallBackBuffers%
+    STR   R0,[R12,#work_CallBack_numCallBackBuffers%]
+
+    LDMIA R13!,{PC}
+]
+ENDPROC
+@
+
+
+1.3
+log
+@Changed things so that the detokenised BASIC source (in the c directory) has
+no line numbers present (LISTO 8). The detokenised source's raison d'etre is
+to allow easier CVS diffs, but line numbers would defeat this purpose whenever
+the change involves inserting more than a handful of line numbers.
+
+No other changes - this version is committed and tagged purely as a reference
+point for future updates. Tag used is 'bavison_SharedSnd-0_48'.
+@
+text
+@@
+
+
+1.2
+log
+@Spinner branch merged
+@
+text
+@d26 94
+a119 94
+   10DEFPROCMemory
+   20LOCAL er$
+   30er$="Memory"
+   40PRINT "PROCMemory"
+   50[OPT I%
+   60
+   70
+   80.memoryStartVal% EQUD memoryStart%
+   90
+  100\----
+  110
+  120.startMem%
+  130
+  140    STMDB R13!,{R14}
+  150
+  160    LDR R3,memoryStartVal%
+  170
+  180    MOV R0,#6
+  190    SWI "XOS_Module"
+  200
+  210    STR R2,[R12]
+  220
+  230    MOVVS R3,#0     \  Flag an error - and dont's start module
+  240    BVS   startMemX%
+  250
+  260    MOV R10,R12     \ Use R10 as tempory private word pointer, for sound installation
+  270    MOV R12,R2
+  280    STR R3,[R12,#work_memSize%]
+  290    STR R10,[R12,#work_privateWord%]
+  300
+  310.startMemX%
+  320
+  330    LDMIA R13!,{PC}
+  340
+  350\ -------------------------------- Workspace routines ------------------------
+  360
+  370.initWorkspace%
+  380
+  390    STMDB R13!,{R14}
+  400
+  410    MOV   R0,#0
+  420    STR   R0,[R12,#work_currentDriver%] \ No driver installed yet
+  430
+  440    STR   R0,[R12,#work_SampleFrequency%]
+  450    STR   R0,[R12,#work_SamplePeriod%]
+  460
+  470    STR   R0,[R12,#work_SoundActive%]   \ No sound currently active
+  480
+  490    STR   R0,[R12,#work_ControlWord%]   \ Control word for Replay
+  500
+  510    STR   R0,[R12,#work_ImmediateHandlers%]
+  520    STR   R0,[R12,#work_CallBackHandlers%]
+  530    STR   R0,[R12,#work_ProcessHandlers%]
+  540
+  550    \ .. Initialise handler table by setting handler_Address% entries to 0
+  560
+  570    ADD   R0,R12,#work_handlerTable%   \ Position of table
+  580    MOV   R1,#handlerMax%              \ Number in table
+  590    MOV   R2,#0
+  600
+  610.initWorkHandlerTableLoop%
+  620
+  630    STR   R2,[R0,#handler_Address%]    \ Store 0 in handler_Address%
+  640    ADD   R0,R0,#handlerTableLen%      \ Increment to next table entry
+  650    SUBS  R1,R1,#1                     \ Decrement count
+  660    BNE   initWorkHandlerTableLoop%    \ Branch to start of loop
+  670
+  680
+  690    \ .. Initialise driver table by setting driver_Address% entries to 0
+  700
+  710    ADD   R0,R12,#work_driverTable%    \ Position of table
+  720    MOV   R1,#driverMax%               \ Number in table
+  730    MOV   R2,#0
+  740
+  750.initWorkDriverTableLoop%
+  760
+  770    STR   R2,[R0,#driver_Address%]     \ Store 0 in handler_Address%
+  780    ADD   R0,R0,#driverTableLen%       \ Increment to next table entry
+  790    SUBS  R1,R1,#1                     \ Decrement count
+  800    BNE   initWorkDriverTableLoop%     \ Branch to start of loop
+  810
+  820    MOV   R0,#0
+  830    STR   R0,[R12,#work_callBack_Active%]
+  840    STR   R0,[R12,#work_callBack_Count%]
+  850    STR   R0,[R12,#work_CallBack_BufferFullCount%]
+  860    STR   R0,[R12,#work_CallBack_CurrentSoundBuffer%]
+  870    STR   R0,[R12,#work_CallBack_CurrentOutBuffer%]
+  880
+  890    MOV   R0,#defaultNumCallBackBuffers%
+  900    STR   R0,[R12,#work_CallBack_numCallBackBuffers%]
+  910
+  920    LDMIA R13!,{PC}
+  930]
+  940ENDPROC
+@
+
+
+1.1
+log
+@file Memory was initially added on branch Spinner.
+@
+text
+@d1 119
+@
+
+
+1.1.2.1
+log
+@New layout SharedSound with text files rather than BASIC files.
+@
+text
+@a0 87
+/* Copyright (c) 1995, Expressive Software Projects
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Expressive Software Projects nor the names of its
+ *       contributors may be used to endorse or promote products derived from
+ *       this software without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+   10DEFPROCMemory
+   20LOCAL er$
+   30er$="Memory"
+   40PRINT "PROCMemory"
+   50[OPT I%
+   80.memoryStartVal% EQUD memoryStart%
+  100\----
+  120.startMem%
+  140    STMDB R13!,{R14}
+  160    LDR R3,memoryStartVal%
+  180    MOV R0,#6
+  190    SWI "XOS_Module"
+  210    STR R2,[R12]
+  230    MOVVS R3,#0     \  Flag an error - and dont's start module
+  240    BVS   startMemX%
+  260    MOV R10,R12     \ Use R10 as tempory private word pointer, for sound installation
+  270    MOV R12,R2
+  280    STR R3,[R12,#work_memSize%]
+  290    STR R10,[R12,#work_privateWord%]
+  310.startMemX%
+  330    LDMIA R13!,{PC}
+  350\ -------------------------------- Workspace routines ------------------------
+  370.initWorkspace%
+  390    STMDB R13!,{R14}
+  410    MOV   R0,#0
+  420    STR   R0,[R12,#work_currentDriver%] \ No driver installed yet
+  440    STR   R0,[R12,#work_SampleFrequency%]
+  450    STR   R0,[R12,#work_SamplePeriod%]
+  470    STR   R0,[R12,#work_SoundActive%]   \ No sound currently active
+  490    STR   R0,[R12,#work_ControlWord%]   \ Control word for Replay
+  510    STR   R0,[R12,#work_ImmediateHandlers%]
+  520    STR   R0,[R12,#work_CallBackHandlers%]
+  530    STR   R0,[R12,#work_ProcessHandlers%]
+  550    \ .. Initialise handler table by setting handler_Address% entries to 0
+  570    ADD   R0,R12,#work_handlerTable%   \ Position of table
+  580    MOV   R1,#handlerMax%              \ Number in table
+  590    MOV   R2,#0
+  610.initWorkHandlerTableLoop%
+  630    STR   R2,[R0,#handler_Address%]    \ Store 0 in handler_Address%
+  640    ADD   R0,R0,#handlerTableLen%      \ Increment to next table entry
+  650    SUBS  R1,R1,#1                     \ Decrement count
+  660    BNE   initWorkHandlerTableLoop%    \ Branch to start of loop
+  690    \ .. Initialise driver table by setting driver_Address% entries to 0
+  710    ADD   R0,R12,#work_driverTable%    \ Position of table
+  720    MOV   R1,#driverMax%               \ Number in table
+  730    MOV   R2,#0
+  750.initWorkDriverTableLoop%
+  770    STR   R2,[R0,#driver_Address%]     \ Store 0 in handler_Address%
+  780    ADD   R0,R0,#driverTableLen%       \ Increment to next table entry
+  790    SUBS  R1,R1,#1                     \ Decrement count
+  800    BNE   initWorkDriverTableLoop%     \ Branch to start of loop
+  820    MOV   R0,#0
+  830    STR   R0,[R12,#work_callBack_Active%]
+  840    STR   R0,[R12,#work_callBack_Count%]
+  850    STR   R0,[R12,#work_CallBack_BufferFullCount%]
+  860    STR   R0,[R12,#work_CallBack_CurrentSoundBuffer%]
+  870    STR   R0,[R12,#work_CallBack_CurrentOutBuffer%]
+  890    MOV   R0,#defaultNumCallBackBuffers%
+  900    STR   R0,[R12,#work_CallBack_numCallBackBuffers%]
+  920    LDMIA R13!,{PC}
+  930]
+  940ENDPROC
+@
+
+
+1.1.2.2
+log
+@New version: useful changes are bug fixed in removing callback
+handlers (affects turning off the MIDI synth), and maintains number of
+channels configured when callback buffers not supplied (stops volume
+of RealAudio playback from fluctuating when MIDI Synth can't make its
+mind up whether to created buffers or not.
+Other changes adds CBAI and 8bit log output support (disabled) and
+debugging code.
+@
+text
+@a30 2
+   60
+   70
+a31 1
+   90
+a32 1
+  110
+a33 1
+  130
+a34 1
+  150
+a35 1
+  170
+a37 1
+  200
+a38 1
+  220
+a40 1
+  250
+a44 1
+  300
+a45 1
+  320
+a46 1
+  340
+a47 1
+  360
+a48 1
+  380
+a49 1
+  400
+a51 1
+  430
+a53 1
+  460
+a54 1
+  480
+a55 1
+  500
+a58 1
+  540
+a59 1
+  560
+a62 1
+  600
+a63 1
+  620
+a67 2
+  670
+  680
+a68 1
+  700
+a71 1
+  740
+a72 1
+  760
+a76 1
+  810
+a82 1
+  880
+a84 1
+  910
+@

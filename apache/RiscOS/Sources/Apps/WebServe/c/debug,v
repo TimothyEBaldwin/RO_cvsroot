@@ -1,0 +1,234 @@
+head	1.3;
+access;
+symbols
+	WebServe-0_02:1.3
+	WebServe-0_01:1.3
+	WebServe-0_49:1.3
+	sbrodie_WebServe_0_48:1.3
+	sbrodie_WebServe_0_45:1.3
+	sbrodie_WebServe_0_44:1.2
+	sbrodie_Expresso_final_190298:1.1.1.1
+	sbrodie_WebServe_0_42:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	98.05.07.14.55.49;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.03.11.17.37.29;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.02.12.17.02.29;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.02.12.17.02.29;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Deferred cache load/validation added.  When WebServe starts, it does
+not scan the entire cache in order to validate it and extract all the
+object information.  The loading of information for any given host is
+deferred until a client first asks for an object from that site.  As a
+result, startup time is much improved (no more sitting around for
+minutes when the cache is large) and time to load the cache almost
+unnoticable as the time taken to load each host is small and these do not
+happen in one go.
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include "debug.h"
+
+#ifdef USE_SYSLOG
+#include "<syslog$dir>.C-veneer.h.syslog"
+#endif
+
+#define DEBUG_FILENAME  "RAM:$.WS_Trace"
+
+#if defined(USE_SYSLOG) && defined(TRACE)
+#include "kernel.h"
+#include "swis.h"
+extern _kernel_oserror *xsyslog_logmessage(const char *logname,
+                                          const char *text, int priority)
+{
+        return _swix(0x4c880, _INR(0,2), logname, text, priority);
+}
+
+extern _kernel_oserror *xsyslog_logdata(const char *logname, int priority,
+                                        const void *data, unsigned int size,
+                                        int offset)
+{
+        return _swix(0x4c88a, _INR(0,4), logname, priority, data, size, offset);
+}
+#endif
+
+/*************************************************************/
+/* static void protocol_debug(const char *format, ...	     */
+/*************************************************************/
+/* Output trace information to the TRACE_FILE		     */
+/*************************************************************/
+#ifdef TRACE
+void protocol_debug(const char *format, ...)
+{
+	#ifdef TRACE
+	if (getenv("NoTrace$WS")) return; else {
+		va_list ap;
+		#ifdef USE_SYSLOG
+		static char buffer[1024];
+		va_start(ap, format);
+		vsprintf(buffer, format, ap);
+		va_end(ap);
+		(void) xsyslog_logmessage("WS", buffer, 100);
+		#else
+		FILE *fp = fopen(DEBUG_FILENAME, "a");
+
+		if (fp != 0) {
+			va_start(ap, format);
+			(void) vfprintf(fp, format, ap);
+			va_end(ap);
+			fclose(fp);
+		}
+		#endif
+	}
+	#else
+	(void) format;
+	#endif
+}
+#endif
+
+
+#ifdef TRACE
+
+#ifndef USE_SYSLOG
+static char *filter(char *buf, const char *ptr, int max)
+{
+	int i;
+	for (i=0; i<=max; ++i) {
+		int p = ptr[i];
+		if (p<32 || p == 127) buf[i] = '.'; else buf[i] = p;
+	}
+	buf[i] = '\0';
+	return buf;
+}
+#endif
+
+void protocol_dump(const char *ptr, int size)
+{
+	#ifdef TRACE
+	if (getenv("NoTrace$WS") || getenv("NoTrace$WSRaw")) return; else {
+		#ifdef USE_SYSLOG
+		(void) xsyslog_logdata("WS", 100, ptr, size, 0);
+		#else
+		FILE *fp = fopen(DEBUG_FILENAME, "a");
+		if (fp != NULL) {
+			int ctr;
+			char buf[48];
+			fprintf(fp, "%08x: ", 0);
+			for (ctr=0; ctr<size; ++ctr) {
+				fprintf(fp, "%02x ", ptr[ctr]);
+				if ((ctr & 31) == 31) {
+					fprintf(fp, "  %s",
+						filter(buf, ptr+(ctr & ~31), ctr & 31));
+					fprintf(fp, "\n%08x: ", ctr+1);
+				}
+			}
+			if (ctr & 31) {
+				const char *start = ptr + (ctr & ~31);
+				while (ctr & 31) {
+					fprintf(fp, "   ");
+					++ctr;
+				}
+				fprintf(fp, "  %s", filter(buf, start, (size & 31)-1));
+			}
+			fputc('\n', fp);
+			fclose(fp);
+		}
+		#endif
+	}
+	#else
+	(void) ptr;
+	(void) size;
+	#endif
+}
+#endif
+
+@
+
+
+1.2
+log
+@* The WebServe configuration file does not get its type set to Obey until
+ the file has been closed.  Some FSes won't let you set types of open
+ files.
+
+* Default expiry time is now stored in the configuration file.  No GUI
+ capability for changing this is provided.  Default can be overridden
+ in !Connect.
+
+* Low free space indication when there is less than 4MB space free on the
+ drive containing the cache.
+
+* Path to cache as set in the Advanced configuration window is now collapsed
+ if it prefix-matches <Wimp$ScrapDir>.
+
+* If the Remote Proxy setting is not empty and has not been prefixed with
+ "http://" as required by the URL_Fetcher module, then this is now inserted
+ automatically.  This clears up many PAN-0xxxx faults relating to user
+ misconceptions concerning "I can't set a proxy" problems.
+@
+text
+@d27 17
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a20 2
+#define USE_SYSLOG
+
+@
+
+
+1.1.1.1
+log
+@Import of WebServe from SrcFiler
+@
+text
+@@

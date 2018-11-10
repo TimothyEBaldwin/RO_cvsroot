@@ -1,0 +1,286 @@
+head	1.2;
+access;
+symbols
+	rompress-0_04:1.2
+	rompress-0_03:1.2
+	rompress-0_02:1.2
+	rompress-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2012.02.25.17.36.04;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	wIBsgVNCSMcxZyUv;
+
+1.1
+date	2012.02.04.21.43.25;	author jlee;	state Exp;
+branches;
+next	;
+commitid	rebjpVdUVMZc2TRv;
+
+
+desc
+@@
+
+
+1.2
+log
+@Multiple improvements
+Detail:
+  Makefile - Ensure additional files get cleaned now that CLEAN_DEPEND is no longer supported
+  s/patchable, Makefile, c/rompress - Add new option -p/--patchable for creating patchable compressed ROMs. Currently it's impossible for a ROM patching tool (e.g. the Iyonix softload or ROM flash tools) to update the negative checksum of the uncompressed image, because the ROM footer will have been compressed. As a workaround for this, asking rompress to produce a patchable ROM will cause it to append a small section of code that manually recalculates the uncompressed image negative checksum and writes it to the ROM footer once decompression is complete.
+  c/romcrc, c/rompress, h/romcrc - Update romcrc code to allow reading/writing of the extended ROM footer. This is used to insert the new 'compressed ROM softload hint' tag into the footer of the compressed ROM, to allow the softload tool to easily identify compressed ROMs and locate the OS header.
+  c/rompress - Add new option -s/--size for specifying that the compressed ROM must be an exact size. E.g. for padding Tungsten ROMs to 4MB.
+  c/zlib, zinflate/s/zinflate - Update zlib decompression stub to only copy the necessary amount of data to the decompression workspace, instead of blindly copying everything up to the end of the image. Remove broken, over-optimised memcpy implementation and replace with a simple loop, since memcpy is rarely (if ever) used.
+  s/asm - Don't rely on OS_LeaveOS for returning to user mode.
+Admin:
+  Tested with compressing/decompressing OMAP3, OMAP3Live, IOMD & Tungsten ROMs
+  Tool should now be ready for use, and will build from source if you have Kernel-5_35-4_79_2_138 or newer
+
+
+Version 0.02. Tagged as 'rompress-0_02'
+@
+text
+@; Copyright 2012 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+        GET     OSEntries
+
+        AREA    |!!!!init$code|, CODE, READONLY
+
+        EXPORT  __main
+        EXPORT  memcpy
+        EXPORT  malloc
+        EXPORT  free
+        IMPORT  __RelocCode
+        IMPORT  uncompress
+
+        ENTRY
+
+rompress_zlibcode
+        ASSERT  OSDecompHdr_WSSize = . - rompress_zlibcode
+        DCD     0 ; Workspace size - poked by rompress
+        ASSERT  OSDecompHdr_Code = . - rompress_zlibcode
+        DCD     __main - rompress_zlibcode
+        ASSERT  OSDecompHdr_size = . - rompress_zlibcode
+
+sourceLen
+        DCD     0 ; Source length - poked by rompress
+
+relocateLen
+        DCD     0 ; Source length plus this stub size - poked by rompress
+
+__main
+        ; Called with:
+        ; a1 = OSHdr ptr
+        ; a2 = IMB func ptr
+        ; a3 = WS ptr
+        ; sp = stack
+        STMFD   sp!, {a1-a3,fp,lr}
+        ; First off, relocate ourselves and the compressed data to the workspace
+        LDR     ip, [a1, #OSHdr_CompressOffset]
+        LDR     fp, relocateLen
+        ADD     a4, ip, a1 ; Start of compressed area
+        STMFD   sp!, {a4,ip}
+        ADR     lr, continue
+        SUB     lr, lr, a4
+        ADD     lr, lr, a3 ; Relocated address to jump to
+10
+        LDR     a1, [a4], #4
+        SUBS    fp, fp, #4
+        STR     a1, [a3], #4
+        BNE     %BT10
+        ; Initialise mallocptr to the end of the used workspace region
+        STR     a3, [lr, #mallocptr-continue]
+        ; IMB the relocated code
+        MOV     a1, #1
+        MOV     a2, lr
+        LDR     pc, [sp, #12] ; Tail-call IMB func
+
+continue
+        ; We arrive here after being relocated to the decompression workspace
+        BL      __RelocCode ; Corrupts fp!
+        ; Use the uncompress function to do the uncompression
+        LDMFD   sp!, {a1-a2,fp,ip,lr} ; Get dest ptr, compression offset, OS hdr, IMB func, WS ptr
+        MOV     a3, lr ; Source ptr is WS ptr
+        LDR     a4, sourceLen ; Get length of zlib stream
+        LDR     ip, [fp, #OSHdr_ImageSize]
+        SUB     a2, ip, a2 ; Dest len is (image size)-(compression offset)
+        STR     a2, [sp, #-4]!
+        MOV     a2, sp
+        ; Fixup OS header
+        STR     ip, [fp, #OSHdr_CompressedSize]
+        MOV     ip, #0
+        STR     ip, [fp, #OSHdr_DecompressHdr]
+        ; Call decompression code
+        BL      uncompress
+        LDMFD   sp!, {a2,fp,pc}
+
+mallocptr
+        DCD     0 ; Tracks next malloc addr
+
+malloc
+        ADD     a2, a1, #3
+        LDR     a1, mallocptr
+        BIC     a2, a2, #3
+        ADD     a2, a2, a1
+        STR     a2, mallocptr
+free
+        MOV     pc, lr
+
+memcpy
+        ; Ordinarily memcpy doesn't get used, so it doesn't matter that this is just a simple bytewise copy
+        SUBS    a3, a3, #1
+        LDRGEB  a4, [a2, a3]
+        STRGEB  a4, [a1, a3]
+        BGT     memcpy
+        MOV     pc, lr
+
+        EXPORT  |__rt_udiv|
+|__rt_udiv|
+; Unsigned divide of a2 by a1: returns quotient in a1, remainder in a2
+; Destroys a3 and ip
+
+        MOV     a3, #0
+        RSBS    ip, a1, a2, LSR #3
+        BCC     u_sh2
+        RSBS    ip, a1, a2, LSR #8
+        BCC     u_sh7
+        MOV     a1, a1, LSL #8
+        ORR     a3, a3, #&FF000000
+        RSBS    ip, a1, a2, LSR #4
+        BCC     u_sh3
+        RSBS    ip, a1, a2, LSR #8
+        BCC     u_sh7
+        MOV     a1, a1, LSL #8
+        ORR     a3, a3, #&00FF0000
+        RSBS    ip, a1, a2, LSR #8
+        MOVCS   a1, a1, LSL #8
+        ORRCS   a3, a3, #&0000FF00
+        RSBS    ip, a1, a2, LSR #4
+        BCC     u_sh3
+        RSBS    ip, a1, #0
+    ;    BCS     dividebyzero
+u_loop  MOVCS   a1, a1, LSR #8
+u_sh7   RSBS    ip, a1, a2, LSR #7
+        SUBCS   a2, a2, a1, LSL #7
+        ADC     a3, a3, a3
+u_sh6   RSBS    ip, a1, a2, LSR #6
+        SUBCS   a2, a2, a1, LSL #6
+        ADC     a3, a3, a3
+u_sh5   RSBS    ip, a1, a2, LSR #5
+        SUBCS   a2, a2, a1, LSL #5
+        ADC     a3, a3, a3
+u_sh4   RSBS    ip, a1, a2, LSR #4
+        SUBCS   a2, a2, a1, LSL #4
+        ADC     a3, a3, a3
+u_sh3   RSBS    ip, a1, a2, LSR #3
+        SUBCS   a2, a2, a1, LSL #3
+        ADC     a3, a3, a3
+u_sh2   RSBS    ip, a1, a2, LSR #2
+        SUBCS   a2, a2, a1, LSL #2
+        ADC     a3, a3, a3
+u_sh1   RSBS    ip, a1, a2, LSR #1
+        SUBCS   a2, a2, a1, LSL #1
+        ADC     a3, a3, a3
+u_sh0   RSBS    ip, a1, a2
+        SUBCS   a2, a2, a1
+        ADCS    a3, a3, a3
+        BCS     u_loop
+        MOV     a1, a3
+        MOV     pc, lr
+
+        END
+@
+
+
+1.1
+log
+@Add initial version of ROM compression tool
+Detail:
+  Tool to compress & decompress RISC OS 5 ROM images.
+  Currently images can be compressed using either the squeeze or zlib algorithms, but more algorithms can easily be added in the future
+  When decompressing images the decompression stub that was appended to the image will be executed directly; this may need changing in future if CPU compatability issues arise.
+  Can only be used with ROM images that have the 'supports compression' flag set in their OS header
+  Currently uses lots of memory when compressing images (especially with zlib) due to everything being done in RAM
+Admin:
+  Tested with compressing/decompressing OMAP3 & OMAP3Live images
+  Note: Won't build until the kernel changes are checked in
+
+
+Version 0.01. Tagged as 'rompress-0_01'
+@
+text
+@d39 3
+d51 1
+a51 1
+        LDR     fp, [a1, #OSHdr_CompressedSize]
+a52 1
+        ADD     fp, fp, a1 ; End of compressed image
+d59 1
+a60 1
+        CMP     a4, fp
+d75 1
+a75 1
+        LDR     a4, sourceLen ; Get source length
+d101 1
+a101 24
+        ; This could be better, but seems to be good enough for our purposes
+        STMFD   sp!, {a1,lr}
+        CMP     a3, #8 ; Word copy assumes at least one word avaliable, after aligning source
+        BLT     memcpy_bytes
+        MOVS    a4, a1, LSL #30
+        BEQ     memcpy_srcaligned
+memcpy_alignsrc
+        LDRB    ip, [a1], #1
+        ADDS    a4, a4, #1<<30
+        STRB    ip, [a2], #1
+        BNE     memcpy_alignsrc
+memcpy_srcaligned
+        ; Source is now aligned, check dest
+        TST     a2, #3
+        SUB     a3, a3, #4
+        BNE     memcpy_unaligned
+memcpy_words
+        LDR     ip, [a1], #4
+        SUBS    a3, a3, #4
+        STR     ip, [a2], #4
+        BGE     memcpy_words
+memcpy_3bytes
+        AND     a3, a3, #3
+memcpy_bytes
+d103 4
+a106 16
+        LDRGEB  ip, [a1], #1
+        STRGEB  ip, [a2], #1
+        BGT     memcpy_bytes
+        LDMFD   sp!, {a1,pc}
+memcpy_unaligned
+        LDR     ip, [a1], #4
+        SUBS    a3, a3, #4
+        STRB    ip, [a2], #1
+        MOV     ip, ip, LSR #8
+        STRB    ip, [a2], #1
+        MOV     ip, ip, LSR #8
+        STRB    ip, [a2], #1
+        MOV     ip, ip, LSR #8
+        STRB    ip, [a2], #1
+        BGE     memcpy_unaligned
+        B       memcpy_3bytes
+@
+

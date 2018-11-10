@@ -1,0 +1,980 @@
+head	1.6;
+access;
+symbols
+	Clipboard-0_10:1.6
+	Clipboard-0_09:1.5
+	Clipboard-0_08:1.4
+	Clipboard-0_07:1.3
+	Clipboard-0_06:1.3
+	Clipboard-0_05:1.2
+	Clipboard-0_04:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2018.05.27.16.05.32;	author rool;	state Exp;
+branches;
+next	1.5;
+commitid	Apl4m39uCboI6XDA;
+
+1.5
+date	2008.09.16.18.36.55;	author rool;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2007.11.13.01.41.06;	author srevill;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.02.25.10.57.31;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.02.22.11.58.02;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.02.19.11.22.08;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Makefile recreated from fragments
+Detail:
+  Updates to build against current HdrSrc, and inherit 'standalone' from the shared makefiles.
+Admin:
+  Built, but no run time testing.
+
+Version 0.10. Tagged as 'Clipboard-0_10'
+@
+text
+@; Copyright 1999 Element 14 Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+;  s.States - routines to handle transaction states
+;
+
+
+; Transaction state handler entry conditions:
+;
+; On entry:
+;   R0 = Wimp_Poll event code (17, 18 or 19)
+;   R1 -> message block
+;   R5 = message action code received
+;   R11 -> action block
+; or
+;   R0-R4 = parameters from Clipboard_Put
+;   R5 = -1
+;   R11 -> action block
+;
+; On exit:
+;   R0-R11 may be corrupted
+;   V set => throw error
+;
+; Processor is in USR or SVC mode
+
+StateHandler
+        EntryS
+        LDR     R14, [R11, #Act_State]
+        CMP     R14, #State_FirstUnused
+        Debug   tmp, "StateHandler"
+        ADDLO   PC, PC, R14, LSL #2
+;        EXITS
+;        EXITS   ; State_None
+        B       StateHandler_None               ; unknown state
+        B       StateHandler_None               ; State_None
+        B       StateHandler_DataSave
+        B       StateHandler_DataSaveAck
+        B       StateHandler_DataLoad
+        B       StateHandler_RAMFetch1
+        B       StateHandler_RAMFetch2
+        B       StateHandler_RAMTransmit
+        B       StateHandler_DataRequest1
+        B       StateHandler_DataRequest2
+        B       StateHandler_PutRequest1
+        B       StateHandler_PutRequest2
+        B       StateHandler_PutRequest3
+        B       StateHandler_Paste
+
+;StateHandler_DataSaveAck
+;StateHandler_RAMFetch1
+;StateHandler_RAMFetch2
+;StateHandler_DataRequest1
+;StateHandler_DataRequest2
+;StateHandler_PutRequest3
+;StateHandler_Paste
+StateHandler_None
+        EXITS
+
+
+;-------------------------------------------------------------------------------
+StateHandler_DataSaveAck
+        Debug   tmp, "DataSaveAck state"
+        Debug   tmp, "Msg type",r0
+        Debug   tmp, "Msg code",r5
+
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_DataSaveAck
+        MOVEQ   R0, #-1
+        STREQ   R0, [R11, #Act_Type]
+        BEQ     %FT10
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5,#Message_DataLoad
+        EXITS   NE
+
+        ; We got a dataload message, alloc temporary memory, read file,
+        ; send Message_Paste and enter State_Paste.
+
+        MOV     R0, #23
+        ADR     R1, PollBlock
+        ADD     R1, R1, #44
+        SWI     XOS_File
+        MOVVS   R0, #0
+        CMP     R0, #1
+        BNE     StateHandler_Exit
+
+        ; We've already allocated a buffer for the clipboard content based
+        ; on the size given in Message_DataSave, so just make sure buffer
+        ; is big enough.
+        LDR     R0, [R11, #Act_BufAddr]
+        LDR     R1, [R11, #Act_BufLen]
+
+        MOV     R1, R4
+        BL      ExpandMemToR1
+        BVS     StateHandler_Exit
+
+        STR     R0, [R11, #Act_BufAddr]
+        STR     R1, [R11, #Act_BufLen]
+
+        MOV     R9, R0
+        MOV     R0, #16
+        ADR     R1, PollBlock
+        ADD     R1, R1, #44
+        MOV     R2, R9
+        MOV     R3, #0
+        SWI     XOS_File
+        BVS     StateHandler_Exit
+
+        ; Right, we've got the clipboard content now send a Message_Paste
+        ; to the application that called Clipboard_Get and enter State_Paste
+
+10
+        MOV     R0, #State_Paste
+        STR     R0, [R11, #Act_State]
+
+        ADD     R14, R11, #Act_Flags
+        LDMIA   R14, {R0-R4}
+
+        LDR     R5, [R11, #Act_Type]
+        MOV     R6, R11
+
+        BL      SendMsg_Paste
+        BVS     StateHandler_Exit
+
+        CMP     R5, #-1
+        MOVNE   R0, #State_Paste
+        STRNE   R0, [R11, #Act_State]
+        BEQ     StateHandler_Exit
+
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+StateHandler_Paste
+        Debug   tmp, "StateHandler_Paste"
+        Debug   tmp, "Msg type",r0
+        Debug   tmp, "Msg code",r5
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        LDREQ   R1, =Message_Paste
+        CMPEQ   R5, R1
+        EXITS   NE
+
+        ; Our Paste message has been acknowledged, remove action
+        ; note this will also remove any temp file we allocated.
+
+        B       StateHandler_Exit
+
+
+;-------------------------------------------------------------------------------
+StateHandler_PutRequest1
+        ; If PutRequest bounced, just free the action block and stop.
+        ; This is not an entirely perfect solution, because we've already
+        ; acknowledged the Message_DataRequest, but there's nothing we can
+        ; do about that - hopefully it'll never happen in practice.
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_PutRequest
+        BEQ     StateHandler_Exit
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R5, #-1
+        EXITS   NE
+
+        ; We got a Clipboard_Put back. Assume flag bits 0-2 are clear.
+        ; Enter State_DataSave.
+        MOV     R0, #State_DataSave
+        STR     R0, [R11, #Act_State]
+        MOV     R0, R2
+        BL      CopyData
+        BVS     StateHandler_Exit
+        STR     R0, [R11, #Act_BufAddr]
+        STR     R3, [R11, #Act_BufLen]
+
+        MOV     R2, R1
+        ADR     R1, PollBlock
+        LDR     R0, [R11, #Act_DataRequestRef]
+        STR     R0, [R1, #ms_yourref]
+        MOV     R0, #Message_DataSave
+        STR     R0, [R1, #ms_action]
+        ADD     R0, R11, #Act_Window
+        LDMIA   R0, {R5-R8}
+        ADD     R0, R1, #msDataTransfer_window
+        STMIA   R0, {R5-R8}
+        LDR     R0, [R11, #Act_BufLen]
+        STR     R0, [R1, #msDataTransfer_filesize]
+        STR     R2, [R1, #msDataTransfer_filetype]
+        ADD     R0, R1, #msDataTransfer_filename
+01      LDRB    R14, [R4], #1
+        STRB    R14, [R0], #1
+        TEQ     R14, #0
+        BNE     %BT01
+        SUB     R0, R0, R1
+        ADD     R0, R0, #3
+        BIC     R0, R0, #3
+        STR     R0, [R1, #ms_size]
+        MOV     R0, #User_Message_Recorded
+        LDR     R2, [R11, #Act_Task]
+        ADD     R4, R11, #Act_MyRef
+        BL      MySendMessage
+        BVS     StateHandler_Exit
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+StateHandler_DataRequest1
+        ; Ignore anything that's totally unexpected.
+
+        Debug   tmp, "DataRequest1"
+        Debug   tmp, "Msg type",r0
+        Debug   tmp, "Msg code",r5
+
+        ; If DataRequest bounced.
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_DataRequest
+        BEQ     %FT10
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5, #Message_DataSave
+        EXITS   NE
+
+        ; We got a DataSave, initiate data transfer by sending RAMFetch1
+        ; We got a Message_DataSave back - enter State_RAMFetch1.
+
+        MOV     R2, #State_RAMFetch1
+        LDR     R3, [R1, #ms_taskhandle]
+        LDR     R4, [R1, #msDataTransfer_filetype]
+
+        STR     R2, [R11, #Act_State]
+        STR     R3, [R11, #Act_Owner]
+        STR     R4, [R11, #Act_Type]
+
+        LDR     R1, [R1, #msDataTransfer_filesize]
+        ADD     R1, R1, #1
+        MOV     R2, #0
+        BL      AllocMem
+        BVS     StateHandler_Exit
+
+        STR     R0, [R11, #Act_BufAddr]
+        STR     R1, [R11, #Act_BufLen]
+        STR     R2, [R11, #Act_TransCount]
+
+        BL      SendMsg_RAMFetch
+        BVS     StateHandler_Exit
+
+        EXIT
+
+10      ; Our DataRequest bounced, send Message_Paste indicating failure
+
+        Debug   tmp, "DataRequest1 bounced"
+        ADD     R1, R11, #Act_Flags     ;
+        LDMIA   R1, {R0-R4}             ;
+        MOV     R5, #-1                 ; -1 => no clipboard
+        MOV     R6, #-1                 ; doesn't really matter
+        BL      SendMsg_Paste           ;
+        B       StateHandler_Exit       ;
+
+
+;-------------------------------------------------------------------------------
+StateHandler_DataRequest2
+
+        Debug   tmp, "DataRequest2"
+        Debug   tmp, "Msg type",r0
+        Debug   tmp, "Msg code",r5
+
+        ; If DataRequest bounced.
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_DataRequest
+        BEQ     %FT10
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5, #Message_DataSave
+        EXITS   NE
+
+        ; We got a DataRequest bounce or a DataSave.
+        ; Either way, send Message_DataTypeIs to data type requestor.
+
+10
+        ADR     R1, PollBlock
+        CMP     R5, #Message_DataSave                   ; did we get a datasave?
+        LDREQ   R5, [R1, #msDataTransfer_filetype]      ; if so, get data type
+        MOVNE   R5, #-1                                 ; if not, -1 => no clipboard
+
+        ADD     R14, R11, #Act_Flags
+        LDMIA   R14, {R0-R4}
+
+        BL      SendMsg_DataTypeIs
+        B       StateHandler_Exit
+
+
+;-------------------------------------------------------------------------------
+StateHandler_DataSave
+        ; If DataSave bounced, free action block and stop.
+        ; This is what will happen if someone is trying to determine the
+        ; data type of the clipboard using the old protocol.
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_DataSave
+        BEQ     StateHandler_Exit
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5, #Message_DataSaveAck
+        CMPNE   R5, #Message_RAMFetch
+        EXITS   NE
+
+        ; If we got a Message_RAMFetch, continue as for StateHandler_RAMTransmit
+        CMP     R5, #Message_RAMFetch
+        BEQ     StateHandler_RAMTransmit
+
+        ; We got a Message_DataSaveAck back - enter State_DataLoad.
+        MOV     R0, #State_DataLoad
+        STR     R0, [R11, #Act_State]
+
+        LDR     R2, [R1, #msDataTransfer_filetype]
+        LDR     R4, [R11, #Act_BufAddr]
+        LDR     R5, [R11, #Act_BufLen]
+        ADD     R5, R4, R5
+        MOV     R0, #OSFile_SaveStamp
+        ADD     R1, R1, #msDataTransfer_filename
+        SWI     XOS_File
+        BVS     StateHandler_Exit
+
+        ADR     R1, PollBlock   ; get back the original R1
+        LDR     R0, [R1, #ms_myref]
+        STR     R0, [R1, #ms_yourref]
+        MOV     R0, #Message_DataLoad
+        STR     R0, [R1, #ms_action]
+        LDR     R0, [R11, #Act_BufLen]
+        STR     R0, [R1, #msDataTransfer_filesize]
+        MOV     R0, #User_Message_Recorded
+        LDR     R2, [R1, #ms_taskhandle]
+        ADD     R4, R11, #Act_MyRef
+        BL      MySendMessage
+        BVS     StateHandler_Exit
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+StateHandler_RAMFetch1
+        Debug   tmp, "RAMFetch1"
+        Debug   tmp, "Msg type",r0
+        Debug   tmp, "Msg code",r5
+
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_RAMFetch
+        BEQ     %FT20
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5, #Message_RAMTransmit
+        EXITS   NE
+
+        ; We've received a RAMTransmit continue as for State_RAMFetch2
+
+        B       StateHandler_RAMFetch2
+
+20      ; Our RAMFetch bounced - enter State_DataSaveAck.
+        MOV     R0, #State_DataSaveAck
+        STR     R0, [R11, #Act_State]
+
+        ADR     R1, PollBlock
+
+        ADD     R0, R1, #msDataTransfer_filename
+        BL      CopyLeaf
+        STR     R0, ClipboardName
+
+        LDR     R0, [R1, #ms_myref]
+        STR     R0, [R1, #ms_yourref]
+
+        MOV     R0, #Message_DataSaveAck
+        STR     R0, [R1, #ms_action]
+
+        MVN     R0, #0
+        STR     R0, [R1, #msDataTransfer_filesize]
+
+        ADD     R1, R11, #Act_Window
+        LDMIA   R1, {R2-R5}
+        ADR     R1, PollBlock + msDataTransfer_window
+        STMIA   R1, {R2-R5}
+
+        ADR     R0, WimpScrapPath
+        ADR     R2, PollBlock + msDataTransfer_filename
+30
+        LDRB    R14, [R0], #1
+        STRB    R14, [R2], #1
+        TEQ     R14, #0
+        BNE     %BT30
+
+        ADR     R1, PollBlock
+        SUB     R0, R2, R1
+        ADD     R0, R0, #3
+        BIC     R0, R0, #3
+        STR     R0, [R1,#ms_size]
+
+        MOV     R0, #User_Message_Recorded
+        LDR     R2, [R11, #Act_Owner]
+        ADD     R4, R11, #Act_MyRef
+        BL      MySendMessage
+        BVS     StateHandler_Exit
+        EXIT
+
+20
+WimpScrapPath
+        DCB     "<Wimp$$Scrap>",0
+        ALIGN
+
+
+;-------------------------------------------------------------------------------
+StateHandler_RAMFetch2
+        Debug   tmp, "RAMFetch2"
+        Debug   tmp, "Msg type",r0
+        Debug   tmp, "Msg code",r5
+
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_RAMFetch
+        MOVEQ   R0, #-1
+        STREQ   R0, [R11, #Act_Type]
+        BEQ     %FT10
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5, #Message_RAMTransmit
+        EXITS   NE
+
+        LDR     R2, [R1, #msRAMTransfer_length]
+        LDR     R3, [R11, #Act_TransCount]
+        ADD     R0, R3, R2
+        STR     R0, [R11, #Act_TransCount]
+
+        LDR     R4, [R11, #Act_BufLen]
+        Debug   tmp, "tcount ",r0
+        Debug   tmp, "got len",r2
+        Debug   tmp, "buf len",r4
+        TEQ     R4, R0
+        STRNE   R0, [R11, #Act_BufLen]
+        BNE     %FT10
+
+        ; Buffer's full, extend buffer, send RAMFetch and enter State_RAMFetch2
+
+        MOV     R0, #State_RAMFetch2
+        STR     R0, [R11, #Act_State]
+
+        LDR     R0, [R11, #Act_BufAddr]
+        LDR     R1, [R11, #Act_BufLen]
+        ADD     R1, R1, #&100
+        BL      ExpandMemToR1
+        ; if V then an error should be generated, 'Unable to claim memory'
+        BVS     StateHandler_Exit
+        STR     R0, [R11, #Act_BufAddr]
+        STR     R1, [R11, #Act_BufLen]
+
+        BL      SendMsg_RAMFetch
+        BVS     StateHandler_Exit
+        EXIT
+
+10      ; Right, we've got the clipboard content now send a Message_Paste
+        ; to the application that called Clipboard_Get and enter State_Paste
+
+        ADD     R14, R11, #Act_Flags
+        LDMIA   R14, {R0-R4}
+
+        LDR     R5, [R11, #Act_Type]
+        MOV     R6, R11
+
+        BL      SendMsg_Paste
+        BVS     StateHandler_Exit
+
+        CMP     R5, #-1
+        MOVNE   R0, #State_Paste
+        STRNE   R0, [R11, #Act_State]
+        BEQ     StateHandler_Exit
+
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+StateHandler_RAMTransmit
+        Debug   tmp, "RAMTransmit"
+        ; If RAMTransmit bounced, report transmission error.
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_RAMTransmit
+        BEQ     StateHandler_TransmissionError
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5, #Message_RAMFetch
+        EXITS   NE
+
+        ; We got a Message_RAMFetch back - enter State_RAMTransmit.
+        MOV     R0, #State_RAMTransmit
+        STR     R0, [R11, #Act_State]
+
+        LDR     R4, [R11, #Act_BufLen]
+        LDR     R5, [R1, #msRAMTransfer_length]
+        LDR     R6, [R11, #Act_TransCount]
+        SUB     R4, R4, R6      ; R4 = amount remaining to be transferred
+        CMP     R4, R5
+        MOVGT   R4, R5          ; R4 = min (amount, receiver_buffer_size)
+        LDR     R2, [R1, #ms_taskhandle]
+        LDR     R3, [R1, #msRAMTransfer_buffer]
+        LDR     R0, mytaskhandle
+        LDR     R1, [R11, #Act_BufAddr]
+        ADD     R1, R1, R6
+        SWI     XWimp_TransferBlock
+        BVS     StateHandler_Exit
+        ADD     R6, R6, R4      ; increase count of data transferred
+        STR     R6, [R11, #Act_TransCount]
+
+        ADR     R1, PollBlock   ; get back the original R1
+        LDR     R0, [R1, #ms_myref]
+        STR     R0, [R1, #ms_yourref]
+        MOV     R0, #Message_RAMTransmit
+        STR     R0, [R1, #ms_action]
+        STR     R4, [R1, #msRAMTransfer_length]
+        CMP     R4, R5          ; was buffer filled?
+        MOVLT   R0, #User_Message
+        MOVEQ   R0, #User_Message_Recorded
+        MOVLT   R4, #0
+        ADDEQ   R4, R11, #Act_MyRef
+        LDR     R2, [R1, #ms_taskhandle]
+        BL      MySendMessage
+        BVS     StateHandler_Exit
+        CMP     R4, R5
+        BLT     StateHandler_Exit       ; tidy up if transaction complete
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+StateHandler_DataLoad
+        ; If DataLoad bounced, report transmission error.
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_DataLoad
+        BEQ     StateHandler_TransmissionError
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        EXITS   EQ
+        CMP     R5, #Message_DataLoadAck
+        EXITS   NE
+
+        ; We got a DataLoadAck back - all is well and we can tidy up.
+        B       StateHandler_Exit
+
+
+;-------------------------------------------------------------------------------
+StateHandler_PutRequest2
+        ; Ignore anything that's totally unexpected.
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_PutRequest
+        CMPNE   R5, #-1
+        EXITS   NE
+
+        ; We got a PutRequest bounce or a Clipboard_Put.
+        ; Either way, send Message_DataTypeIs to data type requestor.
+
+        CMP     R5, #-1         ; did we get a Clipboard_Put?
+        MOVEQ   R5, R1          ; if so, remember data type
+        MOVNE   R5, #-1         ; if not, set filetype to -1
+
+        ADD     R14, R11, #Act_Flags
+        LDMIA   R14, {R0-R4}
+
+        BL      SendMsg_DataTypeIs
+        B       StateHandler_Exit
+
+
+;-------------------------------------------------------------------------------
+StateHandler_PutRequest3
+        ; Ignore anything that's totally unexpected.
+        Debug   tmp, "PutRequest3"
+        Debug   tmp, "Msg type",r0
+        Debug   tmp, "Msg code",r5
+
+        ; We got a PutRequest bounce or a Clipboard_Put.
+        ; Either way, send Message_Paste to data requestor.
+
+        CMP     R0, #User_Message_Acknowledge
+        CMPEQ   R5, #Message_PutRequest
+        BEQ     %FT10
+
+        ; Ignore anything that's totally unexpected.
+        CMP     R5, #-1
+        EXITS   NE
+
+        ; We got a Clipboard_Put back. Assume flag bits 0-2 are clear.
+        MOV     R0, R2
+        BL      CopyData
+        BVS     StateHandler_Exit
+        STR     R0, [R11, #Act_BufAddr]
+        STR     R3, [R11, #Act_BufLen]
+
+        MOV     R0, R4
+        BL      CopyLeaf
+        BVS     StateHandler_Exit
+        STR     R0, [R11, #Act_Name]
+
+10
+        CMP     R5, #-1         ; did we get a Clipboard_Put?
+        MOVEQ   R5, R1          ; if so, remember data type
+        MOVEQ   R6, R11         ;
+        MOVNE   R5, #-1         ; if not, set filetype to -1
+        MOVNE   R6, #-1
+
+        ADD     R14, R11, #Act_Flags
+        LDMIA   R14, {R0-R4}
+
+        BL      SendMsg_Paste
+        BVS     StateHandler_Exit
+
+        CMP     R5, #-1
+        MOVNE   R0, #State_Paste
+        STRNE   R0, [R11, #Act_State]
+        BEQ     StateHandler_Exit
+
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+; Common receiver-died error for DataLoad and RAMTransmit bounces
+        MakeErrorBlock RecDied
+StateHandler_TransmissionError
+        Push    "R1, R5"
+        ADR     R0, ErrorBlock_RecDied
+        ADR     R1, MessagesBlock
+        MOV     R2, #0
+        SWI     XMessageTrans_ErrorLookup       ; ignore errors
+        Push    "R0"
+        ADR     R0, MessagesBlock
+        addr    R1, clipboard_text
+        MOV     R2, #0
+        SWI     XMessageTrans_Lookup            ; ignore errors
+        Pull    "R0"
+        LDR     R1, =&101:OR:(2<<9)
+        MOV     R3, #0
+        MOV     R4, #0
+        MOV     R5, #0
+        SWI     XWimp_ReportError               ; ignore errors
+        Pull    "R1, R5"
+        CLRV
+        ; Delete the scrap file if it was a DataLoad bounce
+        CMP     R5, #Message_DataLoad
+        MOVEQ   R0, #OSFile_Delete
+        ADDEQ   R1, R1, #msDataTransfer_filename
+        SWIEQ   XOS_File
+        ; Drop through...
+
+
+;-------------------------------------------------------------------------------
+; Common exit-transaction code
+StateHandler_Exit
+        Debug   tmp, "Delete action"
+        BL      DeleteAction    ; preserves all registers and flags
+        EXIT
+
+        LTORG
+        END
+@
+
+
+1.5
+log
+@  Completed the clipboard support part of the Clipboard module.
+  Drag-and-Drop support still needs to be designed and implemented.
+Detail:
+  The initial Clipboard module released by ROOL was in a state of flux due
+  to a redesign of how the module worked. The transition to the new way
+  of doing things was only done partially and needed completing to make the
+  Clipboard module support the clipboard fully. The module also contained
+  26-bit only code.
+
+  - Replaced all the 26-bit code with 32-bit (not mode neutral) code.
+
+  - Completed implementation of Clipboard_GetDataType by adding support for
+    the situation where the Clipboard module doesn't own the clipboard and
+    isn't proxying either. The required StateHandler_DataRequest2 has been
+    implemented also.
+
+  - Fully implemented Clipboard_Get including all the required statehandlers.
+      StateHandler_DataSaveAck
+      StateHandler_RAMFetch1
+      StateHandler_RAMFetch2
+      StateHandler_DataRequest1
+      StateHandler_DataRequest2
+      StateHandler_PutRequest3
+      StateHandler_Paste
+
+  - Modified CopyData routine to allow for clipboard content not being
+    word-aligned and/or its length not being a multiple of four.
+
+  - Removed all the commented out code that was left over from the initial
+    implementation of the Clipboard module.
+
+  - Added GetData to the set of test applications. It displays the clipboard
+    contents if it's of type text (It's best to use short text strings). It's
+    not very polished and it's better to use PutClip and GetClip to test the
+    Clipboard module.
+
+  - Added PutClip to the set of test applications. It can be used test
+    SWI Clipboard_Put. Details on how can be found in its Help file.
+
+  - Added GetClip to the set of test applications. It can be used test
+    SWI Clipboard_Get. Details on how can be found in its Help file.
+Admin:
+  Extensively tested on Iyonix RO 5.11 both external behaviour with PutClip
+  and GetClip as well as the internal behaviour of the statehandler (by using
+  StrongED as the clipboard owner/requester and rigging it to fail at certain
+  points during the datatransfer).
+
+  Briefly tested on RO 4.02, seems to be OK.
+
+  Briefly tested on RO 6.06, seems to be OK. Functionality may be different
+  from 5.11 and 4.02 though due to ClipboardHolder. In particular using the
+  Clipboard module as a proxy is likely to be affected.
+
+Version 0.09. Tagged as 'Clipboard-0_09'
+@
+text
+@d424 1
+a424 1
+        DCB     "<Wimp$Scrap>",0
+@
+
+
+1.4
+log
+@Fixed Clipboard to build and made it 32bit.
+Detail:
+  Clipboard has never been 32bitted, therefore it refused to build for
+  Tungsten. It's now been fixed to build. It's still not finished though.
+Admin:
+  Tested on RiscPC RO402. Module checked with ARMalyser.
+Notes:
+  Changes by James Lampard.
+
+Version 0.08. Tagged as 'Clipboard-0_08'
+@
+text
+@d42 1
+a42 1
+        EXITS   HS
+d44 4
+a47 4
+        NOP
+
+        ;EXITS   ; State_None
+        B       StateHandler_None
+d61 7
+d70 3
+d74 74
+a147 5
+StateHandler_RAMFetch1
+StateHandler_RAMFetch2
+StateHandler_DataRequest1
+StateHandler_DataRequest2
+StateHandler_PutRequest3
+d149 14
+a162 1
+        EXITS
+d165 1
+d219 91
+d357 141
+d499 1
+d550 1
+d567 1
+d577 27
+d605 33
+a637 21
+        MOVEQ   R7, R1          ; remember data type
+        MOVNE   R7, #-1         ; dummy value for data type field
+        ADD     R1, R11, #Act_Flags
+        LDMIA   R1, {R2-R6}
+        AND     R2, R2, #ClipboardGetDataType_Wimp
+        ORRNE   R2, R2, #msDataTypeIs_NoClipboard
+        ADR     R1, PollBlock + msDataTypeIs_flags
+        STMIA   R1, {R2-R7}
+        ADR     R1, PollBlock
+        MOV     R0, #msDataTypeIs_size
+        STR     R0, [R1, #ms_size]
+        MOV     R0, #0
+        STR     R0, [R1, #ms_yourref]
+        LDR     R0, =Message_DataTypeIs
+        STR     R0, [R1, #ms_action]
+        MOV     R0, #User_Message
+        LDR     R2, [R1, #msDataTypeIs_window]
+        LDR     R3, [R1, #msDataTypeIs_icon]
+        MOV     R4, #0
+        BL      MySendMessage
+        B       StateHandler_Exit
+d640 1
+d670 1
+d673 1
+d677 1
+a677 1
+
+@
+
+
+1.3
+log
+@* Standardised all error blocks to use AddError/MakeErrorBlock macros
+* Routines added for making "safe" copies of data blocks, data type lists
+  and leafnames passed in via the various mechanisms
+* SWI Clipboard_Put and Message_DataRequest handler implemented, and the
+  supporting state handlers
+    State_PutRequest1
+    State_DataSave
+    State_RAMTransmit
+    State_DataLoad
+* SWI Clipboard_GetDataType implemented, and the supporting handler
+    State_PutRequest2
+    (but not State_DataRequest2 yet)
+* Now requires that the caller is an active task
+* Fixed occasional data abort bug in MySendMessage
+* Fixed corruption of wimp event code bug
+* Implemented and added test applications
+
+Version 0.06. Tagged as 'Clipboard-0_06'
+@
+text
+@d39 1
+a39 1
+        Entry
+d42 1
+d44 4
+a47 2
+        EXITS
+        EXITS   ; State_None
+d61 2
+@
+
+
+1.2
+log
+@* Task-related initialisation moved from module init to Start routine
+* State handler added, called from SWI, UserMessage, UserMessageAck handlers
+* Implemented NewAction, DeleteAction, DeleteActions, FreeClipboard and
+  FreeMsgQueue
+* DA memory allocation adapted so as not to use max-size "-1" DAs
+* RMA memory allocation functions completed to match DA functions - will now
+  assemble with DA support option turned off!
+
+Version 0.05. Tagged as 'Clipboard-0_05'
+@
+text
+@d21 6
+a26 3
+
+; R0 = Wimp_Poll event code (17, 18 or 19)
+; R1 -> message block
+d28 8
+a35 5
+; R0-R4 = parameters from Clipboard_Put
+
+; R5 = message action code received, or -1 if Clipboard_Put
+; R11 -> action block
+
+a57 1
+StateHandler_DataSave
+a58 1
+StateHandler_DataLoad
+a60 1
+StateHandler_RAMTransmit
+a62 2
+StateHandler_PutRequest1
+StateHandler_PutRequest2
+d66 236
+@
+
+
+1.1
+log
+@* Updated API to match that from the spec 1309,419/FS
+* Added symbols for all flag bits in SWIs and messages
+* Major reorganisation of workspace layout, primarily to facilitate multiple
+  concurrent data transfer transactions - because of this, most of the
+  useful functionality is currently commented out, pending updating to use
+  the new structures
+* Replaced "event" queue with a simple queue of ready-to-send Wimp message
+  blocks - this way, event handling can be handled in the same place in the
+  code, irrespective of whether we're in the foreground or background
+* Reorganised finalisation code so that task and module operations are
+  performed in separate routines and (mostly) in strictly the reverse order
+  to at initialisation. This allows code sharing between module finalisation,
+  the exit handler, the UpCall_NewApplication handler, and the task quit
+  code, as well as eradicating several memory leaks in the process
+
+Version 0.04. Tagged as 'Clipboard-0_04'
+@
+text
+@d15 6
+a20 1
+; State handler entry conditions:
+d28 1
+a28 1
+; R6 -> action block
+d32 33
+@

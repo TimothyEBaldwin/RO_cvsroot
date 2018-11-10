@@ -1,0 +1,293 @@
+head	1.3;
+access;
+symbols;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	97.07.30.12.40.53;	author ahodgkin;	state dead;
+branches;
+next	1.2;
+
+1.2
+date	97.07.30.12.39.12;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.07.25.13.12.30;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Sorting out case problem with Meta.c
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/***************************************************/
+/* File   : Meta.c                                 */
+/* Purpose: Handling META tags                     */
+/* Author : A.D.Hodgkinson                         */
+/* History: 25-Jul-97: Created                     */
+/***************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "swis.h"
+#include "flex.h"
+
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+
+#include "svcprint.h"
+#include "Global.h"
+#include "Utils.h"
+
+#include "Browser.h"
+#include "FetchPage.h"
+
+#include "Meta.h"
+
+/* Static function prototypes */
+
+static _kernel_oserror * meta_process_refresh(browser_data * b, HStream * t, const char * content);
+
+/*************************************************/
+/* meta_process_tag()                            */
+/*                                               */
+/* In HTML, META tags can contain a great        */
+/* variety of information (so much so that this  */
+/* source file is entirely dedicated to them).   */
+/* This function is the entry point for dealing  */
+/* with a new META tag.                          */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the token stream      */
+/*             holding the META tag;             */
+/*                                               */
+/*             Pointer to the token representing */
+/*             the META tag.                     */
+/*************************************************/
+
+_kernel_oserror * meta_process_tag(browser_data * b, HStream * t)
+{
+  const char * name;
+  const char * equiv;
+  const char * content;
+  const char * scheme;
+
+  if (!t || !b) return NULL;
+
+  /* Extract information from the token */
+
+  name    = HtmlMETAname       (t);
+  equiv   = HtmlMETAhttp_equiv (t);
+  content = HtmlMETAcontent    (t);
+  scheme  = HtmlMETAscheme     (t);
+
+  /* Work out what to do */
+
+  if (!utils_strcasecmp(equiv, "refresh"))
+  {
+    /* Refresh - load a new page or reload the current page */
+    /* after a certain amount of time                       */
+
+    if (!strcmp(lookup_token("ClientPull:yes", 0, 0), "yes"))
+    {
+      return meta_process_refresh(b, t, content);
+    }
+  }
+
+  return NULL;
+}
+
+/*************************************************/
+/* meta_process_refresh()                        */
+/*                                               */
+/* Handles META tags specify that a page         */
+/* refresh (reload) should occur at some time.   */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the META tag;         */
+/*                                               */
+/*             The content string for the tag.   */
+/*************************************************/
+
+static _kernel_oserror * meta_process_refresh(browser_data * b, HStream * t, const char * content)
+{
+  _kernel_oserror * e;
+  char            * separator;
+  int               time_now;
+
+  if (!content || !b) return NULL;
+
+  /* See if there's any URL specified - else it's the current page that is to be refetched */
+
+  separator = strstr(content, ";");
+
+  /* If we found a separator, skip white space */
+
+  if (separator)
+  {
+    separator ++;
+
+    while (*separator && *separator < 33) separator++;
+
+    if (!*separator) separator = NULL;
+    else
+    {
+      /* May have a 'url=' before the actual URL */
+
+      if (!utils_strncasecmp(separator, "url", 3))
+      {
+        char * oldsep = separator;
+
+        separator += 3;
+
+        /* Skip any white space */
+
+        while (*separator && *separator < 33) separator++;
+
+        /* Should be at an '='; if not, sssume 'url' was the URL to fetch! */
+
+        if (*separator != '=') separator = oldsep;
+        else
+        {
+          /* Skip the '=' and any more white space */
+
+          separator ++;
+          while (*separator && *separator < 33) separator++;
+
+          /* Should be at the URL now, but make sure... */
+
+          if (!*separator) separator = NULL;
+        }
+      }
+    }
+  }
+
+  /* Work out the URL to fetch */
+
+  b->meta_refresh_url = HtmlRelativiseURL(browser_current_url(b),
+                                          separator ? separator : "",
+                                          t);
+
+  /* Only proceed if HtmlRelativiseURL didn't fail */
+
+  if (b->meta_refresh_url)
+  {
+    /* Work out what time to fetch at */
+
+    e = _swix(OS_ReadMonotonicTime,
+              _OUT(0),
+
+              &time_now);
+
+    if (e) return e;
+
+    b->meta_refresh_at = time_now + atoi(content) * 100; /* (Seconds -> Centiseconds) */
+
+    /* Install the handler */
+
+    register_null_claimant(Wimp_ENull, (WimpEventHandler *) meta_check_refresh, b);
+  }
+
+  return NULL;
+}
+
+/*************************************************/
+/* meta_check_refresh()                          */
+/*                                               */
+/* After a META tag specifying a page (re)load   */
+/* (refresh) has been processed, this null       */
+/* handler will initiate the appropriate fetch   */
+/* after the appropriate delay.                  */
+/*                                               */
+/* Paramters are as standard for a Wimp event    */
+/* handler.                                      */
+/*************************************************/
+
+int meta_check_refresh(int eventcode, WimpPollBlock * b, IdBlock * idb, browser_data * handle)
+{
+  int time_now;
+
+  _swix(OS_ReadMonotonicTime,
+        _OUT(0),
+
+        &time_now);
+
+  /* Exit if we haven't reached the fetch time */
+
+  if (time_now < handle->meta_refresh_at) return 0;
+
+  /* Otherwise, deregister this handler and start the fetch */
+
+  deregister_null_claimant(Wimp_ENull, (WimpEventHandler *) meta_check_refresh, handle);
+  handle->meta_refresh_at = 0;
+
+  ChkError(fetchpage_new(handle,
+                         handle->meta_refresh_url,
+                         1));
+
+  handle->meta_refresh_url = NULL;
+
+  return 0;
+}
+@
+
+
+1.2
+log
+@In the middle of customer support work.
+@
+text
+@@
+
+
+1.1
+log
+@Forgot to add the JavaScript, Customer and Meta source files at last
+check in...! Put in a few utilities in a new Utils directory also, which
+includes a TaskObey script that will take a backup of the Makefile, strip
+out the dependencies list, and (assuming the CVS call doesn't crash),
+restore the Makefile with dependencies intact from the backup.
+@
+text
+@a28 2
+#include "unixlib.h" /* For case insensitive strcmps only */
+
+d76 4
+a79 4
+  name    = HtmlMETAname      (t);
+  equiv   = HtmlMETAhttp_equiv(t);
+  content = HtmlMETAcontent   (t);
+  scheme  = HtmlMETAscheme    (t);
+d83 1
+a83 1
+  if (!strcasecmp(equiv, "refresh"))
+@

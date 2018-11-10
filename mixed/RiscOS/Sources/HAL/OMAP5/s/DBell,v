@@ -1,0 +1,350 @@
+head	1.2;
+access;
+symbols
+	OMAP5-0_11:1.2
+	OMAP5-0_10-1_5_2_4:1.1.2.1
+	OMAP5-0_07-1_5_2_3:1.1.2.1
+	OMAP5-0_06-1_5_2_2:1.1.2.1
+	SMP:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2018.07.07.15.12.11;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	yOjMaSVxBy0IudJA;
+
+1.1
+date	2017.08.12.22.21.54;	author jlee;	state dead;
+branches
+	1.1.2.1;
+next	;
+commitid	CXdrQgoiV7dNrY2A;
+
+1.1.2.1
+date	2017.08.12.22.21.54;	author jlee;	state Exp;
+branches;
+next	;
+commitid	CXdrQgoiV7dNrY2A;
+
+
+desc
+@@
+
+
+1.2
+log
+@Merge SMP branch to trunk
+Detail:
+  Makefile, s/DBell - Add doorbell HAL device implementation, using GIC SGIs
+  hdr/StaticWS, hdr/omap543x - Tidy things up a bit by removing the DebugInterrupts code
+  hdr/irqids543x - Offset all the shared interrupt numbers so that RISC OS IRQs 0-31 are core 0 private, 32-63 core 1 private, 64-223 shared
+  s/Boot - Implement SMP HAL entry points
+  s/Interrupts - Tidy up interrupt handling and implement new HAL IRQ calls
+Admin:
+  Untested
+  Requires Kernel-6_09
+
+
+Version 0.11. Tagged as 'OMAP5-0_11'
+@
+text
+@;
+; Copyright (c) 2016, RISC OS Open Ltd
+; All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+;
+
+        IMPORT  memcpy
+
+        GET     Hdr:ListOpts
+        GET     Hdr:CPU.Arch
+        GET     Hdr:Macros
+        GET     Hdr:Proc
+        GET     Hdr:OSEntries
+        GET     hdr.omap543x
+        GET     hdr.StaticWS
+        GET     hdr.Interrupts
+
+sb      RN      9
+
+        EXPORT  DBell_InitDevices
+
+        AREA    |Asm$$Code|, CODE, READONLY, PIC
+
+DBell_InitDevices ROUT
+        Entry
+        ADRL    a1, DBellDevice
+        ADR     a2, DBellTemplate
+        MOV     a3, #HALDevice_DBell_Size
+        BL      memcpy
+        ADRL    a2, DBellDevice
+        LDR     a1, MPU_INTC_Log
+        STR     a1, [a2, #HALDevice_Address]
+        MOV     a1, #0
+        MOV     lr, pc
+        LDR     pc, OSentries+4*OS_AddDevice
+        EXIT
+
+        MACRO
+$class  HALDeviceField $field, $value
+        LCLS    myvalue
+      [ "$value" = ""
+myvalue SETS    "$field"
+      |
+myvalue SETS    "$value"
+      ]
+        ASSERT  . - %A0 = HALDevice_$class$field
+     [ ?HALDevice_$class$field = 2
+        DCW     $myvalue
+   ELIF ?HALDevice_$class$field = 4
+        DCD     $myvalue
+      |
+        %       ?HALDevice_$class$field
+      ]
+        MEND
+
+DBellTemplate
+0
+        HALDeviceField Type,               HALDeviceType_Comms + HALDeviceComms_ARMDBell
+        HALDeviceField ID,                 HALDeviceID_ARMDBell_GIC
+        HALDeviceField Location,           HALDeviceBus_Sys + HALDeviceSysBus_AXI
+        HALDeviceField Version,            0
+        HALDeviceField Description,        DBell_Description
+        HALDeviceField Address,            0
+        HALDeviceField Reserved1,          0
+        HALDeviceField Activate,           DBell_Activate
+        HALDeviceField Deactivate,         DBell_Deactivate
+        HALDeviceField Reset,              DBell_Reset
+        HALDeviceField Sleep,              DBell_Sleep
+        HALDeviceField Device,             -1 ; IRQ numbers vary by core, use DBell_GetIRQ
+        HALDeviceField TestIRQ,            DBell_TestIRQ
+        HALDeviceField ClearIRQ,           DBell_ClearIRQ
+        HALDeviceField Reserved2,          0
+        ASSERT  . - %A0 = HALDeviceSize
+DBell   HALDeviceField GetIRQ,             DBell_GetIRQ
+DBell   HALDeviceField Ring,               DBell_Ring
+        ASSERT  . - %A0 = HALDevice_DBell_Size
+          
+DBell_Description
+        DCB     "GIC SGI doorbell", 0
+        ALIGN
+
+DBell_Activate
+DBell_TestIRQ
+        MOV     a1, #1
+DBell_Deactivate
+DBell_Reset
+        MOV     pc, lr
+
+DBell_Sleep
+        MOV     a1, #0
+        MOV     pc, lr
+
+DBell_GetIRQ
+        ; In: a2 = core number
+        MOV     a1, a2, LSL #5 ; IRQ 0???
+        MOV     pc, lr
+
+DBell_ClearIRQ
+        MOV     pc, lr
+        
+DBell_Ring
+        ; In: a2 = mask of CPU cores
+        LDR     a1, [a1, #HALDevice_Address]
+        MOV     a2, a2, LSL #16
+        ADD     a1, a1, #GICD_BASE
+        STR     a2, [a1, #GICD_SGIR]
+        MOV     pc, lr
+        
+        END
+
+@
+
+
+1.1
+log
+@file DBell was initially added on branch SMP.
+@
+text
+@d1 132
+@
+
+
+1.1.2.1
+log
+@Initial SMP support
+Detail:
+  This is essentiall the same changes as OMAP4-0_52-1_52_2_1, except for HAL_SMPStartup, which needs to deal with GIC CPU interface initialisation.
+  s/DBell, Makefile - Implement doorbell device
+  s/Boot - Implement new SMP-related HAL entry points
+  s/Interrupts - Remove DebugInterrupts code to make things easier to follow. Add a couple of macros for mapping IRQ numbers to register bits, tohelp with IRQ number translation. Implement new IRQ-related HAL entry points
+  hdr/irqids543x - Offset the peripheral interrupt numbers to that 0-31 are core 0 private, 32-63 core 1 private, 64+ = peripheral
+  hdr/StaticWS - Remove DebugInterrupts code. Reserve space for doorbell device.
+  hdr/omap543x - Remove DebugInterrupts code. Add definitions for aux core boot registers. Extend address range that gets mapped in for MPU_INTC, to make sure that we also get the aux core boot registers
+Admin:
+  Tested on IGEPv5
+
+
+Version 0.06, 1.5.2.2. Tagged as 'OMAP5-0_06-1_5_2_2'
+@
+text
+@a0 132
+;
+; Copyright (c) 2016, RISC OS Open Ltd
+; All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+;
+
+        IMPORT  memcpy
+
+        GET     Hdr:ListOpts
+        GET     Hdr:CPU.Arch
+        GET     Hdr:Macros
+        GET     Hdr:Proc
+        GET     Hdr:OSEntries
+        GET     hdr.omap543x
+        GET     hdr.StaticWS
+        GET     hdr.Interrupts
+
+sb      RN      9
+
+        EXPORT  DBell_InitDevices
+
+        AREA    |Asm$$Code|, CODE, READONLY, PIC
+
+DBell_InitDevices ROUT
+        Entry
+        ADRL    a1, DBellDevice
+        ADR     a2, DBellTemplate
+        MOV     a3, #HALDevice_DBell_Size
+        BL      memcpy
+        ADRL    a2, DBellDevice
+        LDR     a1, MPU_INTC_Log
+        STR     a1, [a2, #HALDevice_Address]
+        MOV     a1, #0
+        MOV     lr, pc
+        LDR     pc, OSentries+4*OS_AddDevice
+        EXIT
+
+        MACRO
+$class  HALDeviceField $field, $value
+        LCLS    myvalue
+      [ "$value" = ""
+myvalue SETS    "$field"
+      |
+myvalue SETS    "$value"
+      ]
+        ASSERT  . - %A0 = HALDevice_$class$field
+     [ ?HALDevice_$class$field = 2
+        DCW     $myvalue
+   ELIF ?HALDevice_$class$field = 4
+        DCD     $myvalue
+      |
+        %       ?HALDevice_$class$field
+      ]
+        MEND
+
+DBellTemplate
+0
+        HALDeviceField Type,               HALDeviceType_Comms + HALDeviceComms_ARMDBell
+        HALDeviceField ID,                 HALDeviceID_ARMDBell_GIC
+        HALDeviceField Location,           HALDeviceBus_Sys + HALDeviceSysBus_AXI
+        HALDeviceField Version,            0
+        HALDeviceField Description,        DBell_Description
+        HALDeviceField Address,            0
+        HALDeviceField Reserved1,          0
+        HALDeviceField Activate,           DBell_Activate
+        HALDeviceField Deactivate,         DBell_Deactivate
+        HALDeviceField Reset,              DBell_Reset
+        HALDeviceField Sleep,              DBell_Sleep
+        HALDeviceField Device,             -1 ; IRQ numbers vary by core, use DBell_GetIRQ
+        HALDeviceField TestIRQ,            DBell_TestIRQ
+        HALDeviceField ClearIRQ,           DBell_ClearIRQ
+        HALDeviceField Reserved2,          0
+        ASSERT  . - %A0 = HALDeviceSize
+DBell   HALDeviceField GetIRQ,             DBell_GetIRQ
+DBell   HALDeviceField Ring,               DBell_Ring
+        ASSERT  . - %A0 = HALDevice_DBell_Size
+          
+DBell_Description
+        DCB     "GIC SGI doorbell", 0
+        ALIGN
+
+DBell_Activate
+DBell_TestIRQ
+        MOV     a1, #1
+DBell_Deactivate
+DBell_Reset
+        MOV     pc, lr
+
+DBell_Sleep
+        MOV     a1, #0
+        MOV     pc, lr
+
+DBell_GetIRQ
+        ; In: a2 = core number
+        MOV     a1, a2, LSL #5 ; IRQ 0???
+        MOV     pc, lr
+
+DBell_ClearIRQ
+        MOV     pc, lr
+        
+DBell_Ring
+        ; In: a2 = mask of CPU cores
+        LDR     a1, [a1, #HALDevice_Address]
+        MOV     a2, a2, LSL #16
+        ADD     a1, a1, #GICD_BASE
+        STR     a2, [a1, #GICD_SGIR]
+        MOV     pc, lr
+        
+        END
+
+@
+

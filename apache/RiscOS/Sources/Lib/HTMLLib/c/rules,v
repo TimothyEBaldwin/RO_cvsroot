@@ -1,0 +1,1065 @@
+head	1.3;
+access;
+symbols
+	HTMLLib-0_04:1.3
+	HTMLLib-0_03:1.3
+	HTMLLib-0_02:1.3
+	HTMLLib-0_01:1.3
+	ahodgkin_207release:1.3
+	ahodgkin_206release:1.3
+	ahodgkin_205release:1.3
+	ahodgkin_204release:1.3
+	ahodgkin_133beta:1.2.2.10
+	kbracey_126:1.2.2.10
+	kbracey_AW97patch:1.2.2.10
+	ahodgkin_AW97:1.2.2.9
+	kbracey_PreGordon:1.2
+	Web_bp:1.2
+	Web:1.2.0.2
+	ARTtmp_merge:1.1.2.2
+	ARTtmp:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	98.02.17.10.42.21;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.04.29.15.50.48;	author kbracey;	state Exp;
+branches
+	1.2.2.1;
+next	1.1;
+
+1.1
+date	97.04.08.10.26.48;	author kbracey;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.2.2.1
+date	97.07.02.09.05.56;	author gthorbur;	state Exp;
+branches;
+next	1.2.2.2;
+
+1.2.2.2
+date	97.07.02.16.01.58;	author kbracey;	state Exp;
+branches;
+next	1.2.2.3;
+
+1.2.2.3
+date	97.07.03.13.57.48;	author kbracey;	state Exp;
+branches;
+next	1.2.2.4;
+
+1.2.2.4
+date	97.07.04.14.54.07;	author kbracey;	state Exp;
+branches;
+next	1.2.2.5;
+
+1.2.2.5
+date	97.07.10.12.41.05;	author blaughto;	state Exp;
+branches;
+next	1.2.2.6;
+
+1.2.2.6
+date	97.07.24.16.20.56;	author kbracey;	state Exp;
+branches;
+next	1.2.2.7;
+
+1.2.2.7
+date	97.09.30.14.13.46;	author kbracey;	state Exp;
+branches;
+next	1.2.2.8;
+
+1.2.2.8
+date	97.10.03.14.17.01;	author kbracey;	state Exp;
+branches;
+next	1.2.2.9;
+
+1.2.2.9
+date	97.10.08.12.33.43;	author kbracey;	state Exp;
+branches;
+next	1.2.2.10;
+
+1.2.2.10
+date	97.10.22.14.22.02;	author kbracey;	state Exp;
+branches;
+next	;
+
+1.1.2.1
+date	97.04.08.10.26.48;	author kbracey;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	97.04.09.16.44.38;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Web branch merged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * This is some useful code to lookup rules in the various tables, and
+ * validate that tags are in the correct place etc.
+ */
+
+#include "html2_ext.h"
+#include "internal.h"
+#include "html2.h"
+#include "struct.h"
+#include "string.h"
+#include "ctype.h"
+
+#ifdef USE_SPRINTF
+#include "stdio.h"
+#endif
+
+static int __html_tag_name_len (char *s1);
+
+static int compare_tag(const void *keyp, const void *membp)
+{
+    const char *key = (const char *) keyp;
+    const Tag *memb = (const Tag *) membp;
+
+    return strcmp(key, memb->start_tag);
+}
+
+/*
+ * Given a rule block, (and the number of entries in the rule block),
+ * look to see if the tag exists in that rule block.
+ *
+ */
+
+int __html_check_tag (const Tag *tags, int max_tags, const char *tag)
+{
+Tag  *t_tag;
+//Tag  *tags;
+int loop;
+const char *y;
+char *x;
+static char this_tag[32];
+
+    /* Make sure we are working in upper case */
+    x=this_tag;
+    y=tag;
+    loop = 31;
+
+    while (*y && loop--)
+      *x++ = toupper(*y++);
+
+    *x = '\0';
+
+    if (!loop)
+        return 0;
+
+//    tags=rules;
+
+    t_tag = (Tag *) bsearch(this_tag, tags, max_tags, sizeof(Tag), compare_tag);
+
+    /*
+     * Handle not finding the tag elegantly... Need to understand about
+     * comments which are sort of NULL tags but not quite!
+     *
+     * This works because comments have been defined as a 0 tag as
+     * has the doctype tag. (NASTY HACK!)
+     */
+    if ( !t_tag || t_tag->tag == 0 ) return 0;
+
+    return 1;
+}
+
+
+/*
+ * Routine to find the rule for a tag in any tag block. This routine
+ * assumes it is looking for a start tag (e.g. <P>, <LI> etc), and not an
+ * end tag (e.g. </P>, </LI> etc). See the next routine for how to find
+ * an end tag, and the one after that for how to find *any* tag
+ */
+
+Tag *__html_find_start_tag_block(char *tag)
+{
+char *y;
+Tag *found_tag;
+
+    if ((tag==NULL) || (*tag=='\0')) return NULL;
+
+    y=tag;
+
+    while (*y) {
+      *y=toupper(*y);
+      y++;
+    }
+
+    /* Look at the Head and Body tags */
+    found_tag = bsearch(tag, Tags, MAX_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return found_tag;
+
+    /* Not found! */
+    return NULL;
+}
+
+/*
+ * This routine looks in all the rule blocks for an end tag (e.g. </P>).
+ * (It could probably have been merged with the above routine, but this
+ * is cleaner in my mind. -- PW)
+ */
+Tag *__html_find_end_tag_block(char *tag)
+{
+char *y;
+Tag *found_tag;
+
+    if (tag == NULL || *tag != '/') return NULL;
+
+    y=tag;
+
+    while (*y) {
+      *y=toupper(*y);
+      y++;
+    }
+
+    /* Since most tags are in the body - start there */
+    found_tag = bsearch(tag + 1, Tags, MAX_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return found_tag;
+
+    /* Not found! */
+    return NULL;
+}
+
+/*
+ * This routine finds tags ANYWHERE in the tables. I.E. a start tag or
+ * an end tag. It should be used as a more general interface to
+ * the above routines. If end==0 then only the start tags are searched.
+ * If end==1 then only the end tags are checked. If end==2 then all tags
+ * are checked.
+ *
+ * Note html is a pointer to the string holding the tag, which doesnt need
+ * to be null terminated after the tag name. It does however need to either
+ * contain a space or a terminator before the end of the memory allocated
+ * to that string passed into it.
+ */
+
+Tag *__html_find_tag(char **html, int end)
+{
+Tag *tag=0;
+char *h;
+
+    if (*html==NULL) return NULL;
+
+    h=strndup(*html,__html_tag_name_len(*html));
+
+    /* try and find the tag in the starting tags */
+    if ((end >= 1) && (end < 3)) {
+        tag=__html_find_end_tag_block(h);
+	}
+
+    /* Otherwise try and find tag in the end tags */
+    if (((end == 0) || (end > 1)) && !tag) {
+        tag=__html_find_start_tag_block(h);
+	}
+
+    __html_free(h,0);
+
+    /* return the info for the found tag */
+    return tag;
+}
+
+static int __html_tag_name_len (char *s1)
+{
+  char *p=s1;
+
+  while ((!isspace(*p)) && (*p != '>') && (*p != '\0')) {
+        p++; /* skip to the end of the tag name */
+	}
+
+  return (int)(p-s1);
+}
+@
+
+
+1.2
+log
+@Merged in ARTtmp_merge
+@
+text
+@a14 79
+/* -*-C-*-
+ *
+ * $Version: networking $
+ *
+ * $Source: /projects2/renaissa/cvsroot/ART/Web/HTMLLib/c/Attic/rules,v $
+ *
+ * $Log: rules,v $
+ * Revision 1.1.2.2  1997/04/09 16:44:38  kbracey
+ * Spacing rules drastically improved. Major error in memory context handling
+ * fixed. Bug in __html_strip_lf fixed.
+ *
+ * Revision 1.1.2.1  1997/04/08 10:26:48  kbracey
+ * Initial revision
+ *
+ * Revision 1.6  95/10/31  13:11:40  pwain
+ * *** empty log message ***
+ *
+ * Revision 1.5  95/10/30  10:44:39  pwain
+ * Moved strdup to display source file
+ *
+ * Revision 1.4  95/10/30  10:39:44  pwain
+ * Caught a NULL pointer in strdup().
+ *
+ * Revision 1.3  95/10/20  15:27:52  pwain
+ * Rewrote case 2 in parse again. This seems to work now!
+ * Also required a slight change to the rules handling to allow
+ * a read only pointer to be passed in. This should have been done
+ * anyway of course!
+ *
+ * Revision 1.2  95/10/18  10:40:14  pwain
+ * Found a case where free() was used rather than
+ * __html_free() after a strdup()
+ *
+ * Revision 1.1  95/10/12  12:46:51  pwain
+ * Initial revision
+ *
+ *
+ * --- Original Log Information ---
+ *
+ * $Version: networking $
+ *
+ * $Source: /projects2/renaissa/cvsroot/ART/Web/HTMLLib/c/Attic/rules,v $
+ *
+ * $Log: rules,v $
+ * Revision 1.1.2.2  1997/04/09 16:44:38  kbracey
+ * Spacing rules drastically improved. Major error in memory context handling
+ * fixed. Bug in __html_strip_lf fixed.
+ *
+ * Revision 1.1.2.1  1997/04/08 10:26:48  kbracey
+ * Initial revision
+ *
+ * Revision 1.6  95/10/31  13:11:40  pwain
+ * *** empty log message ***
+ *
+ * Revision 1.5  95/10/30  10:44:39  pwain
+ * Moved strdup to display source file
+ *
+ * Revision 1.4  95/10/30  10:39:44  pwain
+ * Caught a NULL pointer in strdup().
+ *
+ * Revision 1.3  95/10/20  15:27:52  pwain
+ * Rewrote case 2 in parse again. This seems to work now!
+ * Also required a slight change to the rules handling to allow
+ * a read only pointer to be passed in. This should have been done
+ * anyway of course!
+ *
+ * Revision 1.2  95/10/18  10:40:14  pwain
+ * Found a case where free() was used rather than
+ * __html_free() after a strdup()
+ *
+ * Revision 1.1  95/10/12  12:46:51  pwain
+ * Initial revision
+ *
+ * Revision 1.1  95/09/08  10:06:09  pwain
+ * Initial revision
+ *
+ *
+ */
+
+d93 1
+a93 1
+Tag __html_find_start_tag_block(char *tag)
+d98 1
+a98 1
+    if ((tag==NULL) || (*tag=='\0')) return Null_Tag;
+d107 3
+a109 15
+    /* Since most tags are in the body - start there */
+    found_tag = bsearch(tag, Body_Tags, MAX_BODY_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+
+    /* Next look at the Head tags */
+    found_tag = bsearch(tag, Head_Tags, MAX_HEAD_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+
+    /* Next look at the Frameset tags */
+    found_tag = bsearch(tag, Frameset_Tags, MAX_FRAMESET_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+
+    /* Finally the "document" tags */
+    found_tag = bsearch(tag, Document_Tags, MAX_DOC_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+d112 1
+a112 1
+    return Null_Tag;
+d120 1
+a120 1
+Tag __html_find_end_tag_block(char *tag)
+d125 1
+a125 1
+    if (tag == NULL || *tag != '/') return Null_Tag;
+d135 2
+a136 14
+    found_tag = bsearch(tag + 1, Body_Tags, MAX_BODY_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+
+    /* Next look at the Head tags */
+    found_tag = bsearch(tag + 1, Head_Tags, MAX_HEAD_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+
+    /* Next look at the Frameset tags */
+    found_tag = bsearch(tag + 1, Frameset_Tags, MAX_FRAMESET_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+
+    /* Finally the "document" tags */
+    found_tag = bsearch(tag + 1, Document_Tags, MAX_DOC_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+d139 1
+a139 1
+    return Null_Tag;
+d155 1
+a155 1
+Tag __html_find_tag(char **html, int end)
+d157 1
+a157 2
+Tag tag;
+int found=0;
+d160 1
+a160 1
+    if (*html==NULL) return Null_Tag;
+a166 1
+	if (!NULL_TAG(tag)) found=1;
+d170 1
+a170 1
+    if (((end == 0) || (end > 1)) && (found==0)) {
+@
+
+
+1.2.2.1
+log
+@updated to help enable head/body switching
+@
+text
+@d19 1
+a19 1
+ * $Source: /projects2/renaissa/cvsroot/Projects/Web/HTMLLib/c/rules,v $
+a21 3
+ * Revision 1.2  1997/04/29 15:50:48  kbracey
+ * Merged in ARTtmp_merge
+ *
+d56 1
+a56 1
+ * $Source: /projects2/renaissa/cvsroot/Projects/Web/HTMLLib/c/rules,v $
+a58 3
+ * Revision 1.2  1997/04/29 15:50:48  kbracey
+ * Merged in ARTtmp_merge
+ *
+d186 6
+a191 2
+    /* Look at the Head and Body tags */
+    found_tag = bsearch(tag, Head_Body_Tags, MAX_HEAD_BODY_TAGS, sizeof(Tag), compare_tag);
+d226 5
+a230 1
+    found_tag = bsearch(tag + 1, Head_Body_Tags, MAX_HEAD_BODY_TAGS, sizeof(Tag), compare_tag);
+@
+
+
+1.2.2.2
+log
+@Removed dependence on <HEAD> and <BODY>
+@
+text
+@a21 3
+ * Revision 1.2.2.1  1997/07/02 09:05:56  gthorbur
+ * updated to help enable head/body switching
+ *
+a61 3
+ * Revision 1.2.2.1  1997/07/02 09:05:56  gthorbur
+ * updated to help enable head/body switching
+ *
+d193 9
+a201 1
+    found_tag = bsearch(tag, Tags, MAX_TAGS, sizeof(Tag), compare_tag);
+d228 9
+a236 1
+    found_tag = bsearch(tag + 1, Tags, MAX_TAGS, sizeof(Tag), compare_tag);
+@
+
+
+1.2.2.3
+log
+@Stopped the library passing Tag structures around by value (bleuch!)
+@
+text
+@a21 3
+ * Revision 1.2.2.2  1997/07/02 16:01:58  kbracey
+ * Removed dependence on <HEAD> and <BODY>
+ *
+a64 3
+ * Revision 1.2.2.2  1997/07/02 16:01:58  kbracey
+ * Removed dependence on <HEAD> and <BODY>
+ *
+d184 1
+a184 1
+Tag *__html_find_start_tag_block(char *tag)
+d189 1
+a189 1
+    if ((tag==NULL) || (*tag=='\0')) return NULL;
+d200 1
+a200 1
+    if (found_tag) return found_tag;
+d203 1
+a203 1
+    return NULL;
+d211 1
+a211 1
+Tag *__html_find_end_tag_block(char *tag)
+d216 1
+a216 1
+    if (tag == NULL || *tag != '/') return NULL;
+d227 1
+a227 1
+    if (found_tag && found_tag->can_be_end) return found_tag;
+d230 1
+a230 1
+    return NULL;
+d246 1
+a246 1
+Tag *__html_find_tag(char **html, int end)
+d248 2
+a249 1
+Tag *tag=0;
+d252 1
+a252 1
+    if (*html==NULL) return NULL;
+d259 1
+d263 1
+a263 1
+    if (((end == 0) || (end > 1)) && !tag) {
+@
+
+
+1.2.2.4
+log
+@Made to deal with an empty <A NAME="fred"></A>
+@
+text
+@d15 97
+@
+
+
+1.2.2.5
+log
+@Added HtmlInit function to explicitly initialse some static data so that a variant suitable for use by modules can be made
+@
+text
+@a189 36
+
+
+static void __html_tag_init_anchors (char *tag, const Anchor *anchors)
+{
+    Tag *found_tag;
+
+    found_tag = bsearch(tag, Tags, MAX_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag)
+    {
+        found_tag->anchors = anchors;
+    }
+}
+
+void __html_rules_init (void)
+{
+    __html_tag_init_anchors ("A", A_Anchors);
+    __html_tag_init_anchors ("BASE", Base_Anchors);
+    __html_tag_init_anchors ("BASEFONT", Basefont_Anchors);
+    __html_tag_init_anchors ("BODY", Body_Anchors);
+    __html_tag_init_anchors ("FONT", Font_Anchors);
+    __html_tag_init_anchors ("FORM", Form_Anchors);
+    __html_tag_init_anchors ("FRAME", Frame_Anchors);
+    __html_tag_init_anchors ("FRAMESET", Frameset_Anchors);
+    __html_tag_init_anchors ("HR", HR_Anchors);
+    __html_tag_init_anchors ("IMG", Img_Anchors);
+    __html_tag_init_anchors ("INPUT", Input_Anchors);
+    __html_tag_init_anchors ("LINK", Link_Anchors);
+    __html_tag_init_anchors ("OPTION", Option_Anchors);
+    __html_tag_init_anchors ("SELECT", Select_Anchors);
+    __html_tag_init_anchors ("TABLE", Table_Anchors);
+    __html_tag_init_anchors ("TD", Cell_Anchors);
+    __html_tag_init_anchors ("TEXTAREA", Textarea_Anchors);
+    __html_tag_init_anchors ("TH", Cell_Anchors);
+    __html_tag_init_anchors ("TR", Tr_Anchors);
+
+}
+@
+
+
+1.2.2.6
+log
+@Totally redesigned attribute parsing code.
+Started new API for accessing attributes - only implemented for BODY.
+Added <BODY alink onload onunload> support.
+@
+text
+@d192 1
+a192 1
+static void __html_tag_init_attributes(char *tag, const Attribute *attributes)
+d198 3
+a200 1
+        found_tag->attributes = attributes;
+d205 19
+a223 27
+    __html_tag_init_attributes ("A", A_Attributes);
+    __html_tag_init_attributes ("BASE", Base_Attributes);
+    __html_tag_init_attributes ("BASEFONT", Basefont_Attributes);
+    __html_tag_init_attributes ("BODY", Body_Attributes);
+    __html_tag_init_attributes ("FONT", Font_Attributes);
+    __html_tag_init_attributes ("FORM", Form_Attributes);
+    __html_tag_init_attributes ("FRAME", Frame_Attributes);
+    __html_tag_init_attributes ("FRAMESET", Frameset_Attributes);
+    __html_tag_init_attributes ("H1", H_Attributes);
+    __html_tag_init_attributes ("H2", H_Attributes);
+    __html_tag_init_attributes ("H3", H_Attributes);
+    __html_tag_init_attributes ("H4", H_Attributes);
+    __html_tag_init_attributes ("H5", H_Attributes);
+    __html_tag_init_attributes ("H6", H_Attributes);
+    __html_tag_init_attributes ("HR", HR_Attributes);
+    __html_tag_init_attributes ("IMG", Img_Attributes);
+    __html_tag_init_attributes ("INPUT", Input_Attributes);
+    __html_tag_init_attributes ("LINK", Link_Attributes);
+    __html_tag_init_attributes ("META", Meta_Attributes);
+    __html_tag_init_attributes ("OPTION", Option_Attributes);
+    __html_tag_init_attributes ("P", P_Attributes);
+    __html_tag_init_attributes ("SELECT", Select_Attributes);
+    __html_tag_init_attributes ("TABLE", Table_Attributes);
+    __html_tag_init_attributes ("TD", Cell_Attributes);
+    __html_tag_init_attributes ("TEXTAREA", Textarea_Attributes);
+    __html_tag_init_attributes ("TH", Cell_Attributes);
+    __html_tag_init_attributes ("TR", Tr_Attributes);
+@
+
+
+1.2.2.7
+log
+@Turned off CUSTOMER_SPECIAL.
+Changed encoding tables to use FFFF as a null value instead of FFFD.
+Added OBJECT support (more testing required - PARAM not yet done).
+Added AREA support (commented out - MAP not yet done). They come out
+looking like <A></A> elements.
+Souped up mapping to Latin-1 (added lossy tables for Latin Extended
+Additional, CJK Punctuation and Fullwidth forms).
+Added support for <H1 align=...>
+Stripped some superfluous whitespace caused by linefeeds.
+Fixed missing linebreak in "<DT>One<DT>Two" by turning the second DT into
+a BR.
+Removed now unnecessary free(malloc(16384)) bodge.
+Put in CJK code even if UNIFONT not defined (hey - why not?).
+Added code to take direct pointer to table rather than loading it if
+it's in ResourceFS.
+Added support for encoding "x-acorn-latin1".
+Ensured correct handling of OPTIONs when UNIFONT not defined.
+@
+text
+@a203 2
+    __html_tag_init_attributes ("APPLET", Applet_Attributes);
+    __html_tag_init_attributes ("AREA", Area_Attributes);
+a220 1
+    __html_tag_init_attributes ("MAP", Map_Attributes);
+a221 1
+    __html_tag_init_attributes ("OBJECT", Object_Attributes);
+a223 1
+    __html_tag_init_attributes ("PARAM", Param_Attributes);
+@
+
+
+1.2.2.8
+log
+@Added simple support for <DIV align=...>
+Forced linebreaks after </CENTRE> (and </DIV>).
+@
+text
+@a208 1
+    __html_tag_init_attributes ("DIV", Div_Attributes);
+@
+
+
+1.2.2.9
+log
+@Implemented ordered lists.
+Implemented <Q> ... </Q>.
+Caused a linebreak after </DD>.
+Finished implementing attributes for <OBJECT>.
+Stopped HTML after a </FRAMESET> leaking through.
+Ensured that FRAME and FRAMESET tokens aren't passed up if not using frames.
+
+Removed lots of unnecessary #include "utf8.h" lines from encoding files.
+Ensured unsigned constants used in UTF-8 code.
+Added UTF8_next and UTF8_prev functions.
+@
+text
+@a222 1
+    __html_tag_init_attributes ("LI", LI_Attributes);
+a226 1
+    __html_tag_init_attributes ("OL", OL_Attributes);
+@
+
+
+1.2.2.10
+log
+@Added EMBED support (creating lookalike OBJECTs).
+Removed startup table initialisation, because latest compiler can do it.
+@
+text
+@d190 50
+@
+
+
+1.1
+log
+@file rules was initially added on branch ARTtmp.
+@
+text
+@d1 294
+@
+
+
+1.1.2.1
+log
+@Initial revision
+@
+text
+@a0 280
+/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* -*-C-*-
+ *
+ * $Version: networking $
+ *
+ * $Source: /ax/networking:Phileas/HTML/c/rules: $
+ *
+ * $Log:	rules,v $
+ * Revision 1.6  95/10/31  13:11:40  pwain
+ * *** empty log message ***
+ *
+ * Revision 1.5  95/10/30  10:44:39  pwain
+ * Moved strdup to display source file
+ *
+ * Revision 1.4  95/10/30  10:39:44  pwain
+ * Caught a NULL pointer in strdup().
+ *
+ * Revision 1.3  95/10/20  15:27:52  pwain
+ * Rewrote case 2 in parse again. This seems to work now!
+ * Also required a slight change to the rules handling to allow
+ * a read only pointer to be passed in. This should have been done
+ * anyway of course!
+ *
+ * Revision 1.2  95/10/18  10:40:14  pwain
+ * Found a case where free() was used rather than
+ * __html_free() after a strdup()
+ *
+ * Revision 1.1  95/10/12  12:46:51  pwain
+ * Initial revision
+ *
+ *
+ * --- Original Log Information ---
+ *
+ * $Version: networking $
+ *
+ * $Source: /ax/networking:Phileas/HTML/c/rules: $
+ *
+ * $Log:	rules,v $
+ * Revision 1.6  95/10/31  13:11:40  pwain
+ * *** empty log message ***
+ *
+ * Revision 1.5  95/10/30  10:44:39  pwain
+ * Moved strdup to display source file
+ *
+ * Revision 1.4  95/10/30  10:39:44  pwain
+ * Caught a NULL pointer in strdup().
+ *
+ * Revision 1.3  95/10/20  15:27:52  pwain
+ * Rewrote case 2 in parse again. This seems to work now!
+ * Also required a slight change to the rules handling to allow
+ * a read only pointer to be passed in. This should have been done
+ * anyway of course!
+ *
+ * Revision 1.2  95/10/18  10:40:14  pwain
+ * Found a case where free() was used rather than
+ * __html_free() after a strdup()
+ *
+ * Revision 1.1  95/10/12  12:46:51  pwain
+ * Initial revision
+ *
+ * Revision 1.1  95/09/08  10:06:09  pwain
+ * Initial revision
+ *
+ *
+ */
+
+/*
+ * This is some useful code to lookup rules in the various tables, and
+ * validate that tags are in the correct place etc.
+ */
+
+#include "html2_ext.h"
+#include "internal.h"
+#include "html2.h"
+#include "struct.h"
+#include "string.h"
+#include "ctype.h"
+
+#ifdef USE_SPRINTF
+#include "stdio.h"
+#endif
+
+static int __html_tag_name_len (char *s1);
+
+static int compare_tag(const void *keyp, const void *membp)
+{
+    const char *key = (const char *) keyp;
+    const Tag *memb = (const Tag *) membp;
+    
+    return strcmp(key, memb->start_tag);
+}
+
+/*
+ * Given a rule block, (and the number of entries in the rule block),
+ * look to see if the tag exists in that rule block.
+ *
+ */
+
+int __html_check_tag (Tag *tags, int max_tags, const char *tag)
+{
+Tag  *t_tag;
+//Tag  *tags;
+int loop;
+const char *y;
+char *x;
+static char this_tag[32];
+
+    /* Make sure we are working in upper case */
+    x=this_tag;
+    y=tag;
+    loop = 31;
+
+    while (*y && loop--)
+      *x++ = toupper(*y++);
+
+    *x = '\0';
+
+    if (!loop)
+        return 0;
+
+//    tags=rules;
+
+    t_tag = (Tag *) bsearch(this_tag, tags, max_tags, sizeof(Tag), compare_tag);
+
+    /*
+     * Handle not finding the tag elegantly... Need to understand about
+     * comments which are sort of NULL tags but not quite!
+     *
+     * This works because comments have been defined as a 0 tag as
+     * has the doctype tag. (NASTY HACK!)
+     */
+    if ( !t_tag || t_tag->tag == 0 ) return 0;
+
+    return 1;
+}
+
+
+/*
+ * Routine to find the rule for a tag in any tag block. This routine
+ * assumes it is looking for a start tag (e.g. <P>, <LI> etc), and not an
+ * end tag (e.g. </P>, </LI> etc). See the next routine for how to find
+ * an end tag, and the one after that for how to find *any* tag
+ */
+
+Tag __html_find_start_tag_block(char *tag)
+{
+char *y;
+Tag *found_tag;
+
+    if ((tag==NULL) || (*tag=='\0')) return Null_Tag;
+
+    y=tag;
+
+    while (*y) {
+      *y=toupper(*y);
+      y++;
+    }
+
+    /* Since most tags are in the body - start there */
+    found_tag = bsearch(tag, Body_Tags, MAX_BODY_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+
+    /* Next look at the Head tags */
+    found_tag = bsearch(tag, Head_Tags, MAX_HEAD_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+
+    /* Next look at the Frameset tags */
+    found_tag = bsearch(tag, Frameset_Tags, MAX_FRAMESET_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+
+    /* Finally the "document" tags */
+    found_tag = bsearch(tag, Document_Tags, MAX_DOC_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag) return *found_tag;
+
+    /* Not found! */
+    return Null_Tag;
+}
+
+/*
+ * This routine looks in all the rule blocks for an end tag (e.g. </P>).
+ * (It could probably have been merged with the above routine, but this
+ * is cleaner in my mind. -- PW)
+ */
+Tag __html_find_end_tag_block(char *tag)
+{
+char *y;
+Tag *found_tag;
+
+    if (tag == NULL || *tag != '/') return Null_Tag;
+
+    y=tag;
+
+    while (*y) {
+      *y=toupper(*y);
+      y++;
+    }
+
+    /* Since most tags are in the body - start there */
+    found_tag = bsearch(tag + 1, Body_Tags, MAX_BODY_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+
+    /* Next look at the Head tags */
+    found_tag = bsearch(tag + 1, Head_Tags, MAX_HEAD_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+
+    /* Next look at the Frameset tags */
+    found_tag = bsearch(tag + 1, Frameset_Tags, MAX_FRAMESET_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+
+    /* Finally the "document" tags */
+    found_tag = bsearch(tag + 1, Document_Tags, MAX_DOC_TAGS, sizeof(Tag), compare_tag);
+    if (found_tag && found_tag->can_be_end) return *found_tag;
+
+    /* Not found! */
+    return Null_Tag;
+}
+
+/*
+ * This routine finds tags ANYWHERE in the tables. I.E. a start tag or
+ * an end tag. It should be used as a more general interface to
+ * the above routines. If end==0 then only the start tags are searched.
+ * If end==1 then only the end tags are checked. If end==2 then all tags
+ * are checked.
+ *
+ * Note html is a pointer to the string holding the tag, which doesnt need
+ * to be null terminated after the tag name. It does however need to either
+ * contain a space or a terminator before the end of the memory allocated
+ * to that string passed into it.
+ */
+
+Tag __html_find_tag(char **html, int end)
+{
+Tag tag;
+int found=0;
+char *h;
+
+    if (*html==NULL) return Null_Tag;
+
+    h=strndup(*html,__html_tag_name_len(*html));
+    
+    /* try and find the tag in the starting tags */
+    if ((end >= 1) && (end < 3)) {
+        tag=__html_find_end_tag_block(h);
+	if (!NULL_TAG(tag)) found=1;
+	}
+
+    /* Otherwise try and find tag in the end tags */
+    if (((end == 0) || (end > 1)) && (found==0)) {
+        tag=__html_find_start_tag_block(h);
+	}
+
+    __html_free(h,0);
+
+    /* return the info for the found tag */
+    return tag;
+}
+
+static int __html_tag_name_len (char *s1)
+{
+  char *p=s1;
+
+  while ((!isspace(*p)) && (*p != '>') && (*p != '\0')) {
+        p++; /* skip to the end of the tag name */
+	}
+
+  return (int)(p-s1);
+}
+@
+
+
+1.1.2.2
+log
+@Spacing rules drastically improved. Major error in memory context handling
+fixed. Bug in __html_strip_lf fixed.
+@
+text
+@d19 1
+a19 5
+ * $Source: /projects2/renaissa/cvsroot/ART/Web/HTMLLib/c/Attic/rules,v $
+ *
+ * $Log: rules,v $
+ * Revision 1.1.2.1  1997/04/08 10:26:48  kbracey
+ * Initial revision
+d21 1
+d49 1
+a49 5
+ * $Source: /projects2/renaissa/cvsroot/ART/Web/HTMLLib/c/Attic/rules,v $
+ *
+ * $Log: rules,v $
+ * Revision 1.1.2.1  1997/04/08 10:26:48  kbracey
+ * Initial revision
+d51 1
+d102 1
+a102 1
+
+d112 1
+a112 1
+int __html_check_tag (const Tag *tags, int max_tags, const char *tag)
+d253 1
+a253 1
+
+@

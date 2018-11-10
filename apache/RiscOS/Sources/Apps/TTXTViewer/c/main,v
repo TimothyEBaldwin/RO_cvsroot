@@ -1,0 +1,321 @@
+head	1.5;
+access;
+symbols
+	TTXTViewer-0_16:1.5
+	TTXTViewer-0_15:1.5
+	TTXTViewer-0_14:1.5
+	TTXTViewer-0_13:1.5
+	TTXTViewer-0_12:1.5
+	TTXTViewer-0_11:1.4
+	TTXTViewer-0_10:1.3
+	TTXTViewer-0_09:1.3
+	TTXTViewer-0_08:1.2
+	TTXTViewer-0_07:1.2
+	TTXTViewer-0_06:1.1.1.1
+	TTXTViewer-0_05:1.1.1.1
+	TTXTViewer-0_04:1.1.1.1
+	TTXTViewer-0_03:1.1.1.1
+	TTXTViewer-0_02:1.1.1.1
+	TTXTViewer-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2002.06.24.14.00.03;	author srevill;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2002.06.20.11.10.53;	author srevill;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2002.05.27.14.06.42;	author mboura;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2002.02.20.14.00.49;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.11.14.15.19.28;	author mboura;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2001.11.14.15.19.28;	author mboura;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Updated support for setting the default language.
+Detail:
+  The URL scheme has been updated to be the 'correct' solution rather
+  than a short-term bodge. The new language parameter now takes a
+  hexadecimal charset value as per the ETS 300 706 specification.
+  Charsets specified in the stream will still override this.
+
+  E.g. HREF="teletext:?language=5" will launch the Teletext viewer
+  with a Default Charset 0 and Spanish National Subset.
+Admin:
+  I deleted the s.teletext file as it isn't used anywhere.
+
+Version 0.12. Tagged as 'TTXTViewer-0_12'
+@
+text
+@/* Copyright 2001 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "messages.h"
+#include "main.h"
+#include "teletext.h"
+#include "config.h"
+
+#include "VersionNum"
+
+#include "wimplib.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+/*#define DEBUG*/
+
+#define BUFF_SIZE (256)
+
+int main(void)
+{
+   _kernel_oserror *err = NULL;
+
+   int taskHandle = 0;
+   bool quit = false;
+   WimpPollBlock eventBlock;
+   int eventCode;
+   config conf;
+   char buffer[BUFF_SIZE];
+
+   static int wimpMessages[] =
+   { /* wimp messages that are used */
+      TTextAndSubs_On,
+      0
+   };
+
+#ifdef DEBUG
+   setvbuf(stderr,NULL,_IONBF,0);
+   fprintf(stderr,"Starting...\n");
+#endif
+
+   err = messages_initialise();
+
+   messages_lookup1( buffer, BUFF_SIZE, "TaskName", Module_MajorVersion );
+   if (!err)
+      err = wimp_initialise(310,
+                            buffer,
+                            wimpMessages,
+                            NULL,
+                            &taskHandle);
+
+   if (!err)
+      err = load_config(&conf);
+
+   while (!err && !quit)
+   {
+      err = wimp_poll(Wimp_Poll_NullMask | Wimp_Poll_PointerLeavingWindowMask | Wimp_Poll_PointerEnteringWindowMask |
+                      Wimp_Poll_LoseCaretMask | Wimp_Poll_GainCaretMask | Wimp_Poll_PollWordNonZeroMask,
+                      &eventBlock,
+                      NULL,
+                      &eventCode);
+
+      if (!err &&
+          (eventCode == Wimp_EUserMessageRecorded ||
+           eventCode == Wimp_EUserMessage))
+      {
+         switch (eventBlock.user_message.hdr.action_code)
+         {
+            case Wimp_MQuit:
+               quit = true;
+               break;
+
+            case TTextAndSubs_On:
+            {
+               message_ttextandsubs_on *mes = (message_ttextandsubs_on *)&eventBlock.user_message.data.words;
+               message_ttextandsubs_onack *ack = (message_ttextandsubs_onack *)&eventBlock.user_message.data.words;
+
+               mes->flags &= TTextAndSubs_On_ReasonCodeMask | TTextAndSubs_On_WindowedFlag;
+               if (mes->flags == TTextAndSubs_On_TeletextMagazine || /* full screen teletext magazine with no unknown flags */
+                   (mes->flags == TTextAndSubs_On_DVBSubtitles &&
+                    mes->data1 == SubtitleType_EBUTeletext))         /* full screen teletext subtitles */
+               {
+                  err = teletext_on(mes->videoControlHandle,
+                                    (mes->flags & TTextAndSubs_On_DVBSubtitles) != 0,
+                                    ((mes->flags & TTextAndSubs_On_TeletextCharset) != 0) ? mes->languageCode : -1,
+                                    mes->data1,
+                                    mes->data2,
+                                    &conf);
+
+                  ack->flags = (err == NULL) ? 0 : TTextAndSubs_OnAck_ErrorFlag;
+
+                  if (err)
+                  {
+#ifdef DEBUG
+                     fprintf(stderr,"Error: %s\n",err->errmess);
+#endif
+
+                     ack->errorNumber = err->errnum;
+                     strncpy(ack->errorMessage,err->errmess,sizeof(ack->errorMessage));
+                  }
+
+                  eventBlock.user_message.hdr.your_ref = eventBlock.user_message.hdr.my_ref;
+                  eventBlock.user_message.hdr.action_code = TTextAndSubs_OnAck;
+
+                  err = wimp_send_message(Wimp_EUserMessage,&eventBlock,eventBlock.user_message.hdr.sender,0,NULL);
+               }
+
+               break;
+            }
+         }
+      }
+   }
+
+   if (err)
+      wimp_report_error(err,
+                        Wimp_ReportError_Cancel,
+                        (char *)messages_simple_lookup("TaskName"));
+
+   if (taskHandle != 0)
+      wimp_close_down(taskHandle);
+
+   return EXIT_SUCCESS;
+}
+@
+
+
+1.4
+log
+@  Added support for setting the default language.
+Detail:
+  The URL scheme has a new parameter "language=<lang>" where <lang> is a
+  three-letter ISO_639_language_code. This is used for the default language
+  charset. Charsets specified in the stream will override this.
+
+  The launcher BASIC program can now be extended to take any number of
+  parameters, rather than the hard-wired one parameter.
+
+  E.g. HREF="teletext:?page=102&language=spa" will launch the Teletext
+  viewer will a default page of 102 and Spanish language.
+
+  I've also tidied the directory structure of these sources a little by
+  adding the 'Docs' directory.
+Admin:
+  Tested on STB.
+
+Version 0.11. Tagged as 'TTXTViewer-0_11'
+@
+text
+@d96 2
+a97 2
+                                    mes->flags == TTextAndSubs_On_DVBSubtitles,
+                                    mes->languageCode,
+@
+
+
+1.3
+log
+@  Added the version number to the TaskManger's display
+Detail:
+  Now when customers talk to us we will be able to find out what version it was
+Admin:
+  Only tested on the RPC.
+
+Version 0.09. Tagged as 'TTXTViewer-0_09'
+@
+text
+@d97 1
+@
+
+
+1.2
+log
+@  Made the application less over-enthusiastic to acknowledge teletext launch
+  messages that don't belong to it. Updated message spec to fix a few points
+  of confusion, and put back in the DVB subtitling aspects that seem to have
+  been edited out at some point.
+Detail:
+  * Message handler should ignore reserved flag bits in Message_TTextAndSubsOn
+  * Added flag bit delegating positioning of windowed data to the viewer app -
+    in these cases, positioning should be determined from the MPEG system
+    (this communication would be needed anyway for DVB subtitles, to determine
+    the aspect ratio of the window)
+  * Removed line stating that ISO_639_language_code is ignored in the teletext
+    case - it's very much needed when, in combination with teletext_type, you
+    select teletext page according to a DVB teletext descriptor
+  * Re-added subtitling type values for DVB subtitles
+  * Changed rules for sending Message_TTextAndSubsOn - it should always be
+    broadcast, because in a multi-stream world there may well be multiple
+    tasks that are handling the protocol
+Admin:
+  Not tested, but only a one-line code change.
+  Note that the application claims launch messages for teletext pages
+  selected by teletext_type, but it can't do anything sensible with them
+  because the current code has no support for parsing teletext descriptors.
+  Until descriptor support is added, this is also incapable of being used
+  simultaneously with a DVB subtitle decoder. Another thought: should it
+  really be the launcher's responsibility to know which application to try
+  to execute when the Message_TTextAbdSubsOn message bounces?
+
+Version 0.07. Tagged as 'TTXTViewer-0_07'
+@
+text
+@d20 2
+d30 2
+d41 1
+d56 1
+d59 1
+a59 1
+                            (char*)messages_simple_lookup("TaskName"),
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d84 1
+@
+
+
+1.1.1.1
+log
+@Initial import of IPTeletext module
+Detail:
+Takes teletext data from an MPEG stream and processes it for use be !TTXTView
+Admin:
+Brief testing OK
+@
+text
+@@

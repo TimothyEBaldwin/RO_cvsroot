@@ -1,0 +1,227 @@
+head	1.2;
+access;
+symbols
+	Boot-1_26:1.2
+	Boot-1_25:1.2
+	Boot-1_24:1.2
+	Boot-1_23:1.2
+	Boot-1_22:1.2
+	Boot-1_21:1.2
+	Boot-1_20:1.2
+	Boot-1_19:1.2
+	Boot-1_18:1.2
+	Boot-1_17:1.2
+	Boot-1_16:1.2
+	Boot-1_15:1.2
+	Boot-1_14:1.2
+	Boot-1_13:1.2
+	Boot-1_12:1.2
+	Boot-1_11:1.2
+	Boot-1_10:1.2
+	Boot-1_09:1.2
+	Boot-1_08:1.2
+	Boot-1_07:1.2
+	Boot-1_06:1.2
+	Boot-1_05:1.2
+	Boot-1_04:1.2
+	Boot-1_03:1.2
+	Boot-1_02:1.2
+	Boot-1_01:1.2
+	Boot-1_00:1.2
+	Boot-0_99:1.2
+	Boot-0_98:1.2
+	Boot-0_97:1.2
+	Boot-0_96:1.2
+	Boot-0_95:1.2
+	Boot-0_94:1.2
+	Boot-0_93:1.2
+	Boot-0_92:1.2
+	Boot-0_91:1.2
+	Boot-0_90:1.1
+	Boot-0_89:1.1
+	Boot-0_88:1.1
+	Boot-0_87:1.1
+	Boot-0_86:1.1
+	Boot-0_85:1.1
+	Boot-0_84:1.1
+	Boot-0_83:1.1
+	Boot-0_82:1.1
+	Boot-0_81:1.1
+	Boot-0_80:1.1
+	Boot-0_79:1.1
+	Boot-0_78:1.1
+	Boot-0_77:1.1
+	Boot-0_76:1.1
+	Boot-0_75:1.1
+	Boot-0_74:1.1
+	Boot-0_73:1.1
+	Boot-0_72:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2012.07.19.11.37.25;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	x6wvxB4CUBaPkadw;
+
+1.1
+date	2003.02.13.17.22.41;	author rsprowson;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@Try again - CVS bombed out.
+Manually tagged as Boot-0_91.
+@
+text
+@; Copyright 2003 Tematic Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; > Sources.WimpUtils3
+
+;;----------------------------------------------------------------------------
+;; Patch module for RISC OS 3.50
+
+;; In RISC OS 3.50, the Wimp has two calls to the routine which conditionally
+;; sets up the grey-scale palette. One of these (after a *WimpMode command has
+;; been executed) has a bug in the addressing of the flag which determines that
+;; a grey-scale palette is required. The location it actually reads is in the
+;; system heap, in the second half of the kernel's 'TextExpand' block. The
+;; second half of the block is only used in 16 million colour modes. If the
+;; last text background colour set while in one of these modes was not black,
+;; then the Wimp thinks it should set up a grey-scale palette. From then on,
+;; any mode change done via the DisplayManager tries to select a grey-scale
+;; mode, producing strange effects in 2-colour, 256-colour and
+;; 32-thousand-colour modes. Doing F12 then RETURN temporarily clears the
+;; condition, but any reselection of a mode from the DisplayManager returns you
+;; to the naff state. It can only be cleared properly by reselecting a 16
+;; million colour mode - from then on it is OK, because the default background
+;; colour is black (although F12 sets it to be white).
+
+;; This bug could arise if the user ran a program that selected a 16 million
+;; colour mode and changed the text background colour. On return to the
+;; desktop, the initial mode change would be OK, but subsequent ones selected
+;; from the DisplayManager would be wrong.
+
+;; The bug is fixed by this module, which on Service_ModeChange always pokes
+;; the location in the system heap to zero, which is safe, since that part of
+;; the block is only used in 16 million colour modes, and that location
+;; defaults to zero after such a mode change anyway.
+
+;;
+;; Change List
+;; -----------
+;; 01-Mar-94    3.50  TMD  File created
+;;
+;;
+;;----------------------------------------------------------------------------
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:Services
+
+        AREA    |WimpUtils$$Code|,CODE,READONLY
+
+        GBLA    Version
+        GBLS    VString
+        GBLS    Date
+Version SETA    350
+VString SETS    "3.50"
+Date    SETS    "01 Mar 1994"
+
+BodgeLocation   *       &01C03D4C
+EndOfROM        *       &03A00000
+
+Module_BaseAddr
+        DCD     0                               ; Start
+        DCD     0                               ; Init
+        DCD     0                               ; Die
+        DCD     Service        - Module_BaseAddr
+        DCD     Title          - Module_BaseAddr
+        DCD     Helpstr        - Module_BaseAddr
+        DCD     0                               ; Helptable
+        DCD     0                               ; MySWIBase
+        DCD     0                               ; SWIdecode
+        DCD     0                               ; SWInames
+        DCD     0                               ; SWI name decode
+
+Title   DCB     "WindowUtils", 0
+
+Helpstr DCB     "Window Utils", 9, "$VString ($Date)", 0
+        ALIGN
+
+Service ROUT
+        TEQ     r1, #Service_ModeChange
+        MOVNE   pc, lr
+        Push    "r0-r5"
+        MOV     r0, #EndOfROM   ; compare ROM checksum and CRCs
+        LDMDB   r0, {r0-r2}
+        ADR     r3, ROMChecksums ; with what they should be for 3.50
+        LDMIA   r3, {r3-r5}
+        EORS    r0, r0, r3
+        EOREQS  r0, r1, r4
+        EOREQS  r0, r2, r5
+        LDREQ   r1, =BodgeLocation ; store zero in location
+        STREQ   r0, [r1]
+        Pull    "r0-r5"
+        MOV     pc, lr
+
+        LTORG
+
+ROMChecksums
+        &       &F0561D7C, &EAE37D58, &C33AE184
+
+        END
+@
+
+
+1.1
+log
+@Finally got round to storing this stuff.
+Many changes,highlights being:
+ freepool now creates its 'o' directory in the top Makefile
+ safelogin tweaked so it can find its header files again
+ stopped EXITS macro moaning about no ENTRYS in Appsize and AddApp
+ added 2DTools to universal boot sequence
+ Added RO370/400/500Hook though the 370 and 400 are just empty at present
+ newer vprotect added from Alan Glover
+ add Utils.NetChoices
+ delete ~CDReinit binary,shuffle sources a bit
+ misc changes to obey files from Steve
+The Makefile now expects a TARGET to be defined.Currently the 500 one is
+the only one tested,though UNIVERSAL is also defined and outputs a boot
+sequence like you would have got with !MkInstall in V0.71.
+This picks up files which might differ between boots,and also adds
+extra files which change when the UserIF changes.
+
+Version 0.72. Tagged as 'Boot-0_72'
+@
+text
+@d59 1
+a59 1
+	AREA	|ObjAsm$$Code|,CODE,READONLY
+d61 6
+a66 1
+        GET     s.Version3
+@
+

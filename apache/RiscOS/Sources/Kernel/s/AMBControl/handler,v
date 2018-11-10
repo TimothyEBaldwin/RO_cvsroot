@@ -1,0 +1,180 @@
+head	4.1;
+access;
+symbols
+	Kernel-6_14:4.1
+	Kernel-6_01-3:4.1
+	Kernel-6_13:4.1
+	Kernel-6_12:4.1
+	Kernel-6_11:4.1
+	Kernel-6_10:4.1
+	Kernel-6_09:4.1
+	Kernel-6_08-4_129_2_10:4.1
+	Kernel-6_08-4_129_2_9:4.1
+	Kernel-6_08:4.1
+	Kernel-6_07:4.1
+	Kernel-6_06:4.1
+	Kernel-6_05-4_129_2_8:4.1
+	Kernel-6_05:4.1
+	Kernel-6_04:4.1
+	Kernel-6_03:4.1
+	Kernel-6_01-2:4.1
+	Kernel-6_01-4_146_2_1:4.1
+	Kernel-6_02:4.1
+	Kernel-6_01-1:4.1
+	Kernel-6_01:4.1
+	Kernel-6_00:4.1
+	Kernel-5_99:4.1
+	Kernel-5_98:4.1
+	Kernel-5_97-4_129_2_7:4.1
+	Kernel-5_97:4.1
+	Kernel-5_96:4.1
+	Kernel-5_95:4.1
+	Kernel-5_94:4.1
+	Kernel-5_93:4.1
+	Kernel-5_92:4.1
+	Kernel-5_91:4.1
+	Kernel-5_90:4.1
+	Kernel-5_89-4_129_2_6:4.1
+	Kernel-5_89:4.1
+	Kernel-5_88-4_129_2_5:4.1
+	Kernel-5_88-4_129_2_4:4.1
+	Kernel-5_88:4.1
+	Kernel-5_87:4.1
+	Kernel-5_86-4_129_2_3:4.1
+	Kernel-5_86-4_129_2_2:4.1
+	Kernel-5_86-4_129_2_1:4.1
+	Kernel-5_86:4.1
+	SMP:4.1.0.2
+	SMP_bp:4.1
+	Kernel-5_85:4.1
+	Kernel-5_84:4.1
+	Kernel-5_83:4.1
+	Kernel-5_82:4.1
+	Kernel-5_81:4.1
+	Kernel-5_80:4.1
+	Kernel-5_79:4.1
+	Kernel-5_78:4.1
+	Kernel-5_77:4.1
+	Kernel-5_76:4.1
+	Kernel-5_75:4.1
+	Kernel-5_74:4.1
+	Kernel-5_73:4.1
+	Kernel-5_72:4.1
+	Kernel-5_71:4.1
+	Kernel-5_70:4.1
+	Kernel-5_69:4.1
+	Kernel-5_68:4.1
+	Kernel-5_67:4.1
+	Kernel-5_66:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.1
+date	2016.12.13.16.42.53;	author jlee;	state Exp;
+branches;
+next	;
+commitid	aGog9bB8f4QKlQxz;
+
+
+desc
+@@
+
+
+4.1
+log
+@Reimplement AMBControl ontop of the PMP system
+Detail:
+  With this set of changes, each AMB node is now the owner of a fake DANode which is linked to a PMP.
+  From a user's perspective the behaviour of AMBControl is the same as before, but rewriting it to use PMPs internally offers the following (potential) benefits:
+  * Reduction in the amount of code which messes with the CAM & page tables, simplifying future work/maintenance. Some of the AMB ops (grow, shrink) now just call through to OS_ChangeDynamicArea. However all of the old AMB routines were well-optimised, so to avoid a big performance hit for common operations not all of them have been removed (e.g. mapslot / mapsome). Maybe one day these optimal routines will be made available for use by regular PMP DAs.
+  * Removal of the slow Service_MemoryMoved / Service_PagesSafe handlers that had to do page list fixup after the core kernel had reclaimed/moved pages. Since everything is a PMP, the kernel will now deal with this on behalf of AMB.
+  * Removal of a couple of other slow code paths (e.g. Do_AMB_MakeUnsparse calls from OS_ChangeDynamicArea)
+  * Potential for more flexible mapping of application space in future, e.g. sparse allocation of memory to the wimp slot
+  * Simpler transition to an ASID-based task swapping scheme on ARMv6+?
+  Other changes of note:
+  * AMB_LazyMapIn switch has been fixed up to work correctly (i.e. turning it off now disables lazy task swapping and all associated code instead of producing a build error)
+  * The DANode for the current app should be accessed via the GetAppSpaceDANode macro. This will either return the current AMB DANode, or AppSpaceDANode (if e.g. pre-Wimp). However be aware that AppSpaceDANode retains the legacy behaviour of having a base + size relative to &0, while the AMB DANodes (identifiable via the PMP flag) are sane and have their base + size relative to &8000.
+  * Mostly-useless DebugAborts switch removed
+  * AMBPhysBin (page number -> phys addr lookup table) removed. Didn't seem to give any tangible performance benefit, and was imposing hidden restrictions on memory usage (all phys RAM fragments in PhysRamTable must be multiple of 512k). And if it really was a good optimisation, surely it should have been applied to all areas of the kernel, not just AMB!
+  Other potential future improvements:
+  * Turn the fake DANodes into real dynamic areas, reducing the amount of special code needed in some places, but allow the DAs to be hidden from OS_DynamicArea 3 so that apps/users won't get too confused
+  * Add a generic abort trapping system to PMPs/DAs (lazy task swapping abort handler is still a special case)
+  File changes:
+  - s/ARM600, s/VMSAv6, s/ExtraSWIs - Remove DebugAborts
+  - s/ArthurSWIs - Remove AMB service call handler dispatch
+  - s/ChangeDyn - AMB_LazyMapIn switch fixes. Add alternate internal entry points for some PMP ops to allow the DANode to be specified (used by AMB)
+  - s/Exceptions - Remove DebugAborts, AMB_LazyMapIn switch fixes
+  - s/Kernel - Define GetAppSpaceDANode macro, AMB_LazyMapIn switch fix
+  - s/MemInfo - AMB_LazyMapIn switch fixes
+  - s/AMBControl/AMB - Update GETs
+  - s/AMBControl/Memory - Remove block size quantisation, AMB_BlockResize (page list blocks are now allocated by PMP code)
+  - s/AMBControl/Options - Remove PhysBin definitions, AMBMIRegWords (moved to Workspace file), AMB_LimpidFreePool switch. Add AMB_Debug switch.
+  - s/AMBControl/Workspace - Update AMBNode to contain an embedded DANode. Move AMBMIRegWords here from Options file.
+  - s/AMBControl/allocate - Fake DA node initialisation
+  - s/AMBControl/deallocate - Add debug output
+  - s/AMBControl/growp, growshrink, mapslot, mapsome, shrinkp - Rewrite to use PMP ops where possible, add debug output
+  - s/AMBControl/main - Remove PhysBin initialisation. Update the enumerate/mjs_info call.
+  - s/AMBControl/memmap - Low-level memory mapping routines updated or rewritten as appropriate.
+  - s/AMBControl/readinfo - Update to cope with DANode
+  - s/AMBControl/service - Remove old service call handlers
+  - s/AMBControl/handler - DA handler for responding to PMP calls from OS_ChangeDynamicArea; just calls through to growpages/shrinkpages as appropriate.
+Admin:
+  Tested on pretty much everything currently supported
+
+
+Version 5.66. Tagged as 'Kernel-5_66'
+@
+text
+@; Copyright 2016 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+; DA handler for AMBControl DA nodes
+
+AMBDAHandler ROUT
+        CMP     R0, #DAHandler_ResizePMP
+        BNE     UnknownHandlerError
+        ; In:
+        ;  R0 = Reason code
+        ;  R1 = change amount (pages)
+        ;  R2 = DA number (ignore)
+        ;  R12 -> AMBNode
+        ; Out:
+        ;  All regs preserved
+        Entry   "R1,R2,R12"
+      [ AMB_Debug
+        LDR     R2, [R12, #AMBNode_handle]
+        DebugReg R2, "AMBDAHandler "
+        DebugReg R1
+      ]
+        MOV     R2, R12
+        CMP     R1, #0
+        LDR     LR, [R2, #AMBNode_DANode+DANode_PMPSize]
+        LDR     R12, =ZeroPage+AMBControl_ws
+        ADD     R1, R1, LR
+        LDR     R12, [R12]
+        ADR     R14, %FT10
+        BGT     growpages
+        BLT     shrinkpages
+10
+      [ AMB_Debug
+        LDR     R2, [R2, #AMBNode_DANode+DANode_PMPSize]
+        DebugReg R2, "<AMBDAHandler new size "
+      ]
+        EXIT
+
+
+    END
+@

@@ -1,0 +1,439 @@
+head	1.2;
+access;
+symbols
+	Debugger-2_02-1:1.2
+	Debugger-2_02:1.2
+	Debugger-2_01:1.2
+	Debugger-2_00:1.2
+	Debugger-1_99:1.2
+	Debugger-1_98:1.2
+	Debugger-1_97:1.2
+	Debugger-1_96:1.2
+	Debugger-1_95:1.2
+	Debugger-1_94:1.2
+	Debugger-1_93:1.2
+	Debugger-1_92:1.2
+	Debugger-1_91:1.1
+	Debugger-1_90:1.1
+	Debugger-1_89:1.1
+	Debugger-1_88:1.1
+	Debugger-1_87:1.1
+	Debugger-1_86:1.1
+	Debugger-1_85:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2016.04.05.20.41.24;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	xIAY2HYlqbqLLt1z;
+
+1.1
+date	2013.11.28.01.29.22;	author jlee;	state Exp;
+branches;
+next	;
+commitid	STgm4PaoUxPr0Zex;
+
+
+desc
+@@
+
+
+1.2
+log
+@Add exception dump generation and processing facilities
+Detail:
+  This set of changes adds support for the following features:
+  * A new code system variable, Debugger$DumpOptions, to control whether exception/crash dumps are collected from SeriousErrorV and where they should be output
+  * Dump output can be in raw (binary) or annotated (text) form.
+  * Annotated form provides detailed annotation of the stack(s), detecting certain constructs such as SWI invocations, IRQsema frames, CMHG veneers, APCS stack frame chains, and most forms of assembler function calls. The output isn't as easy to understand as a proper stack backtrace would be, but the low-level nature allows it to cope with corrupt or partially-overwritten stack frames, and avoids making invasive changes to components in order to make them backtrace-friendly
+  * Stack annotation is able to make use of embedded ROM debug symbols (to be supported by romlinker 0.06) and Norcroft-style embedded function names in order to provide function-level location information for most ROM components and applications
+  * System variables Debugger$RawFile and Debugger$AnnotatedFile to specify where to save raw and annotated exception dumps (preliminary, approach may change in future)
+  * As well as supporting saving to file, the exception dumps can also be sent to the HAL via HAL_DebugTX, or if a program is driving SeriousErrorV directly it can use SeriousErrorV_CustomReport to have it fed to a custom callback function
+  The code is structured in such a way that the core dump annotation code can potentially be built into a standalone application to allow offline processing of dumps (offline application not part of this checkin)
+  File changes:
+  c/exc, h/exc - Core code for producing the annotated exception dumps
+  hdr/ExcDump - Header detailing the format of the binary dump
+  s/ExceptionDump - Code variable and SeriousErrorV handling. Several support calls (used by c/exc) are also implemented here, in order to separate the dump processing from any interrogation of the originating machine
+  Makefile - Updated for c/exc inclusion, and C header generation from hdr/ExcDump
+  Resources/UK/Messages, Resources/Germany/Messages - New messages used by exception dump code
+  c/support - Add a strcmp implementation, and extend vsprintf to be vsnprintf. Add support for string width format specifier.
+  s/Debugger - Workspace definitions and init/shutdown hooks for exception dump code. Refactor *Where so that the locate logic is separate from the message output logic, to allow the locate logic to be used by the exception dump code.
+Admin:
+  Tested on Raspberry Pi
+  German messages in need of translation
+
+
+Version 1.92. Tagged as 'Debugger-1_92'
+@
+text
+@/* Copyright 2013 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "dis2.h"
+
+/* Minimal sprintf() implementation and other support functions */
+
+size_t strlen(const char *c)
+{
+	size_t count=0;
+	while(*c++)
+		count++;
+	return count;
+}
+
+char *strcat(char *str1,const char *str2)
+{
+	char *ret = str1;
+	while(*str1)
+		str1++;
+	while((*str1++ = *str2++) != 0) {};
+	return ret;
+}
+
+int strcmp(const char *str1, const char *str2)
+{
+	char c;
+	int diff;
+	do
+	{
+		c = *str1++;
+		diff = c - *str2++;
+	} while (c && !diff);
+	return diff;
+}
+
+void *memcpy(void *ptr1,const void *ptr2,size_t n)
+{
+	while(n--)
+	{
+		((char *) ptr1)[n] = ((char *) ptr2)[n];
+	}
+	return ptr1;
+}
+
+int sprintf(char *out,const char *format,...)
+{
+	va_list a;
+	va_start(a,format);
+	int ret = vsnprintf(out,SIZE_MAX,format,a);
+	va_end(a);
+	return ret;
+}
+
+extern int _sprintf(char *out,const char *format,...);
+
+int _sprintf(char *out,const char *format,...)
+{
+	va_list a;
+	va_start(a,format);
+	int ret = vsnprintf(out,SIZE_MAX,format,a);
+	va_end(a);
+	return ret;
+}
+
+int snprintf(char *out,size_t max,const char *format,...)
+{
+	va_list a;
+	va_start(a,format);
+	int ret = vsnprintf(out,max,format,a);
+	va_end(a);
+	return ret;
+}
+
+extern int _snprintf(char *out,size_t max,const char *format,...);
+
+int _snprintf(char *out,size_t max,const char *format,...)
+{
+	va_list a;
+	va_start(a,format);
+	int ret = vsnprintf(out,max,format,a);
+	va_end(a);
+	return ret;
+}
+
+int vsprintf(char *out,const char *format,va_list a)
+{
+	return vsnprintf(out,SIZE_MAX,format,a);
+}
+
+#define OUTC(C) do { char chr = C; if (count < usable_max) out[count] = chr; count++; } while(0)
+
+int vsnprintf(char *out,size_t max,const char *format,va_list a)
+{
+	size_t count=0;
+	int c;
+	size_t usable_max = (out ? max : 0);
+	while((c = *format++) != 0)
+	{
+		if(c == '%')
+		{
+			/* We'll only deal with the following format specifiers:
+			   %[-<width>]s   (control-terminated - to cope with messages)
+			   %c
+			   %<width>[ll]X
+			   %<width>[ll]x
+			   %d
+			   %u
+			*/
+			int width=0;
+			bool islong=false;
+			c = *format++;
+			if (c == '-')
+				c = *format++;
+			while((c >= '0') && (c <= '9'))
+			{
+				width = width*10 + c - '0';
+				c = *format++;
+			}
+			switch(c)
+			{
+			case 's':
+				{
+				const char *s = va_arg(a,const char *);
+				if(width)
+				{
+					/* Assume left-justified */
+					do
+					{
+						OUTC(((*s >= ' ') ? *s++ : ' '));
+					}
+					while(--width);
+				}
+				else
+				{
+					while(*s >= ' ')
+					{
+						OUTC(*s++);
+						width--;
+					}
+				}
+				}
+				break;
+			case 'c':
+				OUTC(va_arg(a,int));
+				break;
+			case 'l':
+				islong = true;
+				format++;
+				c = *format++;
+				/* Fall through... */
+			case 'X':
+			case 'x':
+				{
+				uint64_t h;
+				if(islong)
+					h = va_arg(a,uint64_t);
+				else
+					h = va_arg(a,unsigned int);
+				int i = 15;
+				if(!width)
+					width = 1;
+				do
+				{
+					unsigned int n = (unsigned int) (h>>60);
+					if(n || (i<width))
+					{
+						width = 16;
+						char c2;
+						if(n <= 9)
+							c2 = n+'0';
+						else if(c == 'X')
+							c2 = n+'A'-10;
+						else
+							c2 = n+'a'-10;
+						OUTC(c2);
+					}
+					h=h<<4;
+				} while(--i >= 0);
+				}
+				break;
+			case 'd':
+			case 'u':
+				{
+				unsigned int i = va_arg(a,unsigned int);
+				if((i & 0x80000000) && (c == 'd'))
+				{
+					i = -i;
+					OUTC('-');
+				}
+				while(i)
+				{
+					unsigned int j=1;
+					int k=0;
+					while((j < 0x10000000) && (j*10 <= i))
+					{
+						j *= 10;
+						k++;
+					}
+					while(width > k)
+					{
+						OUTC('0');
+						width--;
+					}
+					c = '0';
+					while(i >= j)
+					{
+						i -= j;
+						c++;
+					}
+					OUTC(c);
+					width = k-1;
+				}
+				while(width-- >= 0)
+					OUTC('0');
+				}
+				break;
+			}
+		}
+		else
+		{
+			OUTC(c);
+		}
+	}
+	if (out && max)
+	{
+		out[(count < max) ? count : (max-1)] = 0;
+	}
+	return count;
+}
+
+/* Main function called by assembler code */
+static const char *conds_cscc[16] = {"EQ","NE","CS","CC","MI","PL","VS","VC","HI","LS","GE","LT","GT","LE","","NV"};
+
+extern char *arm_engine_fromasm(char *buffer,uint32_t instr,uint32_t addr,char **regnames,size_t bufsize);
+
+char *arm_engine_fromasm(char *buffer,uint32_t instr,uint32_t addr,char **regnames,size_t bufsize)
+{
+	dis_options options;
+	for(int i=0;i<16;i++)
+		options.regs[i] = regnames[i];
+	options.cond = conds_cscc;
+	options.reggroups = 0xffff;
+	options.warnversions = ~0 - (1<<FPA);
+	options.ual = false;
+	options.vfpual = true;
+	options.dci = false;
+	options.bashex = true;
+	options.nonstandard_undefined = true;
+	options.allhex = false;
+	options.swihash = false;
+	options.positionind = false;
+	options.cols[0] = 8;
+	options.cols[1] = 27;
+	options.swimode = SWIMODE_NAME;
+	options.lfmsfmmode = LFMSFM_FORM1;
+	options.comment = ';';
+
+	return arm_engine(instr,addr,&options,buffer,bufsize);
+}
+@
+
+
+1.1
+log
+@Add a new, machine-generated VFP/NEON disassembler. Fix some ARMv6/v7 disassembly bugs.
+Detail:
+  This change adds up-to-date VFP & NEON disassembly to the module, by way of a partially machine-generated disassembler written in C.
+  It's also possible to build a standalone disassembler utility (dubbed 'dis2') which is 100% C and has support for all ARM instructions (including some obscure stuff the assembler disassembler currently lacks, e.g. XScale DSP instructions). One day this may completely replace the assembler disassembler, but at the moment it's a bit bulky and probably has a few bugs left to squash. The disassembler is also fairly flexible, supporting various output formatting options.
+
+  Main changes:
+  - Makefile - Rewritten to switch over to using the CModule makefile fragment instead of AAsmModule, to allow the C code to be included in the component. Also added 'dis2' as an alternative component to build as.
+  - Resources/UK/Messages, Resources/Germany/Messages - Updated with new disassembler messages
+  - s/Debugger - Add new UseCVFPNEON switch to allow control over whether the module builds with the C VFP/NEON disassembler or the original assembler VFP disassembler
+  - s/CGlue - Glue code used with the C disassembler to bridge the gap between the assembler world and the C world
+  - actions/* - A set of decgen action files describing what to do for each instruction the new disassembler supports. These are basically just blocks of C code - although they need to match up with the encoding names in Library/Misc/decgen/encodings
+  - cache/* - Folder for decgen to cache decision trees in. Building the decision tree for the disassembler is currently a lengthy process, but caching the trees reduces the build time to a fraction of the full time.
+  - c/head - Stub C file that decgen prepends to the code it generates
+  - c/main - main frontend for the standalone version of the disassembler
+  - c/support - Reimplementation of the standard C library functions required for the disassembler. This allows us to avoid a runtime dependency on the shared C library, and also allows us to deal with control-terminated strings from messagetrans where relevant. For convenience this file also has the main entry point that's called from assembler.
+  - c/util - Utility code for outputting various forms of instruction, decoding immediate constants, etc.
+  - h/dis2 - Header file for the C code
+  - Test/c/testbed - Simple C testbed app to allow the output of dis2 to be compared against the Debugger module and decaof
+  - !MkDis2,fd7 - Script to allow easy building of the standalone 'dis2' disassembler
+  Bugfixes:
+  - s/ARMv6 - Change 'ROR#' to 'ROR #' for UXTAB, etc. disassembly. Fix bitfield extract & clear instructions to detect unpredictable/invalid bitfield definitions
+  Misc other changes:
+  - s/* - Source files updated so s/Debugger contains a list of GETs instead of each source file LNK'ing to the next
+Admin:
+  Tested in ROM form on BB-xM, and as softload on Iyonix
+  German messages are in need of translation
+  Requires Library-1_65 and BuildSys-6_34
+
+
+Version 1.85. Tagged as 'Debugger-1_85'
+@
+text
+@d36 12
+d61 1
+a61 1
+	int ret = vsprintf(out,format,a);
+d72 21
+a92 1
+	int ret = vsprintf(out,format,a);
+d99 8
+a106 1
+	int count=0;
+d108 1
+d114 1
+a114 1
+			   %s   (control-terminated - to cope with messages)
+d124 2
+d136 17
+a152 2
+				while(*s >= ' ')
+					out[count++] = *s++;
+d156 1
+a156 1
+				out[count++] = va_arg(a,int);
+d176 1
+a176 1
+					unsigned int n = h>>60;
+d180 1
+d182 1
+a182 1
+							out[count++] = n+'0';
+d184 1
+a184 1
+							out[count++] = n+'A'-10;
+d186 2
+a187 1
+							out[count++] = n+'a'-10;
+d200 1
+a200 1
+					out[count++] = '-';
+d213 1
+a213 1
+						out[count++] = '0';
+d222 1
+a222 1
+					out[count++] = c;
+d226 1
+a226 1
+					out[count++] = '0';
+a230 4
+		else if(c == '\\')
+		{
+			out[count++] = *format++;
+		}
+d233 1
+a233 1
+			out[count++] = c;
+d236 4
+a239 1
+	out[count] = 0;
+@
+

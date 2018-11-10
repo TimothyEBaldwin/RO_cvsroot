@@ -1,0 +1,1273 @@
+head	4.4;
+access;
+symbols
+	DMA-0_23:4.4
+	DMA-0_22:4.3
+	DMA-0_21:4.3
+	DMA-0_20:4.3
+	DMA-0_19:4.2
+	DMA-0_18:4.2
+	RO_5_07:4.2
+	DMA-0_17:4.2
+	DMA-0_16:4.1
+	HAL_merge:1.1.2.5
+	DMA-0_15-4_4_2_6:1.1.2.5
+	DMA-0_15-4_4_2_5:1.1.2.4
+	DMA-0_15-4_4_2_4:1.1.2.3
+	DMA-0_15-4_4_2_3:1.1.2.3
+	DMA-0_15-4_4_2_2:1.1.2.2
+	DMA-0_15-4_4_2_1:1.1.2.1
+	HAL:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+4.4
+date	2015.08.16.18.30.22;	author jlee;	state Exp;
+branches;
+next	4.3;
+commitid	kaDOr6XAdhXbxwxy;
+
+4.3
+date	2013.01.27.22.19.36;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	IEH6L6dQiqz1JTBw;
+
+4.2
+date	2003.01.30.16.10.47;	author bavison;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2002.12.13.18.48.10;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.11.27.14.57.57;	author bavison;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	2001.11.27.14.57.57;	author bavison;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	2002.10.03.17.35.11;	author bavison;	state Exp;
+branches;
+next	1.1.2.3;
+
+1.1.2.3
+date	2002.10.15.19.15.33;	author bavison;	state Exp;
+branches;
+next	1.1.2.4;
+
+1.1.2.4
+date	2002.11.22.16.53.29;	author bavison;	state Exp;
+branches;
+next	1.1.2.5;
+
+1.1.2.5
+date	2002.12.13.17.24.59;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.4
+log
+@Documentation update
+Detail:
+  Doc/HAL_DMAAPI - Document the requirements of HAL devices and DMAManager clients with respect to memory barriers
+Admin:
+  Documentation change, not tagged
+
+
+Version 0.22. Not tagged
+@
+text
+@DMAManager SWIs
+---------------
+
+SWI DMA_RegisterChannel extended as follows:
+  R0 bits 0-3 = post-transfer channel delay
+  R0 bit 4 set => disable burst transfers
+  R0 bit 5 set => disable DMA request synchronisation to clock
+  R6 = peripheral read/receive physical address
+  R7 = peripheral write/transmit physical address
+  (R6,R7 ignored for IOMD implementations and memory-to-memory DMA, but
+  otherwise required for the 7200 and 9200)
+
+SWI DMA_ExamineTransfer may not be able to give an accurate byte count for
+some DMA controllers; however the byte count returned is guaranteed not to
+exceed the true count. If you need a guaranteed accurate value, you must call
+it between DMA_SuspendTransfer and DMA_ResumeTransfer. (This has always been
+the case.)
+
+SWI DMA_AllocateLogicalChannels (SWI &46147)
+
+On entry:  R0 = number of logical channels to allocate
+On exit:   R0 = number of first logical channel (any others are in a contiguous
+                range above this number)
+
+Use:       Since DMA controllers can now be added by third parties, a method
+           of allocating logical channel numbers is required - this is what
+           this SWI achieves. The range of logical channels from &1000 upwards
+           is reserved for dynamic allocation, and this SWI will allocate one
+           or more channels from this range. The logical channels are
+           guaranteed to be unique within this session, even across
+           reinitialisations of the DMAManager.
+
+Possible future enhancement:
+> SWIs DMA_ClaimChannel and DMA_ReleaseChannel reinstated, but modified so
+> as to take the logical channel as a parameter and not returning any
+> information about the physical channel. These allow a logical channel to
+> temporarily gain sole use of a physical channel, typically to guarantee
+> reception of incoming data.
+
+
+
+Three types of devices (see Kernel.Docs.HAL.NewAPI) are defined: the DMA
+controller, and two types of DMA (physical) channel.
+
+
+DMA controller device
+---------------------
+
+struct dmacontroller
+{
+  /* Public interface */
+  struct device dev;
+  
+  uint32_t (*Features)(struct dmacontroller *);
+  __value_in_regs struct { struct dmachannel **channel; uint32_t count; }
+      (*Enumerate)(struct dmacontroller *);
+  struct dmachannel *(*Allocate)(struct dmacontroller *, uint32_t channel);
+  void (*Deallocate)(struct dmacontroller *, uint32_t channel);
+}
+
+dev.type
+dev.id
+dev.location
+dev.version
+dev.description
+dev.address
+dev.Activate
+dev.Deactivate
+dev.Reset
+dev.Sleep
+dev.devicenumber
+dev.TestIRQ
+  Standard functions as defined in Docs.HAL.NewAPI.
+  Type = &302.
+  Address is not used.
+  Controllers are activated/deactivated on module initialisation/finalisation.
+  dev.Reset is called on software-initiated OS resets.
+  Interrupts are ignored - provide them using the DMA channel device instead.
+
+Features
+  Returns a flags word indicating the capabilities of the controller.
+  Currently no bits defined, all bits should be zero.
+
+Enumerate
+  Returns a static list of available physical DMA channel devices.
+
+Allocate
+  Returns pointer to the physical DMA channel struct to associate with the
+  given logical DMA channel. If the hardware requires a particular logical-
+  physical mapping, this will be obeyed; otherwise one will be allocated at
+  the whim of the software (typically: physical channels grouped according to
+  priority of logical channel, then within each group logical channels are
+  allocated on a one-to-one mapping until no physical channels remain,
+  after which logical channels are arbitrarily doubled up).
+  Return value NULL => this logical channel not supported on this controller
+
+  Recommended DMA priorities:
+    High: sound DMA
+    Medium: other device DMA
+    Low: memory-to-memory DMA
+
+Deallocate
+  The partner of Allocate, this lets the device know that a particular
+  logical channel is no longer being used.
+
+
+
+DMA channel device - buffer type
+--------------------------------
+
+struct dmachannel
+{
+  /* Public interface */
+  struct device dev;
+  
+  uint32_t (*Features)(struct dmachannel *);
+  dmacontroller *controller;
+  void (*Abort)(struct dmachannel *);
+  void (*SetOptions)(struct dmachannel *, uint32_t flags, uint32_t address);
+  void (*SetCurrentTransfer)(struct dmachannel *, uint32_t address,
+      uint32_t length, uint32_t flags);
+  void (*SetNextTransfer)(struct dmachannel *, uint32_t address,
+      uint32_t length, uint32_t flags);
+  __value_in_regs struct { uint32_t address; uint32_t length; }
+      (*TransferState)(struct dmachannel *);
+  void (*IRQClear)(struct dmachannel *);
+  uint32_t (*Status)(struct dmachannel *);
+  void (*SetCurrentTransfer2)(struct dmachannel *, uint32_t srcaddress,
+      uint32_t dstaddress, uint32_t length, uint32_t flags);
+  void (*SetNextTransfer2)(struct dmachannel *, uint32_t srcaddress,
+      uint32_t dstaddress, uint32_t length, uint32_t flags);
+  __value_in_regs struct { uint32_t srcaddress; uint32_t dstaddress;
+      uint32_t length; } (*TransferState2)(struct dmachannel *);
+}
+
+dev.type
+dev.id
+dev.location
+dev.version
+dev.description
+dev.address
+dev.Activate
+dev.Deactivate
+dev.Reset
+dev.Sleep
+dev.devicenumber
+dev.TestIRQ
+  Standard functions as defined in Docs.HAL.NewAPI.
+  Type = &303.
+  Address is not used.
+  Channels are activated/deactivated around each transfer (and are deactivated
+  when a transfer is suspended).
+  
+  dev.Activate enables this physical DMA channel, so that it can generate
+  interrupts (typically this involves unmasking the DMA request line and
+  unmasking a bit in an interrupt control register).
+  
+  dev.Deactivate must block until the transfer on this channel can safely be
+  interrupted (due to Service_PagesUnsafe or SWI DMA_SuspendTransfer),
+  then disable DMA at the DMA request line and interrupt generation levels.
+  After it returns, the values returned from TransferState and Status must
+  reflect the true state of the hardware - ie they must be suitable to use for
+  resumption of the transfer using SetCurrentTransfer.
+  
+  dev.Reset is called by the DMAManager between transfers (but not on OS
+  resets). After this call, Status must report an over/underrun condition.
+
+Features
+  Returns a flag word:
+    all bits reserved, should be zero
+
+controller
+  A pointer to this channel's DMA controller device.
+
+Abort
+  This should be considered a "forced" version of dev.Deactivate, and is only
+  used for SWI DMA_TerminateTransfer. The call must not block, but the values
+  subsequently returned from TransferState and Status are allowed to report
+  inaccurate results, providing they underestimate the progress of the
+  transfer.
+
+SetOptions
+  flags: sets the following aspects of the next transfer on this channel:
+    bit 0 set  => memory to device, clear => device to memory
+                  (ignored for any memory-to-memory channel)
+    bits 1-5   => transfer unit width, typically 1, 2 or 4 bytes
+                  (16 bytes can also be used for IOMD)
+    bits 6-8   => cycle speed, on an arbitrary scale from 0-7
+                  (0-3 maps to A-D cycles on IOMD)
+    bits 9-12  => minimum delay required after a DMA transfer before the same
+                  physical channel is reused (required for 7200 and 9200)
+    bit 13 set => disable burst transfers for this channel
+    bit 14 set => bypass synchronisation to clock before initiating transfer
+                  (for synchronous peripherals - currently 7200 only)
+    other bits reserved, value must be ignored
+  address: sets the physical address of the peripheral to DMA to/from
+    (should be ignored by memory-to-memory channels)
+
+SetCurrentTransfer
+  This sets up the first transfer to be executed for this channel
+  address = physical address to start transfer from
+  length = number of bytes to transfer
+  flags bit 0 set => stop and raise the TC signal when this transfer completes
+                     (mandatory if the DMA controller has no interrupt of
+                     its own)
+  address and length should be multiples of the transfer unit size, and must
+  not cross a page boundary
+
+SetNextTransfer
+  This sets up the next transfer to be executed for this channel, using similar
+  parameters. This will only be called for double-buffered channels.
+
+TransferState
+  This reads the progress of the current transfer on this channel.
+  If the DMA controller will not report accurate progress, report values
+  corresponding to a pessimistic amount of progress.
+
+IRQClear
+  Clears the interrupt for this physical DMA channel (unless some other action
+  carried out during or since TestIRQ has already done so).
+
+Status
+  Returns status bits for the current channel:
+  bit 0 clr => there are transfers programmed that are waiting to begin
+        set => there are no transfers programmed that are waiting to begin
+               A double-buffered controller may exist as
+               II: Both buffers are unprogrammed and idle, both transfers
+                   have completed and an over/underrun condition exists
+               AP/PA: One buffer is active doing a transfer, the other buffer
+                   is programmed ready and waiting to begin
+               AI/IA: One buffer is active doing a transfer, the other buffer
+                   is unprogrammed and idle
+               AA: Both buffers are active, this is of course impossible
+               the II/AI/IA conditions set this flag bit since they are
+               the only ones where there are no pending programmed transfers.
+               For a single-buffered controller, any programmed channel must
+               immediately transition to active. Since there is only one buffer
+               it can never be in state 'P', so this flag bit is always set.
+  bit 1 clr => no over/underrun condition exists
+        set => channel has not yet been used, or is in over/underrun state
+               Set when both buffers are idle for double-buffered DMA
+               controllers.
+               Set on every interrupt for single-buffered DMA controllers.
+  bit 2 clr => channel does not need reprogramming via SetCurrentTransfer
+        set => channel entered over/underrun state before last call to
+               SetNextTransfer had effect (devices may determine this by
+               monitoring any handle they may have on the physical double
+               buffers, or failing this by calculating the final value of the
+               current pointer of the current buffer, and comparing it to what
+               would be expected from the last time the next buffer was
+               programmed - but note that this latter algorithm will fail if a
+               circular transfer from a single-entry scatter list is in use)
+               so the DMA manager needs to program the same data again, but
+               this time using SetCurrentTransfer. This bit must be clear if
+               the last transfer was programmed using SetCurrentTransfer, or if
+               bit 1 is clear.
+  other bits reserved, should be zero.
+
+SetCurrentTransfer2 / SetNextTransfer2 / TransferState2
+  are same as above but with two address arguments and one length argument. For
+  use in memory-to-memory transfers only.
+
+
+
+DMA channel device - list type
+------------------------------
+
+struct dmalistchannel
+{
+  /* Public interface */
+  struct device dev;
+  
+  struct dmalistchannelfeatures *(*Features)(struct dmachannel *);
+  dmacontroller *controller;
+  void (*Abort)(struct dmachannel *);
+  void (*SetOptions)(struct dmachannel *, uint32_t flags, uint32_t address);
+  void (*SetListTransfer)(struct dmachannel *, uint32_t blockphy,
+      void *blocklog, uint32_t nentries, uint32_t length);
+  uint32_t (*ListTransferProgress)(struct dmachannel *);
+  uint32_t (*ListTransferStatus)(struct dmachannel *);
+  uint32_t (*CurtailListTransfer)(struct dmachannel *, uint32_t minimum);
+}
+
+struct dmalistchannelfeatures
+{
+  uint32_t flags;
+  uint32_t blocksize;
+  uint32_t blockalign;
+  uint32_t blockbound;
+  uint32_t maxtransfers;
+  uint32_t transferlimit;
+  uint32_t transferbound;
+}
+
+dev.type
+dev.id
+dev.location
+dev.version
+dev.description
+dev.address
+dev.Activate
+dev.Deactivate
+dev.Reset
+dev.Sleep
+dev.devicenumber
+dev.TestIRQ
+  Standard functions as defined in Docs.HAL.NewAPI.
+  Type = &304.
+  Address is not used.
+  Channels are activated/deactivated around each transfer (and are deactivated
+  when a transfer is suspended).
+  Interrupts are used to detect transfer termination, and to trigger sync
+  callbacks. If the device provides no interrupt, the device is interrogated
+  from a TickerV routine instead.
+
+  dev.Activate, dev.Deactivate and dev.Reset are handled similarly to
+  buffer-type DMA channel devices.
+
+Features
+  Returns a pointer to a static block describing the features of the channel.
+  flags: a flags word with the following format:
+    bit 1 set => channel does not support circular transfers
+    bit 2 set => channel does not support infinite transfers
+    bit 3 set => channel does not generate interrupts on completion of each
+                 entry in the transfer descriptors block, so there is no
+                 benefit to be gained by splitting descriptors at multiples of
+                 the sync gap (sync gap splitting is done when this bit is
+                 clear, to provide more accurate sync callbacks)
+    other bits reserved, should be zero.
+  blocksize: amount of memory to allocate for transfer descriptors block.
+  blockalign: alignment of transfer descriptors block (0 if none).
+  blocklimit: boundary limitation of transfer descriptors block (0 if none).
+  maxtransfers: maximum number of entries to provide in the transfer
+    descriptors block (note this may differ from blocksize/8 if postprocessing
+    needs to be done before the block is presented to the hardware).
+  transferlimit: maximum amount of data that can be transferred by a single
+    entry in the transfer descriptors block.
+  transferbound: boundary limitation of individual entries in the transfer
+    descriptors block.
+
+controller
+  A pointer to this channel's DMA controller device.
+
+Abort
+  See equivalent entry for buffer-type DMA channel devices.
+
+SetOptions
+  See equivalent entry for buffer-type DMA channel devices, but note the
+  following addition to the flags word:
+    bit 15 set => transfer is circular
+
+SetListTransfer
+  Initiates the transfer of data according to a transfer descriptors block.
+  blockphy: physical address of transfer descriptors block.
+  blocklog: logical address of transfer descriptors block.
+  nentries: number of entries in transfer descriptors block.
+  length: total length to transfer, or 0 for infinite transfer.
+
+ListTransferProgress
+  Returns the number of bytes transferred since transfer was initiated. If this
+  cannot be determined exactly, an underestimate should be returned.
+
+ListTransferStatus
+  Returns status flags for the current channel:
+  bit 0 set => an error has occurred accessing memory (eg bus abort) since the
+               transfer was initiated.
+  bit 1 set => an error has occurred accessing the device (eg transfer size
+               mismatch) since the transfer was initiated.
+  other bits reserved, should be zero.
+
+CurtailListTransfer
+  This requests that a transfer in progress be shortened as much as possible
+  subject to normal termination conditions (eg raising the TC line). The call
+  need not block. For infinite transfers, there is a minimum requirement that
+  this makes the transfer finite.
+  minimum: the minimum number of bytes that must still be transferred (as
+  returned from the DMASync callback).
+  Returns the number of bytes that will have been transferred when the transfer
+  terminates.
+
+
+
+Memory barriers
+---------------
+
+DMAManager considers it to be the responsibility of the HAL device to ensure
+that the correct data read/write barriers are used where appropriate. Typically
+this means that:
+
+* Whenever a memory -> device transfer is about to be started, a write barrier
+  should be used to ensure that any buffered writes have reached RAM (pages
+  involved in a DMA transfer will never be cacheable, but they will typically
+  be bufferable).
+* Whenever the progress of a device -> memory transfer is being reported (e.g.
+  TransferState and Status calls), a read barrier should be used to ensure the
+  CPU hasn't prefetched any stale data from the destination buffer.
+* For list-based controllers, the transfer descriptor list will typically be
+  located in bufferable memory, and so barriers will be needed whenever it is
+  being accessed. E.g. a write barrier is needed after the list has been fully
+  populated by the CPU, and if the DMA controller updates the descriptors with
+  progress information then a read barrier should be used before the CPU reads
+  from the descriptors.
+
+The above covers situations where the HAL device should use barriers. The
+following covers situations where the DMAManager client should use barriers:
+
+* If DMA is being used to transfer code, an instruction synchronisation barrier
+  (e.g. ARMv7 ISB instruction) may be required to ensure any stale prefetched
+  instructions are flushed before the new code is executed. Calling
+  OS_SynchroniseCodeAreas for the affected range is a safe and valid method of
+  doing this. Other methods may fail on future systems (e.g. consider a DMA
+  controller which is able to perform cache-coherent DMA to/from the CPU data
+  cache, but not to the instruction cache).
+* If the contents of a circular buffer are being updated on-the-fly by the CPU
+  (e.g. audio playback as used by SoundDMA) then it is the responsibility of
+  the client to ensure any freshly written data is flushed to RAM. However, in
+  this case barriers are only likely to be needed in exceptional
+  circumstances - e.g. if the CPU is repeatedly writing to the same location,
+  and the hardware keeps merging the data into the write buffer but never
+  flushing it to RAM.
+
+For software running within RISC OS, OS_MMUControl 2 can be used to gain access
+to barrier routines suitable for DMA. These routines aren't currently exposed
+to the HAL, and so bespoke barrier routines will be required for code running
+there.
+@
+
+
+4.3
+log
+@Clarify status flags docs
+Confusing wording with double negatives reworded to read more easily.
+Retagged as DMA-0_20.
+@
+text
+@d380 46
+@
+
+
+4.2
+log
+@  A few weeks' dedicated work, mainly to support UDMA hard discs.
+Detail:
+  Features:
+  * Supports physical channels using a new type of HAL device (&303) where
+    the hardware takes a pointer to a scatter list up front to effect the
+    entire transfer, and which may report hardware errors at any time.
+    For full details, see Doc.HAL_DMAAPI.
+  * Page tables are no longer generated when using a bounce-buffer, since
+    they aren't actually any use except in determining if unsafe pages
+    intersect with the transfer. Instead, bounce-buffer transfers are halted
+    whenever any page becomes unsafe, and no new bounce-buffer transfers can
+    be started while any pages are unsafe.
+  * For both bounce-buffer and list-type devices, the Activate entry is
+    now called after the transfer is programmed (with SetCurrentTransfer
+    or SetListTransfer), since this is likely to be more useful for these
+    types of devices. Note that for interrupt-driven buffer devices, it
+    is still assumed that the default state of the device is to be in an
+    underrun interrupt state, so the transfer is not programmed until the
+    first time the interrupt routine is entered.
+  * Now ensures that scatter list start addresses and lengths are all
+    multiples of the transfer unit size (this check is done during page
+    table construction, so will be returned via the Completed callback,
+    rather than directly from DMA_QueueTransfer like the total length check).
+  * When there is no interrupt associated with a physical channel (both for
+    buffer- or list-type devices), if the polling of the hardware within SWI
+    DMA_ExamineTransfer detects that the transfer has completed, then
+    the transfer is shut down in the same was as though an interrupt had
+    happened (ie the Completed callback is called without an error).
+  * Added SWI DMA_AllocateLogicalChannels to act as a centralised allocator
+    for session-unique logical DMA channels. Primarily a service to
+    third-party authors of "HAL" devices.
+  Bugfixes:
+  * Now handles Service_MessageFileClosed to allow safe MessageTrans lookups
+    in the background.
+  * If a controller device was removed before its constituent channel
+    devices, removing the channel device would abort.
+  * Interrupt trampoline construction was wrong, the address of the
+    interrupt handler code wasn't relocated. Also, non-vectored interrupts
+    weren't correctly handled.
+  * Transfers suspended by Service_PagesUnsafe weren't blocking the logical
+    channel, so you could queue another transfer on the same channel and it
+    would start immediately (although transfers already queued before the
+    service call wouldn't have been started).
+  * Transfers which had completed within Service_PagesUnsafe handler weren't
+    being delinked from the queue.
+  * Service_PagesSafe wasn't handled properly, meaning that none of the
+    transfers that were halted by Service_PagesUnsafe were restarted! This
+    was due to the use of routines in common with DMA_SuspendTransfer and
+    DMA_ResumeTransfer which started with the first HALised version - these
+    suspend a logical channel, unlike the original IOMD code which
+    effectively suspends a physical channel. Thus the code to search for
+    transfers to restart needs to be quite different, since the physical
+    channel may be idle, or occupied with another logical channel, and
+    each physical channel may have multiple associated logical channels
+    that were on unsafe transfers!
+  * When you deregistered a logical channel (including during module death)
+    the Completed callback was called for all queued transfers, incorrectly
+    including those that had not yet had the matching Start callback called.
+  * There was a stack imbalance in the buffer device interrupt handler
+    because the retained part of the old code assumed Hdr:Proc stack
+    management, which the new code doesn't use (it's entered with the return
+    address on the stack).
+Admin:
+  Tested with UDMA test harnesses on Tungsten (ADFS not yet complete).
+
+Version 0.17. Tagged as 'DMA-0_17'
+@
+text
+@d224 22
+a245 6
+  bit 0 set => there are no transfers programmed but not yet started
+               (for a double-buffered controller, this is set when interrupting
+               or for a single-buffered controller, this is always set)
+  bit 1 set => channel has not yet been used, or is in over/underrun state
+               (set on every interrupt for single-buffered DMA controllers)
+  bit 2 set => channel entered over/underrun state before last call to
+@
+
+
+4.1
+log
+@Folded in HAL branch.
+
+Version 0.16. Tagged as 'DMA-0_16'
+@
+text
+@d8 2
+a9 2
+  R6 = peripheral read/receive physical address, or -1 to disallow reads
+  R7 = peripheral write/transmit physical address, or -1 to disallow writes
+d19 15
+a33 1
+Future enhancement:
+d42 2
+a43 2
+Two types of devices (see Kernel.Docs.HAL.NewAPI) are defined: the DMA
+controller, and the DMA (physical) channel.
+d77 1
+d117 2
+a118 2
+  dmacontroller *Controller;
+  void (*Abort)(struct device *);
+d151 2
+a152 1
+  Channels are activated/deactivated around each transfer.
+d165 2
+a166 3
+  dev.Reset is called by the DMAManager between transfers (as well as by the
+  kernel on software-initiated resets). After this call, Status must report an
+  over/underrun condition.
+d170 1
+a170 4
+    bit 0 set => DMA transfers cannot be paused, so if *any* of the scatter
+                 list entries is for an unsafe page when the transfer is
+                 activated, then the whole transfer must be delayed
+    other bits reserved, should be zero
+d172 1
+a172 1
+Controller
+d183 1
+a183 1
+  |flags| sets the following aspects of the next transfer on this channel:
+d196 1
+a196 1
+  |address| sets the physical address of the peripheral to DMA to/from
+d241 1
+d246 118
+@
+
+
+1.1
+log
+@file HAL_DMAAPI was initially added on branch HAL.
+@
+text
+@d1 232
+@
+
+
+1.1.2.1
+log
+@  Commit of the HALised DMA Manager code, as it was when the IA division
+  was closed.
+Detail:
+  This didn't get far beyond the design stage, but what there is is best kept
+  safe in CVS in case it gets accidentally deleted again...
+Admin:
+  Don't even think about trying to build this version.
+
+Version 0.15, 4.4.2.1. Tagged as 'DMA-0_15-4_4_2_1'
+@
+text
+@a0 150
+SWI DMA_RegisterChannel extended as follows:
+  R0 bits 0-3 = post-transfer channel delay
+  R0 bit 4 set => disable burst transfers
+  R0 bit 5 set => disable DMA request synchronisation to clock
+  R6 = peripheral read/receive physical address, or -1 to disallow reads
+  R7 = peripheral write/transmit physical address, or -1 to disallow writes
+  (R6,R7 ignored for IOMD implementations and memory-to-memory DMA, but
+  otherwise required for the 7200 and 9200)
+
+SWIs DMA_ClaimChannel and DMA_ReleaseChannel reinstated, but modified so
+as to take the logical channel as a parameter and not returning any
+information about the physical channel. These allow a logical channel to
+temporarily gain sole use of a physical channel, typically to guarantee
+reception of incoming data.
+
+int HAL_DMAActivate(struct device *);
+void HAL_DMADeactivate(struct device *);
+void HAL_DMAReset(struct device *);
+int HAL_DMASleep(struct device *, state);
+int HAL_DMAClaim(struct device *, int intno, myfunc, handle);
+void HAL_DMARelease(struct device *, int intno, myfunc, handle);
+  Standard functions as defined in Docs.HAL.NewAPI
+  Only intno=0 is implemented
+
+unsigned int HAL_DMAFeatures(struct device *);
+  First parameter is ignored
+  Returns a flag word:
+    all bits reserved, should be zero
+
+__value_in_regs struct { struct device **channel, unsigned int count }
+HAL_DMAEnumeratePhysical(struct device *);
+  First parameter is ignored
+  Returns a static list of available physical DMA channel HAL devices
+  count may be 0 to indicate that no DMA facility is available
+
+__value_in_regs struct { unsigned int *channel, unsigned int count }
+HAL_DMAEnumerateLogical(struct device *);
+  First parameter is ignored
+  Returns a static list of logical DMA channels supported on the current
+  hardware
+
+struct device *HAL_DMAAllocate(struct device *, unsigned int channel);
+  First parameter is ignored
+  Returns pointer to the physical DMA channel struct to associate with the
+  given logical DMA channel. If the hardware requires a particular logical-
+  physical mapping, this will be obeyed; otherwise one will be allocated at
+  the whim of the HAL (typically: physical channels grouped according to
+  priority of logical channel, then within each group logical channels are
+  allocated on a one-to-one mapping until no physical channels remain,
+  after which logical channels are arbitrarily doubled up)
+  Return value NULL => this logical channel not supported on this hardware
+
+  DMA priorities:
+    High: sound DMA
+    Medium: other device DMA
+    Low: memory-to-memory DMA
+
+void HAL_DMADeallocate(struct device *, unsigned int channel);
+  First parameter is ignored
+  The partner of HAL_DMAAllocate(), this lets the HAL know that a
+  particular logical channel is no longer being used
+
+void HAL_DMASetSize(struct device *, unsigned int width);
+  |width| is typically 1, 2 or 4 bytes (may be 16 for IOMD)
+
+void HAL_DMASetSpeed(struct device *, unsigned int speed);
+  |speed| is on an arbitrary scale from 0 (slowest) upwards
+  Does nothing on 7200 or 9200, but maps to A-D cycles for IOMD
+
+void HAL_DMASetDirection(struct device *, unsigned int direction);
+  direction = 0: device to memory
+  direction = 1: memory to device
+  Call is ignored by the memory-to-memory DMA channel
+
+void HAL_DMASetAddress(struct device *, unsigned int address);
+  Sets the physical address of the peripheral to DMA to/from
+  Call is ignored by the memory-to-memory DMA channel
+
+void HAL_DMASetDMARequest(struct device *, unsigned int channel);
+  Takes the logical DMA channel number, and uses it to set the DMA request
+  line that will control transfers
+  Call is ignored by the memory-to-memory DMA channel
+
+void HAL_DMASetBurstEnable(struct device *, unsigned int burst);
+  burst = 0: disable burst transfers for this channel (if possible)
+  burst = 1: enable burst transfers for this channel (if possible)
+
+void HAL_DMASetSyncBypass(struct device *, unsigned int bypass);
+  bypass = 0: synchronise request to clock before initiating transfer
+  bypass = 1: disable synchronisation (for synchronous peripherals)
+  Currently only has effect for the 7200
+
+void HAL_DMASetPostTransferDelay(struct device *, unsigned int gap);
+  Sets the minimum delay required after a DMA transfer before the same
+  physical channel is reused - required for 7200 and 9200
+
+void HAL_DMASetTransfer(struct device *, unsigned int address,
+unsigned int length, unsigned int flags);
+  This sets up the next transfer to be executed for this channel
+  address = physical address to start transfer from
+  length = number of bytes to transfer
+  flags bit 0 set => stop when this transfer completes
+  address and length should be multiples of the transfer unit size, and must
+  not cross a page boundary
+
+__value_in_regs struct { unsigned int address, unsigned int length }
+HAL_DMATransferState(struct device *);
+  This reads the progress of the current transfer on this channel
+
+HAL_DMASetTransfer2() / HAL_DMATransferState2() are same as above but with two
+address arguments and one length argument. For use in memory-to-memory
+transfers only. DMA activity where the memory read has completed but the memory
+write has not will not be counted as having occurred - this may involve
+winding back the read address
+
+void HAL_DMAIRQEnable(struct device *);
+  Enables interrupt generation for this physical DMA channel
+
+void HAL_DMAIRQDisable(struct device *);
+  Disables interrupt generation for this physical DMA channel
+
+void HAL_DMAIRQClear(struct device *);
+  Clears the interrupt for this physical DMA channel (if necessary)
+
+unsigned int HAL_DMAStatus(struct device *);
+  Returns status bits for the current channel:
+  bit 0 set => channel is attempting to raise an interrupt
+  bit 1 set => channel is in over/underrun state
+
+void HAL_DMAEnable(struct device *);
+  Enables this physical DMA channel
+
+void HAL_DMADisable(struct device *);
+  Immediately ceases any active DMA on this channel and returns any state
+  machine to its default state
+
+
+struct dmachannel
+{
+  /* Public interface */
+
+  struct device dev;
+  unsigned int physical_channel; /* numbered from 0 upwards */
+  /* List of public function pointers as described above */
+
+  /* Private interface */
+
+  struct dmacontroller *controller; /* stuff common to all channels */
+  /* Addresses of all registers relevant to this channel */
+}
+@
+
+
+1.1.2.2
+log
+@  An intermediate version.
+Detail:
+  Finally, all IOMD dependencies have been expunged, and the module will
+  build again. Any specific support for new features of other DMA controllers
+  has yet to be added, though. New exported header added, for use by DMA
+  device code.
+Admin:
+  Untested. However, should theoretically work if someone were to write the
+  appropriate routines for the IOMD HAL.
+
+Version 0.15, 4.4.2.2. Tagged as 'DMA-0_15-4_4_2_2'
+@
+text
+@d10 5
+a14 11
+SWI DMA_ExamineTransfer may not be able to give an accurate byte count for
+some DMA controllers; however the byte count returned is guaranteed not to
+exceed the true count. If you need a guaranteed accurate value, you must call
+it between DMA_SuspendTransfer and DMA_ResumeTransfer.
+
+Not yet implemented:
+> SWIs DMA_ClaimChannel and DMA_ReleaseChannel reinstated, but modified so
+> as to take the logical channel as a parameter and not returning any
+> information about the physical channel. These allow a logical channel to
+> temporarily gain sole use of a physical channel, typically to guarantee
+> reception of incoming data.
+d20 2
+a21 2
+int HAL_DMADevice;
+bool HAL_DMATestIRQ(struct device *)
+d25 5
+d63 33
+a95 24
+unsigned int HAL_DMAFeatures(struct device *);
+  Returns a flag word:
+    bit 0 set => DMA transfers cannot be paused, so if *any* of the scatter
+                 list entries is for an unsafe page when the transfer is
+                 activated, then the whole transfer must be delayed
+    other bits reserved, should be zero
+
+void HAL_DMASetOptions(struct device *, unsigned int flags,
+unsigned int address);
+  |flags| sets the following aspects of the next transfer on this channel:
+    bit 0 set  => memory to device, clear => device to memory
+                  (ignored for any memory-to-memory channel)
+    bits 1-5   => transfer unit width, typically 1, 2 or 4 bytes
+                  (16 bytes is used for IOMD)
+    bits 6-8   => cycle speed, on an arbitrary scale from 0-7
+                  (0-3 maps to A-D cycles on IOMD)
+    bits 9-12  => minimum delay required after a DMA transfer before the same
+                  physical channel is reused (required for 7200 and 9200)
+    bit 13 set => disable burst transfers for this channel
+    bit 14 set => bypass synchronisation to clock before initiating transfer
+                  (for synchronous peripherals - currently 7200 only)
+    other bits reserved, value must be ignored
+  |address| sets the physical address of the peripheral to DMA to/from
+    (should be ignored by memory-to-memory channels)
+d97 1
+a97 1
+void HAL_DMASetCurrentTransfer(struct device *, unsigned int address,
+d99 1
+a99 1
+  This sets up the first transfer to be executed for this channel
+d102 1
+a102 3
+  flags bit 0 set => stop and raise the TC signal when this transfer completes
+                     (mandatory if the DMA controller has no interrupt of
+                     its own)
+a105 5
+void HAL_DMASetNextTransfer(struct device *, unsigned int address,
+unsigned int length, unsigned int flags);
+  This sets up the next transfer to be executed for this channel, using similar
+  parameters. This will only be called for double-buffered channels.
+
+d108 7
+a114 9
+  This reads the progress of the current transfer on this channel.
+  If the DMA controller will not report accurate progress, report values
+  corresponding to a pessimistic amount of progress.
+
+HAL_DMASetCurrentTransfer2() / HAL_SetNextTransfer2 / HAL_DMATransferState2()
+are same as above but with two address arguments and one length argument. For
+use in memory-to-memory transfers only. DMA activity where the memory read has
+completed but the memory write has not will not be counted as having occurred -
+this may involve winding back the read address
+d123 1
+a123 2
+  Clears the interrupt for this physical DMA channel (unless some other action
+  carried out during or since since HAL_DMATestIRQ has already done so)
+d128 1
+a128 14
+  bit 1 set => channel is in over/underrun state (assumed to happen on every
+               interrupt for single-buffered DMA controllers)
+  bit 2 set => channel entered over/underrun state before last call to
+               HAL_DMASetNextTransfer had effect (devices may determine this by
+               monitoring any handle they may have on the physical double
+               buffers, or failing this by calculating the final value of the
+               current pointer of the current buffer, and comparing it to what
+               would be expected from the last time the next buffer was
+               programmed - but note that this latter algorithm will fail if a
+               circular transfer from a single-entry scatter list is in use)
+               so the DMA manager needs to program the same data again, but
+               this time using HAL_DMASetCurrentTransfer. This bit must be
+               clear if the last transfer was programmed using
+               HAL_DMASetCurrentTransfer, or if bit 1 is clear.
+d131 1
+a131 3
+  Enables this physical DMA channel, so that it can generate interrupts
+  (typically this involves unmasking the DMA request line and unmasking a
+  bit in an interrupt control register).
+d134 2
+a135 11
+  Blocks until the transfer on this channel can safely be interrupted (due to
+  Service_PagesUnsafe or SWIs DMATerminateTransfer or DMA_SuspendTransfer),
+  then disables DMA at the DMA request line and interrupt generation levels.
+  After this call returns, the values returned from HAL_DMATransferState and
+  HAL_DMAStatus must reflect the true state of the hardware - ie they must
+  be suitable to use for possible resumption of the transfer using
+  HAL_DMASetCurrentTransfer.
+
+void HAL_DMAChannelReset(struct device *);
+  Restores any hardware state machine to its default state. For example, after
+  this call, HAL_DMAStatus must report an over/underrun condition.
+d143 1
+@
+
+
+1.1.2.3
+log
+@  Just enough support for floppy DMA transfer to work on Tungsten.
+Detail:
+  * Supports DMA controllers with no interrupts (ie those that need a bounce
+    buffer).
+  * Restructured interface to HAL to separate the concepts of a DMA controller
+    device and a DMA channel device.
+  * Bugfixes to handling of single-buffered channels.
+  * Updated Doc.HAL_DMAAPI.
+Admin:
+  Tested with Kevin's ADFS.
+
+Version 0.15, 4.4.2.3. Tagged as 'DMA-0_15-4_4_2_3'
+@
+text
+@a0 3
+DMAManager SWIs
+---------------
+
+d13 1
+a13 2
+it between DMA_SuspendTransfer and DMA_ResumeTransfer. (This has always been
+the case.)
+d15 1
+a15 1
+Future enhancement:
+d22 20
+d43 2
+a44 51
+
+Two types of devices (see Kernel.Docs.HAL.NewAPI) are defined: the DMA
+controller, and the DMA (physical) channel.
+
+
+DMA controller device
+---------------------
+
+struct dmacontroller
+{
+  /* Public interface */
+  struct device dev;
+  
+  uint32_t (*Features)(struct dmacontroller *);
+  __value_in_regs struct { struct dmachannel **channel; uint32_t count; }
+      (*EnumeratePhysical)(struct dmacontroller *);
+  __value_in_regs struct { uint32_t *channel; uint32_t count; }
+      (*EnumerateLogical)(struct dmacontroller *);
+  struct dmachannel *(*Allocate)(struct dmacontroller *, uint32_t channel);
+  void (*Deallocate)(struct dmacontroller *, uint32_t channel);
+}
+
+dev.type
+dev.id
+dev.location
+dev.version
+dev.description
+dev.address
+dev.Activate
+dev.Deactivate
+dev.Reset
+dev.Sleep
+dev.devicenumber
+dev.TestIRQ
+  Standard functions as defined in Docs.HAL.NewAPI.
+  Type = &301.
+  Address is not used.
+  Controllers are activated/deactivated on module initialisation/finalisation.
+  Interrupts are ignored - provide them using the DMA channel device instead.
+
+Features
+  Returns a flags word indicating the capabilities of the controller.
+  Currently no bits defined, all bits should be zero.
+
+EnumeratePhysical
+  Returns a static list of available physical DMA channel devices.
+
+EnumerateLogical
+  Returns a static list of logical DMA channels supported by the controller.
+
+Allocate
+d48 1
+a48 1
+  the whim of the software (typically: physical channels grouped according to
+d51 2
+a52 2
+  after which logical channels are arbitrarily doubled up).
+  Return value NULL => this logical channel not supported on this controller
+d54 1
+a54 1
+  Recommended DMA priorities:
+d59 4
+a62 64
+Deallocate
+  The partner of Allocate, this lets the device know that a particular
+  logical channel is no longer being used.
+
+
+
+DMA channel device
+------------------
+
+struct dmachannel
+{
+  /* Public interface */
+  struct device dev;
+  
+  uint32_t (*Features)(struct dmachannel *);
+  void (*Abort)(struct device *);
+  void (*SetOptions)(struct dmachannel *, uint32_t flags, uint32_t address);
+  void (*SetCurrentTransfer)(struct dmachannel *, uint32_t address,
+      uint32_t length, uint32_t flags);
+  void (*SetNextTransfer)(struct dmachannel *, uint32_t address,
+      uint32_t length, uint32_t flags);
+  __value_in_regs struct { uint32_t address; uint32_t length; }
+      (*TransferState)(struct dmachannel *);
+  void (*SetCurrentTransfer2)(struct dmachannel *, uint32_t srcaddress,
+      uint32_t dstaddress, uint32_t length, uint32_t flags);
+  void (*SetNextTransfer2)(struct dmachannel *, uint32_t srcaddress,
+      uint32_t dstaddress, uint32_t length, uint32_t flags);
+  __value_in_regs struct { uint32_t srcaddress; uint32_t dstaddress;
+      uint32_t length; } (*TransferState2)(struct dmachannel *);
+  void (*IRQClear)(struct dmachannel *);
+  uint32_t (*Status)(struct dmachannel *);
+}
+
+dev.type
+dev.id
+dev.location
+dev.version
+dev.description
+dev.address
+dev.Activate
+dev.Deactivate
+dev.Reset
+dev.Sleep
+dev.devicenumber
+dev.TestIRQ
+  Standard functions as defined in Docs.HAL.NewAPI.
+  Type = &302.
+  Address is not used.
+  Channels are activated/deactivated around each transfer.
+  
+  dev.Activate enables this physical DMA channel, so that it can generate
+  interrupts (typically this involves unmasking the DMA request line and
+  unmasking a bit in an interrupt control register).
+  
+  dev.Deactivate must block until the transfer on this channel can safely be
+  interrupted (due to Service_PagesUnsafe or SWI DMA_SuspendTransfer),
+  then disable DMA at the DMA request line and interrupt generation levels.
+  After it returns, the values returned from TransferState and Status must
+  reflect the true state of the hardware - ie they must be suitable to use for
+  resumption of the transfer using SetCurrentTransfer.
+  
+  dev.Reset is called by the DMAManager between transfers (as well as by the
+  kernel on software-initiated resets). After this call, Status must report an
+  over/underrun condition.
+d64 1
+a64 1
+Features
+d71 2
+a72 8
+Abort
+  This should be considered a "forced" version of dev.Deactivate, and is only
+  used for SWI DMA_TerminateTransfer. The call must not block, but the values
+  subsequently returned from TransferState and Status are allowed to report
+  inaccurate results, providing they underestimate the progress of the
+  transfer.
+
+SetOptions
+d89 2
+a90 1
+SetCurrentTransfer
+d100 2
+a101 1
+SetNextTransfer
+d105 2
+a106 1
+TransferState
+d111 8
+a118 3
+SetCurrentTransfer2 / SetNextTransfer2 / TransferState2
+  are same as above but with two address arguments and one length argument. For
+  use in memory-to-memory transfers only.
+d120 4
+a123 1
+IRQClear
+d125 1
+a125 1
+  carried out during or since since TestIRQ has already done so).
+d127 1
+a127 1
+Status
+d129 3
+a131 5
+  bit 0 set => there are no transfers programmed but not yet started
+               (for a double-buffered controller, this is set when interrupting
+               or for a single-buffered controller, this is always set)
+  bit 1 set => channel has not yet been used, or is in over/underrun state
+               (set on every interrupt for single-buffered DMA controllers)
+d133 1
+a133 1
+               SetNextTransfer had effect (devices may determine this by
+d141 35
+a175 3
+               this time using SetCurrentTransfer. This bit must be clear if
+               the last transfer was programmed using SetCurrentTransfer, or if
+               bit 1 is clear.
+@
+
+
+1.1.2.4
+log
+@  One new feature, required by ADFS, and lots of silly bugfixes.
+Detail:
+  * Flag bit 3 passed to DMA_QueueTransfer indicates that the DMA Manager
+    shouldn't update the scatter list itself, even when a circular transfer
+    is not specifier
+  * When using a bounce buffer, the source/destination isn't marked
+    uncacheable any more
+  * r2 was being corrupted by the call to the device Reset entry
+  * Flags passed to device SetOptions entry were always 0, which meant that
+    you could never write to any device
+  * Test for whether to write to the bounce buffer was wrong in two ways
+  * Updating the scatter list was wrong if the amount to update by was
+    larger than the first entry (ie after a bounce buffer had been
+    completed) - the whole difference was applied to the first entry
+Admin:
+  Tested in use with ADFS.
+
+Version 0.15, 4.4.2.5. Tagged as 'DMA-0_15-4_4_2_5'
+@
+text
+@d176 1
+a176 1
+                  (16 bytes can also be used for IOMD)
+@
+
+
+1.1.2.5
+log
+@  Lots of improvements, working towards support for UDMA etc.
+Detail:
+  * No longer uses temporay HAL DMA entry points, all hardware access is
+    accomplished using device entry points.
+  * Supports multiple DMA controllers, including dynamic addition and
+    removal of controllers (using OS_Hardware 4 and Service_Hardware).
+  * Added *DMAChannels, which enumerates the currently registered DMA
+    channels, listed according to physical location.
+  * Logical channel blocks are dynamically allocated (as a requirement of
+    the above changes) so logical channel handles are now pointers, no
+    longer an array index. Just so you know.
+  * Removed now-obsolete EnumerateLogical entry from controller device API.
+  * Added pointer-to-controller-device item in publically visible part of
+    channel device structure.
+  * Moved memory-to-memory channel device entries to end of channel device
+    structure (I'm considering removing them).
+  * Added support for GPA debugging listing (requires BuildSys 3.86).
+Admin:
+  Tested on Tungsten (ie floppies still work).
+
+Version 0.15, 4.4.2.6. Tagged as 'DMA-0_15-4_4_2_6'
+@
+text
+@d42 3
+a44 1
+      (*Enumerate)(struct dmacontroller *);
+d62 1
+a62 1
+  Type = &302.
+d71 1
+a71 1
+Enumerate
+d74 3
+d98 2
+a99 2
+DMA channel device - buffer type
+--------------------------------
+a106 1
+  dmacontroller *Controller;
+a114 2
+  void (*IRQClear)(struct dmachannel *);
+  uint32_t (*Status)(struct dmachannel *);
+d121 2
+d138 1
+a138 1
+  Type = &303.
+a163 3
+Controller
+  A pointer to this channel's DMA controller device.
+
+d207 4
+d213 1
+a213 1
+  carried out during or since TestIRQ has already done so).
+a233 4
+
+SetCurrentTransfer2 / SetNextTransfer2 / TransferState2
+  are same as above but with two address arguments and one length argument. For
+  use in memory-to-memory transfers only.
+@
+
+

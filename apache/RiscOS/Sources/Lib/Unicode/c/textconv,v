@@ -1,0 +1,434 @@
+head	1.5;
+access;
+symbols
+	Unicode-0_63:1.5
+	Unicode-0_62:1.5
+	Unicode-0_61:1.5
+	Unicode-0_60:1.5
+	Unicode-0_59:1.5
+	Unicode-0_58:1.5
+	Unicode-0_57:1.5
+	Unicode-0_56:1.5
+	Unicode-0_55:1.4
+	Unicode-0_54:1.4
+	RO_5_07:1.3
+	Unicode-0_53:1.3
+	Unicode-0_52:1.3
+	Unicode-0_51:1.3
+	Unicode-0_50:1.3
+	Unicode-0_49:1.3
+	Unicode-0_48:1.3
+	Unicode-0_47:1.3
+	Unicode-0_46:1.3
+	Unicode-0_45:1.3
+	dellis_autobuild_BaseSW:1.2
+	sbrodie_sedwards_16Mar2000:1.2
+	Unicode-0_44:1.2
+	dcotton_autobuild_BaseSW:1.3
+	Unicode-0_43:1.2
+	Unicode-0_42:1.2
+	Unicode-0_41:1.2
+	Unicode-0_40:1.2
+	Unicode-0_39:1.2
+	Unicode-0_38:1.2
+	Unicode-0_37:1.2
+	Unicode-0_36:1.2
+	Unicode-0_35:1.2
+	Unicode-0_34:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2008.12.05.00.29.44;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2005.08.25.11.57.08;	author kbracey;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.10.05.14.46.35;	author jberanek;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.03.12.15.53.15;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.11.17.01.25;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Fix bugs and inconsistencies in encoding handlers.
+  Fix inconsistency in handling illegal byte sequences.
+  Convert surrogate codepoints and U+FFFE, U+FFFF to U+FFFD.
+  Also, a few extra mappings.
+Detail:
+  enc_utf8.c: 0x80 is a continuation byte. Map stray ones to U+FFFD.
+              Reset the count of expected continuation bytes to 0 when
+              encountering illegal byte sequences. Previously, if the character
+              callback returned non-zero, this count would not be reset, thus
+              leaving the codec in an inconsistent state. Additionally, we no
+              longer consume the illegal continuation byte: instead, we process
+              it as a start byte next time round.
+  encoding.c: Do not load extension tables for ISO-8859-{1,2,9,10,15,16}
+              If these are needed, it's probably best that different charset
+              names are used rather than overloading 8859-n.
+  iso2022.c:  Permit SS2/3 escape sequences for EUC encode/decode.
+              Disable C1 characters for EUC encode/decode.
+              Fix G94x94 read function to handle GR 0xA0/0xFF correctly.
+              Fix writing of C1 controls for 8859-n.
+              Prevent dereference of NULL pointer when scanning tables.
+  iso6937.c:  Replace C99 loop iterators with C89 friendly versions.
+  johab.c:    Fix final_only lookup table to have entries in the right place.
+              Map 0x5C to the Won sign.
+              Actually pay attention to encoding_WRITE_STRICT.
+  shiftjis.c: Map 0x7E to overbar rather than tilde.
+  textconv.c: Fix static assignment of stdin/stdout.
+  unix.c:     Perform wildcard lookup of mapping tables.
+  ccsolaris/Makefile: Modify for use with GCCSDK
+Admin:
+  Tested with the Iconv module testsuite.
+Author:
+  John-Mark Bell
+
+
+Version 0.56. Tagged as 'Unicode-0_56'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* > textconv.c */
+
+/**************************************************************************/
+/*                                                                        */
+/* Copyright [1997-2000] Pace Micro Technology PLC.  All rights reserved. */
+/*                                                                        */
+/* The copyright in this material is owned by Pace Micro Technology PLC   */
+/* ("Pace").  This material is regarded as a highly confidential trade    */
+/* secret of Pace.  It may not be reproduced, used, sold or in any        */
+/* other way exploited or transferred to any third party without the      */
+/* prior written permission of Pace.                                      */
+/**************************************************************************/
+
+#include <stdio.h>
+#include <string.h>
+
+#include "charsets.h"
+#include "encoding.h"
+#include "VersionNum"
+
+static int usage(void)
+{
+    fputs("Usage: TextConv [options] [<inputfile> [<outputfile>]]\n"
+          "\n"
+          "Options:\n"
+          "\n"
+          "-from <charset>    Set the source charset (default = System alphabet)\n"
+          "-to <charset>      Set the destination charset (default = System alphabet)\n"
+          "\n"
+          "Charsets may have one or more appended modifiers:\n"
+          "\n"
+          "/le                Little-endian (eg UTF-16)\n"
+          "/encopt            Encode optionally encoded characters (eg UTF-7)\n"
+          "/noheader          No header (eg UTF-16 byte order mark)\n"
+          "\n"
+          "Known charsets include:\n"
+          "\n"
+          "US-ASCII, ISO-8859-1, ISO-8859-2, ISO-8859-3, ISO-8859-4, ISO-8859-5,\n"
+          "ISO-8859-7, ISO-8859-8, ISO-8859-10, ISO-8859-14, ISO-8859-15, ISO-2022,\n"
+          "ISO-2022-JP, ISO-2022-JP-1, ISO-2022-JP-2, EUC-JP, Shift_JIS, ISO-2022-CN,\n"
+          "ISO-2022-CN-EXT, EUC-CN, Big5, ISO-2022-KR, EUC-KR, Johab, KOI8-R, CP866,\n"
+          "Windows-1250, Windows-1251, Windows-1252, Mac-Roman, Mac-CentralEurRoman,\n"
+          "Mac-Cyrillic, Mac-Ukrainian, ISO-IR-182, ISO-IR-197, x-Acorn-Latin1,\n"
+          "x-Acorn-Fuzzy, x-Current, UTF-7, UTF-8, UTF-16, UCS-4, SCSU\n",
+          stderr
+         );
+
+    return 1;
+}
+
+static int src_enc = csCurrent;
+static int dst_enc = csCurrent;
+static FILE *in;
+static FILE *out;
+static Encoding *read, *write;
+static char inbuf[256], outbuf[256];
+static unsigned int src_flags, dst_flags;
+#ifdef DEBUG
+static int debug;
+#endif
+
+static int callback(void *handle, UCS4 u)
+{
+    char *p = outbuf;
+    int outsize = sizeof outbuf;
+
+#ifdef DEBUG
+    if (debug)
+        fprintf(stderr, "%X ", u);
+#endif
+
+    if (encoding_write(write, u, &p, &outsize) > 0 && p > outbuf)
+        fwrite(outbuf, 1, p - outbuf, out);
+
+    return 0;
+
+    /**/handle = handle;
+}
+
+static int get_encoding_and_flags(const char *p, unsigned int *f)
+{
+    char *temp = malloc(strlen(p)+2);
+    char *tp;
+
+    if (!temp) return 0;
+
+    strcpy(temp, p);
+    strcat(temp, "/");
+
+    for (tp = temp; *tp; tp++)
+        if (*tp >= 'a' && *tp <= 'z')
+            *tp -= 0x20;
+
+    if (strstr(temp, "/LE/")) *f |= encoding_FLAG_LITTLE_ENDIAN;
+    if (strstr(temp, "/ENCOPT/")) *f |= encoding_FLAG_ENCODE_OPTIONAL;
+    if (strstr(temp, "/NOHEADER/")) *f |= encoding_FLAG_NO_HEADER;
+
+    free(temp);
+
+    return encoding_number_from_name(p);
+}
+
+int main(int argc, char **argv)
+{
+    size_t n;
+
+    if (argc < 2)
+        return usage();
+
+    for (argv++, argc--; argc > 0 && **argv == '-'; argv++, argc--)
+    {
+        if (strcmp((*argv)+1, "from") == 0)
+        {
+            if (argc < 2)
+                return usage();
+            if ((src_enc = get_encoding_and_flags(argv[1], &src_flags)) == 0)
+            {
+                fprintf(stderr, "Unknown charset %s\n", argv[1]);
+                return 1;
+            }
+            argv++, argc--;
+        }
+        else if (strcmp((*argv)+1, "to") == 0)
+        {
+            if (argc < 2)
+                return usage();
+            if ((dst_enc = get_encoding_and_flags(argv[1], &dst_flags)) == 0)
+            {
+                fprintf(stderr, "Unknown charset %s\n", argv[1]);
+                return 1;
+            }
+            argv++, argc--;
+        }
+#ifdef DEBUG
+        else if (strcmp((*argv)+1, "debug") == 0)
+        {
+            debug = 1;
+        }
+#endif
+        else if ((*argv)[1] == '?' || (*argv)[1] == 'h')
+        {
+            fputs("TextConv " Module_MajorVersion " (" Module_Date ")\n\n", stderr);
+            return usage();
+        }
+        else
+        {
+            fprintf(stderr, "Unknown option %s\n", argv[0]);
+            return 1;
+        }
+    }
+
+    if (argc >= 1)
+    {
+        in = fopen(argv[0], "r");
+        if (!in)
+        {
+            perror(argv[0]);
+            return 1;
+        }
+
+        if (argc >= 2)
+        {
+            out = fopen(argv[1], "w");
+            if (!out)
+            {
+                perror(argv[1]);
+                return 1;
+            }
+        }
+        else
+        {
+            out = stdout;
+        }
+    }
+    else
+    {
+        in = stdin;
+        out = stdout;
+    }
+
+    if (src_enc == dst_enc)
+        fprintf(stderr, "Warning: source encoding equals destination encoding\n");
+
+    read = encoding_new(src_enc, encoding_READ);
+    write = encoding_new(dst_enc, encoding_WRITE);
+
+    /* We currently only set flag bits */
+    encoding_set_flags(read, src_flags, src_flags);
+    encoding_set_flags(write, dst_flags, dst_flags);
+
+    while ((n = fread(inbuf, 1, sizeof inbuf, in)) > 0)
+    {
+        encoding_read(read, callback, inbuf, n, NULL);
+    }
+
+    /* Flush output */
+    callback(NULL, NULL_UCS4);
+
+    return 0;
+}
+
+
+@
+
+
+1.4
+log
+@* Added support for ISO 6937:2001, and the variant with Euro used by DVB.
+  (This isn't integrated with ISO 2022 processing though - it's standalone).
+* Added a Dstroke -> Eth second-attempt conversion in various write routines,
+  primarily for ISO 6937 -> Latin1 conversion (ISO 6937 unifies them).
+
+Version 0.54. Tagged as 'Unicode-0_54'
+@
+text
+@d67 2
+a68 2
+static FILE *in = stdin;
+static FILE *out = stdout;
+d184 9
+@
+
+
+1.3
+log
+@  Copyright message changes + changes from branch + Unified
+   branched/non-branched builds
+Detail:
+  Copyright messages changed from E-14 to Pace throughout, filename
+   placed at top of file throughout, instead of in just some files.
+
+  Merged branch's fixes into our code base, plus made it possible to
+   get nice debug output in branched tree, and vfprintf() to stderr in
+   RISC OS tree.  Exactly same source used in branched tree now (apart
+   from OS specific files riscos.c and unix.c moving into layers
+   directory structure).
+
+Admin:
+  Built for branched, both Unix and RISC OS.
+  Built in RISC OS tree, and compiled into TextConv.
+
+
+Version 0.45. Tagged as 'Unicode-0_45'
+@
+text
+@d35 1
+a35 1
+static int usage()
+@
+
+
+1.2
+log
+@Updated ISO 2022 handling to write ISO 2022-KR and ISO 2022-CN. Fixed various
+bugs.
+x-Current encoding didn't work if International 1.50 wasn't loaded.
+Adjusted various ISO 2022 escape sequence tables to change prioritisation.
+ISO 2022 writer won't shift character set until required.
+
+Version 0.35. Tagged as 'Unicode-0_35'
+@
+text
+@d15 13
+d90 2
+@
+
+
+1.1
+log
+@Implemented SCSU and UTF-7.
+Added encoding_set_flags().
+Proper handling of byte order marks in UTF-16 and UCS-4.
+Fixed UTF-16 surrogate writing.
+Adjusted various MIME charset identifiers.
+Incorporated latest Unicode Character Database (2.1.8).
+Added "current system alphabet" encoding.
+Created "TextConv" command line character set conversion utility.
+
+Version 0.34. Tagged as 'Unicode-0_34'
+@
+text
+@d20 1
+d24 24
+a47 23
+    fprintf(stderr, "Usage: TextConv [options] [<inputfile> [<outputfile>]]\n"
+                    "\n"
+                    "Options:\n"
+                    "\n"
+                    "-from <charset>    Set the source charset (default = System alphabet)\n"
+                    "-to <charset>      Set the destination charset (default = System alphabet)\n"
+                    "\n"
+                    "Charsets may have one or more appended modifiers:\n"
+                    "\n"
+                    "/le                Little-endian (eg UTF-16)\n"
+                    "/encopt            Encode optionally encoded characters (eg UTF-7)\n"
+                    "/noheader          No header (eg UTF-16 byte order mark)\n"
+                    "\n"
+                    "Known charsets include:\n"
+                    "\n"
+                    "US-ASCII, ISO-8859-1, ISO-8859-2, ISO-8859-3, ISO-8859-4, ISO-8859-5,\n"
+                    "ISO-8859-7, ISO-8859-8, ISO-8859-10, ISO-8859-14, ISO-8859-15, ISO-2022,\n"
+                    "ISO-2022-JP, ISO-2022-JP-1, ISO-2022-JP-2, EUC-JP, Shift_JIS, ISO-2022-CN,\n"
+                    "ISO-2022-CN-EXT, EUC-CN, Big5, ISO-2022-KR, EUC-KR, Johab, KOI8-R, CP866,\n"
+                    "Windows-1250, Windows-1251, Windows-1252, Mac-Roman, Mac-CentralEurRoman,\n"
+                    "Mac-Cyrillic, Mac-Ukrainian, ISO-IR-182, ISO-IR-197, x-Acorn-Latin1,\n"
+                    "x-Acorn-Fuzzy, x-Current, UTF-7, UTF-8, UTF-16, UCS-4, SCSU\n"
+           );
+d140 2
+d143 1
+@

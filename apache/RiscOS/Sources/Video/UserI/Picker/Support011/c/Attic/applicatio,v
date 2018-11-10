@@ -1,0 +1,285 @@
+head	4.2;
+access;
+symbols
+	RO_5_07:4.2
+	sbrodie_sedwards_16Mar2000:4.1.3.1
+	Ursula_merge:4.1.3.1
+	Picker-0_42:4.1.3.1
+	dcotton_autobuild_BaseSW:4.1.3.1
+	nturton_Picker-0_40:4.1.3.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.1.3.1
+	Ursula_RiscPC:4.1.3.1.0.8
+	rthornb_UrsulaBuild-19Aug1998:4.1.3.1
+	UrsulaBuild_FinalSoftload:4.1.3.1
+	rthornb_UrsulaBuild-12Aug1998:4.1.3.1
+	aglover_UrsulaBuild-05Aug1998:4.1.3.1
+	hsimons_BOCA-1_2-Release:4.1.3.1
+	rthornb_UrsulaBuild-29Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-22Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-15Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-07Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-17Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-03Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-27May1998:4.1.3.1
+	rthornb_UrsulaBuild-21May1998:4.1.3.1
+	rthornb_UrsulaBuild_01May1998:4.1.3.1
+	Daytona:4.1.3.1.0.6
+	Daytona_bp:4.1.3.1
+	Ursula:4.1.3.1.0.2
+	Ursula_bp:4.1.3.1
+	RO_3_71:4.1.3.1
+	RCA_bp:4.1.3.1
+	RCA:4.1.3.1.0.4
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	StrongARM:4.1.3;
+locks; strict;
+comment	@# @;
+
+
+4.2
+date	99.11.24.00.04.48;	author sbrodie;	state dead;
+branches;
+next	4.1;
+
+4.1
+date	96.11.06.02.49.13;	author nturton;	state Exp;
+branches
+	4.1.3.1;
+next	;
+
+4.1.3.1
+date	96.11.06.02.49.13;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.2
+log
+@  This code has hacked me off for the last time.
+Detail:
+  As much as possible of the junk has been removed.
+  Standard build structure replaces it.
+  Unused code removed.
+  Support for RISC OS pre-3.60 removed (remove the int'l
+    stuff in the CMHG file to reverse this - it must save
+    all of 100 bytes!)
+  RAM builds now contain the resources for registering in
+    ResourceFS (NOTE: this build does not register them yet
+    but that's the same as current versions!)  When this is
+    fixed, the RAM builds will be the standalone builds.
+  RAM build contains a single ResourceFS area which is to be
+    registered instead of NINE that it used to register.
+  Shame I can't remove all traces of the other directories.
+  WinEdit is now invoked from the makefile instead of having
+    several silly one-liner Obey scripts to do it.  However, this
+    necessitates the perl script to fix the trigraphs (cannot
+    use # in makefiles) unless you like 1000s of warnings about
+    ANSI trigraphs in the (valid) generated headers.
+  Unable to extract it from OSLib or Support011 - it's too
+     heavily dependent on them.  Sorry.
+Admin:
+  RAM builds seem to work.
+
+Version 0.43. Tagged as 'Picker-0_43'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*application.c - useful functions for windowing applications*/
+
+/*From CLib*/
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*From OSLib*/
+#include "os.h"
+#include "wimp.h"
+#include "wimpreadsysinfo.h"
+
+/*From Support*/
+#include "application.h"
+#include "task.h"
+#include "trace.h"
+
+bool application_polling_idle; /*set if Wimp_PollIdle is required*/
+
+int application_timeout; /*WIMP timeout, to be passed to Wimp_PollIdle*/
+
+bool application_quit; /*flag to be set when application() is to return*/
+
+int *application_pollword; /*address to be set to a pollword, if required*/
+
+callback_l application_list;
+
+task_r application_task;
+
+static wimp_block Block;
+/*------------------------------------------------------------------------*/
+os_error *application_initialise (char *programme,
+      wimp_message_list *messages)
+
+   /*Call Wimp_Initialise and create the block for |application_task|.*/
+
+{  os_error *error = NULL, *e;
+   int version;
+   wimp_t task;
+   bool done_initialise = FALSE, done_new = FALSE;
+
+   tracef ("application_initialise\n");
+
+   /*Required to start up as a new task.*/
+   if ((e = xwimpreadsysinfo_version (&version)) != NULL)
+   {  if (e->errnum == error_WIMP_BAD_SYS_INFO)
+         version = wimp_VERSION_RO2;
+      else
+      {  error = e;
+         goto finish;
+   }  }
+
+   tracef ("Wimp version %d\n" _ version);
+   if (version >= wimp_VERSION_RO35)
+      version = wimp_VERSION_RO35;
+   else if (version >= wimp_VERSION_RO3)
+      version = wimp_VERSION_RO3;
+   else if (version >= wimp_VERSION_RO30)
+      version = wimp_VERSION_RO30;
+
+   if ((error = xwimp_initialise (version, programme, messages,
+         NULL, &task)) != NULL)
+      goto finish;
+   done_initialise = TRUE;
+
+   if ((error = task_new (programme, task, &application_task)) != NULL)
+      goto finish;
+   done_new = TRUE;
+
+   application_list = task_list (application_task);
+
+finish:
+   if (error != NULL)
+   {  if (done_new)
+         task_delete (application_task);
+
+      if (done_initialise)
+      {  os_error *error1 = xwimp_close_down (0);
+         if (error == NULL) error = error1;
+   }  }
+
+   if (error != NULL)
+      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+   return error;
+}
+/*------------------------------------------------------------------------*/
+os_error *application_terminate (void)
+
+   /* Call Wimp_CloseDown and delete |application_task|.*/
+
+{  os_error *error = NULL, *error1;
+
+   tracef ("application_terminate\n");
+
+   error1 = xwimp_close_down ((wimp_t) 0);
+   if (error == NULL) error = error1;
+
+   error1 = task_delete (application_task);
+   if (error == NULL) error = error1;
+
+/*finish:*/
+   if (error != NULL)
+      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+   return error;
+}
+/*------------------------------------------------------------------------*/
+void application (void)
+
+   /*Sits in a loop, processing |application_task|. Error processing note:
+      wimp_{poll,poll_idle} report any error they see (rather than returning
+      it), with the exception of argument checking errors: so it is
+      appropriate to abort the loop and report the error if this happens. The
+      callbacks made can also return their own error, and we just report
+      these unless in a redraw event.*/
+
+{  int event;
+   os_error *error = NULL, *error1;
+
+   tracef ("application\n");
+
+   do
+   {  if (!application_polling_idle)
+      {  if ((error = xwimp_poll (task_mask (application_task), &Block,
+               application_pollword, &event)) != NULL)
+            goto finish;
+      }
+      else
+      {  if ((error = xwimp_poll_idle (task_mask (application_task), &Block,
+               application_timeout, application_pollword, &event)) != NULL)
+            goto finish;
+      }
+
+      error1 = task_callback (application_task, NULL, event, &Block, NULL);
+      if (event != wimp_REDRAW_WINDOW_REQUEST)
+         task_report_error (application_task, error1);
+   }
+   while (!application_quit);
+
+finish:
+   task_report_error (application_task, error);
+}
+/*------------------------------------------------------------------------*/
+bits application_claim (int event)
+
+{  tracef ("application_claim\n");
+
+   return task_claim (application_task, event);
+}
+/*------------------------------------------------------------------------*/
+bits application_release (int event)
+
+{  tracef ("application_release\n");
+
+   return task_release (application_task, event);
+}
+/*------------------------------------------------------------------------*/
+os_error *application_report_error (os_error *error)
+
+{  tracef ("application_report_error\n");
+
+   return task_report_error (application_task, error);
+}
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@@

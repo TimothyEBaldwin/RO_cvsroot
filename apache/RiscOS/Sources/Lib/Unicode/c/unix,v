@@ -1,0 +1,357 @@
+head	1.5;
+access;
+symbols
+	Unicode-0_63:1.5
+	Unicode-0_62:1.4
+	Unicode-0_61:1.4
+	Unicode-0_60:1.4
+	Unicode-0_59:1.4
+	Unicode-0_58:1.4
+	Unicode-0_57:1.4
+	Unicode-0_56:1.4
+	Unicode-0_55:1.3
+	Unicode-0_54:1.3
+	RO_5_07:1.3
+	Unicode-0_53:1.3
+	Unicode-0_52:1.3
+	Unicode-0_51:1.2
+	Unicode-0_50:1.2
+	Unicode-0_49:1.2
+	Unicode-0_48:1.2
+	Unicode-0_47:1.2
+	Unicode-0_46:1.2
+	Unicode-0_45:1.2
+	dellis_autobuild_BaseSW:1.1
+	sbrodie_sedwards_16Mar2000:1.1
+	Unicode-0_44:1.1
+	dcotton_autobuild_BaseSW:1.2
+	Unicode-0_43:1.1
+	Unicode-0_42:1.1
+	Unicode-0_41:1.1
+	Unicode-0_40:1.1
+	Unicode-0_39:1.1
+	Unicode-0_38:1.1
+	Unicode-0_37:1.1
+	Unicode-0_36:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.07.24.21.10.12;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	R5G4WIuNMPsFVqLA;
+
+1.4
+date	2008.12.05.00.29.44;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2004.03.05.18.16.24;	author srevill;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.10.05.14.46.35;	author jberanek;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.12.17.09.59;	author smiddle;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Fix potential NULL pointer dereference, and buffer overruns
+enc_utf16.c: move the arg check on putf16 being NULL up before it's used
+riscos.c: strncat() includes a terminator, so don't terminate, and pass one less on the limit
+unix.c: same again for strncat(), and don't assume strncpy() includes a terminator
+Found by cppcheck static analysis.
+
+Version 0.63. Tagged as 'Unicode-0_63'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* > unix.c (Not in branched tree) */
+
+/**************************************************************************/
+/*                                                                        */
+/* Copyright [1997-2000] Pace Micro Technology PLC.  All rights reserved. */
+/*                                                                        */
+/* The copyright in this material is owned by Pace Micro Technology PLC   */
+/* ("Pace").  This material is regarded as a highly confidential trade    */
+/* secret of Pace.  It may not be reproduced, used, sold or in any        */
+/* other way exploited or transferred to any third party without the      */
+/* prior written permission of Pace.                                      */
+/**************************************************************************/
+
+#ifdef LAYERS
+#include "layers.h"
+#include "layers_dbg.h"
+#endif
+
+#include <dirent.h>
+
+#include <string.h>
+#include <stdio.h>
+
+#include "encpriv.h"
+
+int encoding__load_map_file(const char *leaf, UCS2 **ptable, int *pn_entries, int *palloc)
+{
+    DIR *dir;
+    FILE *fh;
+    int flen;
+    char fname[1024];
+    char *slash;
+    struct dirent *dp;
+
+    void *table;
+    int n_entries;
+    int alloc;
+
+    char *s = getenv("UNICODE_DIR");
+    if (s == NULL)
+	s = "/usr/local/etc/unicode";
+
+    *fname = '\0';
+    strncat(fname, s, sizeof(fname)-1);
+    if ( fname[ strlen(fname)-1 ] != '/' )
+	strcat( fname, "/" );
+    strncat(fname, "Encodings/", sizeof(fname)-1);
+    strncat(fname, leaf, sizeof(fname)-1);
+
+    /* We get to search the directory, because the leafname may be a prefix */
+    slash = strrchr(fname, '/');
+    if (!slash) return 0;
+
+    *slash = '\0';
+    slash++;
+
+    dir = opendir(fname);
+    if (!dir) return 0;
+
+    while ((dp = readdir(dir)) != NULL) {
+        if (strncmp(dp->d_name, slash, strlen(slash)) == 0) {
+            *(slash - 1) = '/';
+            *slash = '\0';
+            strncat(fname, dp->d_name, sizeof(fname)-1);
+            break;
+        }
+    }
+
+    closedir(dir);
+
+    fh = fopen(fname, "rb");
+    if (!fh)
+	return 0;
+
+    fseek(fh, 0, SEEK_END);
+    flen = ftell(fh);
+    fseek(fh, 0, SEEK_SET);
+
+    alloc = 1;
+    n_entries = flen/2;
+    table = encoding__alloc(flen);
+
+    if (table)
+    {
+	if (fread(table, flen, 1, fh) != 1)
+	{
+	    encoding__free(table);
+	    table = NULL;
+	}
+    }
+
+    fclose(fh);
+
+    *ptable = table;
+    *pn_entries = n_entries;
+    *palloc = alloc;
+
+    return table != NULL;
+}
+
+int encoding_current_alphabet(void)
+{
+    return 0;
+}
+
+const UCS4 *encoding_alphabet_ucs_table(int a)
+{
+    return NULL;
+}
+
+/* eof unix.c */
+@
+
+
+1.4
+log
+@  Fix bugs and inconsistencies in encoding handlers.
+  Fix inconsistency in handling illegal byte sequences.
+  Convert surrogate codepoints and U+FFFE, U+FFFF to U+FFFD.
+  Also, a few extra mappings.
+Detail:
+  enc_utf8.c: 0x80 is a continuation byte. Map stray ones to U+FFFD.
+              Reset the count of expected continuation bytes to 0 when
+              encountering illegal byte sequences. Previously, if the character
+              callback returned non-zero, this count would not be reset, thus
+              leaving the codec in an inconsistent state. Additionally, we no
+              longer consume the illegal continuation byte: instead, we process
+              it as a start byte next time round.
+  encoding.c: Do not load extension tables for ISO-8859-{1,2,9,10,15,16}
+              If these are needed, it's probably best that different charset
+              names are used rather than overloading 8859-n.
+  iso2022.c:  Permit SS2/3 escape sequences for EUC encode/decode.
+              Disable C1 characters for EUC encode/decode.
+              Fix G94x94 read function to handle GR 0xA0/0xFF correctly.
+              Fix writing of C1 controls for 8859-n.
+              Prevent dereference of NULL pointer when scanning tables.
+  iso6937.c:  Replace C99 loop iterators with C89 friendly versions.
+  johab.c:    Fix final_only lookup table to have entries in the right place.
+              Map 0x5C to the Won sign.
+              Actually pay attention to encoding_WRITE_STRICT.
+  shiftjis.c: Map 0x7E to overbar rather than tilde.
+  textconv.c: Fix static assignment of stdin/stdout.
+  unix.c:     Perform wildcard lookup of mapping tables.
+  ccsolaris/Makefile: Modify for use with GCCSDK
+Admin:
+  Tested with the Iconv module testsuite.
+Author:
+  John-Mark Bell
+
+
+Version 0.56. Tagged as 'Unicode-0_56'
+@
+text
+@d57 2
+a58 1
+    strncpy(fname, s, sizeof(fname));
+d61 2
+a62 3
+    strncat(fname, "Encodings/", sizeof(fname));
+    strncat(fname, leaf, sizeof(fname));
+    fname[sizeof(fname)-1] = 0;
+d78 1
+a78 1
+            strncat(fname, dp->d_name, sizeof(fname));
+@
+
+
+1.3
+log
+@Change merged from Pace repository:
+> Summary:
+>   Merged changes from branch tree
+>   Reversed previous change
+> Detail:
+>
+> * Merged a few changes/fixes from the Unicode library in
+>  branch's tree.
+>
+> * Reversed Steve's change from version 0.50. The change wasn't
+>  necessary, and with the changed definition of NOT_USED in this
+>  version, it compiles fine with cc 5.45.
+>
+> * Small comment change in unix.c. It now states that the file
+>  isn't equivalent to any in the branch tree.
+>
+> Admin:
+>   Built and briefly tested using TextConv utility on Risc PC.
+
+Version 0.52. Tagged as 'Unicode-0_52'
+@
+text
+@d33 2
+d42 1
+d46 2
+d64 21
+@
+
+
+1.2
+log
+@  Copyright message changes + changes from branch + Unified
+   branched/non-branched builds
+Detail:
+  Copyright messages changed from E-14 to Pace throughout, filename
+   placed at top of file throughout, instead of in just some files.
+
+  Merged branch's fixes into our code base, plus made it possible to
+   get nice debug output in branched tree, and vfprintf() to stderr in
+   RISC OS tree.  Exactly same source used in branched tree now (apart
+   from OS specific files riscos.c and unix.c moving into layers
+   directory structure).
+
+Admin:
+  Built for branched, both Unix and RISC OS.
+  Built in RISC OS tree, and compiled into TextConv.
+
+
+Version 0.45. Tagged as 'Unicode-0_45'
+@
+text
+@d15 1
+a15 1
+/* > unix.c (layers/unix/unicode/encodingmap.c in branched tree) */
+@
+
+
+1.1
+log
+@Changed encoding_table_remove_unused() so that it takes a
+parameter giving the depth from which to start purging.
+Fixed ISO2022 write code to free search tables.
+Added unix.c for unix-targeted builds.
+Updated cross-compile build.
+Added unix-targeted build of library and textconv tool
+in ccsolaris directory.
+
+Version 0.36. Tagged as 'Unicode-0_36'
+@
+text
+@d15 17
+a31 10
+/* > unix.c */
+/************************************************************************/
+/*                  Copyright 1997-1999 Element 14 Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Element 14 Ltd.  It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Element 14 Ltd.  All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+d64 1
+a64 1
+    flen = ftell(fh); 
+d66 1
+a66 1
+   
+d81 1
+a81 1
+    
+@
+

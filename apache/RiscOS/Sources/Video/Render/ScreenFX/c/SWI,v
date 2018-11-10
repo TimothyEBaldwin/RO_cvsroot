@@ -1,0 +1,564 @@
+head	1.7;
+access;
+symbols
+	ScreenFX-0_09-1:1.7
+	ScreenFX-0_09:1.7
+	ScreenFX-0_08:1.7
+	ScreenFX-0_07:1.6
+	ScreenFX-0_06:1.5
+	ScreenFX-0_05:1.5
+	ScreenFX-0_04:1.4
+	ScreenFX-0_03:1.3
+	ScreenFX-0_02:1.2
+	ScreenFX-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2007.07.22.20.38.24;	author rool;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2005.09.16.15.48.47;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2005.08.24.08.18.26;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2005.08.19.16.33.14;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2005.08.19.14.16.05;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2005.08.19.13.31.26;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2005.08.18.21.08.34;	author ahodgkin;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2005.08.18.21.08.34;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@  Various bug fixes; new 'escape' feature.
+Detail:
+  Incorrect command line help text fixed. Failure to pass duration to
+  effects engine for crossfades corrected. New bit to Fade and CrossFade
+  SWIs with corresponding "-escape" switch on the command line; allows
+  Escape key to interrupt fades. Documentation updated. Internal effects
+  initialisation and finalisation tidied up a bit. Now uses header files
+  in Global for EventV and PaletteV definitions (note, BBE will require
+  the addition of Global/h/PaletteV in the Export tree).
+Testing:
+  Moderate developer testing on Iyonix platform. Test harness unchanged.
+
+Version 0.08. Tagged as 'ScreenFX-0_08'
+@
+text
+@/* Copyright 2005 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    SWI.c                                             */
+/*          (C) 2005 Tematic                                  */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: SWI implementations.                              */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 18-Aug-2005 (ADH): Created.                       */
+/**************************************************************/
+
+#include "Effect.h"
+
+#include "SWI.h"
+
+/**************************************************************/
+/* swi_fade()                                                 */
+/*                                                            */
+/* Implement SWI ScreenFX_Fade.                               */
+/*                                                            */
+/* Parameters:  Pointer to a register block.                  */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * swi_fade(_kernel_swi_regs * r)
+{
+  dprintf(("SWI",
+           "swi_fade: Called with registers at &%08X:\n"
+           "          Flags &%08X, left RGBS &%08X, right RGBS &%08X, duration %u\n",
+
+           TOINT(r),
+           r->r[0], r->r[1], r->r[2], r->r[3]));
+
+  dprintf(("SWI", "swi_fade: Starting fade...\n"));
+
+  PRISMLIB_RETERR(effect_start_fade((uint32_t) r->r[1],
+                                    (uint32_t) r->r[2],
+                                    (uint32_t) r->r[3]));
+
+  /* Was this a blocking call? */
+
+  if ((r->r[0] & SCREENFX_FADE_BLOCK) != 0)
+  {
+    bool escaped = effect_block
+    (
+      (uint32_t) r->r[3],
+      (r->r[0] & SCREENFX_FADE_NOCALLBACKS) != 0 ? true : false,
+      (r->r[0] & SCREENFX_FADE_ALLOWESCAPE) != 0 ? true : false
+    );
+
+    if ((r->r[0] & SCREENFX_FADE_ALLOWESCAPE) != 0)
+    {
+      r->r[0] = escaped ? SCREENFX_FADE_ALLOWESCAPE : 0;
+    }
+  }
+
+  dprintf(("SWI", "swi_fade: Successful\n"));
+  return NULL;
+}
+
+/**************************************************************/
+/* swi_cancel()                                               */
+/*                                                            */
+/* Implement SWI ScreenFX_Cancel.                             */
+/*                                                            */
+/* Parameters:  Pointer to a register block.                  */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * swi_cancel(_kernel_swi_regs * r)
+{
+  dprintf(("SWI",
+           "swi_cancel: Called with registers at &%08X:\n"
+           "            Flags &%08X\n",
+
+           TOINT(r),
+           r->r[0]));
+
+  (void) r;
+
+  /* Cancel any currently running effect */
+
+  dprintf(("SWI", "swi_cancel: Exiting through effect_cancel()...\n"));
+  return effect_cancel(false);
+}
+
+/**************************************************************/
+/* swi_reset()                                                */
+/*                                                            */
+/* Implement SWI ScreenFX_Reset.                              */
+/*                                                            */
+/* Parameters:  Pointer to a register block.                  */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * swi_reset(_kernel_swi_regs * r)
+{
+  dprintf(("SWI",
+           "swi_reset: Called with registers at &%08X:\n"
+           "            Flags &%08X\n",
+
+           TOINT(r),
+           r->r[0]));
+
+  (void) r;
+
+  /* Cancel any currently running effect */
+
+  PRISMLIB_RETERR(effect_cancel(false));
+
+  /* Reset the gamma and supremacy tables */
+
+  dprintf(("SWI", "swi_reset: Exiting through effect_reset()...\n"));
+  return effect_reset();
+}
+
+/**************************************************************/
+/* swi_status()                                               */
+/*                                                            */
+/* Implement SWI ScreenFX_Status.                             */
+/*                                                            */
+/* Parameters:  Pointer to a register block.                  */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * swi_status(_kernel_swi_regs * r)
+{
+  dprintf(("SWI",
+           "swi_status: Called with registers at &%08X:\n"
+           "            Flags &%08X\n",
+
+           TOINT(r),
+           r->r[0]));
+
+  (void) r;
+
+  /* Activity flags */
+
+  r->r[0] = 0;
+
+  if (fade_running != screenfx_effect_type_NONE)
+  {
+    uint32_t now;
+    int32_t  run_for;
+
+    switch (fade_running)
+    {
+      case screenfx_effect_type_FADE:      r->r[0] |= SCREENFX_STATUS_FADERUNNING;      break;
+      case screenfx_effect_type_CROSSFADE: r->r[0] |= SCREENFX_STATUS_CROSSFADERUNNING; break;
+    }
+
+    /* Read the current time */
+
+    PRISMLIB_RETERR(_swix(OS_ReadMonotonicTime,
+                          _OUT(0),
+
+                          &now));
+
+    /* Work out how long the fade has been running */
+
+    run_for = now - fade_start_at;
+
+    /* Bound the result */
+
+    if      (run_for < 0)             run_for = 0;
+    else if (run_for > fade_duration) run_for = fade_duration;
+
+    /* Return the remaining time */
+
+    r->r[3] = fade_duration - run_for;
+  }
+  else
+  {
+    r->r[3] = 0;
+  }
+
+  /* Current left hand end point */
+
+  r->r[1] = effect_pack(current_r[0],
+                        current_g[0],
+                        current_b[0],
+                        current_s[0]);
+
+  /* Current right hand end point */
+
+  r->r[2] = effect_pack(current_r[255],
+                        current_g[255],
+                        current_b[255],
+                        current_s[255]);
+
+  /* Pointer to base of RGBS tables */
+
+  r->r[4] = (uint32_t) current_table;
+
+  /* All done */
+
+  dprintf(("SWI", "swi_status: Successful\n"));
+  return NULL;
+}
+
+/**************************************************************/
+/* swi_crossfade()                                            */
+/*                                                            */
+/* Implement SWI ScreenFX_CrossFade.                          */
+/*                                                            */
+/* Parameters:  Pointer to a register block.                  */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+_kernel_oserror * swi_crossfade(_kernel_swi_regs * r)
+{
+  dprintf(("SWI",
+           "swi_crossfade: Called with registers at &%08X:\n"
+           "               Flags &%08X, significant bits %u, duration %u\n",
+
+           TOINT(r),
+           r->r[0], r->r[1], r->r[2]));
+
+  dprintf(("SWI", "swi_crossfade: Starting fade...\n"));
+
+  PRISMLIB_RETERR(effect_start_crossfade((r->r[0] & SCREENFX_CROSSFADE_TOLOWER) != 0 ? true : false,
+                                         (uint32_t) r->r[1]));
+
+  /* Was this a blocking call? */
+
+  if ((r->r[0] & SCREENFX_CROSSFADE_BLOCK) != 0)
+  {
+    bool escaped = effect_block
+    (
+      (uint32_t) r->r[1],
+      (r->r[0] & SCREENFX_CROSSFADE_NOCALLBACKS) != 0 ? true : false,
+      (r->r[0] & SCREENFX_CROSSFADE_ALLOWESCAPE) != 0 ? true : false
+    );
+
+    if ((r->r[0] & SCREENFX_CROSSFADE_ALLOWESCAPE) != 0)
+    {
+      r->r[0] = escaped ? SCREENFX_CROSSFADE_ALLOWESCAPE : 0;
+    }
+  }
+
+  dprintf(("SWI", "swi_crossfade: Successful\n"));
+  return NULL;
+}
+
+/* End of file */
+@
+
+
+1.6
+log
+@  Feature addition.
+Detail:
+  ScreenFX_CrossFade / *ScreenFXCrossFade - see API documentation for
+  details.
+Admin:
+  16bpp and 32bpp modes tested; ran out of time to check 8bpp cross fades.
+
+Version 0.07. Tagged as 'ScreenFX-0_07'
+@
+text
+@d62 11
+a72 2
+    effect_block((uint32_t) r->r[3],
+                 (r->r[0] & SCREENFX_FADE_NOCALLBACKS) != 0 ? true : false);
+d105 1
+a105 1
+  return effect_cancel();
+d133 1
+a133 1
+  PRISMLIB_RETERR(effect_cancel());
+d258 11
+a268 2
+    effect_block((uint32_t) r->r[2],
+                 (r->r[0] & SCREENFX_CROSSFADE_NOCALLBACKS) != 0 ? true : false);
+@
+
+
+1.5
+log
+@  Official allocations. Copyright message changes.
+Detail:
+  Now includes official SWI base and error block allocations. The star
+  commands are registered too. Meanwhile, copyright messages have been
+  changed from "Castle Technology Ltd" to "Tematic".
+Admin:
+  Rebuilt from clean, simple test harness passes.
+
+Version 0.05. Tagged as 'ScreenFX-0_05'
+@
+text
+@a26 2
+#include <AsmUtils/callbacks.h>
+
+d62 2
+a63 53
+    uint32_t start = 0;
+    uint32_t now   = 0xffffffff;
+
+    dprintf(("SWI", "swi_fade: Blocking call requested\n"));
+
+    _swix(OS_ReadMonotonicTime,
+          _OUT(0),
+
+          &start);
+
+    /* Sit waiting on VSyncs until the "fade running" flag clears.
+     * Just in case there's a problem, also check the timer; if we
+     * go 1 second beyond the expected fade length, cancel and
+     * bail out.
+     */
+
+    dprintf(("SWI", "swi_fade: Waiting...\n"));
+
+    do
+    {
+      _swix(OS_Byte,
+            _IN(0),
+
+            OSByte_WaitForVSync);
+
+      /* Trigger callbacks after the VSync wait, unless
+       * flags tell us not to.
+       */
+
+      if ((r->r[0] & SCREENFX_FADE_NOCALLBACKS) == 0)
+      {
+        usermode_donothing(); /* (From AsmUtils) */
+      }
+
+      _swix(OS_ReadMonotonicTime,
+            _OUT(0),
+
+            &now);
+    }
+    while (
+            fade_running == true &&
+            now - start < fade_duration + 100
+          );
+
+    dprintf(("SWI", "swi_fade: ...exited wait loop\n"));
+
+    /* Is the fade still running? */
+
+    if (fade_running == true)
+    {
+      dprintf(("SWI", "swi_fade: Timed out - fade still going; bailing!\n"));
+      (void) effect_cancel();
+    }
+d159 1
+a159 1
+  if (fade_running == true)
+d164 5
+a168 1
+    r->r[0] |= SCREENFX_STATUS_FADERUNNING;
+d219 38
+@
+
+
+1.4
+log
+@  Tweaks.
+Detail:
+  *ScreenFXStatus didn't give remaining fade time, it gave absolute time,
+  which isn't what Docs.API says. Fixed. ScreenFX_Status didn't return time
+  at all, instead returning the pointer to the tables in R3 - the BASIC
+  test program conformed to the broken API not the documented API. Fixed
+  this too. Now cancels and resets on module exit, rather than just
+  cancelling the current operation but leaving the display state alone.
+Admin:
+  Tested; test program (such as it is!) updated.
+
+Version 0.04. Tagged as 'ScreenFX-0_04'
+@
+text
+@d17 1
+a17 1
+/*          (C) 2005 Castle Technology Ltd                    */
+@
+
+
+1.3
+log
+@  API addition; documentation support.
+Detail:
+  Blocking fades now trigger callbacks, unless R0:1 in ScreenFX_Fade is
+  set on entry. "*ScreenFXFade -block" always lets callbacks run. On
+  documentation: Doxygen error in ScreenFX.h fixed; Doxygen configuration
+  file now included.
+Admin:
+  Confirmed R0:1 stopped or did not stop callbacks (by playing an MP3 in
+  AMPlayer on an Iyonix and running a slow blocking fade, that stopped MP3
+  playback when R0:1 was set, and did not stop it when R0:1 was clear).
+
+Version 0.03. Tagged as 'ScreenFX-0_03'
+@
+text
+@d212 31
+a242 1
+  if (fade_running == true) r->r[0] |= SCREENFX_STATUS_FADERUNNING;
+d260 1
+a260 1
+  r->r[3] = (uint32_t) current_table;
+@
+
+
+1.2
+log
+@  Bug fixes, redundant code removed, new feature.
+Detail:
+  Rounding errors fixed, so test harness now completes - fades always do
+  completely achieve the target parameters. Interruption timing: When a
+  new fade interrupts an old one, the percentage of its duration that is
+  used depends on how long the fade had been going, not how long it had
+  left to go. See Docs.API for why. Now links with PRISMLib the module
+  version - stops various odd effects (the bits of shared Makefile in use
+  do *not* automatically add a "zm" suffix, so the old version didn't
+  work so well). New feature: *ScreenFXReset, or SWI ScreenFX_Reset - as
+  ScreenFX_Cancel, plus a reset to default gamma and supremacy tables.
+  Again, see Docs.API for details. Finally, the Service_MessagesFileClosed
+  handler has been removed - the module does not *maintain* pointers into
+  the messages file, since it looks up tokens anew each time they are
+  needed, so therefore it does not need to handle the service call.
+Admin:
+  Interrupted fade timing looks better. No more odd effects when switching
+  between debug and non-debug modules. Test harness passes its check that
+  the tables are programmed as expected at the end of a fade. Reset feature
+  works as it should.
+
+Version 0.02. Tagged as 'ScreenFX-0_02'
+@
+text
+@d27 2
+d89 9
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d135 2
+d142 33
+@
+
+
+1.1.1.1
+log
+@Initial import of ScreenFX module to CVS.
+@
+text
+@@

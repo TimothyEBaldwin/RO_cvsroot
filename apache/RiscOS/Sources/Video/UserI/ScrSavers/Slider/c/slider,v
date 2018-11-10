@@ -1,0 +1,1287 @@
+head	1.2;
+access;
+symbols
+	Slider-0_04:1.2
+	Slider-0_03:1.1.1.3
+	Slider-0_02:1.1.1.3
+	Slider-0_01:1.1.1.3
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.3
+	Ursula_RiscPC:1.1.1.3.0.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.3
+	UrsulaBuild_FinalSoftload:1.1.1.3
+	rthornb_UrsulaBuild-12Aug1998:1.1.1.3
+	aglover_UrsulaBuild-05Aug1998:1.1.1.3
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.3
+	rthornb_UrsulaBuild-17Jun1998:1.1.1.3
+	rleggett_Slider-0_03:1.1.1.3
+	rthornb_UrsulaBuild-03Jun1998:1.1.1.2
+	rthornb_UrsulaBuild-27May1998:1.1.1.2
+	rthornb_UrsulaBuild-21May1998:1.1.1.2
+	rthornb_UrsulaBuild_01May1998:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2015.06.28.22.48.40;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	mzQ4wVxoC6Aoxfry;
+
+1.1
+date	98.04.14.11.35.54;	author rleggett;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.04.14.11.35.54;	author rleggett;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.05.20.10.23.01;	author rleggett;	state Exp;
+branches;
+next	1.1.1.3;
+
+1.1.1.3
+date	98.06.17.09.50.55;	author rleggett;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.2
+log
+@Numerous screensaver/setup improvements
+Set 'Cancel' as the escape action button so the setup window closes when Escape is pressed.
+Other admin changes:
+* Makefiles recreated from fragments
+* Version number now auto inserted from VersionNum
+* Messages and common code "saver.c" sync'd with other screensaver/setup apps
+* Removed references to Filer Configure from RMEnsure error messages
+* Removed never used info from setup app messages, ensuring they're never out of date by deleting them
+* Removed non internationalised "Screensave setup" from error box titles
+* Load settings from Choices: write settings through <Choices$Write>
+* Fix null pointer dereference when -openat switch has too few arguments
+* Symbolic names used instead of magic numbers where possible
+Tested on RISC OS 4.02.
+
+Version 0.04. Tagged as 'Slider-0_04'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*---------------------------------------------------------------------------*/
+/* File:    c.slider                                                         */
+/* Purpose: Sliding block screen saver.                                      */
+/* Author:  Richard Leggett                                                  */
+/* History: 17-Nov-97: RML: Created.                                         */
+/*          19-Mar-98: RML: Updated.                                         */
+/*          20-May-98: RML: Rounds block size so that exact number of blocks */
+/*                          fit horizontally and vertically.                 */
+/*          05-Jun-98: RML: Code tidied up a little.                         */
+/*                                                                           */
+/* Copyright © 1998 Acorn Computers Ltd., Cambridge, UK.                     */
+/*---------------------------------------------------------------------------*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "Global/VduExt.h"
+#include "Global/Sprite.h"
+
+#include "wimp.h"
+#include "wimplib.h"
+#include "swis.h"
+#include "toolbox.h"
+#include "event.h"
+#include "window.h"
+#include "saver.h"
+
+#define SettingsRO           "Choices:ScrSavers.Slider"
+#define LineThickness        4
+#define DirectionLeft        1
+#define DirectionRight       2
+#define DirectionDown        3
+#define DirectionUp          4
+#define MinimumBlockSize     32
+#define DefaultBlocksize     256
+#define DefaultSlidestep     2
+#define Delay                0
+
+static MessagesFD messages_desc;
+static IdBlock    idb;
+static int       *spritearea = 0;
+static int        screenw;
+static int        screenh;
+static int        blk[7];
+static int        newx;
+static int        newy;
+static int        blankx;
+static int        blanky;
+static int        xblocks;
+static int        yblocks;
+static int        blocksize = DefaultBlocksize;
+static int        slidestep = DefaultSlidestep;
+
+
+/*---------------------------------------------------------------------------*
+ * program_exit                                                              *
+ *                                                                           *
+ * Finished with this plug-in, so exit.                                      *
+ *---------------------------------------------------------------------------*/
+
+static void program_exit(void)
+{
+    saver_exit();
+    exit(0);
+}
+
+
+/*---------------------------------------------------------------------------*
+ * read_settings                                                             *
+ *                                                                           *
+ * Read the current settings file.                                           *
+ *---------------------------------------------------------------------------*/
+
+static void read_settings(void)
+{
+    FILE *fp;
+    char  string[256];
+    
+    fp=fopen(SettingsRO, "r");
+    if (fp)
+    {
+        fgets(string, 256, fp);
+        sscanf(string, "BlockSize %d", &blocksize);
+        fgets(string, 256, fp);
+        sscanf(string, "SlideStep %d", &slidestep);
+        fclose(fp);
+    }
+    
+    if (blocksize>2048) blocksize = 2048;
+    if (slidestep>blocksize) slidestep = blocksize;
+    if (slidestep<1) slidestep = 1;
+    if (blocksize<16) blocksize = 16;
+}        
+
+
+/*---------------------------------------------------------------------------*
+ * remainder                                                                 *
+ *                                                                           *
+ * Return the integer remainder of a division                                *
+ *---------------------------------------------------------------------------*/
+
+static int remainder(int number, int divisor)
+{
+    int a = number / divisor;
+    int b = a * divisor;
+    
+    return number - b;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * check_blocksize                                                           *
+ *                                                                           *
+ * Check blocksize is within various limits.                                 *
+ *---------------------------------------------------------------------------*/
+
+static void check_blocksize(void)
+{
+    int n;
+    
+    /* Ensure blocksize is at least half the height */
+     if (blocksize > (screenh/2)) blocksize = screenh / 2;
+
+    /* Make sure blocksize is a multiple of 2 */
+    if (blocksize & 1) blocksize-=1;
+    
+    /* If blocksize is a multiple of screen width AND screen height, then return */
+    if ( (!remainder(screenw, blocksize)) && (!remainder(screenh, blocksize)) ) return;
+
+    /* Otherwise, try and find the nearest multiple of screen width AND screen height */
+    for  (n=2; n<blocksize; n+=2)
+    {
+        /* Blocksize must be no more than half screen height in size */
+        if ( (blocksize + n) < (screenh / 2) )
+        {
+            if ( (!remainder(screenw, blocksize + n)) && (!remainder(screenh, blocksize + n)) )
+            {
+                blocksize += n;
+                return;
+            }
+        }
+        
+        /* Blocksize must be at least a minimum size */
+        if ( (blocksize - n) > MinimumBlockSize)
+        {
+            if ( (!remainder(screenw, blocksize - n)) && (!remainder(screenh, blocksize - n)) )
+            {
+                blocksize -= n;
+                return;
+            }
+        }
+    }
+}
+
+
+/*---------------------------------------------------------------------------*
+ * init_sprite_area                                                          *
+ *                                                                           *
+ * Initialise the sprite area used to store the block.                       *
+ *---------------------------------------------------------------------------*/
+
+static int init_sprite_area(void)
+{
+    int size;
+    int bpp;
+
+    check_blocksize();
+
+    /* Calculate how big the sprite area needs to be for this screenmode */
+    _swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, VduExt_Log2BPP, &bpp);
+    bpp = 1<<bpp;
+    size = (blocksize*bpp) / 8;
+    if ( (blocksize*bpp*8) > (size*8*8) ) size++;
+    size = (size+3)&~3;
+    size = (size*blocksize) + 44 + 16;
+
+    /* Get memory */
+    spritearea = malloc(size);
+    if (!spritearea) return 0;
+    spritearea[0] = size;
+    spritearea[2] = 16;
+
+    /* Initialise sprite area */
+    if (_swix(OS_SpriteOp, _INR(0,1), 256+SpriteReason_ClearSprites, spritearea)) return 0;
+
+    return 1;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * draw_grid                                                                 *
+ *                                                                           *
+ * Draw the grid over the desktop.                                           *
+ *---------------------------------------------------------------------------*/
+
+static void draw_grid(int w, int h, int s)
+{
+    int x;
+    int y;
+   
+    for (x=0; x<w; x+=s)
+    {
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, x, 0);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, LineThickness, h);
+    }
+
+    for (y=0; y<h; y+=s)
+    {
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, 0, y);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, w, LineThickness);
+    }
+}
+
+
+/*---------------------------------------------------------------------------*
+ * move_block                                                                *
+ *                                                                           *
+ * Move the sliding block another notch.                                     *
+ *---------------------------------------------------------------------------*/
+
+static void move_block(int bx, int by, int nx, int ny)
+{
+    blk[0] += slidestep;                             
+    _swix(OS_SpriteOp, _INR(0,5), 256+SpriteReason_PutSpriteUserCoords,
+                                  spritearea,
+                                  "grab",
+                                  nx + (blk[1]*blk[0]),
+                                  ny + (blk[2]*blk[0]),
+                                  0);
+    _swix(OS_Plot, _INR(0,2), OSPlot_Move,
+                              nx + blk[3] + (blk[1]*blk[0]),
+                              ny + blk[4] + (blk[2]*blk[0]));
+    _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, blk[5], blk[6]);
+}
+
+
+/*---------------------------------------------------------------------------*
+ * select_new_direction                                                      *
+ *                                                                           *
+ * Select a new direction to slide in and grab the sliding square as a       *
+ * sprite.                                                                   *
+ *---------------------------------------------------------------------------*/
+
+static void select_new_direction(void)
+{
+    static int  direction = 0;
+    static int  opposite[] = {0, 2, 1, 4, 3};
+    char       *savearea;
+    int         last_direction;
+    int         prev1;
+    int         prev2;
+    int         prev3;
+    int         fill_width;
+
+    last_direction = direction;
+    blankx = newx;
+    blanky = newy;
+
+    /* Decide on a new direction */
+    while ((newx==blankx) && (newy==blanky))
+    {
+        direction = saver_rnd(4);
+        if (direction==opposite[last_direction]) direction = saver_rnd(4);
+        
+        switch(direction)
+        {   
+            case DirectionLeft:  newx = blankx + 1; break;
+            case DirectionRight: newx = blankx - 1; break;
+            case DirectionDown:  newy = blanky + 1; break;
+            case DirectionUp:    newy = blanky - 1; break;
+        }
+        
+        if (newx>xblocks) newx = xblocks;
+        if (newy>yblocks) newy = yblocks;
+        if (newx<0)       newx = 0;
+        if (newy<0)       newy = 0;
+    }
+    
+    /* Set up the sliding parameters */
+    blk[0] = 0;
+    switch(direction)
+    {
+        case DirectionLeft:
+            blk[1] = -1;
+            blk[2] = 0;
+            blk[3] = blocksize;
+            blk[4] = 0;
+            blk[5] = slidestep;
+            blk[6] = blocksize;
+            break;
+
+        case DirectionRight:
+            blk[1] = 1;
+            blk[2] = 0;
+            blk[3] = -slidestep;
+            blk[4] = 0;
+            blk[5] = slidestep;
+            blk[6] = blocksize;
+            break;
+
+        case DirectionDown:
+            blk[1] = 0;
+            blk[2] = -1;
+            blk[3] = 0;
+            blk[4] = blocksize;
+            blk[5] = blocksize;
+            blk[6] = slidestep;
+            break;
+
+        case DirectionUp:
+            blk[1] = 0;
+            blk[2] = 1;
+            blk[3] = 0;
+            blk[4] = -slidestep;
+            blk[5] = blocksize;
+            blk[6] = slidestep;
+            break;
+    }
+    
+    /* Grab the block to be slid as a sprite */
+    _swix(OS_SpriteOp, _INR(0,7), 256+SpriteReason_GetSpriteUserCoords,
+                                 spritearea,
+                                 "grab",
+                                 0,
+                                 newx*blocksize,
+                                 newy*blocksize,
+                                 ((newx+1)*blocksize)-1,
+                                 ((newy+1)*blocksize)-1);           
+
+    /* Now, if the block is an end block, there may be bits off screen which
+       need filling in black. */
+    if ((newx!=xblocks) && (newy!=yblocks)) return;
+
+    savearea = malloc(800);
+    if (!savearea) return;
+    memset(savearea, 0, 4);
+   
+    _swix(OS_SpriteOp, _INR(0,3)|_OUTR(1,3),
+                       256+SpriteReason_SwitchOutputToSprite,
+                       spritearea, "grab", savearea,
+                       &prev1, &prev2, &prev3);
+
+    _swix(ColourTrans_SetGCOL, _IN(0)|_IN(3)|_IN(4), 0, 0, 0);
+
+    if (newx==xblocks)
+    {
+        fill_width = ((xblocks+1) * blocksize) - screenw;
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, blocksize-fill_width, 0);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, fill_width, blocksize);
+    }
+    
+    if (newy==yblocks)
+    {
+        fill_width = ((yblocks+1) * blocksize) - screenh;
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, 0, blocksize-fill_width);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, blocksize, fill_width);
+    }
+                           
+    _swix(OS_SpriteOp, _INR(0,3),
+                       256+SpriteReason_SwitchOutputToSprite,
+                       prev1, prev2, prev3);
+ 
+    free(savearea);
+}
+
+
+/*---------------------------------------------------------------------------*
+ * initialise_slider                                                         *
+ *                                                                           *
+ * Set up a few variables and draw a grid.                                   *
+ *---------------------------------------------------------------------------*/
+
+static void initialise_slider(void)
+{
+    xblocks = (screenw / blocksize) - 1;
+    yblocks = (screenh / blocksize) - 1;
+    newx = saver_rnd(xblocks);
+    newy = 0;    
+
+    draw_grid(screenw, screenh, blocksize);
+    _swix(OS_Plot, _INR(0,2), OSPlot_Move, newx*blocksize, newy*blocksize);
+    _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, blocksize, blocksize);
+    blk[0] = blocksize;
+
+    /* We no longer want high priority pollword scans */
+    saver_error_trap(event_set_mask(Wimp_Poll_PollWord), 0);    
+}    
+
+
+/*---------------------------------------------------------------------------*
+ * null_event                                                                *
+ *                                                                           *
+ * Null event handler - we do all our sliding on null events.                *
+ *---------------------------------------------------------------------------*/
+
+int null_event(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+    static int slider_initialised = 0;
+    static int last_time = 0;
+    int        current_time;
+    
+    _swix(OS_ReadMonotonicTime, _OUT(0), &current_time);
+    if (current_time < (last_time + Delay)) return 1;
+    last_time = current_time;
+
+    _swix(ColourTrans_SetGCOL, _IN(0)|_IN(3)|_IN(4), 0, 0, 0);
+
+    if (!slider_initialised)
+    {
+        initialise_slider();
+        slider_initialised = 1;
+    }
+    
+    if (blk[0]==blocksize)
+    {
+        select_new_direction();
+    }
+    else
+    {
+        move_block(blankx*blocksize, blanky*blocksize, newx*blocksize, newy*blocksize);
+    }
+ 
+    return 1;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * gain_pointer                                                              *
+ *                                                                           *
+ * Pointer has entered my window - turn it off!                              *
+ *---------------------------------------------------------------------------*/
+
+int gain_pointer(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+    saver_hide_pointer();
+
+    return 1;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * lose_pointer                                                              *
+ *                                                                           *
+ * Pointer has left my window - switch it back on again!                     *
+ *---------------------------------------------------------------------------*/
+
+int lose_pointer(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+    saver_show_pointer();
+    
+    return 1;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * redraw                                                                    *
+ *                                                                           *
+ * Handle redraw events - ignore them in fact!                               *
+ *---------------------------------------------------------------------------*/
+
+int redraw(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+    WimpRedrawWindowBlock block;
+    int                   more;
+    
+    wimp_update_window(&block, &more);
+    while (more)
+    {
+        wimp_get_rectangle(&block, &more);
+    }
+    
+    return 1;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * pollword                                                                  *
+ *                                                                           *
+ * Handle pollword non-zero events                                           *
+ *---------------------------------------------------------------------------*/
+
+int pollword(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+    program_exit();
+    
+    return 1;
+}
+
+/*---------------------------------------------------------------------------*
+ * message_quit                                                              *
+ *                                                                           *
+ * Called when wimp quit message received.                                   *
+ *---------------------------------------------------------------------------*/
+ 
+int message_quit(WimpMessage *event, void *handler)
+{
+    program_exit();
+    
+    return 1;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * main_initialise                                                           *
+ *---------------------------------------------------------------------------*/
+
+static void main_initialise(void)
+{
+    int task_handle;
+    int main_window;
+    int xeig;
+    int yeig;
+
+    /* Initialise toolbox */
+    saver_error_trap(toolbox_initialise(0, 310, 0, 0, "<BlankTask$Dir>", &messages_desc, &idb,
+                                  0, &task_handle, 0), 1);
+    saver_error_trap(event_initialise(&idb), 0);
+    saver_error_trap(event_set_mask(Wimp_Poll_PollWord +
+                              Wimp_Poll_PollWordHighPriority), 0);    
+
+    /* Register event handlers */
+    saver_error_trap(event_register_message_handler(Wimp_MQuit, message_quit, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_ENull, null_event, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_ERedrawWindow, redraw, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_EPollWordNonZero, pollword, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_EPointerEnteringWindow, gain_pointer, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_EPointerLeavingWindow, lose_pointer, NULL), 0);
+
+    /* Open the covering window */
+    saver_read_screensize(&screenw, &screenh, &xeig, &yeig);
+    saver_error_trap(toolbox_create_object(0, "Window", &main_window), 1);
+    saver_open_covering_window(main_window);
+
+    /* More initialisation */
+    read_settings();
+    saver_set_rnd_seed();
+}
+
+
+/*---------------------------------------------------------------------------*
+ * main                                                                      *
+ *                                                                           *
+ * Main polling loop.                                                        *
+ *---------------------------------------------------------------------------*/
+
+int main(int argc, char **argv)
+{
+    WimpPollBlock  wpb;
+    int            event_code;
+    int           *pollword = NULL;
+
+    if (argc>1) pollword = (int*) atoi(argv[1]);
+    if (!pollword) program_exit();
+    main_initialise();
+
+    if (!init_sprite_area())
+    {
+        saver_handle_fatal_error();
+    }
+
+    while (TRUE)
+    {
+        saver_error_trap(event_poll(&event_code, &wpb, pollword), 0);
+    }
+
+    return 0;
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d21 3
+d31 4
+a37 1
+#include "wimplib.h"
+d41 1
+d43 1
+a43 1
+#define SettingsFile         "<Choices$Write>.ScrSavers.Slider"
+d49 4
+a52 4
+#define SpriteInitArea       9
+#define SpriteGetSprite      16
+#define SpritePutSprite      34
+#define SpriteSwitchToSprite 60
+a58 1
+static int        bpp;
+d66 2
+a67 4
+static int        direction;
+static int        slider_initialised = 0;
+static int        blocksize = 256;
+static int        slidestep = 2;
+d76 1
+a76 1
+void program_exit(void)
+d78 1
+a78 7
+    /* Turn on pointer */
+    _swix(OS_Byte, _INR(0,1), 106, 1);
+
+    /* Unset ScrSaver$Running */
+    _swix(OS_SetVarVal, _INR(0,4), "ScrSaver$Running", 0, -1, 0, 0);
+    
+    /* Exit */
+d84 1
+a84 1
+ * error_trap                                                                *
+d86 1
+a86 5
+ * Wrap around a function to report an error if one occurred eg.:            *
+ *  error_trap(event_initialise(&idb), 0);                                   *
+ *                                                                           *
+ * In: err - a kernel_oserror block                                          *
+ *     type - 0 means non-fatal, otherwise program will exit after reporting *
+d89 1
+a89 1
+void error_trap(_kernel_oserror *err, int err_type)
+d91 5
+a95 2
+    /* Report the appropriate error, has one occured */
+    if (err != NULL)
+d97 5
+a101 4
+        wimp_report_error(err, 0, "Screen Blanker", 0, 0, 0);
+  
+        /* Now, if it was a fatal error (type != 0), exit at once */
+        if (err_type != 0) exit(0);
+d103 6
+a108 1
+}
+d112 1
+a112 1
+ * rnd                                                                       *
+d114 1
+a114 1
+ * Generate a random number between 1 and n.                                 *
+d117 1
+a117 1
+int rnd(int n)
+d119 4
+a122 1
+    return (int) ( ((float)rand()/(float)RAND_MAX) *n)+1;
+d127 1
+a127 1
+ * set_random_seed                                                           *
+d129 1
+a129 1
+ * Reset the random number seed to a value dependent on the monotonic timer. *
+d131 2
+a132 1
+void set_random_seed(void)
+d134 1
+a134 1
+    int time;
+d136 2
+a137 3
+    _swix(OS_ReadMonotonicTime, _OUT(0), &time);
+    srand(time);
+}
+d139 5
+d145 2
+a146 13
+/*---------------------------------------------------------------------------*
+ * read_settings                                                             *
+ *                                                                           *
+ * Read the current settings file.                                           *
+ *---------------------------------------------------------------------------*/
+
+void read_settings(void)
+{
+    char  string[256];
+    FILE *fp;
+    
+    fp=fopen(SettingsFile, "r");
+    if (fp)
+d148 19
+a166 5
+        fgets(string, 256, fp);
+        sscanf(string, "BlockSize %d", &blocksize);
+        fgets(string, 256, fp);
+        sscanf(string, "SlideStep %d", &slidestep);
+        fclose(fp);
+d168 1
+a168 6
+    
+    if (blocksize>2048) blocksize = 2048;
+    if (slidestep>blocksize) slidestep = blocksize;
+    if (slidestep<1) slidestep = 1;
+    if (blocksize<16) blocksize = 16;
+}        
+d177 1
+a177 1
+int init_sprite_area(void)
+d180 4
+a183 1
+    
+d185 2
+d199 1
+a199 1
+    _swix(OS_SpriteOp, _INR(0,1), 256+SpriteInitArea, spritearea);
+d211 1
+a211 1
+void draw_grid(int w, int h, int s)
+d218 2
+a219 2
+        _swix(OS_Plot, _INR(0,2), 69, x, 0);
+        _swix(OS_Plot, _INR(0,2), 101, x+LineThickness, h);
+d224 2
+a225 2
+        _swix(OS_Plot, _INR(0,2), 69, 0, y);
+        _swix(OS_Plot, _INR(0,2), 101, w, y+LineThickness);
+d236 1
+a236 1
+void move_block(int bx, int by, int nx, int ny)
+d239 10
+a248 10
+    _swix(OS_SpriteOp, _INR(0,5), 256+SpritePutSprite,
+                                 spritearea,
+                                 "grab",
+                                 nx + (blk[1]*blk[0]),
+                                 ny + (blk[2]*blk[0]),
+                                 0);
+    _swix(OS_Plot, _INR(0,2), 69,
+                             nx + blk[3] + (blk[1]*blk[0]),
+                             ny + blk[4] + (blk[2]*blk[0]));
+    _swix(OS_Plot, _INR(0,2), 97, blk[5], blk[6]);
+d259 1
+a259 1
+void select_new_direction()
+d261 8
+a268 7
+    char* savearea;
+    int   opposite[] = {0, 2, 1, 4, 3};
+    int   last_direction = direction;
+    int   prev1;
+    int   prev2;
+    int   prev3;
+    int   fill_width;
+d270 1
+d277 2
+a278 2
+        direction = rnd(4);
+        if (direction==opposite[last_direction]) direction = rnd(4);
+d336 1
+a336 1
+    _swix(OS_SpriteOp, _INR(0,7), 256+SpriteGetSprite,
+d354 1
+a354 1
+                       256+SpriteSwitchToSprite,
+d363 2
+a364 2
+        _swix(OS_Plot, _INR(0,2), 69, blocksize-fill_width, 0);
+        _swix(OS_Plot, _INR(0,2), 97, fill_width, blocksize);
+d370 2
+a371 2
+        _swix(OS_Plot, _INR(0,2), 69, 0, blocksize-fill_width);
+        _swix(OS_Plot, _INR(0,2), 97, blocksize, fill_width);
+d375 1
+a375 1
+                       256+SpriteSwitchToSprite,
+d388 1
+a388 1
+void initialise_slider(void)
+d390 3
+a392 3
+    xblocks = (screenw / blocksize);
+    yblocks = (screenh / blocksize);
+    newx = rnd(xblocks);
+d396 2
+a397 2
+    _swix(OS_Plot, _INR(0,2), 69, newx*blocksize, newy*blocksize);
+    _swix(OS_Plot, _INR(0,2), 97, blocksize, blocksize);
+d401 1
+a401 3
+    error_trap(event_set_mask(Wimp_Poll_PollWord), 0);    
+
+    slider_initialised = 1;
+d413 8
+d422 6
+a427 1
+    if (!slider_initialised) initialise_slider();
+d429 8
+a436 3
+    if (blk[0]==blocksize) select_new_direction();
+    else move_block(blankx*blocksize, blanky*blocksize,
+                    newx*blocksize, newy*blocksize);
+d450 2
+a451 1
+    _swix(OS_Byte, _INR(0,1), 106, 0);
+d464 2
+a465 1
+    _swix(OS_Byte, _INR(0,1), 106, 1);
+d483 1
+d485 1
+d522 1
+a522 1
+static int main_initialise(void)
+d524 4
+a527 12
+    WimpOpenWindowBlock win;
+    BBox                extent;
+    int                 task_handle;
+    int                 xeig;
+    int                 yeig;
+    int                 xpixels;
+    int                 ypixels;
+    int                 wimp_handle;
+    int                 main_window;
+
+    read_settings();
+    set_random_seed();
+d529 2
+a530 2
+    /* Initialise and register event handlers */
+    error_trap(toolbox_initialise(0, 310, 0, 0, "<BlankTask$Dir>", &messages_desc, &idb,
+d532 2
+a533 2
+    error_trap(event_initialise(&idb), 0);
+    error_trap(event_set_mask(Wimp_Poll_PollWord +
+d536 7
+a542 13
+    error_trap(event_register_message_handler(Wimp_MQuit, message_quit, NULL), 0);
+    error_trap(event_register_wimp_handler(-1, Wimp_ENull, null_event, NULL), 0);
+    error_trap(event_register_wimp_handler(-1, Wimp_ERedrawWindow, redraw, NULL), 0);
+    error_trap(event_register_wimp_handler(-1, Wimp_EPollWordNonZero, pollword, NULL), 0);
+    error_trap(event_register_wimp_handler(-1, Wimp_EPointerEnteringWindow, gain_pointer, NULL), 0);
+    error_trap(event_register_wimp_handler(-1, Wimp_EPointerLeavingWindow, lose_pointer, NULL), 0);
+
+    /* Find screen size */
+    error_trap(_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 4, &xeig), 0);
+    error_trap(_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 5, &yeig), 0);
+    error_trap(_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 11, &xpixels), 0);
+    error_trap(_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 12, &ypixels), 0);
+    error_trap(_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 9, &bpp), 0);
+d544 4
+a547 3
+    bpp = 1<<bpp;
+    screenw = xpixels<<xeig;
+    screenh = ypixels<<yeig;
+d549 3
+a551 21
+    /* Set the extent of the 'covering' window. */
+    extent.xmin = 0;
+    extent.xmax = screenw;
+    extent.ymin = 0;
+    extent.ymax = screenh;
+    error_trap(toolbox_create_object(0, "Window", &main_window), 1);
+    error_trap(window_set_extent(0, main_window, &extent), 0);
+    error_trap(window_get_wimp_handle(0, main_window, &wimp_handle), 0);
+
+    /* Open the covering window */
+    win.window_handle = wimp_handle;
+    win.visible_area.xmin = 0;
+    win.visible_area.xmax = screenw;
+    win.visible_area.ymin = 0;
+    win.visible_area.ymax = screenh;
+    win.xscroll = 0;
+    win.yscroll = 0;
+    win.behind = -1;
+    error_trap(wimp_open_window(&win), 0);
+    
+    return 1;
+d565 1
+a565 1
+    int           *pollword = 0;
+d569 6
+a574 2
+    if (!main_initialise()) program_exit();
+    if (!init_sprite_area()) program_exit();
+d578 1
+a578 1
+        error_trap(event_poll(&event_code, &wpb, pollword), 0);
+@
+
+
+1.1.1.1
+log
+@Initial import of slider screensaver.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Now rounds blocksize to nearest value that will fit an exact number of
+blocks on screen.
+@
+text
+@a20 2
+/*          20-May-98: RML: Rounds block size so that exact number of blocks */
+/*                          fit horizontally and vertically.                 */
+a45 1
+#define MinimumBlockSize     32
+a51 2
+static int        xeig;
+static int        yeig;
+a162 62
+ * remainder                                                                 *
+ *                                                                           *
+ * Return the integer remainder of a division                                *
+ *---------------------------------------------------------------------------*/
+
+int remainder(int number, int divisor)
+{
+    int a = number / divisor;
+    int b = a * divisor;
+    
+    return number - b;
+}
+
+
+/*---------------------------------------------------------------------------*
+ * check_blocksize                                                           *
+ *                                                                           *
+ * Check blocksize is within various limits.                                 *
+ *---------------------------------------------------------------------------*/
+
+void check_blocksize(void)
+{
+    int n;
+    int sw = screenw + (1<<xeig);
+    int sh = screenh + (1<<yeig);
+    
+    /* Ensure blocksize is at least half the height */
+     if (blocksize > (sh/2)) blocksize = sh / 2;
+
+    /* Make sure blocksize is a multiple of 2 */
+    if (blocksize & 1) blocksize-=1;
+    
+    /* If blocksize is a multiple of screen width AND screen height, then return */
+    if ( (!remainder(sw, blocksize)) && (!remainder(sh, blocksize)) ) return;
+
+    /* Otherwise, try and find the nearest multiple of screen width AND screen height */
+    for  (n=2; n<blocksize; n+=2)
+    {
+        /* Blocksize must be no more than half screen height in size */
+        if ( (blocksize + n) < (sh / 2) )
+        {
+            if ( (!remainder(sw, blocksize + n)) && (!remainder(sh, blocksize + n)) )
+            {
+                blocksize += n;
+                return;
+            }
+        }
+        
+        /* Blocksize must be at least a minimum size */
+        if ( (blocksize - n) > MinimumBlockSize)
+        {
+            if ( (!remainder(sw, blocksize - n)) && (!remainder(sh, blocksize - n)) )
+            {
+                blocksize -= n;
+                return;
+            }
+        }
+    }
+}
+
+
+/*---------------------------------------------------------------------------*
+d171 1
+a171 3
+
+    check_blocksize();
+
+d491 2
+@
+
+
+1.1.1.3
+log
+@Error reporting routine used wrong application name.
+Code tidied up and now uses 'saver' library file for simplicity.
+@
+text
+@a22 1
+/*          05-Jun-98: RML: Code tidied up a little.                         */
+a36 1
+#include "saver.h"
+a48 3
+#define DefaultBlocksize     256
+#define DefaultSlidestep     2
+#define Delay                0
+d55 3
+d65 4
+a68 2
+static int        blocksize = DefaultBlocksize;
+static int        slidestep = DefaultSlidestep;
+d77 1
+a77 1
+static void program_exit(void)
+d79 7
+a85 1
+    saver_exit();
+d91 49
+d145 1
+a145 1
+static void read_settings(void)
+d147 1
+a148 1
+    char  string[256];
+d173 1
+a173 1
+static int remainder(int number, int divisor)
+d188 1
+a188 1
+static void check_blocksize(void)
+d191 2
+d195 1
+a195 1
+     if (blocksize > (screenh/2)) blocksize = screenh / 2;
+d201 1
+a201 1
+    if ( (!remainder(screenw, blocksize)) && (!remainder(screenh, blocksize)) ) return;
+d207 1
+a207 1
+        if ( (blocksize + n) < (screenh / 2) )
+d209 1
+a209 1
+            if ( (!remainder(screenw, blocksize + n)) && (!remainder(screenh, blocksize + n)) )
+d219 1
+a219 1
+            if ( (!remainder(screenw, blocksize - n)) && (!remainder(screenh, blocksize - n)) )
+d235 1
+a235 1
+static int init_sprite_area(void)
+a237 1
+    int bpp;
+a241 2
+    _swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), -1, 9, &bpp);
+    bpp = 1<<bpp;
+d254 1
+a254 1
+    if (_swix(OS_SpriteOp, _INR(0,1), 256+SpriteInitArea, spritearea)) return 0;
+d266 1
+a266 1
+static void draw_grid(int w, int h, int s)
+d273 2
+a274 2
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, x, 0);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, LineThickness, h);
+d279 2
+a280 2
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, 0, y);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, w, LineThickness);
+d291 1
+a291 1
+static void move_block(int bx, int by, int nx, int ny)
+d295 9
+a303 9
+                                  spritearea,
+                                  "grab",
+                                  nx + (blk[1]*blk[0]),
+                                  ny + (blk[2]*blk[0]),
+                                  0);
+    _swix(OS_Plot, _INR(0,2), OSPlot_Move,
+                              nx + blk[3] + (blk[1]*blk[0]),
+                              ny + blk[4] + (blk[2]*blk[0]));
+    _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, blk[5], blk[6]);
+d314 1
+a314 1
+static void select_new_direction()
+d316 7
+a322 8
+    static int  direction = 0;
+    static int  opposite[] = {0, 2, 1, 4, 3};
+    char       *savearea;
+    int         last_direction;
+    int         prev1;
+    int         prev2;
+    int         prev3;
+    int         fill_width;
+a323 1
+    last_direction = direction;
+d330 2
+a331 2
+        direction = saver_rnd(4);
+        if (direction==opposite[last_direction]) direction = saver_rnd(4);
+d416 2
+a417 2
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, blocksize-fill_width, 0);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, fill_width, blocksize);
+d423 2
+a424 2
+        _swix(OS_Plot, _INR(0,2), OSPlot_Move, 0, blocksize-fill_width);
+        _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, blocksize, fill_width);
+d441 1
+a441 1
+static void initialise_slider(void)
+d443 3
+a445 3
+    xblocks = (screenw / blocksize) - 1;
+    yblocks = (screenh / blocksize) - 1;
+    newx = saver_rnd(xblocks);
+d449 2
+a450 2
+    _swix(OS_Plot, _INR(0,2), OSPlot_Move, newx*blocksize, newy*blocksize);
+    _swix(OS_Plot, _INR(0,2), OSPlot_RectangleFill, blocksize, blocksize);
+d454 3
+a456 1
+    saver_error_trap(event_set_mask(Wimp_Poll_PollWord), 0);    
+a467 8
+    static int slider_initialised = 0;
+    static int last_time = 0;
+    int        current_time;
+    
+    _swix(OS_ReadMonotonicTime, _OUT(0), &current_time);
+    if (current_time < (last_time + Delay)) return 1;
+    last_time = current_time;
+
+d469 1
+a469 6
+
+    if (!slider_initialised)
+    {
+        initialise_slider();
+        slider_initialised = 1;
+    }
+d471 3
+a473 8
+    if (blk[0]==blocksize)
+    {
+        select_new_direction();
+    }
+    else
+    {
+        move_block(blankx*blocksize, blanky*blocksize, newx*blocksize, newy*blocksize);
+    }
+d487 1
+a487 2
+    saver_hide_pointer();
+
+d500 1
+a500 2
+    saver_show_pointer();
+    
+a517 1
+    {
+a518 1
+    }
+d555 1
+a555 1
+static void main_initialise(void)
+d557 10
+a566 4
+    int task_handle;
+    int main_window;
+    int xeig;
+    int yeig;
+d568 2
+a569 2
+    /* Initialise toolbox */
+    saver_error_trap(toolbox_initialise(0, 310, 0, 0, "<BlankTask$Dir>", &messages_desc, &idb,
+d571 2
+a572 2
+    saver_error_trap(event_initialise(&idb), 0);
+    saver_error_trap(event_set_mask(Wimp_Poll_PollWord +
+d575 26
+a600 7
+    /* Register event handlers */
+    saver_error_trap(event_register_message_handler(Wimp_MQuit, message_quit, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_ENull, null_event, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_ERedrawWindow, redraw, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_EPollWordNonZero, pollword, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_EPointerEnteringWindow, gain_pointer, NULL), 0);
+    saver_error_trap(event_register_wimp_handler(-1, Wimp_EPointerLeavingWindow, lose_pointer, NULL), 0);
+d603 11
+a613 7
+    saver_read_screensize(&screenw, &screenh, &xeig, &yeig);
+    saver_error_trap(toolbox_create_object(0, "Window", &main_window), 1);
+    saver_open_covering_window(main_window);
+
+    /* More initialisation */
+    read_settings();
+    saver_set_rnd_seed();
+d631 2
+a632 6
+    main_initialise();
+
+    if (!init_sprite_area())
+    {
+        saver_handle_fatal_error();
+    }
+d636 1
+a636 1
+        saver_error_trap(event_poll(&event_code, &wpb, pollword), 0);
+@

@@ -1,0 +1,178 @@
+head	1.2;
+access;
+symbols
+	RISC_OSLib-5_97:1.2
+	RISC_OSLib-5_96:1.2
+	RISC_OSLib-5_95:1.2
+	RISC_OSLib-5_94:1.2
+	RISC_OSLib-5_93:1.2
+	RISC_OSLib-5_92:1.2
+	RISC_OSLib-5_91:1.2
+	RISC_OSLib-5_90:1.2
+	RISC_OSLib-5_89:1.2
+	RISC_OSLib-5_88:1.2
+	RISC_OSLib-5_87:1.2
+	RISC_OSLib-5_86-1:1.2
+	RISC_OSLib-5_86:1.2
+	RISC_OSLib-5_85:1.2
+	RISC_OSLib-5_84:1.2
+	RISC_OSLib-5_83-2:1.2
+	RISC_OSLib-5_83-1:1.2
+	RISC_OSLib-5_83:1.2
+	RISC_OSLib-5_82:1.2
+	RISC_OSLib-5_81:1.2
+	RISC_OSLib-5_75-2:1.2
+	RISC_OSLib-5_80:1.2
+	RISC_OSLib-5_79:1.2
+	RISC_OSLib-5_78:1.2
+	RISC_OSLib-5_75-1:1.2
+	RISC_OSLib-5_77:1.2
+	RISC_OSLib-5_76:1.2
+	RISC_OSLib-5_75:1.2
+	RISC_OSLib-5_74:1.2
+	RISC_OSLib-5_73:1.2
+	RISC_OSLib-5_72:1.2
+	RISC_OSLib-5_71:1.2
+	RISC_OSLib-5_70:1.2
+	RISC_OSLib-5_69:1.2
+	RISC_OSLib-5_68:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2012.06.11.07.32.30;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	O2lGWYMHaZ6edg8w;
+
+1.1
+date	2012.05.28.18.04.08;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	psVvzYlFFIpQ9w6w;
+
+
+desc
+@@
+
+
+1.2
+log
+@Make mktime() correct for local time.
+Following an earlier fix, the logic of mktime() has turned out to need reviewing too.
+To summarise
+  time() -> a UTC time in seconds
+  gmtime() -> breaks down a UTC time into components
+  localtime() -> breaks down a UTC time into local components (tz + DST)
+  mktime() -> converts local components back into UTC time, normalising
+In mktime(), the current locale (via setlocale()) is considered and used to choose the timezone, assuming an appropriate territory module is loaded.
+The value of the tm_isdst field is factored into the offset calculation.
+However, mktime() is also defined as normalising the components of time and updating the caller's block with normalised values, in local time, so the local offset is reapplied at the end.
+
+Moved time_to_tm up in the function so mktime() can use it.
+Corrected/lined up some comments.
+Also, mktime() no longer forces tm_isdst to -1, it preserves the user's value, so consecutive mktime()s are consistent.
+Added test to "test/tzones.c", results compared with Windows XP.
+
+Version 5.69. Tagged as 'RISC_OSLib-5_69'
+@
+text
+@/* Copyright 2012 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <locale.h>
+#include <stdio.h>
+#include <time.h>
+
+int main(void)
+{
+	const char *result;
+	time_t      now;
+	struct tm  *local;
+	struct tm  *utc;
+	char        buffer[256];
+
+#ifdef __CC_NORCROFT
+	/* Expect 1,1,1,1,1 */
+	result = setlocale(LC_ALL, "");
+	printf("Set locale to empty string => '%s'\n", result == NULL ? "NULL" : result);
+	if (result != NULL) printf("Locale read back %s\n", setlocale(LC_ALL, NULL));
+
+	/* Expect 0,0,0,0,0 */
+	result = setlocale(LC_ALL, "C");
+	printf("Set locale to 'C' => %s\n", result == NULL ? "NULL" : result);
+	if (result != NULL) printf("Locale read back %s\n", setlocale(LC_ALL, NULL));
+
+	/* Expect 17,17,17,17,17 if Canada1 is loaded */
+	result = setlocale(LC_ALL, "Canada1");
+	printf("Set locale to fr-ca => %s\n", result == NULL ? "NULL" : result);
+	if (result != NULL) printf("Locale read back %s\n", setlocale(LC_ALL, NULL));
+
+	/* Expect 17,17,17,17,5137 if Canada1 is loaded */
+	result = setlocale(LC_ALL, "Canada1/HNP");
+	printf("Set locale to fr-ca Pacific => %s\n", result == NULL ? "NULL" : result);
+	if (result != NULL) printf("Locale read back %s\n", setlocale(LC_ALL, NULL));
+#else
+	/* Probably on a Windows PC then, use rough equivalent tzset() */
+	putenv("TZ=PST8PDT");
+	tzset();
+#endif
+	/* Expect the UTC time now and Pacific standard time (UTC-0800)
+	 * remembering that if you run this with DST on it'll be UTC-0700
+	 */
+	now = time(NULL);
+
+	utc = gmtime(&now);
+	printf("Time at UTC              %d-%02d-%02d %02d:%02d:%02d\n",
+	        utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+	        utc->tm_hour, utc->tm_min, utc->tm_sec);
+
+	local = localtime(&now);
+	strftime(buffer, 256, "%x %X %z %Z", local);
+	printf("in this program's locale %s\n", buffer);
+
+	/* Check for reciprocity */
+	if (now != mktime(localtime(&now))) printf("Asymmetry in mktime()!\n");
+
+	return 0;
+}
+@
+
+
+1.1
+log
+@Add locale support for selecting timezones from C
+armsys.c
+  Ammended time() to match ISO9899 and just return UTC like it says.
+  Inlined the single use of _bbctime() macro.
+locale.c
+  The timezone within a territory can now be specified as part of the setlocale() function.
+  This uses a qualifier to the already accepted territory name, for an example see test/tzones.c
+  Shock addition of some comments to the locale parsing function.
+  To avoid needing to mess about with C library workspace the timezone and territory are encoded internally into 1 word, with 10 bits allowing up to 1024 territories worldwide.
+  Ripple through to strftime().
+time.c
+  localtime() updated to respect locale selection.
+test/file,gen_inputs,test64
+  Copyright headers added.
+
+Output compared with Windows XP using setlocale versus tzset to shift the program into Pacific time.
+
+Version 5.68. Tagged as 'RISC_OSLib-5_68'
+@
+text
+@d66 3
+@
+

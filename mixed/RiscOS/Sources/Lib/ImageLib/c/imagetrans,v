@@ -1,0 +1,1067 @@
+head	1.13;
+access;
+symbols
+	ImageLib-0_09:1.13
+	ImageLib-0_08:1.13
+	ImageLib-0_07:1.13
+	ImageLib-0_06:1.13
+	ImageLib-0_05:1.13
+	ImageLib-0_04:1.13
+	ImageLib-0_03:1.13
+	ImageLib-0_02:1.13
+	ImageLib-0_01:1.12
+	dcotton_autobuild_BaseSW:1.13
+	ahodgkin_207release:1.12
+	ahodgkin_206release:1.12
+	ahodgkin_205release:1.11
+	ahodgkin_133beta:1.8
+	kbracey_126beta:1.5
+	kbracey_AW97patch:1.4
+	ahodgkin_AW97:1.4;
+locks; strict;
+comment	@# @;
+
+
+1.13
+date	2001.06.13.13.36.45;	author ahodgkin;	state Exp;
+branches;
+next	1.12;
+
+1.12
+date	98.07.03.10.23.23;	author dbrown;	state Exp;
+branches;
+next	1.11;
+
+1.11
+date	98.04.07.11.17.39;	author ahodgkin;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	98.03.23.13.29.19;	author kbracey;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	98.03.03.11.32.06;	author kbracey;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	98.01.29.17.51.47;	author kbracey;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	97.11.07.15.12.33;	author kbracey;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	97.11.04.15.27.44;	author kbracey;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	97.10.27.18.14.29;	author kbracey;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	97.10.14.17.45.49;	author kbracey;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.10.14.13.45.51;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.09.05.13.17.08;	author rleggett;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.07.21.12.24.34;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.13
+log
+@  Dependencies stripped. Delete o and z directories. New function.
+Detail:
+  All cleaning-related TaskObey files run StripDepnd on the relevant
+  Makefile now. The o and z directories are wiped for ImageLib, libjpeg
+  and libpng since there are dirs rules to create them (previously the
+  clean rules only wiped the contents). A new function, ImageLib_Version,
+  returns the Module_HelpVersion string from VersionNum.
+Admin:
+  Tested improved clean rules and rebuilt from clean. Operation of
+  ImageLib_Version not tested.
+
+Version 0.02. Tagged as 'ImageLib-0_02'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Copyright (c) 1996 Acorn RISC Technologies. All rights reserved.
+ */
+
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#ifdef TRACE
+#include <stdio.h>
+#endif
+
+#include "swis.h"
+#include "VersionNum"
+
+#include "imagetrans.h"
+
+#include "internal.h"
+#include "defines.h"
+#include "datastruct.h"
+#include "gif.h"
+#include "cfsi.h"
+#include "draw.h"
+#include "jpeg.h"
+#include "xbm.h"
+#include "png.h"
+#include "sprite.h"
+#include "PNG/png.h"
+
+static const char *mimetypes[]={"gif", "jpeg", "x-xbitmap", "x-riscos-sprite", "png", 0};
+
+static int NewGuess(Image *);
+static _kernel_oserror *LoadGuess(Image *this, const char *data, int len, BBox *changed);
+static _kernel_oserror *DeleteGuess(Image *this);
+static _kernel_oserror *EndLoadGuess(Image *this, BBox *changed);
+
+static int use_internal_jpeg = 0;
+
+void ImageLib_SetInternalJPEG(int a)
+{
+    use_internal_jpeg = a;
+}
+
+int ImageLib_GetInternalJPEG(void)
+{
+    return use_internal_jpeg;
+}
+
+void ImageLib_Init (void)
+{
+}
+
+const char *ImageLib_Version (void)
+{
+  return Module_HelpVersion;
+}
+
+static _kernel_oserror *ModeChange(Image *this)
+{
+    this->modechanged = 1;
+    return NULL;
+}
+
+Image *NewImage(const char *mimetype, unsigned int flags)
+{
+    Image *image;
+    int s;
+    int i;
+
+    image=(Image *)malloc(sizeof(Image));
+    memset(image, 0, sizeof(Image));
+
+    if (!image)
+        return NULL;
+
+    image->width=-1;
+    image->height=-1;
+    image->flags=flags;
+    image->private_data=NULL;
+    image->ModeChange=ModeChange;
+
+    image->transparent = 0;
+    image->mutable_mask = 0;
+    image->animated = 0;
+
+    if (mimetype==NULL)
+        i=-1;
+    else
+        for (i=0; mimetypes[i]; i++)
+            if (strcmp(mimetype, mimetypes[i])==0)
+                break;
+
+    switch (i)
+    {
+        case -1:
+            s=NewGuess(image);
+            break;
+
+        case 0:
+            s=NewGIF(image);
+            break;
+
+        case 1:
+            if (use_internal_jpeg != 0)
+                s=NewInternalJPEG(image);
+            else
+                s=NewJPEG(image);
+            break;
+
+        case 2:
+            s=NewXBM(image);
+            break;
+
+        case 3:
+            s=NewSprite(image);
+            break;
+
+        case 4:
+            s=NewPNG(image);
+            break;
+
+        default:
+            s=NewCFSI(image);
+            break;
+    }
+
+    if (s)
+    {
+        free(image);
+        return NULL;
+    }
+
+    return image;
+}
+
+static int NewGuess(Image *this)
+{
+    this->Load=LoadGuess;
+    this->Delete=DeleteGuess;
+    this->EndLoad=EndLoadGuess;
+    this->width=this->width_os=this->height_os=-1;
+    this->height=0; /* Use this to store bytes so far */
+
+    return 0;
+}
+
+static _kernel_oserror *LoadGuess(Image *this, const char *data, int len, BBox *changed)
+{
+    int toread=len;
+    char temp[sizeof this->factors];
+    int s;
+    _kernel_oserror *e;
+    int tempw, temph;
+
+    #ifdef TRACE
+    FILE *trace;
+    {
+        char name[256];
+        sprintf(name, "ADFS::4.$.Trace.Lib.%pG", this);
+        trace=fopen(name, "a");
+        if (trace)
+        {
+            fwrite(data, len, 1, trace);
+            fclose(trace);
+        }
+    }
+    #endif
+
+    if (changed)
+        memset(changed, 0, sizeof(BBox));
+
+    if (len<0)
+        return NULL;
+
+    if (toread+this->height > sizeof this->factors)
+        toread=sizeof this->factors - this->height;
+
+    memcpy((char *)this->factors+this->height, data, toread);
+
+    this->height += toread;
+    len -= toread;
+    data += toread;
+
+    if (this->height < sizeof this->factors)
+        return 0;
+
+    tempw=this->width_os;
+    temph=this->height_os;
+
+    memcpy(temp, this->factors, sizeof temp);
+
+    #ifdef TRACE
+    {
+        char name[256];
+        sprintf(name, "ADFS::4.$.Trace.Lib.%pD", this);
+        trace=fopen(name, "w");
+        if (trace)
+            fprintf(trace, "I think it's a ");
+    }
+    #endif
+    if (this->factors[0] == 0x38464947)  /* GIF8 */
+    {
+        s=NewGIF(this);
+        #ifdef TRACE
+        if (trace) fprintf(trace, "GIF. NewGIF returned %d\n", s);
+        #endif
+    }
+    else if (png_sig_cmp((png_bytep) this->factors, 0, sizeof this->factors) == 0)
+    {
+        s=NewPNG(this);
+        #ifdef TRACE
+        if (trace) fprintf(trace, "PNG. NewPNG returned %d\n", s);
+        #endif
+    }
+    else if (
+              use_internal_jpeg == 0 ||
+              (
+                use_internal_jpeg == 1                        &&
+                this->factors[0] == 0xE0FFD8FF                &&
+                (this->factors[1] & 0xFFFF0000) == 0x464A0000 &&
+                (this->factors[2] & 0x0000FFFF) == 0x00004649    /* SOI, APP0 "JFIF" */
+              )
+            )
+    {
+        s=NewJPEG(this);
+
+        #ifdef TRACE
+        if (trace) fprintf(trace, "SpriteExtend JFIF. NewJPEG returned %d\n", s);
+        #endif
+    }
+    else if ((this->factors[0] & 0x0000FFFF) == 0x0000D8FF) /* SOI */
+    {
+        s=NewInternalJPEG(this);
+
+        #ifdef TRACE
+        if (trace) fprintf(trace, "JPEG. NewInternalJPEG returned %d\n", s);
+        #endif
+    }
+    else if ((this->factors[0] == 0x77617244)) /* Draw */
+    {
+        /* Looks like it might be a draw file */
+        s=NewDraw(this);
+        #ifdef TRACE
+        if (trace) fprintf(trace, "Draw file. NewDraw returned %d\n", s);
+        #endif
+
+    }
+    else if (this->factors[0] == 0x66656423 &&
+             this->factors[1] == 0x20656E69)     /* #define */
+        s=NewXBM(this);
+    else if (this->factors[0] <= 200 &&       /* Less than 200 sprites */
+             this->factors[1] <= 64*1024 &&    /* Less than 64K of user data */
+             this->factors[2] <= 4*1024*1024)  /* Less than 4M in size */
+        s=NewSprite(this);
+    else
+    {
+        s=NewCFSI(this);
+        #ifdef TRACE
+        if (trace) fprintf(trace, "Dunno. NewCFSI returned %d\n", s);
+        #endif
+    }
+
+    #ifdef TRACE
+    if (trace) fclose(trace);
+    #endif
+
+    if (s)
+        return imgtrnsError("Unable to determine image format");
+
+    this->width_os=tempw;
+    this->height_os=temph;
+
+    e=this->Load(this, temp, sizeof temp, changed);
+    if (!e && len)
+        e=this->Load(this, data, len, changed);
+
+    return e;
+}
+
+static _kernel_oserror *DeleteGuess(Image *this)
+{
+    free(this);
+    return NULL;
+}
+
+static _kernel_oserror *EndLoadGuess(Image *this, BBox *changed)
+{
+    changed=NULL;
+
+    return imgtrnsError("Insufficient data to determine image format");
+}
+
+
+_kernel_oserror *imgtrnsError(const char *st)
+{
+  static _kernel_oserror e;
+  e.errnum=0;
+  strcpy(e.errmess, st);
+
+  return &e;
+}
+
+static flex_ptr export_ptr;
+static int export_len;
+static int export_pos;
+
+_kernel_oserror *StartExport(flex_ptr source, int len, int offset)
+{
+    export_ptr=source;
+    export_len=len;
+    export_pos=offset;
+
+    return NULL;
+}
+
+_kernel_oserror *Export(Image *this, char *buffer, int *len)
+{
+    if (*len>export_len)
+    {
+        memcpy(buffer, (char *)*export_ptr+export_pos, export_len);
+        *len=export_len;
+        export_len=0;
+        export_pos+=export_len;
+    }
+    else
+    {
+        memcpy(buffer, (char *)*export_ptr+export_pos, *len);
+        export_len-=*len;
+        export_pos+=*len;
+    }
+    return NULL;
+}
+
+_kernel_oserror *EndExport(Image *this)
+{
+    return NULL;
+}
+
+static _kernel_oserror *ReadPixel(void *spr_ptr, int *spid, int x, int y,
+                                  int *colour, int *tint)
+{
+    _kernel_oserror *e = NULL;
+    int pal_size;
+    int mask;
+
+    /* Read pixel mask */
+    e=_swix(OS_SpriteOp, _INR(0,4)|_OUT(5), 43+512, spr_ptr, spid, x, y, &mask);
+    if (e)
+        goto finish;
+
+    if (mask==0)
+    {
+        *colour=-1;
+        goto finish;
+    }
+
+    /* Read palette size*/
+    e=_swix(OS_SpriteOp, _INR(0,3)|_OUT(3), 37+512, spr_ptr, spid, -1, &pal_size);
+    if (e)
+        goto finish;
+
+    if (pal_size == 256) /* Only if a 256 palette sprite */
+    {
+        *colour =
+        ((char *) (((int *) ((char *) spid + spid[8]) +
+        (spid[4] + 1)*(spid[5] - y)))) [spid[6]/8 + x];
+        *tint = 0;
+    }
+    else
+    {
+        /*All other cases o k.*/
+        e = _swix(OS_SpriteOp, _INR(0,4)|_OUTR(5,6), 41+512, spr_ptr, spid, x, y,
+                                                    colour, tint);
+        if (e)
+            goto finish;
+    }
+
+finish:
+    return e;
+}
+
+
+_kernel_oserror *BGCol(void *spr_ptr, int *bgcol)
+{
+    int x,y,bpp;
+    int *sphead;
+    _kernel_oserror *e;
+    char temp[16];
+    int width, height, mode, palsize;
+    int colour, tint;
+    int *palette;
+    unsigned int col_word;
+    unsigned r=0, g=0, b=0;
+    double r2=0, g2=0, b2=0;
+    int rval, gval, bval;
+    int n=0;
+    int bg=*bgcol;
+    double sr, sg, sb;
+    double sd;
+    int xinc, yinc;
+
+    /* Find first sprite */
+    e=_swix(OS_SpriteOp, _INR(0,4), 256+13, spr_ptr, temp, sizeof temp, 1);
+    if (e)
+        return e;
+
+    /* Get pointer to it */
+    e=_swix(OS_SpriteOp, _INR(0,2)|_OUT(2), 256+24, spr_ptr, temp, &sphead);
+    if (e)
+        return e;
+
+    /* Get width and height */
+    e=_swix(OS_SpriteOp, _INR(0,2)|_OUTR(3,4)|_OUT(6), 512+40, spr_ptr, sphead,
+                                                       &width, &height, &mode);
+    if (e)
+        return e;
+
+    /* Get bpp */
+    e=_swix(OS_ReadModeVariable, _INR(0,1)|_OUT(2), mode, 9, &bpp);
+    if (e) return e;
+
+    /* Check palette */
+    e=_swix(OS_SpriteOp, _INR(0,3)|_OUTR(3,4), 512+37, spr_ptr, sphead, -1,
+                                                       &palsize, &palette);
+    if (e) return e;
+
+    if (bpp > 5 || (bpp <= 3 && palsize < (1<<(1<<bpp))))
+    {
+        *bgcol=-2;
+        return NULL;
+    }
+
+    xinc = width / 51; if (xinc < 9) xinc = 9;
+    yinc = height / 51; if (yinc < 9) yinc = 9;
+    for (x=0; x<width; x+=xinc)
+        for (y=0; y<height; y+=yinc)
+        {
+            ReadPixel(spr_ptr, sphead, x, y, &colour, &tint);
+            if (colour==-1)
+            {
+                col_word=bg;
+                goto do24bpp;
+            }
+            else
+            {
+                if (bpp < 4)
+                {
+                    col_word=palette[colour*2];
+                    goto do24bpp;
+                }
+                else if (bpp == 4)
+                {
+                    rval=colour & 0x001F; rval = (rval << 3) | (rval >> 2);
+                    gval=colour & 0x03E0; gval = (gval >> 2) | (gval >> 7);
+                    bval=colour & 0x7C00; bval = (bval >> 7) | (bval >> 12);
+                }
+                else /* bpp == 5 */
+                {
+                    col_word = colour << 8;
+                  do24bpp:
+                    rval=(col_word & 0xFF00) >> 8;
+                    gval=(col_word & 0xFF0000) >> 16;
+                    bval=col_word >> 24;
+                }
+
+            }
+
+            r+=rval; g+=gval; b+=bval;
+            r2+=rval*rval; g2+=gval*gval; b2+=bval*bval;
+            n++;
+        }
+
+
+    sr=sqrt(((double)r2-(double)r*(double)r/(double)n)/(double)n);
+    sg=sqrt(((double)g2-(double)g*(double)g/(double)n)/(double)n);
+    sb=sqrt(((double)b2-(double)b*(double)b/(double)n)/(double)n);
+
+    sd=(2*sr+4*sg+sb)/7;
+
+    if (sd<=32.0)
+    {
+        r/=n; g/=n; b/=n;
+
+        col_word=b<<24 | g<<16 | r<<8;
+    }
+    else
+        col_word=-1;
+
+    *bgcol=col_word;
+
+    return NULL;
+}
+
+int SpriteAreaSize(void *mode, int w, int h)
+{
+    int bpp;
+    int rowwidthinbits;
+    int rowwidthinwords;
+
+    bpp = _swi(OS_ReadModeVariable, _INR(0,1)|_RETURN(2), mode, 9);
+
+    rowwidthinbits = w<<bpp;
+    rowwidthinwords = (rowwidthinbits+31)/32;
+    return 16+44+rowwidthinwords*4*h + SprExtendBonus;
+}
+
+extern _kernel_oserror *BGColSimple(Image *this, int *bgcol, int dontoverride)
+{
+    return BGCol(this->private_data2, bgcol);
+}
+
+
+#ifdef USESYSTEMSPRITEAREA
+static unsigned int areasize, newsize;
+#else
+static int *sprarea;
+#endif
+static unsigned int sw0, sw1, sw2, sw3;
+static int *savearea;
+
+_kernel_oserror *MakeBufferSprite(void *mode, int width, int height, int **paletteptr)
+{
+    _kernel_oserror *e;
+  #ifdef USESYSTEMSPRITEAREA
+    unsigned int freeoffset, freespace;
+  #endif
+    unsigned int log2bpp, sprsize;
+
+    _swix(OS_SpriteOp, _IN(0)|_IN(2), 25, "itransbuffer");
+    if (savearea)
+    {
+        free(savearea);
+        savearea = NULL;
+    }
+
+  #ifdef USESYSTEMSPRITEAREA
+    e = _swix(OS_SpriteOp, _IN(0)|_OUT(2)|_OUT(5), SprReadControlBlock, &areasize, &freeoffset);
+    if (e) return e;
+
+    freespace = areasize - freeoffset;
+  #endif
+
+    log2bpp = _swi(OS_ReadModeVariable, _INR(0,1)|_RETURN(2), mode, 9);
+
+    sprsize = 44 + (((width << log2bpp) + 31)/32)*4*height + SprExtendBonus;
+
+    if (log2bpp <= 3)
+       sprsize += 8 << (1 << log2bpp);
+
+  #ifdef USESYSTEMSPRITEAREA
+    if (freespace < sprsize)
+    {
+        e = _swix(OS_ChangeDynamicArea, _INR(0,1), 3, sprsize - freespace);
+        if (e) return e;
+        e = _swix(OS_SpriteOp, _IN(0)|_OUT(2), SprReadControlBlock, &newsize);
+        if (e) return e;
+    }
+    else
+        newsize = areasize;
+  #else
+    sprarea = malloc(16 + sprsize);
+    if (!sprarea)
+    {
+        e = imgtrnsError("Out of memory");
+        goto error1;
+    }
+    sprarea[0] = 16 + sprsize;
+    sprarea[2] = 16;
+    e = _swix(OS_SpriteOp, _INR(0,1), 256+SprInitArea, sprarea);
+    if (e) goto error1;
+  #endif
+
+  #ifdef USESYSTEMSPRITEAREA
+    e = _swix(OS_SpriteOp, _IN(0)|_INR(2,6), SprCreateSprite, "itransbuffer", 0, width, height, mode);
+  #else
+    e = _swix(OS_SpriteOp, _INR(0,6), 256+SprCreateSprite, sprarea, "itransbuffer", 0, width, height, mode);
+  #endif
+    if (e)
+        goto error1;
+
+    if (log2bpp <= 3)
+    {
+        int *palette;
+        unsigned int palsize;
+
+      #ifdef USESYSTEMSPRITEAREA
+        e = _swix(OS_SpriteOp, _IN(0)|_INR(2,3), SprAddPalette, "itransbuffer", 1+(1U<<31));
+      #else
+        e = _swix(OS_SpriteOp, _INR(0,3), 256+SprAddPalette, sprarea, "itransbuffer", 1+(1U<<31));
+      #endif
+        if (e) goto error2;
+
+      #ifdef USESYSTEMSPRITEAREA
+        e = _swix(OS_SpriteOp, _IN(0)|_INR(2,3)|_OUTR(3,4),
+                               SprAddPalette, "itransbuffer", -1,
+                               &palsize, &palette);
+      #else
+        e = _swix(OS_SpriteOp, _INR(0,3)|_OUTR(3,4),
+                               256+SprAddPalette, sprarea, "itransbuffer", -1,
+                               &palsize, &palette);
+      #endif
+        if (e) goto error2;
+
+        e = _swix(ColourTrans_ReadPalette, _INR(0,4), -1, -1, palette, palsize * 8, 2);
+        if (e) goto error2;
+
+        if (paletteptr)
+            *paletteptr = palette;
+    }
+
+    return NULL;
+
+  error2:
+  #ifdef USESYSTEMSPRITEAREA
+    _swix(OS_SpriteOp, _IN(0)|_IN(2), SprDelete, "itransbuffer");
+  #endif
+
+  error1:
+  #ifdef USESYSTEMSPRITEAREA
+    if (areasize != newsize)
+        _swix(OS_ChangeDynamicArea, _INR(0,1), 3, areasize - newsize);
+  #else
+    free(sprarea);
+  #endif
+
+    return e;
+}
+
+_kernel_oserror *SwitchToBufferSprite(void)
+{
+    _kernel_oserror *e;
+    unsigned int savesize;
+
+    if (!savearea)
+    {
+      #ifdef USESYSTEMSPRITEAREA
+        e = _swix(OS_SpriteOp, _IN(0)|_IN(2)|_OUT(3), SprSaveAreaSize, "itransbuffer", &savesize);
+      #else
+        e = _swix(OS_SpriteOp, _INR(0,2)|_OUT(3), 256+SprSaveAreaSize, sprarea, "itransbuffer", &savesize);
+      #endif
+        if (e) return e;
+
+        savearea = malloc(savesize);
+        if (e) return imgtrnsError("Out of memory");
+
+        savearea[0] = 0;
+    }
+
+  #ifdef USESYSTEMSPRITEAREA
+    return _swix(OS_SpriteOp, _IN(0)|_INR(2,3)|_OUTR(0,3),
+                              SprSwitchVdu, "itransbuffer", savearea,
+                              &sw0, &sw1, &sw2, &sw3);
+  #else
+    return _swix(OS_SpriteOp, _INR(0,3)|_OUTR(0,3),
+                              256+SprSwitchVdu, sprarea, "itransbuffer", savearea,
+                              &sw0, &sw1, &sw2, &sw3);
+  #endif
+}
+
+_kernel_oserror *SwitchFromBufferSprite(void)
+{
+    int temp = sw0;
+    sw0 = 0;
+
+    return temp ? _swix(OS_SpriteOp, _INR(0,3), temp, sw1, sw2, sw3) : NULL;
+}
+
+_kernel_oserror *FreeBufferSprite(void)
+{
+    if (savearea)
+    {
+        free(savearea);
+        savearea = NULL;
+    }
+  #ifdef USESYSTEMSPRITEAREA
+    _kernel_oserror *e;
+
+    e = _swix(OS_SpriteOp, _IN(0)|_IN(2), SprDelete, "itransbuffer");
+    if (e) return e;
+
+    if (areasize != newsize)
+    {
+        e = _swix(OS_ChangeDynamicArea, _INR(0,1), 3, areasize - newsize);
+        if (e) return e;
+        newsize = areasize;
+    }
+  #else
+    if (sprarea)
+    {
+        free(sprarea);
+        sprarea = NULL;
+    }
+  #endif
+
+    return NULL;
+}
+
+_kernel_oserror *BufferSprite_TableSize(int *bufsize)
+{
+    return _swix(ColourTrans_GenerateTable, _INR(0,5)|_OUT(4), sprarea, sprarea+4, -1, -1, 0, 1, bufsize);
+}
+
+_kernel_oserror *BufferSprite_GenerateTable(void *table)
+{
+    return _swix(ColourTrans_GenerateTable, _INR(0,5), sprarea, sprarea+4, -1, -1, table, 1);
+}
+
+_kernel_oserror *BufferSprite_Plot(int x, int y, int flags)
+{
+    return _swix(OS_SpriteOp, _INR(0,5), 256+34, sprarea,
+                                         "itransbuffer",
+                                         x, y,
+                                         flags);
+}
+
+
+_kernel_oserror *BufferSprite_PlotScaled(int x, int y, int flags, int *fac, void *table)
+{
+    if (fac && fac[0] == fac[2] && fac[1] == fac[3])
+        fac = NULL;
+
+    if (fac == NULL && table == NULL && (flags &~ 0x6F) == 0)
+        return BufferSprite_Plot(x, y, flags);
+
+    return _swix(OS_SpriteOp, _INR(0,7), 256+52, sprarea,
+                                         "itransbuffer",
+                                         x, y,
+                                         flags, fac, table);
+}
+
+
+@
+
+
+1.12
+log
+@Added drawfile support and fixed jpeg memory leak.
+@
+text
+@d27 1
+d64 5
+@
+
+
+1.11
+log
+@ImageLib_SetInternalJPEG can be told to use OS routines only, OS routines
+if they can cope, or its own internal routines all the time.
+@
+text
+@d35 1
+d245 9
+@
+
+
+1.10
+log
+@Now links in IJG 6a code - can either use SpriteExtend or do it itself
+@
+text
+@d110 1
+a110 1
+            if (use_internal_jpeg)
+d221 9
+a229 4
+    else if (!use_internal_jpeg &&
+             this->factors[0] == 0xE0FFD8FF &&
+             (this->factors[1] & 0xFFFF0000) == 0x464A0000 &&
+             (this->factors[2] & 0x0000FFFF) == 0x00004649)       /* SOI, APP0 "JFIF" */
+d232 1
+d240 1
+@
+
+
+1.9
+log
+@Updated to libpng-0.99e and zlib-1.1.1
+@
+text
+@d48 12
+d110 4
+a113 1
+            s=NewJPEG(image);
+d211 1
+a211 1
+        if (trace) fprintf(trace, "GIF. NewGif returned %d\n", s);
+d214 11
+a224 2
+    else if ((this->factors[1] & 0xFFFF0000) == 0x464A0000 &&
+             (this->factors[2] & 0x0000FFFF) == 0x00004649)     /* JFIF */
+d228 8
+a235 1
+        if (trace) fprintf(trace, "JPEG. NewJPEG returned %d\n", s);
+a244 2
+    else if (png_check_sig((png_bytep) this->factors, sizeof this->factors))
+        s=NewPNG(this);
+@
+
+
+1.8
+log
+@Lots of printing problems fixed
+@
+text
+@a49 1
+    png_init ();
+@
+
+
+1.7
+log
+@Improved display during first pass of PNGs.
+Fixed saving of greyscale+alpha and true-colour+alpha PNGs as sprites.
+Background filled in for alpha PNGs if no filler function registered.
+ImageTest updated to work again.
+@
+text
+@d624 4
+a627 1
+    return _swix(OS_SpriteOp, _INR(0,3), sw0, sw1, sw2, sw3);
+d662 1
+a662 1
+    return _swix(ColourTrans_GenerateTable, _INR(0,5)|_OUT(4), sprarea, "itransbuffer", -1, -1, 0, 0, bufsize);
+d667 1
+a667 1
+    return _swix(ColourTrans_GenerateTable, _INR(0,5), sprarea, "itransbuffer", -1, -1, table, 0);
+@
+
+
+1.6
+log
+@Removed lots of compilation warnings in PNG stuff.
+Added some "fast plot without translation" optimisations.
+Convert RGB PNGs with <=5 significant bits on every channel into 16bpp sprites.
+Fixed a few RGB/greyscale tRNS anomalies.
+Made sure no gamma correction occurs if no gAMA chunk in PNG.
+Ensured that values 0 and 255 in alpha blending gamma tables are correct.
+Made < 8bpp paletted PNGs with complex transparency work.
+Made n bpp paletted PNGs with <n^(1/2) palette entries work. (eg 8bpp images
+with 8 palette entries (yuck)).
+Ensured spare palette entries in PNGs cleared.
+Added support for saving paletted transparent PNGs as sprites composited onto the PNG
+background colour.
+Added support for alpha blending in < 8bpp modes.
+@
+text
+@d524 5
+@
+
+
+1.5
+log
+@Rendering in filler functions in non-EX1 EY1 modes should now work.
+PNG background images with alpha now handled properly.
+@
+text
+@d662 9
+d673 6
+@
+
+
+1.4
+log
+@Implemented background colour determination for JPEGs and GIFs.
+Made basic BGCol routine work on 16 and 32 bpp sprites.
+@
+text
+@d402 1
+d404 2
+d466 1
+a466 1
+    return 16+44+rowwidthinwords*4*h;
+d469 1
+a469 1
+extern _kernel_oserror *BGColSimple(Image *this, int *bgcol)
+d473 198
+@
+
+
+1.3
+log
+@Made RGB PNGs work on RISC OS 3.1 (but slowly!)
+Added dithering to PNGs with alpha.
+Made ModeChange delay action until image is next rendered.
+@
+text
+@d345 1
+a345 1
+_kernel_oserror *BGCol(void *spr_ptr, int bpp, int *bgcol)
+d347 1
+a347 1
+    int x,y;
+d362 1
+d375 1
+a375 1
+    e=_swix(OS_SpriteOp, _INR(0,2)|_OUTR(3,5), 512+40, spr_ptr, sphead,
+d389 1
+a389 1
+    if (bpp >= 4 || palsize < (1<<(1<<bpp)))
+d395 4
+a398 2
+    for (x=0; x<width; x+=9)
+        for (y=0; y<height; y+=9)
+d404 22
+a425 4
+                col_word=palette[colour*2];
+            rval=(col_word & 0xFF00) >> 8;
+            gval=(col_word & 0xFF0000) >> 16;
+            bval=col_word >> 24;
+d466 1
+a466 1
+_kernel_oserror *BGColSimple(Image *this, int *bgcol)
+d468 1
+a468 1
+    return BGCol(this->private_data2, 3, bgcol);
+@
+
+
+1.2
+log
+@EndLoad now returns a BBox; Corrected flex problems on 3.1 machines; Corrected 16 colour mode bug.
+@
+text
+@d53 6
+d75 1
+d251 1
+a251 1
+    
+@
+
+
+1.1
+log
+@First commit to CVS
+@
+text
+@d46 1
+a46 1
+static _kernel_oserror *EndLoadGuess(Image *this);
+d241 1
+a241 1
+static _kernel_oserror *EndLoadGuess(Image *this)
+d243 2
+@

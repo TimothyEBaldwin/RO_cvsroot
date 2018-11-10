@@ -1,0 +1,298 @@
+head	1.1;
+access;
+symbols
+	kbracey_126:1.1.2.3
+	kbracey_AW97patch:1.1.2.3
+	ahodgkin_AW97:1.1.2.3
+	Web:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	97.09.18.14.12.07;	author kbracey;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	97.09.18.14.12.07;	author kbracey;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	97.09.30.14.13.55;	author kbracey;	state Exp;
+branches;
+next	1.1.2.3;
+
+1.1.2.3
+date	97.10.08.12.33.56;	author kbracey;	state Exp;
+branches;
+next	1.1.2.4;
+
+1.1.2.4
+date	97.11.28.15.32.27;	author kbracey;	state dead;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.1
+log
+@file shiftjis was initially added on branch Web.
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+@
+
+
+1.1.2.1
+log
+@Encoding support added (yippee). #define UNIFONT to get UTF-8 output,
+otherwise Latin-1 output is provided. Lots of encoding files...
+@
+text
+@a0 164
+/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdlib.h>
+
+#include "encoding.h"
+#include "utf8.h"
+
+#include "iso2022.h"
+#include "shiftjis.h"
+
+
+static UCS2 *roman, *katakana, *kanji;
+
+typedef struct ShiftJIS_Encoding
+{
+    Encoding e;
+    char prev;
+} ShiftJIS_Encoding;
+
+/*
+ * Routines for encoding Microsoft's Shift-JIS
+ * Number: 17
+ * Names: Shift_JIS
+ *        MS_Kanji
+ *        csShiftJIS
+ */
+
+static UCS4 kanji_to_ucs(int c1, int c2)
+{
+    /*
+     * Shift-JIS encodes kanji using byte pairs:
+     *     first byte 0x81-0x9F, 0xE0-0xEF
+     *    second byte 0x40-0x7E, 0x80-0xFC
+     *
+     * Removing the gap, and shifting to a base of 0,
+     * that gives us:
+     *     first byte 0-46
+     *    second byte 0-187
+     * And 47*188 = 8836 = 94*94... these 8836 codes
+     * are those of JIS X 0208.
+     *
+     * Also there are "user-defined" characters:
+     *     first byte 0xF0-0xFC
+     *    second byte 0x40-0x7E, 0x80-0xFC
+     *
+     * We turn all those into good ol' 0xFFFD.
+     *
+     * We assume that c1 is in the range 0x81-0x9F, 0xE0-0xFC,
+     * courtesy of range checking in shiftjis_read.
+     */
+    if (c1 >= 0xF0 || c2 < 0x40 || c2 == 0x7F || c2 > 0xFC)
+        return 0xFFFD;
+
+    if (c1 >= 0xE0)
+        c1 -= 0xC1;
+    else
+        c1 -= 0x81;
+
+    if (c2 >= 0x80)
+        c2 -= 0x41;
+    else
+        c2 -= 0x40;
+
+    return kanji[188 * c1 + c2];
+}
+
+static void shiftjis_reset(Encoding *e)
+{
+    ShiftJIS_Encoding *sj = (ShiftJIS_Encoding *) e;
+
+    if (!roman)
+        roman = iso2022_find_table(94, 0x4A);
+
+    if (!katakana)
+        katakana = iso2022_find_table(94, 0x49);
+
+    if (!kanji)
+        kanji = iso2022_find_table(94*94, 0x42);
+
+    sj->prev = 0;
+}
+
+static unsigned int shiftjis_read(struct Encoding *e,
+                                  int (*ucs_out)(void *, UCS4),
+                                  const char *s,
+                                  unsigned int n,
+                                  void *handle)
+{
+    ShiftJIS_Encoding *sj = (ShiftJIS_Encoding *) e;
+    unsigned int count;
+
+    for (count = n; count; count--)
+    {
+        char c = *s++;
+        UCS4 u;
+
+        if (sj->prev)
+        {
+            u = kanji_to_ucs(sj->prev, c);
+            sj->prev = 0;
+        }
+        else
+        {
+            if (c < 0x21)
+                u = c;
+            else if (c < 0x80)
+                u = roman[c - 0x21];
+            else if (c == 0x7F)
+                u = 0x007F;
+            else if (c == 0x80)
+                u = 0x005C; /* Backslash - a Mac extension */
+            else if (c < 0xA0)
+            {
+                sj->prev = c;
+                continue;
+            }
+            else if (c == 0xA0)
+                u = 0xFFFD;
+            else if (c < 0xE0)
+                u = katakana[c - 0xA1];
+            else if (c < 0xFD)
+            {
+                sj->prev = c;
+                continue;
+            }
+            else if (c == 0xFD)
+                u = 0x00A9; /* Copyright - a Mac extension */
+            else if (c == 0xFE)
+                u = 0x2122; /* Trademark - a Mac extension */
+            else /* c == 0xFF */
+                u = 0x2026; /* Ellipsis - a Mac extension */
+        }
+
+        if (ucs_out)
+            if (ucs_out(handle, u))
+                break;
+    }
+
+    return n - count;
+}
+
+static void shiftjis_delete(Encoding *e)
+{
+}
+
+Encoding enc_shiftjis =
+{
+    shiftjis_read,
+    shiftjis_reset,
+    sizeof(ShiftJIS_Encoding) - sizeof(Encoding),
+    shiftjis_delete
+};
+@
+
+
+1.1.2.2
+log
+@Turned off CUSTOMER_SPECIAL.
+Changed encoding tables to use FFFF as a null value instead of FFFD.
+Added OBJECT support (more testing required - PARAM not yet done).
+Added AREA support (commented out - MAP not yet done). They come out
+looking like <A></A> elements.
+Souped up mapping to Latin-1 (added lossy tables for Latin Extended
+Additional, CJK Punctuation and Fullwidth forms).
+Added support for <H1 align=...>
+Stripped some superfluous whitespace caused by linefeeds.
+Fixed missing linebreak in "<DT>One<DT>Two" by turning the second DT into
+a BR.
+Removed now unnecessary free(malloc(16384)) bodge.
+Put in CJK code even if UNIFONT not defined (hey - why not?).
+Added code to take direct pointer to table rather than loading it if
+it's in ResourceFS.
+Added support for encoding "x-acorn-latin1".
+Ensured correct handling of OPTIONs when UNIFONT not defined.
+@
+text
+@a41 2
+    UCS4 u;
+
+d76 1
+a76 3
+    u = kanji[188 * c1 + c2];
+
+    return u == NULL_UCS2 ? 0xFFFD : u;
+a144 3
+
+        if (u == NULL_UCS2)
+            u = 0xFFFD;
+@
+
+
+1.1.2.3
+log
+@Implemented ordered lists.
+Implemented <Q> ... </Q>.
+Caused a linebreak after </DD>.
+Finished implementing attributes for <OBJECT>.
+Stopped HTML after a </FRAMESET> leaking through.
+Ensured that FRAME and FRAMESET tokens aren't passed up if not using frames.
+
+Removed lots of unnecessary #include "utf8.h" lines from encoding files.
+Ensured unsigned constants used in UTF-8 code.
+Added UTF8_next and UTF8_prev functions.
+@
+text
+@d1 18
+@
+
+
+1.1.2.4
+log
+@Modified to use external Unicode resources and UnicodeLib.
+@
+text
+@@

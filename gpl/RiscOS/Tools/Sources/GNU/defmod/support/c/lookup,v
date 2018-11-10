@@ -1,0 +1,503 @@
+head	1.3;
+access;
+symbols
+	defmod-6_23:1.3
+	defmod-6_22:1.3
+	defmod-6_21:1.2
+	defmod-6_01:1.1.1.1
+	defmod-5_50_prerelease:1.1.1.1
+	oslib-5_5_prerelease:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2001.06.07.12.24.27;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.06.06.12.48.11;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.11.18.11.10.51;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.11.18.11.10.51;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  Changes to cstrong.c for UNIX compatibility.
+  Switching macros inverted.
+Detail:
+  Tested.
+Admin:
+  Still works.
+
+
+Version 6.22. Tagged as 'defmod-6_22'
+@
+text
+@/*lookup.c - simple lookup facilities*/
+
+/*OSLib---efficient, type-safe, transparent, extensible,\n"
+   register-safe A P I coverage of RISC O S*/
+/*Copyright © 1994 Jonathan Coxhead*/
+
+/*
+      OSLib is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 1, or (at your option)
+   any later version.
+
+      OSLib is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+      You should have received a copy of the GNU General Public License
+   along with this programme; if not, write to the Free Software
+   Foundation, Inc, 675 Mass Ave, Cambridge, MA 02139, U S A.
+*/
+
+/*From CLib*/
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*From OSLib*/
+#include "os.h"
+#include "territory.h"
+
+/*From Support*/
+#include "lookup.h"
+#include "m.h"
+#include "riscos.h"
+#include "trace.h"
+
+typedef
+   struct
+   {
+      char *token;
+      void *ptr;
+   }
+   Entry;
+
+struct lookup_t
+   {
+      int count;
+      Entry *entries;
+   };
+
+#if 0
+/*------------------------------------------------------------------------*/
+static os_error *Trace (lookup_t t)
+
+{
+   int i;
+
+   tracef ("Trace\n");
+   tracef ("t 0x%X\n" _ t);
+   tracef ("count %d\n" _ t->count);
+   tracef ("t->entries 0x%X\n" _ t->entries);
+   for (i = 0; i < t->count; i++)
+      tracef ("%-3d: 0x%X, 0x%X\n" _ i _
+            ((int *) t->entries) [2*i] _ ((int *) t->entries) [2*i + 1]);
+   for (i = 0; i < t->count; i++)
+      if (t->entries [i].token != NULL)
+         tracef ("%-3d: %s (0x%X) -> 0x%X\n" _
+               i _ t->entries [i].token _ t->entries [i].token _
+               t->entries [i].ptr);
+      else
+         tracef ("%-3d: empty\n" _ i);
+
+   return NULL;
+}
+#endif
+/*------------------------------------------------------------------------*/
+
+os_error *lookup_new
+(
+   lookup_t *t_out,
+   int       start_count
+)
+{
+   int       i;
+   os_error *error = NULL;
+   lookup_t  t;
+
+//   tracef ("lookup_new\n");
+   if ((t = m_ALLOC (sizeof *t)) == NULL)
+   {
+      error = riscos_error_lookup (os_GLOBAL_NO_MEM, "NoMem");
+      goto finish;
+   }
+
+   if ((t->entries = m_ALLOC (start_count*sizeof (Entry))) == NULL)
+   {
+      error = riscos_error_lookup (os_GLOBAL_NO_MEM, "NoMem");
+      goto finish;
+   }
+   t->count = start_count;
+
+//   tracef ("clearing out entries 0, ..., %d\n" _ t->count - 1);
+   for (i = 0; i < t->count; i++)
+      t->entries [i].token = NULL;
+
+   if (t_out != NULL) *t_out = t;
+
+finish:
+   if (error != NULL)
+   {
+//      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+      if (t != NULL)
+      {
+         m_FREE (t->entries, 0);
+         m_FREE (t, sizeof *t);
+      }
+   }
+
+   return error;
+}
+/*------------------------------------------------------------------------*/
+
+os_error *lookup_delete
+(
+   lookup_t t
+)
+{
+//   tracef ("lookup_delete\n");
+
+   if (t != NULL)
+   {
+      int i;
+
+      for (i = 0; i < t->count && t->entries [i].token != NULL; i++)
+         m_FREE (t->entries [i].token,
+               riscos_strlen (t->entries [i].token) + 1);
+
+      m_FREE (t->entries, t->count*sizeof (Entry));
+      m_FREE (t, sizeof *t);
+   }
+
+   return NULL;
+}
+/*------------------------------------------------------------------------*/
+
+/*Returns the entry corresponding to the token |s|, or |NULL| if it is
+   not in the table.
+   There are three possibilities on exit:
+      *e_out != NULL && (*e_out)->token == NULL:
+            |s| was not in the table, but there is a slot to put it in
+      *e_out != NULL && (*e_out)->token != NULL:
+            |s| was in the table before
+      *e_out == NULL:
+            |s| is not in the table, and the table should be extended.*/
+
+static os_error *Lookup
+(
+   lookup_t   t,
+   char      *s,
+   Entry    **e_out
+)
+{
+   int       i, collate;
+   os_error *error = NULL;
+   Entry    *e = NULL;
+
+//   tracef ("Lookup\n");
+
+   for (i = 0; i < t->count; i++)
+   {
+      if (t->entries [i].token == NULL)
+      {
+         e = &t->entries [i];
+//         tracef ("found an empty slot (%d)\n" _ i);
+         break;
+      }
+
+      /*Attempt to fix MED-4237: fall back to bytewise comparison if there
+         is no territory. J R C 23rd Feb 1995*/
+      /*Second attempt: the first stupidly still kept the erorr return from
+         xterritory_collate() in |error|.*/
+#ifndef EXECUTE_ON_UNIX
+      if (xterritory_collate (territory_CURRENT, s, t->entries [i].token,
+            territory_IGNORE_CASE, &collate) != NULL)
+#endif
+         collate = strcmp (s, t->entries [i].token);
+
+      if (collate == 0)
+      {
+         e = &t->entries [i];
+//         tracef ("found a match (%d)\n" _ i);
+         break;
+      }
+   }
+
+//   if (e == NULL) tracef ("no slot found\n");
+
+   if (e_out != NULL) *e_out = e;
+
+/*finish:*/
+//   if (error != NULL)
+//      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+   return error;
+}
+/*------------------------------------------------------------------------*/
+
+os_error *lookup
+(
+   lookup_t   t,
+   char      *s,
+   void     **ptr_out
+)
+{
+   os_error *error = NULL;
+   Entry    *e;
+
+//   tracef ("lookup (0x%X, \"%s\",)\n" _ t _ s);
+
+   if ((error = Lookup (t, s, &e)) != NULL)
+      goto finish;
+
+   if (e == NULL || e->token == NULL)
+   {
+      error = riscos_error_lookup (os_GLOBAL_NO_ANY, "NoAny", s);
+      goto finish;
+   }
+
+   if (ptr_out != NULL) *ptr_out = e->ptr;
+
+finish:
+//   if (error != NULL)
+//      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+   return error;
+}
+/*------------------------------------------------------------------------*/
+os_error *lookup_insert (lookup_t t, char *s, void *ptr)
+
+{
+   os_error *error = NULL;
+   Entry    *e;
+
+//   tracef ("lookup_insert (0x%X, \"%s\", 0x%X)\n" _ t _ s _ ptr);
+
+   if ((error = Lookup (t, s, &e)) != NULL)
+      goto finish;
+
+   if (e == NULL)
+   {
+      Entry *tmp;
+
+//      tracef ("extending the table to count %d (now at 0x%X)\n" _
+//            2*t->count _ t->entries);
+      if ((tmp = m_REALLOC (t->entries, t->count*sizeof (Entry),
+            2*t->count*sizeof (Entry))) == NULL)
+      {
+         error = riscos_error_lookup (os_GLOBAL_NO_MEM, "NoMem");
+         goto finish;
+      }
+      t->entries = tmp;
+//      tracef ("table extended (now at 0x%X)\n" _ t->entries);
+
+//      tracef ("clearing out entries %d, ..., %d\n" _
+//            t->count _ 2*t->count - 1);
+      memset (t->entries + t->count, '\0', t->count*sizeof (Entry));
+
+      e = &t->entries [t->count];
+
+      t->count *= 2;
+//      tracef ("new count %d\n" _ t->count);
+   }
+
+   if (e->token == NULL && (e->token = m_ALLOC (riscos_strlen (s) + 1)) ==
+         NULL)
+   {
+      error = riscos_error_lookup (os_GLOBAL_NO_MEM, "NoMem");
+      goto finish;
+   }
+
+   riscos_strcpy (e->token, s); /*case may have changed*/
+   e->ptr = ptr;
+
+finish:
+//   if (error != NULL)
+//      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+   return error;
+}
+/*------------------------------------------------------------------------*/
+
+os_error *lookup_enumerate
+(
+   lookup_t   t,
+   char     **token,
+   void     **ptr,
+   void     **context
+)
+{
+//   tracef ("lookup_enumerate\n");
+
+   if ((int) *context < t->count &&
+         t->entries [(int) *context].token != NULL)
+   {
+      if (token != NULL) *token = t->entries [(int) *context].token;
+      if (ptr   != NULL) *ptr   = t->entries [(int) *context].ptr;
+
+      *context = (void *) ((int) *context + 1);
+   }
+   else
+      /*Not found.*/
+      *context = NULL;
+
+   return NULL;
+}
+@
+
+
+1.2
+log
+@  Update of defmod to the one that accompanies public version 6.21
+  UNIX version.
+Detail:
+  This source set represents that distributed with OSLib 6.21.  I've
+    fixed some faults and passed them back to the maintainers (notably
+    an uncaught NULL pointer dereference in the chelp_output function).
+  This application now builds on Solaris, Linux & FreeBSD.
+  The bootstrap code moves to directory 'oslib' instead of 'bs' to avoid
+    needing to change lots of includes between RISC OS and non-RISC OS
+    variants.
+Notes:
+  -cstrong seems to produce empty files (on all variants) - I guess it's
+    not supported any more (we don't need it either).
+Admin:
+  Tested on Solaris, Linux, FreeBSD and RISC OS.
+  Sources re-released to maintainers as required under GPL licence.
+
+
+Version 6.21. Tagged as 'defmod-6_21'
+@
+text
+@d183 1
+a183 1
+#ifdef EXECUTE_ON_RISCOS
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d89 1
+a89 1
+   tracef ("lookup_new\n");
+d103 1
+a103 1
+   tracef ("clearing out entries 0, ..., %d\n" _ t->count - 1);
+d112 1
+a112 1
+      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+d129 1
+a129 1
+   tracef ("lookup_delete\n");
+d168 1
+a168 1
+   tracef ("Lookup\n");
+d175 1
+a175 1
+         tracef ("found an empty slot (%d)\n" _ i);
+d183 1
+d186 1
+d192 1
+a192 1
+         tracef ("found a match (%d)\n" _ i);
+d197 1
+a197 1
+   if (e == NULL) tracef ("no slot found\n");
+d202 2
+a203 2
+   if (error != NULL)
+      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+d218 1
+a218 1
+   tracef ("lookup (0x%X, \"%s\",)\n" _ t _ s);
+d232 2
+a233 2
+   if (error != NULL)
+      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+d243 1
+a243 1
+   tracef ("lookup_insert (0x%X, \"%s\", 0x%X)\n" _ t _ s _ ptr);
+d252 2
+a253 2
+      tracef ("extending the table to count %d (now at 0x%X)\n" _
+            2*t->count _ t->entries);
+d261 1
+a261 1
+      tracef ("table extended (now at 0x%X)\n" _ t->entries);
+d263 2
+a264 2
+      tracef ("clearing out entries %d, ..., %d\n" _
+            t->count _ 2*t->count - 1);
+d270 1
+a270 1
+      tracef ("new count %d\n" _ t->count);
+d284 2
+a285 2
+   if (error != NULL)
+      tracef ("ERROR: %s (error 0x%X)\n" _ error->errmess _ error->errnum);
+d298 1
+a298 1
+   tracef ("lookup_enumerate\n");
+@
+
+
+1.1.1.1
+log
+@  Initial import of the sources of the "defmod" tool, used to build OSLib.
+  These sources represent the GPLed version of defmod available with OSLib
+  5.5, with modifications to support -26bit and -32bit options to choose the
+  APCS variant being used.
+   
+Detail:
+  The code has been reorganised to remove dependencies on path variables
+  which are not appropriate for our build structure.  The sources directory
+  contains the main code sources; the bs directory contains bootstrap headers
+  to enable defmod to be build without OSLib headers being available; the
+  support directory contains derivatives of JCoxhead's support library.
+  
+  Code changes are a switch in support.s.riscosa to support 32-bit builds of
+  defmod itself; sources.y.defmod includes VersionNum and uses Module_Date
+  and Module_FullVersion in the -help output; sources.c.objasm has a new
+  apcs32 flag which controls MOV vs. MOVS and LDM vs. LDM^ for veneer exits.
+   
+  The Makefile is a complete rewrite.
+  
+  Do not define __GNUC__ as zero even if the compiler wants you to - it
+    breaks other things (due to inconsistent use of #ifdef and #if)
+ 
+Admin:
+  Checked output is correct by inspecting AOF files generated by ToolAction.
+  This tool sits in the GNU sources directory as it is released the GPL.
+  This tool exports its binary to the Library.Build directory because that
+    is where it lives in the library at the moment.
+
+
+Tagged as defmod-5_50_prerelease
+  
+@
+text
+@@

@@ -1,0 +1,795 @@
+head	1.1;
+access;
+symbols
+	GPIO-1_00-1_11_2_5:1.1.2.4
+	GPIO-1_00-1_11_2_4:1.1.2.3
+	GPIO-1_00-1_11_2_3:1.1.2.3
+	GPIO-1_00-1_11_2_2:1.1.2.2
+	GPIO-1_00-1_11_2_1:1.1.2.1
+	HAL:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2017.02.11.15.12.40;	author rool;	state dead;
+branches
+	1.1.2.1;
+next	;
+commitid	J69vqiljDCvfVxFz;
+
+1.1.2.1
+date	2017.02.11.15.12.41;	author rool;	state Exp;
+branches;
+next	1.1.2.2;
+commitid	J69vqiljDCvfVxFz;
+
+1.1.2.2
+date	2017.08.03.19.59.35;	author rsprowson;	state Exp;
+branches;
+next	1.1.2.3;
+commitid	jMkfGA3jss5TWN1A;
+
+1.1.2.3
+date	2017.08.03.20.01.55;	author rsprowson;	state Exp;
+branches;
+next	1.1.2.4;
+commitid	d9Lmb2DStI8JXN1A;
+
+1.1.2.4
+date	2018.03.31.20.21.29;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	1Yt462h8VyG8mEwA;
+
+
+desc
+@@
+
+
+1.1
+log
+@file gpio was initially added on branch HAL.
+@
+text
+@@
+
+
+1.1.2.1
+log
+@Implementation of API 1.00
+Detail:
+  By delagating the hardware access element to the underlying HAL, the GPIO module becomes much simpler.
+  None of the platform specific SWIs (eg. GPIO_AuxAsUSB) are required, or implemented. This information can be obtained by enumerating the pins and switching members of the same group by setting their mode for example.
+  A new SWI, GPIO_Features is added, though the returned flags are currently 0 the presence of the SWI demarks the HAL variant.
+  A new command, *GPIODevices lists the GPIO controller(s) known and their basic input/output state at a glance.
+  See the StrongHelp manual for full details.
+Admin:
+  Tested on not-a-Pi too, to ensure it doesn't attach to pre API 1.00.
+
+Version 1.00, 1.11.2.1. Tagged as 'GPIO-1_00-1_11_2_1'
+@
+text
+@a0 611
+/*
+ * Copyright (c) 2016, RISC OS Open Ltd
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "swis.h"
+
+#include "Global/NewErrors.h"
+#include "Global/Services.h"
+#include "Global/HALDevice.h"
+#include "Global/HALEntries.h"
+#include "Global/OSEntries.h"
+
+#include "GPIOHdr.h"
+
+#define GPIO_MAX_DEVICES       8 /* Arbitrary */
+#define GPIO_MAJOR_VSN         1
+#define ErrorBase_GPIO         0x81DD20
+#define UNUSED(k)              (k)=(k) /* Fewer warnings */
+#define CHECK_PIN_RANGE(p,d)   { uint32_t r = (p) >> 5; \
+                                 (d) = gpio_device[r]; \
+                                 if ((r >= GPIO_MAX_DEVICES) || ((d) == NULL)) \
+                                 return lookup_error(ERR0A_NOT_FOUND); \
+                               }
+#define GPIO_MODE_PULL_EN      (1<<5) /* Enable, else disable */
+#define GPIO_MODE_PULL_UP      (1<<6) /* Pull up, else down */
+#define GPIO_MODE_EVENT_EN     (1<<7) /* Enable, else disable */
+#define GPIO_MODE_EVENT_RISING (1<<8) /* Rising/high edge trigger, else falling/lo */
+#define GPIO_MODE_EVENT_EDGE   (1<<9) /* Edge sensitive, else level */
+#define GPIO_MODE_VALID_MASK   (0x1F<<5)
+#define GPIO_MODE_BITS         (0x1F)
+#define GPIO_INFO_FULL         0x4C4C5546
+
+typedef struct
+{
+	uint32_t number:8;     /* The Nth of this type */
+	uint32_t mode:5;       /* Opaque alternate mode */
+	uint32_t unused:3;
+	uint32_t type:16;      /* Allocated in Hdr:GPIODevice */
+} gpio_pinmode_t;
+
+typedef struct
+{
+	uint32_t pin:5;
+	uint32_t canoutput:1;
+	uint32_t caninput:1;
+	uint32_t unused:25;
+	uint32_t modesallowed; /* Bit field */
+	gpio_pinmode_t modes[1];
+#define GPIO_PINMODE_LAST      -1
+} gpio_pinenum_t;
+
+typedef struct
+{
+	struct device dev;
+	uint32_t ports;
+	uint32_t number;
+	const gpio_pinenum_t *(*Enumerate)(struct device *, int *);
+	int (*SetDataBits)(struct device *, int);
+	int (*ClearDataBits)(struct device *, int);
+	void (*ToggleDataBits)(struct device *, int);
+	int (*ReadDataBits)(struct device *);
+	int (*DataDirection)(struct device *, int, int);
+	int /* 5 bit mode */ (*ReadMode)(struct device *, int);
+	int /* 5 bit mode */ (*WriteMode)(struct device *, int, int /* 5 bit mode */);
+	int (*PullControl)(struct device *, int, int);   
+	int (*PullDirection)(struct device *, int, int);
+	int (*EdgeControl)(struct device *, int, int *, int *, int *);
+	int (*EdgePollStatus)(struct device *, int);
+} gpio_device_t;
+
+typedef struct
+{
+	uint32_t errnum;
+	char     token[8];
+} internaterr_t;
+
+enum
+{
+	ERR00_UK_OPERATION = 0, /* Unused */
+	ERR01_MALLOC_FAIL, /* Unused */
+	ERR02_HW_PROBLEM,
+	ERR03_FAIL_MAP_LOGICAL_GPIO, /* Unused */
+	ERR04_FAIL_MAP_LOGICAL_CONTROL, /* Unused */
+	ERR05_FAIL_MAP_LOGICAL_SRAM, /* Unused */
+	ERR06_RMA_CLEAR, /* Unused */
+	ERR07_NO_SOC_SUPPORT, /* Unused */
+	ERR08_TICKERV_CLAIM, /* Unused */
+	ERR09_NOT_PERMITTED,
+	ERR0A_NOT_FOUND
+};
+
+extern void *Resources(void); /* Generated by 'resgen' */
+
+static uint32_t message_block[4];
+static gpio_device_t *gpio_device[GPIO_MAX_DEVICES];
+
+/*
+ * Internationalisation
+ */
+static _kernel_oserror *lookup_error(uint32_t which)
+{
+	_kernel_oserror *error;
+	internaterr_t    msg_errblk;
+
+	/* Translate via MessageTrans' internal buffer */
+	sprintf(msg_errblk.token, "E%02x", which);
+	msg_errblk.errnum = which + ErrorBase_GPIO;
+	error = _swix(MessageTrans_ErrorLookup, _INR(0,7),
+	              &msg_errblk, message_block, 0, 0, 0, 0, 0, 0);
+
+	return error;
+}
+
+static const char *lookup_msg(const char *token, char *buffer, size_t buffersize)
+{
+	_kernel_oserror *error;
+
+	/* Translate via MessageTrans' internal buffer */
+	error = _swix(MessageTrans_Lookup, _INR(0,3),
+	              message_block, token, buffer, buffersize);
+	if (error != NULL) strcpy(buffer, "?");
+
+	return buffer;
+}
+
+/*
+ * Implementations
+ */
+static _kernel_oserror *do_swi_readoe(uint32_t pin, uint32_t *state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+	*state = (device->DataDirection(&device->dev, 0, 0) & mask) ? 1 : 0;
+
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_writeoe(uint32_t pin, uint32_t state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+	device->DataDirection(&device->dev, mask, state ? mask : 0);
+
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_readmode(uint32_t pin, uint32_t *state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+	uint32_t mode, pullen, pulldir;
+	int even, evrisehigh, evedge;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+
+	/* Gather the info */
+	mode = device->ReadMode(&device->dev, pin & 0x1F);
+	pullen = device->PullControl(&device->dev, 0, 0);
+	pulldir = device->PullDirection(&device->dev, 0, 0);
+	device->EdgeControl(&device->dev, 0, &even, &evedge, &evrisehigh);
+
+	/* Pick out the bit requested */
+	if (pullen & mask) mode = mode |
+	                          GPIO_MODE_PULL_EN |
+	                          ((pulldir & mask) ? GPIO_MODE_PULL_UP : 0);
+	if (even & mask) mode = mode |
+	                        GPIO_MODE_EVENT_EN |
+	                        ((evrisehigh & mask) ? GPIO_MODE_EVENT_RISING : 0) |
+	                        ((evedge & mask) ? GPIO_MODE_EVENT_EDGE : 0);
+	*state = mode;
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_writemode(uint32_t pin, uint32_t state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+	int even, evrisehigh, evedge;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+
+	if (state & ~(GPIO_MODE_BITS | GPIO_MODE_VALID_MASK))
+	{
+		/* Unknown flags passed */
+		return lookup_error(ERR09_NOT_PERMITTED);
+	}
+
+	/* Set the mode first in case the option bits only stick in that mode */
+	device->WriteMode(&device->dev, pin & 0x1F, state & GPIO_MODE_BITS);
+
+	if (state & GPIO_MODE_PULL_EN)
+	{
+		device->PullDirection(&device->dev, mask, (state & GPIO_MODE_PULL_UP) ? mask : 0);
+	}
+	device->PullControl(&device->dev, mask, (state & GPIO_MODE_PULL_EN) ? mask : 0);
+
+	if (state & GPIO_MODE_EVENT_EN)
+	{
+		even = mask;
+		evrisehigh = (state & GPIO_MODE_EVENT_RISING) ? mask : 0;
+		evedge = (state & GPIO_MODE_EVENT_EDGE) ? mask : 0;
+	}
+	else
+	{
+		even = evrisehigh = evedge = 0;
+	}
+	device->EdgeControl(&device->dev, mask, &even, &evedge, &evrisehigh);
+
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_readdata(uint32_t pin, uint32_t *state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+	*state = (device->ReadDataBits(&device->dev) & mask) ? 1 : 0;
+
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_writedata(uint32_t pin, uint32_t state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+	if (state)
+	{
+		device->SetDataBits(&device->dev, mask);
+	}
+	else
+	{
+		device->ClearDataBits(&device->dev, mask);
+	}
+
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_readevent(uint32_t pin, uint32_t *state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+	*state = (device->EdgePollStatus(&device->dev, 0) & mask) ? 1 : 0;
+
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_writeevent(uint32_t pin, uint32_t state)
+{
+	gpio_device_t *device;
+	uint32_t mask;
+
+	CHECK_PIN_RANGE(pin, device);
+	mask = 1 << (pin & 0x1F);
+	device->EdgePollStatus(&device->dev, state ? 0 : mask);
+
+	return NULL;
+}
+
+static _kernel_oserror *do_swi_info(_kernel_swi_regs *r)
+{
+	static const uint8_t dummylist[] = { 0xFF, 0xFF, 0xFF, 0xFF };
+	gpio_device_t *device;
+	const gpio_pinenum_t *info;
+	int32_t low, high, pin, next;
+	size_t i;
+
+	if (r->r[0] == GPIO_INFO_FULL)
+	{
+		/* Full info
+		 * => R0 = "FULL"
+		 *    R1 = opaque enumeration point (0 to start)
+		 *    R2 = HAL descriptor (0 to start)
+		 * <= R0 = pointer to full pin info
+		 *    R1 = next enumeration point (or -1 if no more)
+		 *    R2 = HAL descriptor
+		 *    R3 = logical pin
+		 */
+		if (r->r[2] == 0)
+		{
+			device = gpio_device[0];
+		}
+		else
+		{
+			device = (gpio_device_t *)r->r[2];
+		}
+		next = r->r[1];
+		info = device->Enumerate(&device->dev, &next);
+		if (info == NULL) return lookup_error(ERR0A_NOT_FOUND);
+		pin = (device->number << 5) + info->pin;
+		if (next == -1)
+		{
+			/* No more on that device, prepare to carry on on the next device.
+			 * This ensures that callers of the SWI see pins in one long
+			 * enumeration, but the HAL devices see the enumeration per
+			 * each device.
+			 */
+			for (i = 0; i < (GPIO_MAX_DEVICES - 1); i++)
+			{
+				if (gpio_device[i] == device)
+				{
+					for (; i < GPIO_MAX_DEVICES; i++)
+					{
+						gpio_device_t *tmpdevice = gpio_device[i + 1];
+						int32_t        tmpnext = 0;
+
+						if (tmpdevice == NULL) break;
+						if (tmpdevice->Enumerate(&tmpdevice->dev, &tmpnext) != NULL)
+						{
+							/* Exists and has pins */
+							device = tmpdevice;
+							next = 0;
+						}
+					}
+					break;
+				}
+			}
+		}
+		r->r[0] = (int)info;
+		r->r[1] = next;
+		r->r[2] = (int)device;
+		r->r[3] = pin;
+
+		return NULL;
+	}
+
+	/* Not full info
+	 * <= R0 = lowest pin (what if there are gaps?)
+	 *    R1 = highest pin (what if there are gaps?)
+	 *    R2 = pointer to alternate lists
+	 */
+	low = INT32_MAX;
+	high = 0;
+	for (i = 0; i < GPIO_MAX_DEVICES; i++)
+	{
+		device = gpio_device[i];
+		next = 0;
+		while ((device != NULL) && (next != -1))
+		{
+			info = device->Enumerate(&device->dev, &next);
+			if (info != NULL)
+			{
+				pin = (device->number << 5) + info->pin; /* Make contiguous */
+				if (pin < low) low = pin; /* Min */
+				if (pin > high) high = pin; /* Max */
+			}
+		}
+	}
+	r->r[0] = low;
+	r->r[1] = high;
+	r->r[2] = (int)dummylist;
+
+	return NULL;
+}
+
+static const char *do_formatted_bits(uint32_t value, char hi, char lo, char *buffer)
+{
+	int32_t i;
+	char   *b = buffer;
+
+	for (i = 31; i >= 0; i--)
+	{
+		*b = (value & (1 << i)) ? hi : lo;
+		b++;
+		if ((i % 8) == 0)
+		{
+			*b = ' ';
+			b++;
+		}
+	}
+	/* Write over the last separator */
+	b--;
+	*b = '\0';
+
+	return (const char *)buffer;
+}
+
+static _kernel_oserror *do_cmd_gpiodevices(void)
+{
+	size_t i;
+	char input[2], output[2], range[64], bits[32 + 8];
+	uint32_t value;
+	gpio_device_t *device;
+
+	lookup_msg("In", input, sizeof(input));
+	lookup_msg("Out", output, sizeof(output));
+	lookup_msg("Range", range, sizeof(range));
+	for (i = 0; i < GPIO_MAX_DEVICES; i++)
+	{
+		device = gpio_device[i];
+		if (device != NULL)
+		{
+			printf("%u: %s\n", i, device->dev.description);
+			putchar(' '); putchar(' '); putchar(' ');
+			value = device->DataDirection(&device->dev, 0, 0);
+			printf(range, do_formatted_bits(value, input[0], output[0], bits));
+			putchar('\n');
+			putchar(' '); putchar(' '); putchar(' ');
+			value = device->ReadDataBits(&device->dev);
+			printf(range, do_formatted_bits(value, '1', '0', bits));
+			putchar('\n');
+		}
+	}
+
+	return NULL;
+}
+
+/*
+ * Module initialise
+ */
+_kernel_oserror *gpio_init(const char *cmd_tail, int podule_base, void *pw)
+{
+	gpio_device_t   *device;
+	_kernel_oserror *error;
+	int32_t pos = 0, count = 0;
+
+	/* Go looking for suitable GPIO devices */
+	while (1)
+	{
+		error = _swix(OS_Hardware, _INR(0,1) | _IN(8) | _OUTR(1,2),
+		                           HALDeviceType_Comms + HALDeviceComms_GPIO + (GPIO_MAJOR_VSN << 16), pos,
+		                           OSHW_DeviceEnumerate,
+		                           &pos, &device);
+		if (error != NULL) return error;
+		if ((pos == -1) && (count > 0))
+		{
+			/* Found something while looking */
+			break;
+		}
+		if (pos == -1)
+		{
+			static const internaterr_t badhard = { ErrorNumber_BadHard, "BadHard" };
+
+			/* No matches, quit */
+			return _swix(MessageTrans_ErrorLookup, _INR(0,2), &badhard, 0, 0);
+		}
+		if (((device->dev.version >> 16) == GPIO_MAJOR_VSN /* Major version match */) &&
+		    (device->number < GPIO_MAX_DEVICES) &&
+		    device->dev.Activate(&device->dev))
+		{
+			/* Note it */
+			gpio_device[device->number] = device;
+			count++;
+		}
+	}
+
+#ifndef ROM
+	/* Register the messages for RAM based modules */
+	error = _swix(ResourceFS_RegisterFiles, _IN(0), Resources());
+	if (error != NULL) return error;
+#endif
+	error = _swix(MessageTrans_OpenFile, _INR(0,2), message_block, Module_MessagesFile, 0);
+	if (error != NULL)
+	{
+#ifndef ROM
+		_swix(ResourceFS_DeregisterFiles, _IN(0), Resources());
+#endif
+		return error;
+	}
+
+	UNUSED(cmd_tail);
+	UNUSED(podule_base);
+	UNUSED(pw);
+
+	return NULL;
+}
+
+/*
+ * Module finalise
+ */
+_kernel_oserror *gpio_final(int fatal, int podule, void *pw)
+{
+	size_t i;
+
+	/* Tidy up and deregister */
+	for (i = 0; i < GPIO_MAX_DEVICES; i++)
+	{
+		if (gpio_device[i] != NULL) gpio_device[i]->dev.Deactivate(&gpio_device[i]->dev);
+	}
+
+	_swix(MessageTrans_CloseFile, _IN(0), message_block);
+#ifndef ROM
+	_swix(ResourceFS_DeregisterFiles, _IN(0), Resources());
+#endif
+
+	UNUSED(fatal);
+	UNUSED(podule);
+	UNUSED(pw);
+
+	return NULL;
+}
+
+/*
+ * Module services
+ */
+void gpio_services(int service_number, _kernel_swi_regs *r, void *pw)
+{
+	switch (service_number)
+	{
+#ifndef ROM
+		case Service_ResourceFSStarting:
+			(*(void (*)(void *, void *, void *, void *))r->r[2])(Resources(), 0, 0, (void *)r->r[3]);
+			break;
+#endif
+	}
+
+	UNUSED(pw);
+}
+
+/*
+ * Module commands
+ */
+_kernel_oserror *gpio_commands(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+	switch (cmd_no)
+	{
+		case CMD_GPIODevices:
+			return do_cmd_gpiodevices();
+	}
+
+	UNUSED(arg_string);
+	UNUSED(argc);
+	UNUSED(pw);
+
+	return NULL;
+}
+
+/*
+ * Module SWIs
+ */
+_kernel_oserror *gpio_swis(int swi_offset, _kernel_swi_regs *r, void *pw)
+{
+	switch (swi_offset)
+	{
+		case GPIO_ReadData - GPIO_00:
+			return do_swi_readdata(r->r[0], (uint32_t *)&r->r[0]);
+
+		case GPIO_WriteData - GPIO_00:
+			return do_swi_writedata(r->r[0], r->r[1]);
+
+		case GPIO_ReadOE - GPIO_00:
+			return do_swi_readoe(r->r[0], (uint32_t *)&r->r[0]);
+
+		case GPIO_WriteOE - GPIO_00:
+			return do_swi_writeoe(r->r[0], r->r[1]);
+
+		case GPIO_ReadEvent - GPIO_00:
+			return do_swi_readevent(r->r[0], (uint32_t *)r->r[0]);
+
+		case GPIO_WriteEvent - GPIO_00:
+			return do_swi_writeevent(r->r[0], r->r[1]);
+
+		case GPIO_Info - GPIO_00:
+			return do_swi_info(r);
+
+		case GPIO_ReadMode - GPIO_00:
+			return do_swi_readmode(r->r[0], (uint32_t *)&r->r[0]);
+
+		case GPIO_WriteMode - GPIO_00:
+			return do_swi_writemode(r->r[0], r->r[1]);
+
+		case GPIO_Features - GPIO_00:
+			r->r[0] = 0; /* No newly introduced feature flags yet */
+			return NULL;
+	}
+	UNUSED(pw);
+
+	return error_BAD_SWI;
+}
+@
+
+
+1.1.2.2
+log
+@Export C version of the device header
+Move some of the struct definitions out into a new header file, which is appended at build time to the GPIODevice. Some minor renaming to follow the conventions from other devices (eg. whether to split with underscores or not).
+Sync GPIO types in the docs.
+
+Version 1.00, 1.11.2.2. Tagged as 'GPIO-1_00-1_11_2_2'
+@
+text
+@a38 1
+#include "Interface/GPIODevice.h"
+d62 38
+d122 1
+a122 1
+static gpiodevice_t *gpio_device[GPIO_MAX_DEVICES];
+d158 1
+a158 1
+	gpiodevice_t *device;
+d170 1
+a170 1
+	gpiodevice_t *device;
+d182 1
+a182 1
+	gpiodevice_t *device;
+d210 1
+a210 1
+	gpiodevice_t *device;
+d249 1
+a249 1
+	gpiodevice_t *device;
+d261 1
+a261 1
+	gpiodevice_t *device;
+d280 1
+a280 1
+	gpiodevice_t *device;
+d292 1
+a292 1
+	gpiodevice_t *device;
+d305 2
+a306 2
+	gpiodevice_t *device;
+	const gpio_enumerate_t *info;
+d327 1
+a327 1
+			device = (gpiodevice_t *)r->r[2];
+d346 1
+a346 1
+						gpiodevice_t  *tmpdevice = gpio_device[i + 1];
+d425 1
+a425 1
+	gpiodevice_t *device;
+d455 1
+a455 1
+	gpiodevice_t    *device;
+@
+
+
+1.1.2.3
+log
+@Fix for abort using GPIO_ReadEvent
+Missing '&' meant an attempt to put the result to the wrong address.
+Ref https://www.riscosopen.org/forum/forums/11/topics/9414
+
+Version 1.00, 1.11.2.3. Tagged as 'GPIO-1_00-1_11_2_3'
+@
+text
+@d553 1
+a553 1
+			return do_swi_readevent(r->r[0], (uint32_t *)&r->r[0]);
+@
+
+
+1.1.2.4
+log
+@Fix for only returning the first and last GPIO controller's enumeration
+The loop to search for the next controller to return for GPIO_Info would only find the first and last controller and skipped any intermediate ones.
+For the Raspberry Pi, with 2, this went unnoticed.
+Also, the inner loop would read off the end of the gpio_device array by 1 entry.
+
+Tested on a Raspberry Pi (results unchanged) and OMAP3 (6 controllers).
+
+Version 1.00, 1.11.2.5. Tagged as 'GPIO-1_00-1_11_2_5'
+@
+text
+@d303 1
+a303 1
+			for (i = 0; i < GPIO_MAX_DEVICES; i++)
+d305 1
+a305 10
+				if (gpio_device[i] == device) break;
+			}
+			i++;
+			for (; i < GPIO_MAX_DEVICES; i++)
+			{
+				gpiodevice_t *tmpdevice = gpio_device[i];
+				int32_t       tmpnext = 0;
+
+				if (tmpdevice == NULL) break;
+				if (tmpdevice->Enumerate(&tmpdevice->dev, &tmpnext) != NULL)
+d307 13
+a319 3
+					/* Exists and has pins */
+					device = tmpdevice;
+					next = 0;
+@
+
+

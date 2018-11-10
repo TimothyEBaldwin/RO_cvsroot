@@ -1,0 +1,395 @@
+head	1.6;
+access;
+symbols
+	MUSBDriver-0_35:1.6
+	MUSBDriver-0_34:1.6
+	MUSBDriver-0_33:1.6
+	MUSBDriver-0_32:1.6
+	MUSBDriver-0_31:1.5
+	MUSBDriver-0_30:1.5
+	MUSBDriver-0_29:1.5
+	MUSBDriver-0_28:1.5
+	MUSBDriver-0_27:1.4
+	MUSBDriver-0_26:1.4
+	MUSBDriver-0_25:1.4
+	MUSBDriver-0_24:1.4
+	MUSBDriver-0_23:1.4
+	MUSBDriver-0_22:1.3
+	MUSBDriver-0_21:1.2
+	MUSBDriver-0_20:1.2
+	MUSBDriver-0_19:1.2
+	MUSBDriver-0_18:1.2
+	MUSBDriver-0_17:1.2
+	MUSBDriver-0_16:1.2
+	MUSBDriver-0_15:1.2
+	MUSBDriver-0_14:1.2
+	MUSBDriver-0_13:1.2
+	MUSBDriver-0_12:1.2
+	MUSBDriver-0_11:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2017.09.23.09.01.54;	author rool;	state Exp;
+branches;
+next	1.5;
+commitid	6rXidvVzktBEFi8A;
+
+1.5
+date	2016.12.17.10.40.24;	author rool;	state Exp;
+branches;
+next	1.4;
+commitid	RYu6RVCw6APddkyz;
+
+1.4
+date	2015.08.21.20.09.38;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	AR6BOUEtVfUgVayy;
+
+1.3
+date	2014.06.01.13.58.16;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	8OjtcW0RnvIJcPCx;
+
+1.2
+date	2011.05.22.20.32.28;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	ojDCXEOv6C57WIkv;
+
+1.1
+date	2011.04.11.23.25.35;	author jlee;	state Exp;
+branches;
+next	;
+commitid	6pcEoJPvdLzddtfv;
+
+
+desc
+@@
+
+
+1.6
+log
+@Remove HAL library variant
+Detail:
+  Simplify the makefile by not building a HAL variant.
+  cmodule.c: 2 fewer warnings
+  musb.c/musb_debug.c/musb_peri.c/musb_root.c/musb_util.c/tps.c: remove usbhal.h include
+  cmodule.h/musb_usb.c: USBHAL is no longer defined
+  CMHG file changed to make Makefile
+Admin:
+  Submission for USB bounty.
+
+Version 0.32. Tagged as 'MUSBDriver-0_32'
+@
+text
+@/*
+ * Copyright (c) 2004, 2009 The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Lennart Augustsson (lennart@@augustsson.net), Charles M. Hannum, and
+ * Jeffrey Lee (me@@phlamethrower.co.uk)
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *        This product includes software developed by the NetBSD
+ *        Foundation, Inc. and its contributors.
+ * 4. Neither the name of The NetBSD Foundation nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include "modhead.h"
+#include "swis.h"
+#include "callx/callx.h"
+#include <limits.h>
+#include <machine/bus.h>
+
+#include <sys/malloc.h>
+#include <sys/queue.h>
+#include <sys/types.h>
+#include <sys/systm.h>
+
+#include <dev/usb/usb.h>
+#include <dev/usb/usbdi.h>
+#include <dev/usb/usbdivar.h>
+
+#include "Global/RISCOS.h"
+#include "Global/HALEntries.h"
+#include "cmodule.h"
+
+/* Have to avoid including stdio as there's a clash with the BSD stuff */
+#define __stdio_h
+
+#include "musb.h"
+#include "musb_util.h"
+
+/*
+
+				Utility functions
+
+*/
+
+int
+musb_str(usb_string_descriptor_t* p, int l, char *s)
+{
+	int i;
+
+	if (l == 0)
+		return (0);
+	p->bLength = 2 * strlen(s) + 2;
+	if (l == 1)
+		return (1);
+	p->bDescriptorType = UDESC_STRING;
+	l -= 2;
+	for (i = 0; s[i] && l > 1; i++, l -= 2)
+		USETW2(p->bString[i], 0, s[i]);
+	return (2*i+2);
+}
+
+u32 musb_calc_port_status(int devctl,int power,u32 port_status)
+{
+	/* Calculate new port_status flags */
+	int i=0;
+	if(devctl & DEVCTL_HOSTMODE)
+	{
+		i |= UPS_CURRENT_CONNECT_STATUS; /* Always connected when in host mode? */
+		i |= UPS_PORT_ENABLED; /* Always enabled? */
+		if(power & POWER_SUSPENDM)
+			i |= UPS_SUSPEND;
+		/* todo: overcurrent */
+		if(power & POWER_RESET)
+			i |= UPS_RESET;
+		i |= UPS_PORT_POWER; /* Always powered in host mode? */
+		if(power & POWER_HSMODE)
+			i |= UPS_HIGH_SPEED;
+		else if(devctl & DEVCTL_LSDEV)
+			i |= UPS_LOW_SPEED;
+	}
+	/* Update wPortStatus */
+	if((i & UPS_CURRENT_CONNECT_STATUS) != (port_status & UPS_CURRENT_CONNECT_STATUS))
+		i |= UPS_C_CONNECT_STATUS<<16;
+	if(!(i & UPS_PORT_ENABLED) && (port_status & UPS_PORT_ENABLED))
+		i |= UPS_C_PORT_ENABLED<<16;
+	if((i & UPS_OVERCURRENT_INDICATOR) != (port_status & UPS_OVERCURRENT_INDICATOR))
+		i |= UPS_C_OVERCURRENT_INDICATOR<<16;
+	if((i & UPS_RESET) && !(port_status & UPS_RESET))
+		i |= UPS_C_PORT_RESET<<16;
+	return (port_status & 0xffff0000) | i;
+}
+
+void *musb_fiforead(volatile musb_regs *musb_base,int ep,void *dest,int bytes)
+{
+	DPRINTFN(20,("musb_fiforead: %d: ",bytes));
+	volatile musb_fifo *fifo = &(musb_base->fifo[ep]);
+	if(!(((u32)dest)&3))
+	{
+		u32 *d = (u32 *) dest;
+		while(bytes>=4)
+		{
+			*d++ = fifo->_u32;
+			DPRINTFN(20,("%08x ",d[-1]));
+			bytes -= 4;
+		}
+		dest = (void *) d;
+	}
+	if(!(((u32)dest)&1))
+	{
+		u16 *d = (u16 *) dest;
+		while(bytes>=2)
+		{
+			*d++ = fifo->_u16;
+			DPRINTFN(20,("%04x ",d[-1]));
+			bytes -= 2;
+		}
+		dest = (void *) d;
+	}
+	char *c = (char *) dest;
+	while(bytes--)
+	{
+		*c++ = fifo->_u8;
+		DPRINTFN(20,("%02x ",c[-1]));
+	}
+	DPRINTFN(20,("\n"));
+	return (void *) c;
+}
+
+void *musb_fifowrite(volatile musb_regs *musb_base,int ep,void *src,int bytes)
+{
+	DPRINTFN(20,("musb_fifowrite: %d: ",bytes));
+	volatile musb_fifo *fifo = &(musb_base->fifo[ep]);
+	if(!(((u32)src)&3))
+	{
+		u32 *d = (u32 *) src;
+		while(bytes>=4)
+		{
+			fifo->_u32 = *d++;
+			DPRINTFN(20,("%08x ",d[-1]));
+			bytes -= 4;
+		}
+		src = (void *) d;
+	}
+	if(!(((u32)src)&1))
+	{
+		u16 *d = (u16 *) src;
+		while(bytes>=2)
+		{
+			fifo->_u16 = *d++;
+			DPRINTFN(20,("%04x ",d[-1]));
+			bytes -= 2;
+		}
+		src = (void *) d;
+	}
+	char *c = (char *) src;
+	while(bytes--)
+	{
+		fifo->_u8 = *c++;
+		DPRINTFN(20,("%02x ",c[-1]));
+	}
+	DPRINTFN(20,("\n"));
+	return (void *) c;
+}
+@
+
+
+1.5
+log
+@Remove unused include
+Admin:
+  Fewer depends. Not tagged.
+@
+text
+@a36 3
+#ifdef USBHAL
+#include <dev/usb/usbhal.h>
+#else
+a39 1
+#endif
+a52 1
+#include "Global/Services.h"
+@
+
+
+1.4
+log
+@Don't reach into USBDriver's back pocket
+cmodule.c:
+  Use USBDriver.h from interface exports
+Makefile:
+  Remove duplicated libs from debug build
+  Remove relative reference to NetBSD component from VPATH
+!MkDebug:
+  Select debug target so the right compiler switches are used
+musb.c/musb_debug.c/musb_peri.c/musb_root.c/musb_usb.c/musb_util.c/tps.c:
+  Unused reference to USBDriver.h removed
+Built, but not tested.
+
+Version 0.23. Tagged as 'MUSBDriver-0_23'
+@
+text
+@a59 1
+#include "tboxlibint/messages.h"
+@
+
+
+1.3
+log
+@Fix to allow building against NetBSD-0_85
+Detail:
+  c/cmodule - Don't use NetBSD/build/service.h, it no longer exists. Use the exported USB/USBDevFS.h instead. Fix service call reason codes to use USBDevFS names.
+  c/musb, c/musb_debug, c/musb_hal, c/musb_peri, c/musb_root, c/musb_usb, c/musb_util, c/tps - Strip redundant #includes
+Admin:
+  Tested in OMAP3 ROM build
+  Build output is binary-identical to previous version
+  Requires NetBSD-0_85
+
+
+Version 0.22. Tagged as 'MUSBDriver-0_22'
+@
+text
+@a43 1
+#include "../../NetBSD/build/USBDriver.h"
+@
+
+
+1.2
+log
+@Add support for HAL builds of MUSBDriver
+Detail:
+  Makefile - Now builds a HAL-compatible static library during the export libs phase
+  !MkHAL,fd7 - Handy script for building the HAL lib
+  c/musb_hal - HAL version of cmodule.c
+  c/musb, c/musb_debug, c/musb_peri, c/musb_root, c/musb_usb, c/musb_util, c/tps, h/cmodule, h/musb, h/musb_util, h/tps - Changed to support the HAL build. Biggest change was getting rid of all global vars; everything is now done via the bus ptr instead.
+  c/port - Removed microtime and moved riscos_irq_clear here, to match change made in main USB drivers
+Admin:
+  HAL & non-HAL versions tested on rev C2 BB, rev A2 BB-xM, rev C1 TouchBook
+  Needs latest Kernel & NetBSD USB drivers
+
+
+Version 0.12. Tagged as 'MUSBDriver-0_12'
+@
+text
+@a65 2
+#include "../../NetBSD/build/service.h"
+
+@
+
+
+1.1
+log
+@Restructure MUSBDriver source code, rework host mode endpoint handling, plus other misc changes
+Detail:
+  c/musb_debug - New file containing debug code.
+  c/musb_peri - Contains the code for handling peripheral mode, taken from c/musb
+  c/musb_root - Contains the code for handling the USBDriver-required 'soft' hub, taken from c/musb
+  c/musb_usb - Contains initialisation code and other misc USBDriver-related code, mostly taken from c/musb
+  c/musb_util - Misc utility functions from c/musb
+  h/musb_util, h/musb_usb - A couple of new header files to help with breaking things up. Might make sense to break h/musb_usb down further (or just consolidate everything back into h/musb)
+  c/musb - Stripped out pretty much everything except code related to host-mode endpoint and interrupt handling. Instances of the new musb_multiplexer struct are used to handle endpoint allocation, and allocation is now performed on a per-usbd_xfer basis instead of on a per-pipe basis. This should allow the code to cope better with situations where the number of pipes is greater than the number of physical endpoints, although much work is still required.
+  c/cmodule, c/port, c/tps, h/cmodule, h/musb - Misc tweaks and changes
+Admin:
+  Tested on rev A2 BB-xM.
+
+
+Version 0.11. Tagged as 'MUSBDriver-0_11'
+@
+text
+@d37 3
+d41 3
+a44 1
+#include "swis.h"
+a59 1
+#include "callx/callx.h"
+a66 1
+#include "oslib/devicefs.h"
+d125 1
+a125 1
+void *musb_fiforead(int ep,void *dest,int bytes)
+d161 1
+a161 1
+void *musb_fifowrite(int ep,void *src,int bytes)
+@
+

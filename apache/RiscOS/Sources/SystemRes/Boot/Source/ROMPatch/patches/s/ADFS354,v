@@ -1,0 +1,238 @@
+head	1.1;
+access;
+symbols
+	Boot-1_26:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2018.02.02.21.36.06;	author jlee;	state Exp;
+branches;
+next	;
+commitid	jlvtBOT0SmsaBkpA;
+
+
+desc
+@@
+
+
+1.1
+log
+@Add ROM patches for the ADFS "disc error 20" fix
+Detail:
+  This set of changes adds a "disc error 20" fix to ADFS for RISC OS 3.50 thru 4.02, using similar code to that used for the fix that was applied to ADFS itself (in ADFS 3.54). This is to resolve issues with modern IDE devices which don't adhere to the DRQ timeout that old versions of the ATA spec mandated.
+  File changes (all within Source/ROMPatch):
+  - patches/s/ADFS354 - Generic assembler source for the disc error 20 fix
+  - ihf2c/c/ihf2c - Source for a C utility that was used to help produce the ROM patch data
+  - patches/adfs354,feb - Utility script for building the different versions of the ADFS patch and converting to ROMPatch form
+  - patches/350/h/ADFSpatch, patches/360/h/ADFSpatch, patches/370/h/ADFSpatch, patches/371/h/ADFSpatch, patches/402/h/ADFSpatch - Added/updated ADFS patches
+  - patches/350/h/patch, patches/371/h/patch, patches/402/h/patch - Include new ADFSpatch files where relevant
+  - UK/h/messages - Update ROMPatch version numbers
+  - c/rompatch, s/module - Add a word of writable workspace to the module which the ADFS patch can use
+  - patches/402/h/CDSFTpatch - Remove duplicate patch (duplicate of RESLVpatch)
+  - patches/402/h/MSGSpatch - Document the patches
+  - ReadMe, Install/ROMPatch/!RunImage,ff8 - Remove redundant/outdated files (the main Boot makefile will build and install ROMPatch for us)
+Admin:
+  Tested on a RISC OS 3.70 StrongARM RiscPC with a CF-IDE adapter, disc error 20 is no more
+  3.50/3.60/3.70/3.71/4.02 also tested under RPCEmu, manually provoking the different code paths to check hook points are correct
+
+
+Version 1.26. Tagged as 'Boot-1_26'
+@
+text
+@; Copyright 2018 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+; Source for ADFS "disc error 20" patch
+;
+; See ADFS 3.54 for the original patch:
+; https://www.riscosopen.org/viewer/revisions/logs?ident=1511034689-054391.html 
+;
+; This file can be used to generate the patches for arbitrary ROM versions, by
+; configuring the appropriate constants below.
+
+ [ :LNOT: :DEF: ROMVer
+        GBLA    ROMVer
+ROMVer  SETA    370
+ ]
+
+        MACRO
+$symbol BasedReg $reg, $offset
+        ^ $offset, $reg
+$symbol # 0
+        MEND
+        
+; ROM addresses
+
+ [ ROMVer = 350
+PatchBase             * &039FC000 ; Spare page at end of ROM
+WinIDEIRQError        * &038FC6E8
+WinIDETimeout         * &038FC744
+ ELIF ROMVer = 360
+PatchBase             * &03B61000 ; Spare page at end of ROM
+WinIDEIRQError        * &0393479C
+WinIDETimeout         * &03934818
+ ELIF ROMVer = 370
+PatchBase             * &03BA6000 ; Spare page at end of ROM
+WinIDEIRQError        * &0394BC9C
+WinIDETimeout         * &0394BD18
+ ELIF ROMVer = 371
+PatchBase             * &03BA9000 ; Spare page at end of ROM
+WinIDEIRQError        * &0394F6EC
+WinIDETimeout         * &0394F768
+ ELIF ROMVer = 402
+PatchBase             * &03BEE47C ; Already-patched page
+WinIDEIRQError        * &039C1924
+WinIDETimeout         * &039C19A0
+ ]
+
+; Workspace locations
+
+ [ ROMVer = 350
+WinIDECommandCode     BasedReg R12, 444
+WinIDEDiscAddress     BasedReg R12, 464
+WinIDEBlockSize       BasedReg R12, 476
+WinIDEScatterPtr      BasedReg R12, 488
+WinIDETmpScatterEntry BasedReg R12, 508
+WinTickCount          BasedReg R12, 524
+WinTickCallAddress    BasedReg R12, 528
+WinIDEPtr             BasedReg R12, 532
+WinIDEWritePtr        BasedReg R12, 556
+ |
+WinIDECommandCode     BasedReg R12, 444
+WinIDEDiscAddress     BasedReg R12, 468
+WinIDEBlockSize       BasedReg R12, 488
+WinIDEScatterPtr      BasedReg R12, 500
+WinIDETmpScatterEntry BasedReg R12, 520
+WinTickCount          BasedReg R12, 544
+WinTickCallAddress    BasedReg R12, 548
+WinIDEPtr             BasedReg R12, 552
+WinIDEWritePtr        BasedReg R12, 576
+ ]
+ 
+IDE                   RN R11
+IDERegAltStatus       BasedReg IDE, 2072
+IDEStatusDRQ          *       1:SHL:3
+WinIDEErrNoDRQ        *       &20     ; no DRQ when expected
+                GBLS    WinIDEIRQRegsA          ; regs pushed
+                GBLS    WinIDEIRQRegsB
+WinIDEIRQRegsA  SETS    "R0"
+WinIDEIRQRegsB  SETS    "R0-R8,IDE"
+
+; Patch code
+
+        AREA    |main|, CODE, READONLY
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+
+        ; Patch entry, called on DRQ poll loop timeout
+        ORG           PatchBase
+        
+; set up the TickerV DRQ poll routine
+        PHPSEI  LR
+        LDR     R1, WinTickCount                ; preserve current timeout
+        LDR     R2, WinIDEDRQTimeoutPtr
+        STR     R1, [R2]
+        MOV     R1, #1
+        STR     R1, WinTickCount
+        ADR     R1, WinIDEDRQPoll
+        STR     R1, WinTickCallAddress
+        PLP     LR
+        Pull    "R1-R6,R8-R9,PC"
+
+WinIDEDRQPoll   ROUT
+;
+; Called every centisecond from TickerV when we're waiting for DRQ for the
+; first sector of a write op.
+;
+; Entry:
+;    SB -> static workspace
+;    MODE: IRQ or SVC
+;    IRQs disabled
+;
+; Exit:
+;    All registers preserved
+
+; Switch to SVC mode as will join main thread of IRQ
+
+        Push    "$WinIDEIRQRegsA,LR"    ; same regs as IRQHandler
+        WritePSRc SVC_mode :OR: I_bit,LR,,R0
+
+; Now in SVC mode - save main regs
+
+        Push    "$WinIDEIRQRegsB,LR"    ; same regs as IRQHandler
+
+; Set IDE -> IDE controller
+
+        LDR     IDE,WinIDEPtr           ; IDE -> IDE hardware
+
+; Check for timeout
+        LDR     R3,WinIDEDRQTimeoutPtr
+        LDR     R2,[R3]
+        SUBS    R2,R2,#1
+        BEQ     %FT95
+
+; Check for DRQ
+        LDRB    R0,IDERegAltStatus
+        TST     R0,#IDEStatusDRQ
+        STREQ   R2,[R3]
+        MOVEQ   R2,#1
+        BEQ     %FT90
+
+; got DRQ so write data
+
+        LDR     R1,WinIDETmpScatterEntry        ; R1 -> buffer
+        LDR     R0,WinIDEBlockSize              ; R0 = max bytes to move
+
+; R0 = length to transfer (up to 512 bytes will be moved)
+; R1 -> buffer
+; Call data write routine
+
+        MOV     LR,PC                           ; set link
+        LDR     PC,WinIDEWritePtr               ; (R0,R1,IDE->R0,R1)
+                                                ; returns here
+
+; Restore standard ticker routine
+        LDR     R2,=WinIDETimeout
+        STR     R2,WinTickCallAddress
+        
+90
+        STR     R2,WinTickCount
+; First restore SVC regs and switch back to original mode
+
+        Pull    "$WinIDEIRQRegsB,LR"
+
+        RestPSR R0,,c
+
+; Now back in original mode
+
+        Pull    "$WinIDEIRQRegsA,PC",,^
+
+95
+        MOV     R0,#WinIDEErrNoDRQ      ; R0 = error code
+        LDR     R2,WinIDEDiscAddress    ; R2 = disc address of start of op
+        LDR     R3,WinIDEScatterPtr     ; R3 -> scatter list
+        LDRB    R7,WinIDECommandCode    ; R7 = IDE command code
+        B       WinIDEIRQError
+        
+        LTORG
+
+WinIDEDRQTimeoutPtr
+        DCD     0                       ; Must be filled in by patcher to point somewhere writable
+
+        END
+@

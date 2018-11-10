@@ -1,0 +1,347 @@
+head	1.3;
+access;
+symbols
+	PHCIDriver-0_11:1.3
+	PHCIDriver-0_10:1.3
+	PHCIDriver-0_09:1.3
+	PHCIDriver-0_08:1.3
+	PHCIDriver-0_07:1.3
+	PHCIDriver-0_06:1.2
+	PHCIDriver-0_05:1.2
+	PHCIDriver-0_04:1.2
+	PHCIDriver-0_03:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2001.11.13.11.18.19;	author dellis;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.10.19.17.54.37;	author dellis;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.09.14.14.47.35;	author dellis;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  - Support added for overcurrent detection
+  - Code added for supporting device side of controller
+  - Better error detection and recovery
+
+Detail:
+  Analogue overcurrent detection has been switched on in the hardware
+configuration.
+
+  Code has been added to support the device side of the controller, although
+this is by default switched out.  It hasn't been tested, but is included for
+completeness.
+
+  Error recovery is now much more robust and there is now an assembly option
+to add a null packet to the end of the payload buffer.  This prevents
+multiple transaction attempts on interrupt endpoints.
+
+Admin:
+  Tested extensively on a RiscPC.  The device controller code has been tested
+at all (but isn't by default included).
+
+
+Version 0.07. Tagged as 'PHCIDriver-0_07'
+@
+text
+@; Copyright 2001 Pace Micro Technology plc
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+; 		Copyright 1996 Acorn Network Computing
+;
+;  This material is the confidential trade secret and proprietary
+;  information of Acorn Network Computing. It may not be reproduced,
+;  used, sold, or transferred to any third party without the prior
+;  written consent of Acorn Network Computing. All rights reserved.
+;
+; ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; Sets border colour
+;
+colour_off   * &40000000
+colour_red   * &400000ff
+colour_blue  * &40ff0000
+colour_green * &4000ff00
+
+        	MACRO
+$label  	SetColour $colour
+$label
+ [ debug
+		Push	"r0-r1"
+		MOV	r0, #&3500000
+		LDR	r1, =colour_$colour
+		STR	r1, [r0]
+		Pull	"r0-r1"
+ ]
+        	MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; Calls buffer manager service routine
+;
+                MACRO
+$label          CallBuffMan     $cc
+
+$label          Push    "r12,lr"		; save our workspace ptr
+ [ SafeSVC
+ |
+                Push    "r10,r11"
+                MRS     r10, CPSR                ; get hold of the flags (or NOP)
+                ORR     r11, r10, #SVC_Mode       ; force SVC mode (preserve 32-bitness)
+                MSR     CPSR_c, r11              ; switch mode, preserve flags
+                Push    "r10,r14_svc"
+ ]
+                ADR$cc   r12, BuffManWkSpace    ; buffman workspace and entry
+                MOV$cc   lr, pc                 ; return address
+                ASSERT  BuffManService = BuffManWkSpace+4
+                LDM$cc.IA r12, {r12, pc}        ; load buffman wkspace and entry
+ [ SafeSVC
+ |
+                Pull    "r10,r14_svc"
+                MSR     CPSR_c, r10
+                Pull    "r10,r11"
+ ]
+                Pull    "r12,lr"                ; restore our workspace ptr
+
+                MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; read 32 bits from a host controller register
+;
+; specify a register with the command value, and a temporary register
+; on entry r11 contains BaseAddress
+;
+                MACRO
+$label          HCLDR   $rd, $rn, $reg
+                LCLS    tmp
+                [ "$reg"=""
+tmp             SETS    "R14"
+                |
+tmp             SETS    "$reg"
+                ]
+$label          BIC     $rn, $rn, #&80
+                STR     $rn, HCCommand
+                LDR     $rd, HCData
+                MOV     $rd, $rd, LSL#16      ; Clear top 16 bits of r0
+                MOV     $rd, $rd, LSR#16
+                LDR     $tmp, HCData
+                ORR     $rd, $rd, $tmp, LSL#16
+                MEND
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; read 16 bits from a host controller register
+; on entry r11 contains BaseAddress
+;
+;
+                MACRO
+$label          HCLDRH  $rd, $rn
+$label          BIC     $rn, $rn, #&80
+                STR     $rn, HCCommand
+                LDR     $rd, HCData
+                MOV     $rd, $rd, LSL#16      ; Clear top 16 bits of r0
+                MOV     $rd, $rd, LSR#16
+                MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; write 32 bits to a host controller register
+; on entry r11 contains BaseAddress
+;
+                MACRO
+$label          HCSTR   $rd,  $rn
+$label          ORR     $rn, $rn, #&80
+                STR     $rn, HCCommand
+                STR     $rd, HCData
+                MOV     $rd, $rd, ROR#16
+                STR     $rd, HCData
+                MOV     $rd, $rd, ROR#16
+                MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; write 16 bits to a host controller register
+;
+; in : rn = register, rd = value
+; on entry r11 contains BaseAddress
+;
+                MACRO
+$label          HCSTRH  $rd, $rn
+$label          ORR     $rn, $rn, #&80
+                STR     $rn, HCCommand
+                STR     $rd, HCData
+                MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; read 32 bits from a device controller register
+;
+; specify a register with the command value, and a temporary register
+; on entry r11 contains BaseAddress
+;
+                MACRO
+$label          DCLDR   $rd, $rn, $reg
+                LCLS    tmp
+                [ "$reg"=""
+tmp             SETS    "R14"
+                |
+tmp             SETS    "$reg"
+                ]
+$label          STR     $rn, DCCommand
+                LDR     $rd, DCData
+                MOV     $rd, $rd, LSL#16      ; Clear top 16 bits of r0
+                MOV     $rd, $rd, LSR#16
+                LDR     $tmp, DCData
+                ORR     $rd, $rd, $tmp, LSL#16
+                MEND
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; read 16 bits from a device controller register
+; on entry r11 contains BaseAddress
+;
+;
+                MACRO
+$label          DCLDRH  $rd, $rn
+$label          STR     $rn, DCCommand
+                LDR     $rd, DCData
+                MOV     $rd, $rd, LSL#16      ; Clear top 16 bits of r0
+                MOV     $rd, $rd, LSR#16
+                MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; write 32 bits to a device controller register
+; on entry r11 contains BaseAddress
+;
+                MACRO
+$label          DCSTR   $rd,  $rn
+$label          STR     $rn, DCCommand
+                STR     $rd, DCData
+                MOV     $rd, $rd, ROR#16
+                STR     $rd, DCData
+                MOV     $rd, $rd, ROR#16
+                MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+;
+; write 16 bits to a device controller register
+;
+; in : r0 = register, r1 = value
+; on entry r11 contains BaseAddress
+;
+                MACRO
+$label          DCSTRH  $rd, $rn
+$label          STR     $rn, DCCommand
+                STR     $rd, DCData
+                MEND
+
+; +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+                END
+@
+
+
+1.2
+log
+@  Much more functional driver.
+
+Detail:
+  The driver now implements a root hub, and can support interrupt, bulk and
+control transfers.  Connections are made by opening the phci device in
+devicefs with a special field specifying the endpoint number and type.
+
+  DevDesc has been enhanced to print out on the command line if no address is
+given.
+
+Admin:
+  Tested extensively on RiscPC and STB.  Still awaiting the writing of a
+Spec.
+
+Version 0.04. Tagged as 'PHCIDriver-0_04'
+@
+text
+@d164 7
+a170 1
+$label          DCLDR   $rd, $rn, $tmp
+@
+
+
+1.1
+log
+@  Initial import of PHCIDriver
+
+Detail:
+  The driver is currently fairly limited.  It sets up the hardware, and
+supplies some * commands.
+
+  It has been commited primarily for TestTask to make use of
+
+Admin:
+  Tested with TestTask on a STB, and quite extensively on a RiscPC.  The
+* command PHCIDevDesc has been observed to put the chip into a confused state
+after something of the order of 1000 repeats.
+
+
+
+Version 0.03. Tagged as 'PHCIDriver-0_03'
+@
+text
+@d57 8
+d69 6
+d96 2
+a97 1
+$label          STR     $rn, HCCommand
+d114 2
+a115 1
+$label          STR     $rn, HCCommand
+@
+

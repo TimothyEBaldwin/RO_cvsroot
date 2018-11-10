@@ -1,0 +1,299 @@
+head	1.2;
+access;
+symbols
+	EtherTH-0_25:1.1.1.1
+	EtherTH-0_24:1.1.1.1
+	EtherTH-0_23:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2017.03.11.00.12.59;	author jballance;	state dead;
+branches;
+next	1.1;
+commitid	EKCvCR7DacKJ24Jz;
+
+1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+1.1.1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+
+desc
+@@
+
+
+1.2
+log
+@    Convert to C based component with import of re-written module form Colin Granville
+Detail:
+Admin:
+    tested in iMx6
+
+Version 0.26. Tagged as 'EtherTH-0_26'
+@
+text
+@; Copyright 2016 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+
+; Initialise Mbuf_Manager session
+; r0 = min underlying block size
+; r1 = max underlying block size
+; r2 = minimum contiguous size
+; on exit, either error pointer, or MBufSession initialised
+mmanager_init   ROUT
+        Entry   "r3,MBUFCTL"
+        ldr     r3, MBufSession         ; already initialised?
+        teq     r3, #0
+        bne     %ft1
+        adrl    MBUFCTL, MyMBufCTL
+        mov     r3, #mbufctllen
+        str     r3, mbcsize
+        mov     r3, #100
+        str     r3, mbcvers
+        str     r0, advminubs
+        str     r1, advmaxubs
+        str     r2, mincontig
+        mov     r3, #0
+        str     r3, spare1
+        mov     r0, MBUFCTL
+        swi     XMbuf_OpenSession
+        EXIT    VS
+        str     r0, MBufSession
+1       mov     r0, #0
+        EXIT
+
+; kill the current session
+mmanager_kill   ROUT
+        Entry
+        ldr     r0, MBufSession         ; already killed?
+        teq     r0, #0
+        beq     %ft1
+;        adrl   r0, MyMBufCTL
+        swi     XMbuf_CloseSession
+        EXIT    VS
+1       mov     r0, #0
+        str     r0, MBufSession
+        EXIT
+
+; find physical address and length of an mbuf's data element
+; if mbuf data buffer crosses a page boundary, replace it with one that doesn't
+; on entry, r3  ->mbuf
+;           r12 = base of module ram
+; on exit,  r6  = number of entries used
+GetMBufPhysData
+        Entry   "r0, r1, r2, r3, r4, r5, r7"
+; firstly count no of mbufs linked onto this chain
+        mov     r7, sp                  ; remember for easy unwind
+        mov     r5, #12                 ; initial space needed for os_memory 0 page block
+
+        mov     r1, r3                  ; mbuf ptr
+11      ldr     r1, [r1, #mbnextptr-mbufstruct] ;
+        teq     r1, #0                  ; chain end?
+        addne   r5, r5, #12             ; need more space
+        bne     %bt11
+        sub     sp, sp, r5              ; space for all page blocks
+
+        mov     r1, sp                  ; point at blocks
+        mov     r6, r3
+        mov     r2, #0
+22      add     r2, r2, #1
+        ldr     r0, [r6, #mbdoffset-mbufstruct]
+        add     r0, r0, r6              ; actual address
+        str     r0, [r1, #4]            ; put logical address in place in block
+; DebugReg r0, "Logical address "
+        add     r1, r1, #12             ; to next block
+        teq     r1, r7                  ; finished yet?
+        ldrne   r6, [r6, #mbnextptr-mbufstruct]
+        bne     %bt22
+        mov     r0, #(1<<9) + (1<<13)   ; supply LA, get Phys Add
+        mov     r1, sp                  ; point at blocks
+        swi     XOS_Memory
+        mov     r6, r2                  ; remember number of conversions
+        adrl    r5, EnetTKPairBuf
+; DebugReg r12, "r12 "
+; DebugReg r5, "EnetTKPairBuf "
+33      ldr     r1, [sp, #8]            ; read physical addr
+        ldr     r2, [r3, #mbdlen-mbufstruct] ; length from mbuf
+; DebugReg r1, "Physical address "
+; DebugReg r2, "Length "
+; need to verify this is a contiguous physical address and act accordingly
+        add     r0, r1, r2              ; end address +1
+        mov     r0, r0, lsr #12         ; extract 4k page number of end
+        mov     lr, r1, lsr #12         ; extract 4k page number of start
+        subs    lr, r0, lr
+        teqne   lr, #1                  ; all within this or next 4k page
+        beq     %ft1
+
+
+ DebugTX " mbuf data overflows the physical page to non contiguous page ************** "
+1
+; at this point we have :
+;  r1 = physical address
+;  r2 = length
+; store them in the queue
+        stmia   r5!, {r1, r2}           ; phys address, length
+        add     sp, sp, #12             ; move to next block
+        teq     sp, r7                  ; unwound yet?
+        ldrne   r3, [r3, #mbnextptr-mbufstruct]
+        bne     %bt33                   ; no.. do next mbuf
+        EXIT
+
+; routine to trigger subsequent mbuf free call
+mbuffree        ROUT
+        Entry   "r0, r1"
+        adrl    r0, MbufFreeCB          ; launch the driver on a callback
+                                        ; so our SWIs can be used
+        mov     r1, r12                 ; r12 to use
+        swi     XOS_AddCallBack         ; assume it valid!!
+        movvc   r0, #cb_pending
+        strvcb  r0, mbfcbstate
+        EXIT
+
+MbufFreeCB      ROUT
+        Entry   "r0, r1, r2, r3, ip"
+        mov     r1, #cb_unrequired
+        strb    r1, mbfcbstate
+        PHPSEI  r3                      ; irq off to update
+        ldr     r1, TXMBRelease
+        teq     r1, #0
+        EXIT    EQ
+        mov     r0, #0
+        str     r0, TXMBRelease
+        PLP     r3
+        ldr     r0, MBufSession         ; r5/r5 is what we define against
+
+        adr     lr, %ft22
+        ldr     pc, [r0, #freem-mbufctlstruct] ; free the mbuf chain
+22
+        str     r0, TXMBRelease
+ DebugReg r0, "free addr cb done "
+        EXIT
+
+; Claim 1 rx buffer chain.
+; data length required in r1
+; returns r0-> chain mbuf pair or NULL if error
+; r1 -> physical address of data mbuf
+ClaimRXBufferChain
+        Entry   "r2-r5"
+; DebugTXS "C1MB-"
+        ldr     r0, MBufSession         ; session ptr
+        cmp     r1, #ENET_RxBufMax      ; check not too big
+        movgt   r1, #ENET_RxBufMax      ; data size
+        mov     r2, #0                  ; supply data buffers too
+        mov     r3, #MBC_Single
+        adr     lr, %ft3
+        Push    "ip"
+        ldr     pc, [r0, #alloc_g-mbufctlstruct]
+3
+        Pull    "ip"
+; DebugByteReg r0, ""
+        teq     r0, #0
+        EXIT    EQ                      ; no allocation
+; DebugReg r0, "r0 "
+;  adjust start up and size down so it starts on a 16byte boundary
+        ldr     r3, [r0, #mbdoffset-mbufstruct]
+        add     r3, r3, r0              ; current data start
+        ands    lr, r3, #15
+        beq     startalignedok
+        mov     r4, #RxDataAlign
+        sub     r4, r4, lr
+; DebugRegNCR r4, "correction  "
+        ldr     r3, [r0, #mbdlen-mbufstruct]
+        sub     r3, r3, r4
+        str     r3, [r0, #mbdlen-mbufstruct]
+        ldr     r3, [r0, #mbdoffset-mbufstruct]
+        add     r3, r3, r4
+        str     r3, [r0, #mbdoffset-mbufstruct]
+        add     r3, r3, r0              ; current data start
+startalignedok
+        mov     r4, r0                  ; remember main mbuf ptr
+        ldr     r0, MBufSession         ; session ptr
+        mov     r1, #RXHdrSize          ; data size
+        mov     r2, #0                  ; supply data buffers too
+        mov     r3, #MBC_Default
+        adr     lr, %ft31
+        Push    "ip"
+        ldr     pc, [r0, #alloc_g-mbufctlstruct]
+31
+        Pull    "ip"
+        teq     r0, #0
+        beq     allocfailure
+        mov     lr, #MBUF_MT_DATA
+        strb    lr, [r4, #mbtype-mbufstruct]
+        mov     lr, #MBUF_MT_HEADER
+        strb    lr, [r0, #mbtype-mbufstruct]
+        str     r4, [r0, #mbnextptr-mbufstruct]
+        mov     r5, r0                  ; store resultant chain
+; now get databuffer physical address
+        sub     sp, sp, #12             ; space for page block
+
+        mov     r1, sp                  ; point at block
+        mov     r2, #1
+        ldr     r0, [r4, #mbdoffset-mbufstruct]
+        add     r0, r0, r4              ; actual address
+        str     r0, [r1, #4]            ; put logical address in place in block
+; DebugReg r0, "Logical address "
+        mov     r0, #(1<<9) + (1<<13)   ; supply LA, get Phys Add
+        swi     XOS_Memory
+        ldr     r1, [sp, #8]            ; physical address
+; DebugReg r1, "phys addr "
+        add     sp, sp, #12             ; recover space for page block
+        mov     r0, r5
+        EXIT
+allocfailure                            ; free what we did get
+        mov     r1, r4
+        ldr     r0, MBufSession         ;
+
+        adr     lr, %ft22
+        Push    "ip"
+        ldr     pc, [r0, #freem-mbufctlstruct] ; free the mbuf chain
+22
+        Pull    "ip"
+        mov     r0, #0                   ; flag failure to claim
+        EXIT
+
+
+
+
+        END
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@@
+
+
+1.1.1.1
+log
+@   Initial import of EtherTH module
+@
+text
+@@

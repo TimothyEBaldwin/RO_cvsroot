@@ -1,0 +1,344 @@
+head	1.5;
+access;
+symbols
+	ScreenFX-0_09-1:1.5
+	ScreenFX-0_09:1.5
+	ScreenFX-0_08:1.5
+	ScreenFX-0_07:1.4
+	ScreenFX-0_06:1.3
+	ScreenFX-0_05:1.3
+	ScreenFX-0_04:1.2
+	ScreenFX-0_03:1.2
+	ScreenFX-0_02:1.2
+	ScreenFX-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2007.07.22.20.38.24;	author rool;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2005.09.16.15.48.47;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2005.08.24.08.18.26;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2005.08.19.13.31.26;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2005.08.18.21.08.34;	author ahodgkin;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2005.08.18.21.08.34;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Various bug fixes; new 'escape' feature.
+Detail:
+  Incorrect command line help text fixed. Failure to pass duration to
+  effects engine for crossfades corrected. New bit to Fade and CrossFade
+  SWIs with corresponding "-escape" switch on the command line; allows
+  Escape key to interrupt fades. Documentation updated. Internal effects
+  initialisation and finalisation tidied up a bit. Now uses header files
+  in Global for EventV and PaletteV definitions (note, BBE will require
+  the addition of Global/h/PaletteV in the Export tree).
+Testing:
+  Moderate developer testing on Iyonix platform. Test harness unchanged.
+
+Version 0.08. Tagged as 'ScreenFX-0_08'
+@
+text
+@/* Copyright 2005 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    Transfer.c                                        */
+/*          (C) 2005 Tematic                                  */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Transfer functions.                               */
+/*                                                            */
+/* Author:  K.Bracey.                                         */
+/*                                                            */
+/* History: 18-Aug-2005 (ADH): Created.                       */
+/**************************************************************/
+
+#include "Transfer.h"
+
+/**************************************************************/
+/* transfer_fill_table()                                      */
+/*                                                            */
+/* Fill in a transfer table such that:                        */
+/*                                                            */
+/*   table[0]   = min                                         */
+/*   table[255] = max                                         */
+/*                                                            */
+/* ...and table[1..254] interpolate between the two linearly. */
+/*                                                            */
+/* Parameters:  Pointer to the base of the 256-byte table;    */
+/*                                                            */
+/*              Left hand end point ("min", 0-255);           */
+/*                                                            */
+/*              Right hand end point ("min", 0-255).          */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+static void transfer_fill_table
+            (
+              uint8_t * table,
+              uint8_t   min,
+              uint8_t   max
+            )
+{
+  int i, round;
+
+  round = (max > min) ? 128 : -128;
+
+  for (i = 0; i < 256; i++)
+  {
+    table[i] = ((max - min) * i + round) / 255 + min;
+  }
+}
+
+/**************************************************************/
+/* transfer_fill_for_step()                                   */
+/*                                                            */
+/* Fill in a transfer table for a given step of a fade based  */
+/* on start and end points.                                   */
+/*                                                            */
+/* At step 0, the table will contain:                         */
+/*   table[0] = min0...table[255] = max0                      */
+/*                                                            */
+/* At step laststep, the table holds:                         */
+/*   table[0] = min1...table[255] = max1                      */
+/*                                                            */
+/* Parameters:  Pointer to the base of the table to update;   */
+/*                                                            */
+/*              Start left hand end point ("min0", 0-255);    */
+/*                                                            */
+/*              Start right hand end point ("max0", 0-255);   */
+/*                                                            */
+/*              Target left hand end point ("min1", 0-255);   */
+/*                                                            */
+/*              Target right hand end point ("max1", 0-255);  */
+/*                                                            */
+/*              Number of current step (starting at zero);    */
+/*                                                            */
+/*              Highest step number.                          */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+void transfer_fill_for_step
+     (
+       uint8_t * table,
+       uint8_t   min0,
+       uint8_t   max0,
+       uint8_t   min1,
+       uint8_t   max1,
+       int       step,
+       int       laststep
+     )
+{
+  uint8_t min,      max;
+  int     roundmin, roundmax;
+
+  roundmin = (min1 > min0) ? laststep / 2 : -laststep / 2;
+  roundmax = (max1 > max0) ? laststep / 2 : -laststep / 2;
+
+  min = laststep == 0 ? min1 : ((min1 - min0) * step + roundmin) / laststep + min0;
+  max = laststep == 0 ? max1 : ((max1 - max0) * step + roundmax) / laststep + max0;
+
+  transfer_fill_table(table, min, max);
+}
+
+/**************************************************************/
+/* transfer_interpolate_for_step()                            */
+/*                                                            */
+/* Fill in a transfer table for a given step of a fade based  */
+/* on interpolation between a start and end table.            */
+/*                                                            */
+/* Parameters:  Pointer to the base of the table to update;   */
+/*                                                            */
+/*              Pointer to starting table;                    */
+/*                                                            */
+/*              Pointer to ending table;                      */
+/*                                                            */
+/*              Number of current step (starting at zero);    */
+/*                                                            */
+/*              Highest step number.                          */
+/*                                                            */
+/* Re-entrancy: Function is not re-entrant.                   */
+/*                                                            */
+/* Threading:   Function is not thread-safe.                  */
+/**************************************************************/
+
+void transfer_interpolate_for_step
+     (
+       uint8_t * table,
+       uint8_t * start,
+       uint8_t * end,
+       int       step,
+       int       laststep
+     )
+{
+  int i;
+
+  if (laststep == 0)
+  {
+    for (i = 0; i < 256; i++)
+    {
+      table[i] = end[i];
+    }
+  }
+  else
+  {
+    for (i = 0; i < 256; i++)
+    {
+      table[i] = ((end[i] * step) + (start[i] * (laststep - step))) / laststep;
+    }
+  }
+}
+
+/* End of file */
+@
+
+
+1.4
+log
+@  Feature addition.
+Detail:
+  ScreenFX_CrossFade / *ScreenFXCrossFade - see API documentation for
+  details.
+Admin:
+  16bpp and 32bpp modes tested; ran out of time to check 8bpp cross fades.
+
+Version 0.07. Tagged as 'ScreenFX-0_07'
+@
+text
+@@
+
+
+1.3
+log
+@  Official allocations. Copyright message changes.
+Detail:
+  Now includes official SWI base and error block allocations. The star
+  commands are registered too. Meanwhile, copyright messages have been
+  changed from "Castle Technology Ltd" to "Tematic".
+Admin:
+  Rebuilt from clean, simple test harness passes.
+
+Version 0.05. Tagged as 'ScreenFX-0_05'
+@
+text
+@d70 2
+a71 1
+/* Fill in the a transfer table for a given step of a fade.   */
+d79 1
+a79 1
+/* Parameters:  Pointer to the base of the table;             */
+d121 48
+@
+
+
+1.2
+log
+@  Bug fixes, redundant code removed, new feature.
+Detail:
+  Rounding errors fixed, so test harness now completes - fades always do
+  completely achieve the target parameters. Interruption timing: When a
+  new fade interrupts an old one, the percentage of its duration that is
+  used depends on how long the fade had been going, not how long it had
+  left to go. See Docs.API for why. Now links with PRISMLib the module
+  version - stops various odd effects (the bits of shared Makefile in use
+  do *not* automatically add a "zm" suffix, so the old version didn't
+  work so well). New feature: *ScreenFXReset, or SWI ScreenFX_Reset - as
+  ScreenFX_Cancel, plus a reset to default gamma and supremacy tables.
+  Again, see Docs.API for details. Finally, the Service_MessagesFileClosed
+  handler has been removed - the module does not *maintain* pointers into
+  the messages file, since it looks up tokens anew each time they are
+  needed, so therefore it does not need to handle the service call.
+Admin:
+  Interrupted fade timing looks better. No more odd effects when switching
+  between debug and non-debug modules. Test harness passes its check that
+  the tables are programmed as expected at the end of a fade. Reset feature
+  works as it should.
+
+Version 0.02. Tagged as 'ScreenFX-0_02'
+@
+text
+@d17 1
+a17 1
+/*          (C) 2005 Castle Technology Ltd                    */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d57 3
+a59 1
+  int i;
+d63 1
+a63 1
+    table[i] = ((max - min) * i + 128) / 255 + min;
+d108 5
+a112 1
+    uint8_t min, max;
+d114 2
+a115 2
+    min = laststep == 0 ? min1 : ((min1 - min0) * step + (laststep / 2)) / laststep + min0;
+    max = laststep == 0 ? max1 : ((max1 - max0) * step + (laststep / 2)) / laststep + max0;
+d117 1
+a117 1
+    transfer_fill_table(table, min, max);
+@
+
+
+1.1.1.1
+log
+@Initial import of ScreenFX module to CVS.
+@
+text
+@@

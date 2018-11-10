@@ -1,0 +1,483 @@
+head	1.4;
+access;
+symbols
+	Clipboard-0_10:1.4
+	Clipboard-0_09:1.4
+	Clipboard-0_08:1.3
+	Clipboard-0_07:1.2
+	Clipboard-0_06:1.2
+	Clipboard-0_05:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2008.09.16.18.36.56;	author rool;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2007.11.13.01.41.06;	author srevill;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.02.25.10.57.34;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.02.22.11.58.05;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Completed the clipboard support part of the Clipboard module.
+  Drag-and-Drop support still needs to be designed and implemented.
+Detail:
+  The initial Clipboard module released by ROOL was in a state of flux due
+  to a redesign of how the module worked. The transition to the new way
+  of doing things was only done partially and needed completing to make the
+  Clipboard module support the clipboard fully. The module also contained
+  26-bit only code.
+
+  - Replaced all the 26-bit code with 32-bit (not mode neutral) code.
+
+  - Completed implementation of Clipboard_GetDataType by adding support for
+    the situation where the Clipboard module doesn't own the clipboard and
+    isn't proxying either. The required StateHandler_DataRequest2 has been
+    implemented also.
+
+  - Fully implemented Clipboard_Get including all the required statehandlers.
+      StateHandler_DataSaveAck
+      StateHandler_RAMFetch1
+      StateHandler_RAMFetch2
+      StateHandler_DataRequest1
+      StateHandler_DataRequest2
+      StateHandler_PutRequest3
+      StateHandler_Paste
+
+  - Modified CopyData routine to allow for clipboard content not being
+    word-aligned and/or its length not being a multiple of four.
+
+  - Removed all the commented out code that was left over from the initial
+    implementation of the Clipboard module.
+
+  - Added GetData to the set of test applications. It displays the clipboard
+    contents if it's of type text (It's best to use short text strings). It's
+    not very polished and it's better to use PutClip and GetClip to test the
+    Clipboard module.
+
+  - Added PutClip to the set of test applications. It can be used test
+    SWI Clipboard_Put. Details on how can be found in its Help file.
+
+  - Added GetClip to the set of test applications. It can be used test
+    SWI Clipboard_Get. Details on how can be found in its Help file.
+Admin:
+  Extensively tested on Iyonix RO 5.11 both external behaviour with PutClip
+  and GetClip as well as the internal behaviour of the statehandler (by using
+  StrongED as the clipboard owner/requester and rigging it to fail at certain
+  points during the datatransfer).
+
+  Briefly tested on RO 4.02, seems to be OK.
+
+  Briefly tested on RO 6.06, seems to be OK. Functionality may be different
+  from 5.11 and 4.02 though due to ClipboardHolder. In particular using the
+  Clipboard module as a proxy is likely to be affected.
+
+Version 0.09. Tagged as 'Clipboard-0_09'
+@
+text
+@; Copyright 1999 Element 14 Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+;  s.WimpMsg - message queue handling
+;
+
+;-------------------------------------------------------------------------------
+; =>    R0   =  flags
+;       R1   =  destination window handle
+;       R2   =  destination icon handle
+;       R3   =  destination x coordinate
+;       R4   =  destination y coordinate
+;       R5   =  filetype or -1 if failed
+;-------------------------------------------------------------------------------
+SendMsg_DataTypeIs
+        Entry    "R0-R7"
+        CMN     R5, #1
+        AND     R0, R0, #ClipboardGetDataType_Wimp
+        ORREQ   R0, R0, #msDataTypeIs_NoClipboard
+        ADR     R14, PollBlock + msDataTypeIs_flags
+        STMIA   R14, {R0-R5}
+
+        ADR     R1, PollBlock
+        MOV     R2, #msDataTypeIs_size
+        LDR     R3, =Message_DataTypeIs
+        MOV     R4, #0
+        STR     R2, [R1, #ms_size]
+        STR     R3, [R1, #ms_action]
+        STR     R4, [R1, #ms_yourref]
+
+        MOV     R0, #User_Message
+        LDR     R2, [R1, #msDataTypeIs_window]
+        LDR     R3, [R1, #msDataTypeIs_icon]
+        MOV     R4, #0
+        BL      MySendMessage
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+;-------------------------------------------------------------------------------
+SendMsg_PutRequest
+        Entry   "R0-R9"
+        ADR     R1, PollBlock
+        MOV     R0, #msPutRequest_size
+        STR     R0, [R1, #ms_size]
+        MOV     R0, #0
+        STR     R0, [R1, #ms_yourref]
+        MOV     R0, #Message_PutRequest
+        STR     R0, [R1, #ms_action]
+        LDR     R0, ClipboardFlags
+        AND     R0, R0, #ClipboardPut_Wimp
+        ORR     R0, R0, #msPutRequest_SendClipboard
+        STR     R0, [R1, #msPutRequest_flags]
+        ADD     R0, R11, #Act_Window
+        LDMIA   R0, {R2-R5}
+        ADD     R0, R1, #msPutRequest_window
+        STMIA   R0, {R2-R5}
+        LDR     R0, [R11, #Act_List]
+        STR     R0, [R1, #msPutRequest_datatypes]
+        MOV     R0, #User_Message_Recorded
+        LDR     R2, ClipboardTask
+        ADD     R4, R11, #Act_MyRef
+        BL      MySendMessage
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+;-------------------------------------------------------------------------------
+SendMsg_DataRequest
+        Entry   "R0-R9"
+
+        ADR     R1, PollBlock
+        MOV     R0, #0
+        STR     R0, [R1, #ms_yourref]
+        MOV     R0, #Message_DataRequest
+        STR     R0, [R1, #ms_action]
+
+        ADD     R0, R11, #Act_Window
+        LDMIA   R0, {R2-R5}
+        ADD     R0, R1, #msDataRequest_window
+        STMIA   R0, {R2-R5}
+
+; We need some unique value as internal handle, which must not be an iconhandle
+; For now just use our taskhandle
+        LDR     R0, mytaskhandle
+        STR     R0, [R1, #msDataRequest_internal]
+
+        MOV     R0, #4
+        STR     R0, [R1, #msDataRequest_flags]
+
+        ; copy filetypes
+        LDR     R0, [R11, #Act_List]
+        ADD     R2, R1, #msDataRequest_filetypes
+40
+        LDR     R14, [R0], #4
+        STR     R14, [R2], #4
+        CMP     R14, #-1
+        BNE     %BT40
+
+        SUB     R0, R2, R1
+        STR     R0, [R1, #ms_size]
+
+        Debug   tmp, "Send DataRequest message"
+        MOV     R0, #User_Message_Recorded
+        MOV     R2, #0
+        ADD     R4, R11, #Act_MyRef
+        BL      MySendMessage
+
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+;-------------------------------------------------------------------------------
+SendMsg_RAMFetch
+        Entry   "R0-R9"
+
+        ADR     R1, PollBlock                   ;
+        LDR     R0, [R11, #Act_TransCount]      ; amount of data transfered sofar
+        LDR     R2, [R11, #Act_BufAddr]         ; ptr -> buffer for datatransfer
+        LDR     R3, [R11, #Act_BufLen]          ; len of buffer for datatransfer
+        LDR     R4, [R1, #ms_myref]             ;
+        MOV     R5, #Message_RAMFetch           ; message code
+
+        ; msRAMTransfer_buffer = Act_BufAddr + Act_TransCount
+        ; msRAMTransfer_length = Act_BufLen  - Act_TransCount
+
+        ADD     R2, R2, R0                      ; datatransfer continues here
+        SUB     R3, R3, R0                      ; amount that can be transfered
+
+        STR     R2, [R1, #msRAMTransfer_buffer] ; ptr -> buffer for sender
+        STR     R3, [R1, #msRAMTransfer_length] ; len of buffer
+        STR     R4, [R1, #ms_yourref]           ;
+        STR     R5, [R1, #ms_action]            ;
+
+        MOV     R0, #User_Message_Recorded      ;
+        LDR     R2, [R1, #ms_taskhandle]        ;
+        ADD     R4, R11, #Act_MyRef             ;
+        BL      MySendMessage                   ;
+
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+; There are three ways we can end up here:
+;
+; 1. We hold the clipboard ourselves
+; 2. We obtained the clipboard data
+;    a. From a task that we were proxying for through Clipboard_Put
+;    b. From a task that doesn't know about us through RAMFetch/DataLoad
+; 3. Obtaining the clipboard failed
+;
+; In case 1  the data is held in our own workspace & Clipboardxxx vars
+; In case 2a the data is held in a temporary block & the action state
+; In case 2b the data is held in a temporary block & the action state
+; In case 3  the data doesn't matter we send failure message
+;
+; =>    R0   =  flags
+;       R1   =  destination window handle
+;       R2   =  destination icon handle
+;       R3   =  destination x coordinate
+;       R4   =  destination y coordinate
+;       R5   =  filetype or -1 if failed
+;       R6   =  ptr -> actionblock or -1
+;-------------------------------------------------------------------------------
+SendMsg_Paste
+        Entry   "R0-R7"
+        CMP     R5, #-1
+        AND     R0, R0, #msPaste_Wimp
+        ORREQ   R0, R0, #msPaste_NoClipboard
+        ADR     R14, PollBlock + msPaste_flags
+        STMIA   R14, {R0-R5}
+
+        ADR     R1, PollBlock
+
+        MOV     R2, #msPaste_size
+        LDR     R3, =Message_Paste
+        MOV     R4, #0
+        STR     R2, [R1, #ms_size]
+        STR     R3, [R1, #ms_action]
+        STR     R4, [R1, #ms_yourref]
+
+        CMP     R5, #-1
+        MOVEQ   R2, #0
+        MOVEQ   R3, #0
+        MOVEQ   R4, #0
+        BEQ     %FT10
+
+        CMP     R6, #-1
+        LDREQ   R2, ClipboardAddr
+        LDREQ   R3, ClipboardLen
+        LDREQ   R4, ClipboardName
+        LDRNE   R2, [R6, #Act_BufAddr]
+        LDRNE   R3, [R6, #Act_BufLen]
+        LDRNE   R4, [R6, #Act_Name]
+
+10
+        STR     R2, [R1, #msPaste_data]
+        STR     R3, [R1, #msPaste_datalen]
+        STR     R4, [R1, #msPaste_leafname]
+
+        CMP     R5, #-1
+        MOVEQ   R0, #User_Message
+        MOVNE   R0, #User_Message_Recorded
+        LDR     R2, [R1, #msPaste_window]
+        LDR     R3, [R1, #msPaste_icon]
+        CMP     R6, #-1
+        MOVEQ   R4, #0
+        ADDNE   R4, R6, #Act_MyRef
+        BL      MySendMessage
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+; On entry:
+;   R0 = event code to use (17, 18 or 19)
+;   R1 -> message block
+;   R2 = destination task/window handle, or 0 to broadcast
+;   R3 = destination icon handle, if applicable
+;   R4 = address to hold the message's my_ref field (returned from Wimp_SendMessage)
+;   Processor is in USR or SVC mode
+; On exit:
+;   All registers preserved. If the processor is in SVC mode, the message is queued
+;   and the my_ref is filled in with -1 to indicate that it isn't valid yet.
+;-------------------------------------------------------------------------------
+MySendMessage
+        Entry   "R5"
+
+        MOV     R14, PC
+        AND     R14, R14, #SVC_mode  ; extract mode bits from 26-bit PC
+        MRS     R14, CPSR            ; NOP on ARM2/3, in any mode on later ARMs
+        TST     R14, #&F             ; NE for any mode other than USR26 or USR32
+        BNE    %FT01                 ; if not, queue message
+
+        ; Just send the message
+        SWI     XWimp_SendMessage
+        LDR     R14, [R1, #ms_myref]
+        TEQ     R4, #0
+        STRNE   R14, [R4]
+        EXIT
+01      ; Queue the message
+        MOV     R14, #-1
+        TEQ     R4, #0
+        STRNE   R14, [R4]               ; mark my_ref invalid for now
+        Push    "R0, R2, R3"
+        MOV     R0, #ModHandReason_Claim
+        LDR     R3, [R1, #ms_size]
+        ADD     R3, R3, #MsgQ_Size
+        SWI     XOS_Module              ; claim new message queue block
+        Pull    "R0, R2, R3", VS
+        EXIT    VS
+        ; Find last link in message queue
+        ADR     R5, MsgQueue - MsgQ_Next
+02      LDR     R0, [R5, #MsgQ_Next]
+        TEQ     R0, #0
+        MOVNE   R5, R0
+        BNE     %BT02
+        ; Found it; add new block to end
+        STR     R2, [R5, #MsgQ_Next]
+        MOV     R5, R2
+        Pull    "R0, R2, R3"
+        ; Now set up new block
+        ASSERT  MsgQ_Next = 0
+        ASSERT  MsgQ_Handle = MsgQ_EventCode + 4
+        ASSERT  MsgQ_Icon = MsgQ_Handle + 4
+        ASSERT  MsgQ_MyRefPtr = MsgQ_Icon + 4
+        MOV     R14, #0
+        STR     R14, [R5], #MsgQ_EventCode ; store "next" link
+        STMIA   R5!, {R0, R2-R4}        ; store event code, handles, my_ref pointer
+        LDR     R2, [R1, #ms_size]      ; number of bytes to copy
+03      LDRB    R0, [R1], #1
+        STRB    R0, [R5], #1            ; copy byte into queue block
+        SUBS    R2, R2, #1
+        BGT     %BT03
+        EXIT
+
+
+;-------------------------------------------------------------------------------
+;-------------------------------------------------------------------------------
+FreeMsgQueue
+        Entry   "R0, R2, R3"
+        LDR     R2, MsgQueue
+        TEQ     R2, #0
+        EXIT    EQ
+01      LDR     R3, [R2, #MsgQ_Next]
+        MOV     R0, #ModHandReason_Free
+        SWI     XOS_Module
+        MOVS    R2, R3
+        BNE     %BT01
+        STR     R2, MsgQueue
+        EXIT
+
+
+        END
+@
+
+
+1.3
+log
+@Fixed Clipboard to build and made it 32bit.
+Detail:
+  Clipboard has never been 32bitted, therefore it refused to build for
+  Tungsten. It's now been fixed to build. It's still not finished though.
+Admin:
+  Tested on RiscPC RO402. Module checked with ARMalyser.
+Notes:
+  Changes by James Lampard.
+
+Version 0.08. Tagged as 'Clipboard-0_08'
+@
+text
+@d19 15
+d35 191
+a225 1
+MySendMessage
+d236 2
+d239 1
+d241 5
+a245 2
+        ANDS    R14, R14, #SVC_mode     ; so EQ => USR, NE => SVC
+        BNE     %FT01
+d289 2
+@
+
+
+1.2
+log
+@* Standardised all error blocks to use AddError/MakeErrorBlock macros
+* Routines added for making "safe" copies of data blocks, data type lists
+  and leafnames passed in via the various mechanisms
+* SWI Clipboard_Put and Message_DataRequest handler implemented, and the
+  supporting state handlers
+    State_PutRequest1
+    State_DataSave
+    State_RAMTransmit
+    State_DataLoad
+* SWI Clipboard_GetDataType implemented, and the supporting handler
+    State_PutRequest2
+    (but not State_DataRequest2 yet)
+* Now requires that the caller is an active task
+* Fixed occasional data abort bug in MySendMessage
+* Fixed corruption of wimp event code bug
+* Implemented and added test applications
+
+Version 0.06. Tagged as 'Clipboard-0_06'
+@
+text
+@d82 1
+a82 1
+        EXITS   EQ
+d89 1
+a89 1
+        EXITS
+@
+
+
+1.1
+log
+@* Task-related initialisation moved from module init to Start routine
+* State handler added, called from SWI, UserMessage, UserMessageAck handlers
+* Implemented NewAction, DeleteAction, DeleteActions, FreeClipboard and
+  FreeMsgQueue
+* DA memory allocation adapted so as not to use max-size "-1" DAs
+* RMA memory allocation functions completed to match DA functions - will now
+  assemble with DA support option turned off!
+
+Version 0.05. Tagged as 'Clipboard-0_05'
+@
+text
+@d38 2
+a39 1
+        STR     R14, [R4]
+d43 2
+a44 1
+        STR     R14, [R4]               ; mark my_ref invalid for now
+@

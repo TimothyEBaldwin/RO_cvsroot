@@ -1,0 +1,2579 @@
+head	1.6;
+access;
+symbols
+	DWCDriver-0_35:1.6
+	DWCDriver-0_34:1.6
+	DWCDriver-0_33:1.6
+	DWCDriver-0_32:1.6
+	DWCDriver-0_31:1.6
+	DWCDriver-0_30:1.6
+	DWCDriver-0_29:1.6
+	DWCDriver-0_28:1.6
+	DWCDriver-0_27:1.6
+	DWCDriver-0_26:1.6
+	DWCDriver-0_24-1:1.6
+	DWCDriver-0_25:1.6
+	DWCDriver-0_24:1.6
+	DWCDriver-0_23:1.6
+	DWCDriver-0_22:1.6
+	DWCDriver-0_21:1.6
+	DWCDriver-0_20:1.5
+	DWCDriver-0_19:1.5
+	DWCDriver-0_18:1.5
+	DWCDriver-0_17:1.5
+	DWCDriver-0_16:1.5
+	DWCDriver-0_15:1.5
+	DWCDriver-0_14:1.5
+	DWCDriver-0_13:1.5
+	DWCDriver-0_12:1.5
+	DWCDriver-0_11:1.5
+	DWCDriver-0_10:1.4
+	DWCDriver-0_09:1.4
+	DWCDriver-0_08:1.3
+	DWCDriver-0_07:1.3
+	DWCDriver-0_06:1.3
+	DWCDriver-0_05:1.3
+	DWCDriver-0_04:1.2
+	DWCDriver-0_03:1.1
+	DWCDriver-0_02:1.1
+	DWCDriver-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2015.10.07.21.00.09;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	qck3WWYzKpNMGdEy;
+
+1.5
+date	2014.04.26.18.18.20;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	3PdzN60cJJ3zNdyx;
+
+1.4
+date	2012.09.17.16.34.50;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	DXVFy2WJjyak3Ukw;
+
+1.3
+date	2012.07.21.19.22.55;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	5Kpl2qWWr4efRsdw;
+
+1.2
+date	2012.06.24.21.41.57;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	7BXP9gA386QIu0aw;
+
+1.1
+date	2012.06.03.15.14.13;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ZZ9X1FvMWAU11h7w;
+
+
+desc
+@@
+
+
+1.6
+log
+@Update to 'FIQ FSM' USB driver
+Detail:
+  Makefile, dwc/* - Updated to latest-ish code from Raspberry Pi github (rev c8baa9702c). Includes the 'FIQ FSM' USB driver, which replaces the older 'FIQ fix'. Note that many files appear to have no functional changes - just trailing whitespace removal to keep things in sync with github.
+  Makefile - add DEBUGLIBS back into the debug libs listing to fix debug builds
+  c/cmodule - Update to work with new FIQ FSM flags
+  c/dwc_otg_riscos - Update to work with new FIQ FSM flags. Update initialisation procedure. Change IRQ handling to try both the HCD & CIL interrupt handlers (HCD can claim interrupt is handled when there's still a CIL interrupt pending). Disable support for falling back to IRQ if the FIQ vector is claimed by someone else - will need new implementation to cope with starting & stopping the FIQ FSM.
+  s/regaccess - Update FIQ veneer & install routine to allow operation with either the dwc_otg_fiq_fsm or dwc_otg_fiq_nop functions.
+Admin:
+  Tested on Raspberry Pi 1 & 2
+
+
+Version 0.21. Tagged as 'DWCDriver-0_21'
+@
+text
+@#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kthread.h>
+
+#ifdef DWC_CCLIB
+# include "dwc_cc.h"
+#endif
+
+#ifdef DWC_CRYPTOLIB
+# include "dwc_modpow.h"
+# include "dwc_dh.h"
+# include "dwc_crypto.h"
+#endif
+
+#ifdef DWC_NOTIFYLIB
+# include "dwc_notifier.h"
+#endif
+
+/* OS-Level Implementations */
+
+/* This is the Linux kernel implementation of the DWC platform library. */
+#include <linux/moduleparam.h>
+#include <linux/ctype.h>
+#include <linux/crypto.h>
+#include <linux/delay.h>
+#include <linux/device.h>
+#include <linux/dma-mapping.h>
+#include <linux/cdev.h>
+#include <linux/errno.h>
+#include <linux/interrupt.h>
+#include <linux/jiffies.h>
+#include <linux/list.h>
+#include <linux/pci.h>
+#include <linux/random.h>
+#include <linux/scatterlist.h>
+#include <linux/slab.h>
+#include <linux/stat.h>
+#include <linux/string.h>
+#include <linux/timer.h>
+#include <linux/usb.h>
+
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24)
+# include <linux/usb/gadget.h>
+#else
+# include <linux/usb_gadget.h>
+#endif
+
+#include <asm/io.h>
+#include <asm/page.h>
+#include <asm/uaccess.h>
+#include <asm/unaligned.h>
+
+#include "dwc_os.h"
+#include "dwc_list.h"
+
+
+/* MISC */
+
+void *DWC_MEMSET(void *dest, uint8_t byte, uint32_t size)
+{
+	return memset(dest, byte, size);
+}
+
+void *DWC_MEMCPY(void *dest, void const *src, uint32_t size)
+{
+	return memcpy(dest, src, size);
+}
+
+void *DWC_MEMMOVE(void *dest, void *src, uint32_t size)
+{
+	return memmove(dest, src, size);
+}
+
+int DWC_MEMCMP(void *m1, void *m2, uint32_t size)
+{
+	return memcmp(m1, m2, size);
+}
+
+int DWC_STRNCMP(void *s1, void *s2, uint32_t size)
+{
+	return strncmp(s1, s2, size);
+}
+
+int DWC_STRCMP(void *s1, void *s2)
+{
+	return strcmp(s1, s2);
+}
+
+int DWC_STRLEN(char const *str)
+{
+	return strlen(str);
+}
+
+char *DWC_STRCPY(char *to, char const *from)
+{
+	return strcpy(to, from);
+}
+
+char *DWC_STRDUP(char const *str)
+{
+	int len = DWC_STRLEN(str) + 1;
+	char *new = DWC_ALLOC_ATOMIC(len);
+
+	if (!new) {
+		return NULL;
+	}
+
+	DWC_MEMCPY(new, str, len);
+	return new;
+}
+
+int DWC_ATOI(const char *str, int32_t *value)
+{
+	char *end = NULL;
+
+	*value = simple_strtol(str, &end, 0);
+	if (*end == '\0') {
+		return 0;
+	}
+
+	return -1;
+}
+
+int DWC_ATOUI(const char *str, uint32_t *value)
+{
+	char *end = NULL;
+
+	*value = simple_strtoul(str, &end, 0);
+	if (*end == '\0') {
+		return 0;
+	}
+
+	return -1;
+}
+
+
+#ifdef DWC_UTFLIB
+/* From usbstring.c */
+
+int DWC_UTF8_TO_UTF16LE(uint8_t const *s, uint16_t *cp, unsigned len)
+{
+	int	count = 0;
+	u8	c;
+	u16	uchar;
+
+	/* this insists on correct encodings, though not minimal ones.
+	 * BUT it currently rejects legit 4-byte UTF-8 code points,
+	 * which need surrogate pairs.  (Unicode 3.1 can use them.)
+	 */
+	while (len != 0 && (c = (u8) *s++) != 0) {
+		if (unlikely(c & 0x80)) {
+			// 2-byte sequence:
+			// 00000yyyyyxxxxxx = 110yyyyy 10xxxxxx
+			if ((c & 0xe0) == 0xc0) {
+				uchar = (c & 0x1f) << 6;
+
+				c = (u8) *s++;
+				if ((c & 0xc0) != 0xc0)
+					goto fail;
+				c &= 0x3f;
+				uchar |= c;
+
+			// 3-byte sequence (most CJKV characters):
+			// zzzzyyyyyyxxxxxx = 1110zzzz 10yyyyyy 10xxxxxx
+			} else if ((c & 0xf0) == 0xe0) {
+				uchar = (c & 0x0f) << 12;
+
+				c = (u8) *s++;
+				if ((c & 0xc0) != 0xc0)
+					goto fail;
+				c &= 0x3f;
+				uchar |= c << 6;
+
+				c = (u8) *s++;
+				if ((c & 0xc0) != 0xc0)
+					goto fail;
+				c &= 0x3f;
+				uchar |= c;
+
+				/* no bogus surrogates */
+				if (0xd800 <= uchar && uchar <= 0xdfff)
+					goto fail;
+
+			// 4-byte sequence (surrogate pairs, currently rare):
+			// 11101110wwwwzzzzyy + 110111yyyyxxxxxx
+			//     = 11110uuu 10uuzzzz 10yyyyyy 10xxxxxx
+			// (uuuuu = wwww + 1)
+			// FIXME accept the surrogate code points (only)
+			} else
+				goto fail;
+		} else
+			uchar = c;
+		put_unaligned (cpu_to_le16 (uchar), cp++);
+		count++;
+		len--;
+	}
+	return count;
+fail:
+	return -1;
+}
+#endif	/* DWC_UTFLIB */
+
+
+/* dwc_debug.h */
+
+dwc_bool_t DWC_IN_IRQ(void)
+{
+	return in_irq();
+}
+
+dwc_bool_t DWC_IN_BH(void)
+{
+	return in_softirq();
+}
+
+void DWC_VPRINTF(char *format, va_list args)
+{
+	vprintk(format, args);
+}
+
+int DWC_VSNPRINTF(char *str, int size, char *format, va_list args)
+{
+	return vsnprintf(str, size, format, args);
+}
+
+void DWC_PRINTF(char *format, ...)
+{
+	va_list args;
+
+	va_start(args, format);
+	DWC_VPRINTF(format, args);
+	va_end(args);
+}
+
+int DWC_SPRINTF(char *buffer, char *format, ...)
+{
+	int retval;
+	va_list args;
+
+	va_start(args, format);
+	retval = vsprintf(buffer, format, args);
+	va_end(args);
+	return retval;
+}
+
+int DWC_SNPRINTF(char *buffer, int size, char *format, ...)
+{
+	int retval;
+	va_list args;
+
+	va_start(args, format);
+	retval = vsnprintf(buffer, size, format, args);
+	va_end(args);
+	return retval;
+}
+
+void __DWC_WARN(char *format, ...)
+{
+	va_list args;
+
+	va_start(args, format);
+	DWC_PRINTF(KERN_WARNING);
+	DWC_VPRINTF(format, args);
+	va_end(args);
+}
+
+void __DWC_ERROR(char *format, ...)
+{
+	va_list args;
+
+	va_start(args, format);
+	DWC_PRINTF(KERN_ERR);
+	DWC_VPRINTF(format, args);
+	va_end(args);
+}
+
+void DWC_EXCEPTION(char *format, ...)
+{
+	va_list args;
+
+	va_start(args, format);
+	DWC_PRINTF(KERN_ERR);
+	DWC_VPRINTF(format, args);
+	va_end(args);
+	BUG_ON(1);
+}
+
+#ifdef DEBUG
+void __DWC_DEBUG(char *format, ...)
+{
+	va_list args;
+
+	va_start(args, format);
+	DWC_PRINTF(KERN_DEBUG);
+	DWC_VPRINTF(format, args);
+	va_end(args);
+}
+#endif
+
+
+/* dwc_mem.h */
+
+#if 0
+dwc_pool_t *DWC_DMA_POOL_CREATE(uint32_t size,
+				uint32_t align,
+				uint32_t alloc)
+{
+	struct dma_pool *pool = dma_pool_create("Pool", NULL,
+						size, align, alloc);
+	return (dwc_pool_t *)pool;
+}
+
+void DWC_DMA_POOL_DESTROY(dwc_pool_t *pool)
+{
+	dma_pool_destroy((struct dma_pool *)pool);
+}
+
+void *DWC_DMA_POOL_ALLOC(dwc_pool_t *pool, uint64_t *dma_addr)
+{
+	return dma_pool_alloc((struct dma_pool *)pool, GFP_KERNEL, dma_addr);
+}
+
+void *DWC_DMA_POOL_ZALLOC(dwc_pool_t *pool, uint64_t *dma_addr)
+{
+	void *vaddr = DWC_DMA_POOL_ALLOC(pool, dma_addr);
+	memset(..);
+}
+
+void DWC_DMA_POOL_FREE(dwc_pool_t *pool, void *vaddr, void *daddr)
+{
+	dma_pool_free(pool, vaddr, daddr);
+}
+#endif
+
+void *__DWC_DMA_ALLOC(void *dma_ctx, uint32_t size, dwc_dma_t *dma_addr)
+{
+#ifdef xxCOSIM /* Only works for 32-bit cosim */
+	void *buf = dma_alloc_coherent(dma_ctx, (size_t)size, dma_addr, GFP_KERNEL);
+#else
+	void *buf = dma_alloc_coherent(dma_ctx, (size_t)size, dma_addr, GFP_KERNEL | GFP_DMA32);
+#endif
+	if (!buf) {
+		return NULL;
+	}
+
+	memset(buf, 0, (size_t)size);
+	return buf;
+}
+
+void *__DWC_DMA_ALLOC_ATOMIC(void *dma_ctx, uint32_t size, dwc_dma_t *dma_addr)
+{
+	void *buf = dma_alloc_coherent(NULL, (size_t)size, dma_addr, GFP_ATOMIC);
+	if (!buf) {
+		return NULL;
+	}
+	memset(buf, 0, (size_t)size);
+	return buf;
+}
+
+void __DWC_DMA_FREE(void *dma_ctx, uint32_t size, void *virt_addr, dwc_dma_t dma_addr)
+{
+	dma_free_coherent(dma_ctx, size, virt_addr, dma_addr);
+}
+
+void *__DWC_ALLOC(void *mem_ctx, uint32_t size)
+{
+	return kzalloc(size, GFP_KERNEL);
+}
+
+void *__DWC_ALLOC_ATOMIC(void *mem_ctx, uint32_t size)
+{
+	return kzalloc(size, GFP_ATOMIC);
+}
+
+void __DWC_FREE(void *mem_ctx, void *addr)
+{
+	kfree(addr);
+}
+
+
+#ifdef DWC_CRYPTOLIB
+/* dwc_crypto.h */
+
+void DWC_RANDOM_BYTES(uint8_t *buffer, uint32_t length)
+{
+	get_random_bytes(buffer, length);
+}
+
+int DWC_AES_CBC(uint8_t *message, uint32_t messagelen, uint8_t *key, uint32_t keylen, uint8_t iv[16], uint8_t *out)
+{
+	struct crypto_blkcipher *tfm;
+	struct blkcipher_desc desc;
+	struct scatterlist sgd;
+	struct scatterlist sgs;
+
+	tfm = crypto_alloc_blkcipher("cbc(aes)", 0, CRYPTO_ALG_ASYNC);
+	if (tfm == NULL) {
+		printk("failed to load transform for aes CBC\n");
+		return -1;
+	}
+
+	crypto_blkcipher_setkey(tfm, key, keylen);
+	crypto_blkcipher_set_iv(tfm, iv, 16);
+
+	sg_init_one(&sgd, out, messagelen);
+	sg_init_one(&sgs, message, messagelen);
+
+	desc.tfm = tfm;
+	desc.flags = 0;
+
+	if (crypto_blkcipher_encrypt(&desc, &sgd, &sgs, messagelen)) {
+		crypto_free_blkcipher(tfm);
+		DWC_ERROR("AES CBC encryption failed");
+		return -1;
+	}
+
+	crypto_free_blkcipher(tfm);
+	return 0;
+}
+
+int DWC_SHA256(uint8_t *message, uint32_t len, uint8_t *out)
+{
+	struct crypto_hash *tfm;
+	struct hash_desc desc;
+	struct scatterlist sg;
+
+	tfm = crypto_alloc_hash("sha256", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(tfm)) {
+		DWC_ERROR("Failed to load transform for sha256: %ld\n", PTR_ERR(tfm));
+		return 0;
+	}
+	desc.tfm = tfm;
+	desc.flags = 0;
+
+	sg_init_one(&sg, message, len);
+	crypto_hash_digest(&desc, &sg, len, out);
+	crypto_free_hash(tfm);
+
+	return 1;
+}
+
+int DWC_HMAC_SHA256(uint8_t *message, uint32_t messagelen,
+		    uint8_t *key, uint32_t keylen, uint8_t *out)
+{
+	struct crypto_hash *tfm;
+	struct hash_desc desc;
+	struct scatterlist sg;
+
+	tfm = crypto_alloc_hash("hmac(sha256)", 0, CRYPTO_ALG_ASYNC);
+	if (IS_ERR(tfm)) {
+		DWC_ERROR("Failed to load transform for hmac(sha256): %ld\n", PTR_ERR(tfm));
+		return 0;
+	}
+	desc.tfm = tfm;
+	desc.flags = 0;
+
+	sg_init_one(&sg, message, messagelen);
+	crypto_hash_setkey(tfm, key, keylen);
+	crypto_hash_digest(&desc, &sg, messagelen, out);
+	crypto_free_hash(tfm);
+
+	return 1;
+}
+#endif	/* DWC_CRYPTOLIB */
+
+
+/* Byte Ordering Conversions */
+
+uint32_t DWC_CPU_TO_LE32(uint32_t *p)
+{
+#ifdef __LITTLE_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+
+	return (u_p[3] | (u_p[2] << 8) | (u_p[1] << 16) | (u_p[0] << 24));
+#endif
+}
+
+uint32_t DWC_CPU_TO_BE32(uint32_t *p)
+{
+#ifdef __BIG_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+
+	return (u_p[3] | (u_p[2] << 8) | (u_p[1] << 16) | (u_p[0] << 24));
+#endif
+}
+
+uint32_t DWC_LE32_TO_CPU(uint32_t *p)
+{
+#ifdef __LITTLE_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+
+	return (u_p[3] | (u_p[2] << 8) | (u_p[1] << 16) | (u_p[0] << 24));
+#endif
+}
+
+uint32_t DWC_BE32_TO_CPU(uint32_t *p)
+{
+#ifdef __BIG_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+
+	return (u_p[3] | (u_p[2] << 8) | (u_p[1] << 16) | (u_p[0] << 24));
+#endif
+}
+
+uint16_t DWC_CPU_TO_LE16(uint16_t *p)
+{
+#ifdef __LITTLE_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+	return (u_p[1] | (u_p[0] << 8));
+#endif
+}
+
+uint16_t DWC_CPU_TO_BE16(uint16_t *p)
+{
+#ifdef __BIG_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+	return (u_p[1] | (u_p[0] << 8));
+#endif
+}
+
+uint16_t DWC_LE16_TO_CPU(uint16_t *p)
+{
+#ifdef __LITTLE_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+	return (u_p[1] | (u_p[0] << 8));
+#endif
+}
+
+uint16_t DWC_BE16_TO_CPU(uint16_t *p)
+{
+#ifdef __BIG_ENDIAN
+	return *p;
+#else
+	uint8_t *u_p = (uint8_t *)p;
+	return (u_p[1] | (u_p[0] << 8));
+#endif
+}
+
+
+/* Registers */
+
+uint32_t DWC_READ_REG32(uint32_t volatile *reg)
+{
+	return readl(reg);
+}
+
+#if 0
+uint64_t DWC_READ_REG64(uint64_t volatile *reg)
+{
+}
+#endif
+
+void DWC_WRITE_REG32(uint32_t volatile *reg, uint32_t value)
+{
+	writel(value, reg);
+}
+
+#if 0
+void DWC_WRITE_REG64(uint64_t volatile *reg, uint64_t value)
+{
+}
+#endif
+
+void DWC_MODIFY_REG32(uint32_t volatile *reg, uint32_t clear_mask, uint32_t set_mask)
+{
+	writel((readl(reg) & ~clear_mask) | set_mask, reg);
+}
+
+#if 0
+void DWC_MODIFY_REG64(uint64_t volatile *reg, uint64_t clear_mask, uint64_t set_mask)
+{
+}
+#endif
+
+
+/* Locking */
+
+dwc_spinlock_t *DWC_SPINLOCK_ALLOC(void)
+{
+	spinlock_t *sl = (spinlock_t *)1;
+
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	sl = DWC_ALLOC(sizeof(*sl));
+	if (!sl) {
+		DWC_ERROR("Cannot allocate memory for spinlock\n");
+		return NULL;
+	}
+
+	spin_lock_init(sl);
+#endif
+	return (dwc_spinlock_t *)sl;
+}
+
+void DWC_SPINLOCK_FREE(dwc_spinlock_t *lock)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	DWC_FREE(lock);
+#endif
+}
+
+void DWC_SPINLOCK(dwc_spinlock_t *lock)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	spin_lock((spinlock_t *)lock);
+#endif
+}
+
+void DWC_SPINUNLOCK(dwc_spinlock_t *lock)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	spin_unlock((spinlock_t *)lock);
+#endif
+}
+
+void DWC_SPINLOCK_IRQSAVE(dwc_spinlock_t *lock, dwc_irqflags_t *flags)
+{
+	dwc_irqflags_t f;
+
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	spin_lock_irqsave((spinlock_t *)lock, f);
+#else
+	local_irq_save(f);
+#endif
+	*flags = f;
+}
+
+void DWC_SPINUNLOCK_IRQRESTORE(dwc_spinlock_t *lock, dwc_irqflags_t flags)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	spin_unlock_irqrestore((spinlock_t *)lock, flags);
+#else
+	local_irq_restore(flags);
+#endif
+}
+
+dwc_mutex_t *DWC_MUTEX_ALLOC(void)
+{
+	struct mutex *m;
+	dwc_mutex_t *mutex = (dwc_mutex_t *)DWC_ALLOC(sizeof(struct mutex));
+
+	if (!mutex) {
+		DWC_ERROR("Cannot allocate memory for mutex\n");
+		return NULL;
+	}
+
+	m = (struct mutex *)mutex;
+	mutex_init(m);
+	return mutex;
+}
+
+#if (defined(DWC_LINUX) && defined(CONFIG_DEBUG_MUTEXES))
+#else
+void DWC_MUTEX_FREE(dwc_mutex_t *mutex)
+{
+	mutex_destroy((struct mutex *)mutex);
+	DWC_FREE(mutex);
+}
+#endif
+
+void DWC_MUTEX_LOCK(dwc_mutex_t *mutex)
+{
+	struct mutex *m = (struct mutex *)mutex;
+	mutex_lock(m);
+}
+
+int DWC_MUTEX_TRYLOCK(dwc_mutex_t *mutex)
+{
+	struct mutex *m = (struct mutex *)mutex;
+	return mutex_trylock(m);
+}
+
+void DWC_MUTEX_UNLOCK(dwc_mutex_t *mutex)
+{
+	struct mutex *m = (struct mutex *)mutex;
+	mutex_unlock(m);
+}
+
+
+/* Timing */
+
+void DWC_UDELAY(uint32_t usecs)
+{
+	udelay(usecs);
+}
+
+void DWC_MDELAY(uint32_t msecs)
+{
+	mdelay(msecs);
+}
+
+void DWC_MSLEEP(uint32_t msecs)
+{
+	msleep(msecs);
+}
+
+uint32_t DWC_TIME(void)
+{
+	return jiffies_to_msecs(jiffies);
+}
+
+
+/* Timers */
+
+struct dwc_timer {
+	struct timer_list *t;
+	char *name;
+	dwc_timer_callback_t cb;
+	void *data;
+	uint8_t scheduled;
+	dwc_spinlock_t *lock;
+};
+
+static void timer_callback(unsigned long data)
+{
+	dwc_timer_t *timer = (dwc_timer_t *)data;
+	dwc_irqflags_t flags;
+
+	DWC_SPINLOCK_IRQSAVE(timer->lock, &flags);
+	timer->scheduled = 0;
+	DWC_SPINUNLOCK_IRQRESTORE(timer->lock, flags);
+	DWC_DEBUGC("Timer %s callback", timer->name);
+	timer->cb(timer->data);
+}
+
+dwc_timer_t *DWC_TIMER_ALLOC(char *name, dwc_timer_callback_t cb, void *data)
+{
+	dwc_timer_t *t = DWC_ALLOC(sizeof(*t));
+
+	if (!t) {
+		DWC_ERROR("Cannot allocate memory for timer");
+		return NULL;
+	}
+
+	t->t = DWC_ALLOC(sizeof(*t->t));
+	if (!t->t) {
+		DWC_ERROR("Cannot allocate memory for timer->t");
+		goto no_timer;
+	}
+
+	t->name = DWC_STRDUP(name);
+	if (!t->name) {
+		DWC_ERROR("Cannot allocate memory for timer->name");
+		goto no_name;
+	}
+
+#if (defined(DWC_LINUX) && defined(CONFIG_DEBUG_SPINLOCK))
+	DWC_SPINLOCK_ALLOC_LINUX_DEBUG(t->lock);
+#else
+	t->lock = DWC_SPINLOCK_ALLOC();
+#endif
+	if (!t->lock) {
+		DWC_ERROR("Cannot allocate memory for lock");
+		goto no_lock;
+	}
+
+	t->scheduled = 0;
+	t->t->base = &boot_tvec_bases;
+	t->t->expires = jiffies;
+	setup_timer(t->t, timer_callback, (unsigned long)t);
+
+	t->cb = cb;
+	t->data = data;
+
+	return t;
+
+ no_lock:
+	DWC_FREE(t->name);
+ no_name:
+	DWC_FREE(t->t);
+ no_timer:
+	DWC_FREE(t);
+	return NULL;
+}
+
+void DWC_TIMER_FREE(dwc_timer_t *timer)
+{
+	dwc_irqflags_t flags;
+
+	DWC_SPINLOCK_IRQSAVE(timer->lock, &flags);
+
+	if (timer->scheduled) {
+		del_timer(timer->t);
+		timer->scheduled = 0;
+	}
+
+	DWC_SPINUNLOCK_IRQRESTORE(timer->lock, flags);
+	DWC_SPINLOCK_FREE(timer->lock);
+	DWC_FREE(timer->t);
+	DWC_FREE(timer->name);
+	DWC_FREE(timer);
+}
+
+void DWC_TIMER_SCHEDULE(dwc_timer_t *timer, uint32_t time)
+{
+	dwc_irqflags_t flags;
+
+	DWC_SPINLOCK_IRQSAVE(timer->lock, &flags);
+
+	if (!timer->scheduled) {
+		timer->scheduled = 1;
+		DWC_DEBUGC("Scheduling timer %s to expire in +%d msec", timer->name, time);
+		timer->t->expires = jiffies + msecs_to_jiffies(time);
+		add_timer(timer->t);
+	} else {
+		DWC_DEBUGC("Modifying timer %s to expire in +%d msec", timer->name, time);
+		mod_timer(timer->t, jiffies + msecs_to_jiffies(time));
+	}
+
+	DWC_SPINUNLOCK_IRQRESTORE(timer->lock, flags);
+}
+
+void DWC_TIMER_CANCEL(dwc_timer_t *timer)
+{
+	del_timer(timer->t);
+}
+
+
+/* Wait Queues */
+
+struct dwc_waitq {
+	wait_queue_head_t queue;
+	int abort;
+};
+
+dwc_waitq_t *DWC_WAITQ_ALLOC(void)
+{
+	dwc_waitq_t *wq = DWC_ALLOC(sizeof(*wq));
+
+	if (!wq) {
+		DWC_ERROR("Cannot allocate memory for waitqueue\n");
+		return NULL;
+	}
+
+	init_waitqueue_head(&wq->queue);
+	wq->abort = 0;
+	return wq;
+}
+
+void DWC_WAITQ_FREE(dwc_waitq_t *wq)
+{
+	DWC_FREE(wq);
+}
+
+int32_t DWC_WAITQ_WAIT(dwc_waitq_t *wq, dwc_waitq_condition_t cond, void *data)
+{
+	int result = wait_event_interruptible(wq->queue,
+					      cond(data) || wq->abort);
+	if (result == -ERESTARTSYS) {
+		wq->abort = 0;
+		return -DWC_E_RESTART;
+	}
+
+	if (wq->abort == 1) {
+		wq->abort = 0;
+		return -DWC_E_ABORT;
+	}
+
+	wq->abort = 0;
+
+	if (result == 0) {
+		return 0;
+	}
+
+	return -DWC_E_UNKNOWN;
+}
+
+int32_t DWC_WAITQ_WAIT_TIMEOUT(dwc_waitq_t *wq, dwc_waitq_condition_t cond,
+			       void *data, int32_t msecs)
+{
+	int32_t tmsecs;
+	int result = wait_event_interruptible_timeout(wq->queue,
+						      cond(data) || wq->abort,
+						      msecs_to_jiffies(msecs));
+	if (result == -ERESTARTSYS) {
+		wq->abort = 0;
+		return -DWC_E_RESTART;
+	}
+
+	if (wq->abort == 1) {
+		wq->abort = 0;
+		return -DWC_E_ABORT;
+	}
+
+	wq->abort = 0;
+
+	if (result > 0) {
+		tmsecs = jiffies_to_msecs(result);
+		if (!tmsecs) {
+			return 1;
+		}
+
+		return tmsecs;
+	}
+
+	if (result == 0) {
+		return -DWC_E_TIMEOUT;
+	}
+
+	return -DWC_E_UNKNOWN;
+}
+
+void DWC_WAITQ_TRIGGER(dwc_waitq_t *wq)
+{
+	wq->abort = 0;
+	wake_up_interruptible(&wq->queue);
+}
+
+void DWC_WAITQ_ABORT(dwc_waitq_t *wq)
+{
+	wq->abort = 1;
+	wake_up_interruptible(&wq->queue);
+}
+
+
+/* Threading */
+
+dwc_thread_t *DWC_THREAD_RUN(dwc_thread_function_t func, char *name, void *data)
+{
+	struct task_struct *thread = kthread_run(func, data, name);
+
+	if (thread == ERR_PTR(-ENOMEM)) {
+		return NULL;
+	}
+
+	return (dwc_thread_t *)thread;
+}
+
+int DWC_THREAD_STOP(dwc_thread_t *thread)
+{
+	return kthread_stop((struct task_struct *)thread);
+}
+
+dwc_bool_t DWC_THREAD_SHOULD_STOP(void)
+{
+	return kthread_should_stop();
+}
+
+
+/* tasklets
+ - run in interrupt context (cannot sleep)
+ - each tasklet runs on a single CPU
+ - different tasklets can be running simultaneously on different CPUs
+ */
+struct dwc_tasklet {
+	struct tasklet_struct t;
+	dwc_tasklet_callback_t cb;
+	void *data;
+};
+
+static void tasklet_callback(unsigned long data)
+{
+	dwc_tasklet_t *t = (dwc_tasklet_t *)data;
+	t->cb(t->data);
+}
+
+dwc_tasklet_t *DWC_TASK_ALLOC(char *name, dwc_tasklet_callback_t cb, void *data)
+{
+	dwc_tasklet_t *t = DWC_ALLOC(sizeof(*t));
+
+	if (t) {
+		t->cb = cb;
+		t->data = data;
+		tasklet_init(&t->t, tasklet_callback, (unsigned long)t);
+	} else {
+		DWC_ERROR("Cannot allocate memory for tasklet\n");
+	}
+
+	return t;
+}
+
+void DWC_TASK_FREE(dwc_tasklet_t *task)
+{
+	DWC_FREE(task);
+}
+
+void DWC_TASK_SCHEDULE(dwc_tasklet_t *task)
+{
+	tasklet_schedule(&task->t);
+}
+
+void DWC_TASK_HI_SCHEDULE(dwc_tasklet_t *task)
+{
+	tasklet_hi_schedule(&task->t);
+}
+
+
+/* workqueues
+ - run in process context (can sleep)
+ */
+typedef struct work_container {
+	dwc_work_callback_t cb;
+	void *data;
+	dwc_workq_t *wq;
+	char *name;
+
+#ifdef DEBUG
+	DWC_CIRCLEQ_ENTRY(work_container) entry;
+#endif
+	struct delayed_work work;
+} work_container_t;
+
+#ifdef DEBUG
+DWC_CIRCLEQ_HEAD(work_container_queue, work_container);
+#endif
+
+struct dwc_workq {
+	struct workqueue_struct *wq;
+	dwc_spinlock_t *lock;
+	dwc_waitq_t *waitq;
+	int pending;
+
+#ifdef DEBUG
+	struct work_container_queue entries;
+#endif
+};
+
+static void do_work(struct work_struct *work)
+{
+	dwc_irqflags_t flags;
+	struct delayed_work *dw = container_of(work, struct delayed_work, work);
+	work_container_t *container = container_of(dw, struct work_container, work);
+	dwc_workq_t *wq = container->wq;
+
+	container->cb(container->data);
+
+#ifdef DEBUG
+	DWC_CIRCLEQ_REMOVE(&wq->entries, container, entry);
+#endif
+	DWC_DEBUGC("Work done: %s, container=%p", container->name, container);
+	if (container->name) {
+		DWC_FREE(container->name);
+	}
+	DWC_FREE(container);
+
+	DWC_SPINLOCK_IRQSAVE(wq->lock, &flags);
+	wq->pending--;
+	DWC_SPINUNLOCK_IRQRESTORE(wq->lock, flags);
+	DWC_WAITQ_TRIGGER(wq->waitq);
+}
+
+static int work_done(void *data)
+{
+	dwc_workq_t *workq = (dwc_workq_t *)data;
+	return workq->pending == 0;
+}
+
+int DWC_WORKQ_WAIT_WORK_DONE(dwc_workq_t *workq, int timeout)
+{
+	return DWC_WAITQ_WAIT_TIMEOUT(workq->waitq, work_done, workq, timeout);
+}
+
+dwc_workq_t *DWC_WORKQ_ALLOC(char *name)
+{
+	dwc_workq_t *wq = DWC_ALLOC(sizeof(*wq));
+
+	if (!wq) {
+		return NULL;
+	}
+
+	wq->wq = create_singlethread_workqueue(name);
+	if (!wq->wq) {
+		goto no_wq;
+	}
+
+	wq->pending = 0;
+
+#if (defined(DWC_LINUX) && defined(CONFIG_DEBUG_SPINLOCK))
+	DWC_SPINLOCK_ALLOC_LINUX_DEBUG(wq->lock);
+#else
+	wq->lock = DWC_SPINLOCK_ALLOC();
+#endif
+	if (!wq->lock) {
+		goto no_lock;
+	}
+
+	wq->waitq = DWC_WAITQ_ALLOC();
+	if (!wq->waitq) {
+		goto no_waitq;
+	}
+
+#ifdef DEBUG
+	DWC_CIRCLEQ_INIT(&wq->entries);
+#endif
+	return wq;
+
+ no_waitq:
+	DWC_SPINLOCK_FREE(wq->lock);
+ no_lock:
+	destroy_workqueue(wq->wq);
+ no_wq:
+	DWC_FREE(wq);
+
+	return NULL;
+}
+
+void DWC_WORKQ_FREE(dwc_workq_t *wq)
+{
+#ifdef DEBUG
+	if (wq->pending != 0) {
+		struct work_container *wc;
+		DWC_ERROR("Destroying work queue with pending work");
+		DWC_CIRCLEQ_FOREACH(wc, &wq->entries, entry) {
+			DWC_ERROR("Work %s still pending", wc->name);
+		}
+	}
+#endif
+	destroy_workqueue(wq->wq);
+	DWC_SPINLOCK_FREE(wq->lock);
+	DWC_WAITQ_FREE(wq->waitq);
+	DWC_FREE(wq);
+}
+
+void DWC_WORKQ_SCHEDULE(dwc_workq_t *wq, dwc_work_callback_t cb, void *data,
+			char *format, ...)
+{
+	dwc_irqflags_t flags;
+	work_container_t *container;
+	static char name[128];
+	va_list args;
+
+	va_start(args, format);
+	DWC_VSNPRINTF(name, 128, format, args);
+	va_end(args);
+
+	DWC_SPINLOCK_IRQSAVE(wq->lock, &flags);
+	wq->pending++;
+	DWC_SPINUNLOCK_IRQRESTORE(wq->lock, flags);
+	DWC_WAITQ_TRIGGER(wq->waitq);
+
+	container = DWC_ALLOC_ATOMIC(sizeof(*container));
+	if (!container) {
+		DWC_ERROR("Cannot allocate memory for container\n");
+		return;
+	}
+
+	container->name = DWC_STRDUP(name);
+	if (!container->name) {
+		DWC_ERROR("Cannot allocate memory for container->name\n");
+		DWC_FREE(container);
+		return;
+	}
+
+	container->cb = cb;
+	container->data = data;
+	container->wq = wq;
+	DWC_DEBUGC("Queueing work: %s, container=%p", container->name, container);
+	INIT_WORK(&container->work.work, do_work);
+
+#ifdef DEBUG
+	DWC_CIRCLEQ_INSERT_TAIL(&wq->entries, container, entry);
+#endif
+	queue_work(wq->wq, &container->work.work);
+}
+
+void DWC_WORKQ_SCHEDULE_DELAYED(dwc_workq_t *wq, dwc_work_callback_t cb,
+				void *data, uint32_t time, char *format, ...)
+{
+	dwc_irqflags_t flags;
+	work_container_t *container;
+	static char name[128];
+	va_list args;
+
+	va_start(args, format);
+	DWC_VSNPRINTF(name, 128, format, args);
+	va_end(args);
+
+	DWC_SPINLOCK_IRQSAVE(wq->lock, &flags);
+	wq->pending++;
+	DWC_SPINUNLOCK_IRQRESTORE(wq->lock, flags);
+	DWC_WAITQ_TRIGGER(wq->waitq);
+
+	container = DWC_ALLOC_ATOMIC(sizeof(*container));
+	if (!container) {
+		DWC_ERROR("Cannot allocate memory for container\n");
+		return;
+	}
+
+	container->name = DWC_STRDUP(name);
+	if (!container->name) {
+		DWC_ERROR("Cannot allocate memory for container->name\n");
+		DWC_FREE(container);
+		return;
+	}
+
+	container->cb = cb;
+	container->data = data;
+	container->wq = wq;
+	DWC_DEBUGC("Queueing work: %s, container=%p", container->name, container);
+	INIT_DELAYED_WORK(&container->work, do_work);
+
+#ifdef DEBUG
+	DWC_CIRCLEQ_INSERT_TAIL(&wq->entries, container, entry);
+#endif
+	queue_delayed_work(wq->wq, &container->work, msecs_to_jiffies(time));
+}
+
+int DWC_WORKQ_PENDING(dwc_workq_t *wq)
+{
+	return wq->pending;
+}
+
+
+#ifdef DWC_LIBMODULE
+
+#ifdef DWC_CCLIB
+/* CC */
+EXPORT_SYMBOL(dwc_cc_if_alloc);
+EXPORT_SYMBOL(dwc_cc_if_free);
+EXPORT_SYMBOL(dwc_cc_clear);
+EXPORT_SYMBOL(dwc_cc_add);
+EXPORT_SYMBOL(dwc_cc_remove);
+EXPORT_SYMBOL(dwc_cc_change);
+EXPORT_SYMBOL(dwc_cc_data_for_save);
+EXPORT_SYMBOL(dwc_cc_restore_from_data);
+EXPORT_SYMBOL(dwc_cc_match_chid);
+EXPORT_SYMBOL(dwc_cc_match_cdid);
+EXPORT_SYMBOL(dwc_cc_ck);
+EXPORT_SYMBOL(dwc_cc_chid);
+EXPORT_SYMBOL(dwc_cc_cdid);
+EXPORT_SYMBOL(dwc_cc_name);
+#endif	/* DWC_CCLIB */
+
+#ifdef DWC_CRYPTOLIB
+# ifndef CONFIG_MACH_IPMATE
+/* Modpow */
+EXPORT_SYMBOL(dwc_modpow);
+
+/* DH */
+EXPORT_SYMBOL(dwc_dh_modpow);
+EXPORT_SYMBOL(dwc_dh_derive_keys);
+EXPORT_SYMBOL(dwc_dh_pk);
+# endif	/* CONFIG_MACH_IPMATE */
+
+/* Crypto */
+EXPORT_SYMBOL(dwc_wusb_aes_encrypt);
+EXPORT_SYMBOL(dwc_wusb_cmf);
+EXPORT_SYMBOL(dwc_wusb_prf);
+EXPORT_SYMBOL(dwc_wusb_fill_ccm_nonce);
+EXPORT_SYMBOL(dwc_wusb_gen_nonce);
+EXPORT_SYMBOL(dwc_wusb_gen_key);
+EXPORT_SYMBOL(dwc_wusb_gen_mic);
+#endif	/* DWC_CRYPTOLIB */
+
+/* Notification */
+#ifdef DWC_NOTIFYLIB
+EXPORT_SYMBOL(dwc_alloc_notification_manager);
+EXPORT_SYMBOL(dwc_free_notification_manager);
+EXPORT_SYMBOL(dwc_register_notifier);
+EXPORT_SYMBOL(dwc_unregister_notifier);
+EXPORT_SYMBOL(dwc_add_observer);
+EXPORT_SYMBOL(dwc_remove_observer);
+EXPORT_SYMBOL(dwc_notify);
+#endif
+
+/* Memory Debugging Routines */
+#ifdef DWC_DEBUG_MEMORY
+EXPORT_SYMBOL(dwc_alloc_debug);
+EXPORT_SYMBOL(dwc_alloc_atomic_debug);
+EXPORT_SYMBOL(dwc_free_debug);
+EXPORT_SYMBOL(dwc_dma_alloc_debug);
+EXPORT_SYMBOL(dwc_dma_free_debug);
+#endif
+
+EXPORT_SYMBOL(DWC_MEMSET);
+EXPORT_SYMBOL(DWC_MEMCPY);
+EXPORT_SYMBOL(DWC_MEMMOVE);
+EXPORT_SYMBOL(DWC_MEMCMP);
+EXPORT_SYMBOL(DWC_STRNCMP);
+EXPORT_SYMBOL(DWC_STRCMP);
+EXPORT_SYMBOL(DWC_STRLEN);
+EXPORT_SYMBOL(DWC_STRCPY);
+EXPORT_SYMBOL(DWC_STRDUP);
+EXPORT_SYMBOL(DWC_ATOI);
+EXPORT_SYMBOL(DWC_ATOUI);
+
+#ifdef DWC_UTFLIB
+EXPORT_SYMBOL(DWC_UTF8_TO_UTF16LE);
+#endif	/* DWC_UTFLIB */
+
+EXPORT_SYMBOL(DWC_IN_IRQ);
+EXPORT_SYMBOL(DWC_IN_BH);
+EXPORT_SYMBOL(DWC_VPRINTF);
+EXPORT_SYMBOL(DWC_VSNPRINTF);
+EXPORT_SYMBOL(DWC_PRINTF);
+EXPORT_SYMBOL(DWC_SPRINTF);
+EXPORT_SYMBOL(DWC_SNPRINTF);
+EXPORT_SYMBOL(__DWC_WARN);
+EXPORT_SYMBOL(__DWC_ERROR);
+EXPORT_SYMBOL(DWC_EXCEPTION);
+
+#ifdef DEBUG
+EXPORT_SYMBOL(__DWC_DEBUG);
+#endif
+
+EXPORT_SYMBOL(__DWC_DMA_ALLOC);
+EXPORT_SYMBOL(__DWC_DMA_ALLOC_ATOMIC);
+EXPORT_SYMBOL(__DWC_DMA_FREE);
+EXPORT_SYMBOL(__DWC_ALLOC);
+EXPORT_SYMBOL(__DWC_ALLOC_ATOMIC);
+EXPORT_SYMBOL(__DWC_FREE);
+
+#ifdef DWC_CRYPTOLIB
+EXPORT_SYMBOL(DWC_RANDOM_BYTES);
+EXPORT_SYMBOL(DWC_AES_CBC);
+EXPORT_SYMBOL(DWC_SHA256);
+EXPORT_SYMBOL(DWC_HMAC_SHA256);
+#endif
+
+EXPORT_SYMBOL(DWC_CPU_TO_LE32);
+EXPORT_SYMBOL(DWC_CPU_TO_BE32);
+EXPORT_SYMBOL(DWC_LE32_TO_CPU);
+EXPORT_SYMBOL(DWC_BE32_TO_CPU);
+EXPORT_SYMBOL(DWC_CPU_TO_LE16);
+EXPORT_SYMBOL(DWC_CPU_TO_BE16);
+EXPORT_SYMBOL(DWC_LE16_TO_CPU);
+EXPORT_SYMBOL(DWC_BE16_TO_CPU);
+EXPORT_SYMBOL(DWC_READ_REG32);
+EXPORT_SYMBOL(DWC_WRITE_REG32);
+EXPORT_SYMBOL(DWC_MODIFY_REG32);
+
+#if 0
+EXPORT_SYMBOL(DWC_READ_REG64);
+EXPORT_SYMBOL(DWC_WRITE_REG64);
+EXPORT_SYMBOL(DWC_MODIFY_REG64);
+#endif
+
+EXPORT_SYMBOL(DWC_SPINLOCK_ALLOC);
+EXPORT_SYMBOL(DWC_SPINLOCK_FREE);
+EXPORT_SYMBOL(DWC_SPINLOCK);
+EXPORT_SYMBOL(DWC_SPINUNLOCK);
+EXPORT_SYMBOL(DWC_SPINLOCK_IRQSAVE);
+EXPORT_SYMBOL(DWC_SPINUNLOCK_IRQRESTORE);
+EXPORT_SYMBOL(DWC_MUTEX_ALLOC);
+
+#if (!defined(DWC_LINUX) || !defined(CONFIG_DEBUG_MUTEXES))
+EXPORT_SYMBOL(DWC_MUTEX_FREE);
+#endif
+
+EXPORT_SYMBOL(DWC_MUTEX_LOCK);
+EXPORT_SYMBOL(DWC_MUTEX_TRYLOCK);
+EXPORT_SYMBOL(DWC_MUTEX_UNLOCK);
+EXPORT_SYMBOL(DWC_UDELAY);
+EXPORT_SYMBOL(DWC_MDELAY);
+EXPORT_SYMBOL(DWC_MSLEEP);
+EXPORT_SYMBOL(DWC_TIME);
+EXPORT_SYMBOL(DWC_TIMER_ALLOC);
+EXPORT_SYMBOL(DWC_TIMER_FREE);
+EXPORT_SYMBOL(DWC_TIMER_SCHEDULE);
+EXPORT_SYMBOL(DWC_TIMER_CANCEL);
+EXPORT_SYMBOL(DWC_WAITQ_ALLOC);
+EXPORT_SYMBOL(DWC_WAITQ_FREE);
+EXPORT_SYMBOL(DWC_WAITQ_WAIT);
+EXPORT_SYMBOL(DWC_WAITQ_WAIT_TIMEOUT);
+EXPORT_SYMBOL(DWC_WAITQ_TRIGGER);
+EXPORT_SYMBOL(DWC_WAITQ_ABORT);
+EXPORT_SYMBOL(DWC_THREAD_RUN);
+EXPORT_SYMBOL(DWC_THREAD_STOP);
+EXPORT_SYMBOL(DWC_THREAD_SHOULD_STOP);
+EXPORT_SYMBOL(DWC_TASK_ALLOC);
+EXPORT_SYMBOL(DWC_TASK_FREE);
+EXPORT_SYMBOL(DWC_TASK_SCHEDULE);
+EXPORT_SYMBOL(DWC_WORKQ_WAIT_WORK_DONE);
+EXPORT_SYMBOL(DWC_WORKQ_ALLOC);
+EXPORT_SYMBOL(DWC_WORKQ_FREE);
+EXPORT_SYMBOL(DWC_WORKQ_SCHEDULE);
+EXPORT_SYMBOL(DWC_WORKQ_SCHEDULE_DELAYED);
+EXPORT_SYMBOL(DWC_WORKQ_PENDING);
+
+static int dwc_common_port_init_module(void)
+{
+	int result = 0;
+
+	printk(KERN_DEBUG "Module dwc_common_port init\n" );
+
+#ifdef DWC_DEBUG_MEMORY
+	result = dwc_memory_debug_start(NULL);
+	if (result) {
+		printk(KERN_ERR
+		       "dwc_memory_debug_start() failed with error %d\n",
+		       result);
+		return result;
+	}
+#endif
+
+#ifdef DWC_NOTIFYLIB
+	result = dwc_alloc_notification_manager(NULL, NULL);
+	if (result) {
+		printk(KERN_ERR
+		       "dwc_alloc_notification_manager() failed with error %d\n",
+		       result);
+		return result;
+	}
+#endif
+	return result;
+}
+
+static void dwc_common_port_exit_module(void)
+{
+	printk(KERN_DEBUG "Module dwc_common_port exit\n" );
+
+#ifdef DWC_NOTIFYLIB
+	dwc_free_notification_manager();
+#endif
+
+#ifdef DWC_DEBUG_MEMORY
+	dwc_memory_debug_stop();
+#endif
+}
+
+module_init(dwc_common_port_init_module);
+module_exit(dwc_common_port_exit_module);
+
+MODULE_DESCRIPTION("DWC Common Library - Portable version");
+MODULE_AUTHOR("Synopsys Inc.");
+MODULE_LICENSE ("GPL");
+
+#endif	/* DWC_LIBMODULE */
+@
+
+
+1.5
+log
+@Update to latest code from Raspberry Pi github
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github (rev e0001dd59d). Includes the fabled 'FIQ fix' code, although the code isn't yet enabled in the RISC OS version of the driver.
+  c/cmodule - Add extra flags for controlling driver behaviour, as required by the new core code
+  c/dwc_otg_riscos - Add some missing driver parameters (although we leave them at default). Handle DWC_E_SHUTDOWN xfer errors, which will now be produced when the driver is shutting down
+  c/softc_device - Disable interrupts around dwc_otg_hcd_urb_enqueue, to mirror behaviour of Linux code (previously, it was the responsibility of the DWC code to disable interrupts for the appropriate part of the operation)
+  s/regaccess - Add some extra IRQ/memory barrier functions required by the new code (mainly the FIQ fix). Make DWC_MODIFY_REG32 operate atomicly (mirrors change in Linux version)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.11. Tagged as 'DWCDriver-0_11'
+@
+text
+@a582 4
+	unsigned long flags;
+
+	local_irq_save(flags);
+	local_fiq_disable();
+a583 1
+	local_irq_restore(flags);
+d763 3
+d767 1
+d1084 3
+d1088 1
+@
+
+
+1.4
+log
+@Update to version 3.00 of DWC_otg
+Detail:
+  This big batch of changes brings us in line with rev 70428950df of the Raspberry Pi Linux github.
+  Briefly:
+  * Deleted HTML docs as they're a waste of space
+  * Dropped the SOF fix (which we never used anyway)
+  * Dropped our implementation of the microframe scheduling patch, in favour of their implementation
+  * Updated to version 3.00 of the DWC sources. Hard to tell what useful changes this brings, due to API tweaks resulting in pretty much every file being littered with changes.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  This new version seems like it might be a bit more sensitive to insufficient power supplies. Beware!
+
+
+Version 0.09. Tagged as 'DWCDriver-0_09'
+@
+text
+@d583 4
+d588 1
+d999 5
+d1309 1
+a1309 1
+EXPORT_SYMBOL(__DWC_DMA_ALLOC);
+@
+
+
+1.3
+log
+@Track latest developments on Raspberry Pi github
+Detail:
+  Makefile, c/cmodule, h/module, dwc/driver/c/dwc_otg_driver, dwc/driver/c/dwc_otg_hcd, dwc/driver/c/dwc_otg_hcd_ddma, dwc/driver/c/dwc_otg_hcd_intr, dwc/driver/c/dwc_otg_hcd_linex, dwc/driver/h/dwc_otg_hcd, dwc/dwc_common_port/c/dwc_common_linux - Track latest developments on Raspberry Pi github. Includes fixes for buffer overruns when unexpectedly receiving too much data, and changes to allow SOF interrupt spam to be reduced.
+  c/dwc_common_riscos - Make sure we always round up delay values when converting from msec to csec. Avoids issues with high frequency timers (e.g. SOF re-enable timer) hogging all the CPU time. May be the cause of some other bad behaviour that I've experienced in the past?
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Note - SOF fix is currently disabled, as it was causing too many interrupt packets (e.g. mouse clicks) to be lost. Probable cause is that we're running the SOF re-enable timer at 100Hz instead of 1kHz. May be worth investigating moving all timer/thread scheduling over to a HAL timer which can provide us a 1kHz ticker interrupt.
+
+
+Version 0.05. Tagged as 'DWCDriver-0_05'
+@
+text
+@a0 6
+#include "dwc_cc.h"
+#include "dwc_modpow.h"
+#include "dwc_dh.h"
+#include "dwc_crypto.h"
+#include "dwc_notifier.h"
+
+d6 2
+a7 9
+MODULE_DESCRIPTION("DWC Common Library - Portable version");
+MODULE_AUTHOR("Synopsys Inc.");
+MODULE_LICENSE ("GPL");
+
+static int dwc_common_port_init_module(void)
+{
+	printk( KERN_DEBUG "Module dwc_common_port init\n" );
+#ifdef DEBUG_MEMORY
+	dwc_memory_debug_start();
+a8 3
+	dwc_alloc_notification_manager();
+	return 0;
+}
+d10 4
+a13 6
+static void dwc_common_port_exit_module(void)
+{
+	printk( KERN_DEBUG "Module dwc_common_port exit\n" );
+	dwc_free_notification_manager();
+#ifdef DEBUG_MEMORY
+	dwc_memory_debug_stop();
+a14 37
+}
+
+module_init(dwc_common_port_init_module);
+module_exit(dwc_common_port_exit_module);
+
+/* CC */
+EXPORT_SYMBOL(dwc_cc_if_alloc);
+EXPORT_SYMBOL(dwc_cc_if_free);
+EXPORT_SYMBOL(dwc_cc_clear);
+EXPORT_SYMBOL(dwc_cc_add);
+EXPORT_SYMBOL(dwc_cc_remove);
+EXPORT_SYMBOL(dwc_cc_change);
+EXPORT_SYMBOL(dwc_cc_data_for_save);
+EXPORT_SYMBOL(dwc_cc_restore_from_data);
+EXPORT_SYMBOL(dwc_cc_match_chid);
+EXPORT_SYMBOL(dwc_cc_match_cdid);
+EXPORT_SYMBOL(dwc_cc_ck);
+EXPORT_SYMBOL(dwc_cc_chid);
+EXPORT_SYMBOL(dwc_cc_cdid);
+EXPORT_SYMBOL(dwc_cc_name);
+
+#ifndef CONFIG_MACH_IPMATE
+/* Modpow */
+EXPORT_SYMBOL(dwc_modpow);
+/* DH */
+EXPORT_SYMBOL(dwc_dh_modpow);
+EXPORT_SYMBOL(dwc_dh_derive_keys);
+EXPORT_SYMBOL(dwc_dh_pk);
+#endif /* CONFIG_MACH_IPMATE  */
+/* Crypto */
+EXPORT_SYMBOL(dwc_wusb_aes_encrypt);
+EXPORT_SYMBOL(dwc_wusb_cmf);
+EXPORT_SYMBOL(dwc_wusb_prf);
+EXPORT_SYMBOL(dwc_wusb_fill_ccm_nonce);
+EXPORT_SYMBOL(dwc_wusb_gen_nonce);
+EXPORT_SYMBOL(dwc_wusb_gen_key);
+EXPORT_SYMBOL(dwc_wusb_gen_mic);
+d16 2
+a17 18
+
+/* Notification */
+EXPORT_SYMBOL(dwc_alloc_notification_manager);
+EXPORT_SYMBOL(dwc_free_notification_manager);
+EXPORT_SYMBOL(dwc_register_notifier);
+EXPORT_SYMBOL(dwc_unregister_notifier);
+EXPORT_SYMBOL(dwc_add_observer);
+EXPORT_SYMBOL(dwc_remove_observer);
+EXPORT_SYMBOL(dwc_notify);
+
+/* Memory Debugging Routines */
+#ifdef DEBUG_MEMORY
+EXPORT_SYMBOL(dwc_alloc_debug);
+EXPORT_SYMBOL(dwc_alloc_atomic_debug);
+EXPORT_SYMBOL(dwc_free_debug);
+EXPORT_SYMBOL(dwc_dma_alloc_debug);
+EXPORT_SYMBOL(dwc_dma_alloc_atomic_debug);
+EXPORT_SYMBOL(dwc_dma_free_debug);
+a22 3
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/module.h>
+d35 2
+d41 2
+d44 3
+a46 3
+#include <linux/usb.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+#include <linux/usb_gadget.h>
+d48 1
+a48 1
+#include <linux/usb/gadget.h>
+d50 1
+a50 1
+#include <linux/random.h>
+d55 4
+a58 2
+#include <asm/page.h>
+#include <linux/scatterlist.h>
+a65 1
+EXPORT_SYMBOL(DWC_MEMSET);
+a70 1
+EXPORT_SYMBOL(DWC_MEMCPY);
+a75 1
+EXPORT_SYMBOL(DWC_MEMMOVE);
+a80 1
+EXPORT_SYMBOL(DWC_MEMCMP);
+a85 1
+EXPORT_SYMBOL(DWC_STRNCMP);
+a90 1
+EXPORT_SYMBOL(DWC_STRCMP);
+a95 1
+EXPORT_SYMBOL(DWC_STRLEN);
+d97 1
+a97 1
+char *DWC_STRCPY(char *to, const char *from)
+a100 1
+EXPORT_SYMBOL(DWC_STRCPY);
+d106 1
+d110 1
+a113 1
+EXPORT_SYMBOL(DWC_STRDUP);
+d115 1
+a115 1
+int DWC_ATOI(char *str, int32_t *value)
+d118 1
+d123 1
+a125 1
+EXPORT_SYMBOL(DWC_ATOI);
+d127 1
+a127 1
+int DWC_ATOUI(char *str, uint32_t *value)
+d130 1
+d135 1
+a137 1
+EXPORT_SYMBOL(DWC_ATOUI);
+d140 1
+d142 1
+a191 1
+
+d204 2
+a205 1
+EXPORT_SYMBOL(DWC_UTF8_TO_UTF16LE);
+a212 1
+EXPORT_SYMBOL(DWC_IN_IRQ);
+d214 1
+a214 1
+int DWC_IN_BH(void)
+a217 1
+EXPORT_SYMBOL(DWC_IN_BH);
+a222 1
+EXPORT_SYMBOL(DWC_VPRINTF);
+d232 1
+a236 1
+EXPORT_SYMBOL(DWC_PRINTF);
+d242 1
+a247 1
+EXPORT_SYMBOL(DWC_SPRINTF);
+d253 1
+a258 1
+EXPORT_SYMBOL(DWC_SNPRINTF);
+d263 1
+a268 1
+EXPORT_SYMBOL(__DWC_WARN);
+d273 1
+a278 1
+EXPORT_SYMBOL(__DWC_ERROR);
+d283 1
+a289 1
+EXPORT_SYMBOL(DWC_EXCEPTION);
+d295 1
+a300 1
+EXPORT_SYMBOL(__DWC_DEBUG);
+a303 1
+
+d321 1
+a321 1
+void *DWC_DMA_POOL_ALLOC(dwc_pool_t *pool, U64 *dma_addr)
+d326 1
+a326 1
+void *DWC_DMA_POOL_ZALLOC(dwc_pool_t *pool, U64 *dma_addr)
+d329 1
+a329 1
+	memset();
+a335 1
+
+d338 1
+a338 1
+void *__DWC_DMA_ALLOC(uint32_t size, dwc_dma_t *dma_addr)
+d340 5
+a344 1
+	void *buf = dma_alloc_coherent(NULL, (size_t)size, dma_addr, GFP_KERNEL);
+d348 1
+a351 7
+EXPORT_SYMBOL(__DWC_DMA_ALLOC);
+
+void __DWC_DMA_FREE(uint32_t size, void *virt_addr, dwc_dma_t dma_addr)
+{
+	dma_free_coherent(NULL, size, virt_addr, dma_addr);
+}
+EXPORT_SYMBOL(__DWC_DMA_FREE);
+d353 1
+a353 1
+void *__DWC_DMA_ALLOC_ATOMIC(uint32_t size, dwc_dma_t *dma_addr)
+a361 1
+EXPORT_SYMBOL(__DWC_DMA_ALLOC_ATOMIC);
+d363 6
+a368 1
+void *__DWC_ALLOC(uint32_t size)
+a371 1
+EXPORT_SYMBOL(__DWC_ALLOC);
+d373 1
+a373 1
+void *__DWC_ALLOC_ATOMIC(uint32_t size)
+a376 1
+EXPORT_SYMBOL(__DWC_ALLOC_ATOMIC);
+d378 1
+a378 1
+void __DWC_FREE(void *addr)
+a381 1
+EXPORT_SYMBOL(__DWC_FREE);
+d383 2
+a390 1
+EXPORT_SYMBOL(DWC_RANDOM_BYTES);
+d414 1
+a414 1
+	if(crypto_blkcipher_encrypt(&desc, &sgd, &sgs, messagelen)) {
+a422 1
+EXPORT_SYMBOL(DWC_AES_CBC);
+a443 1
+EXPORT_SYMBOL(DWC_SHA256);
+d467 4
+a470 1
+EXPORT_SYMBOL(DWC_HMAC_SHA256);
+d472 1
+a472 2
+/* Byte Ordering Conversions. */
+uint32_t DWC_CPU_TO_LE32(void *p)
+d475 1
+a475 1
+	return *((uint32_t *)p);
+a481 1
+EXPORT_SYMBOL(DWC_CPU_TO_LE32);
+d483 1
+a483 1
+uint32_t DWC_CPU_TO_BE32(void *p)
+d486 1
+a486 1
+	return *((uint32_t *)p);
+a492 1
+EXPORT_SYMBOL(DWC_CPU_TO_BE32);
+d494 1
+a494 1
+uint32_t DWC_LE32_TO_CPU(void *p)
+d497 1
+a497 1
+	return *((uint32_t *)p);
+a501 1
+
+a503 1
+EXPORT_SYMBOL(DWC_LE32_TO_CPU);
+d505 1
+a505 1
+uint32_t DWC_BE32_TO_CPU(void *p)
+d508 1
+a508 1
+	return *((uint32_t *)p);
+a514 1
+EXPORT_SYMBOL(DWC_BE32_TO_CPU);
+d516 1
+a516 1
+uint16_t DWC_CPU_TO_LE16(void *p)
+d519 1
+a519 1
+	return *((uint16_t *)p);
+a524 1
+EXPORT_SYMBOL(DWC_CPU_TO_LE16);
+d526 1
+a526 1
+uint16_t DWC_CPU_TO_BE16(void *p)
+d529 1
+a529 1
+	return *((uint16_t *)p);
+a534 1
+EXPORT_SYMBOL(DWC_CPU_TO_BE16);
+d536 1
+a536 1
+uint16_t DWC_LE16_TO_CPU(void *p)
+d539 1
+a539 1
+	return *((uint16_t *)p);
+a544 1
+EXPORT_SYMBOL(DWC_LE16_TO_CPU);
+d546 1
+a546 1
+uint16_t DWC_BE16_TO_CPU(void *p)
+d549 1
+a549 1
+	return *((uint16_t *p)p);
+a554 1
+EXPORT_SYMBOL(DWC_BE16_TO_CPU);
+a562 1
+EXPORT_SYMBOL(DWC_READ_REG32);
+a573 1
+EXPORT_SYMBOL(DWC_WRITE_REG32);
+d583 1
+a583 1
+	writel( (readl(reg) & ~clear_mask) | set_mask, reg );
+a584 1
+EXPORT_SYMBOL(DWC_MODIFY_REG32);
+d587 1
+a587 1
+void DWC_MODIFY_REG64(uint64_t volatile *reg, uint64_t value)
+d593 1
+d595 3
+a597 1
+/* Threading */
+d599 6
+a604 6
+typedef struct work_container
+{
+	dwc_work_callback_t cb;
+	void *data;
+	dwc_workq_t *wq;
+	char *name;
+d606 1
+a606 2
+#ifdef DEBUG
+	DWC_CIRCLEQ_ENTRY(work_container) entry;
+d608 2
+d611 6
+a616 2
+	struct delayed_work work;
+} work_container_t;
+d618 4
+a621 2
+#ifdef DEBUG
+DWC_CIRCLEQ_HEAD(work_container_queue, work_container);
+d623 1
+d625 1
+a625 1
+struct dwc_workq
+d627 2
+a628 7
+	struct workqueue_struct *wq;
+	int pending;
+	dwc_spinlock_t *lock;
+	dwc_waitq_t *waitq;
+
+#ifdef DEBUG
+	struct work_container_queue entries;
+d630 1
+a630 1
+};
+d632 1
+a632 1
+static void do_work(struct work_struct *work)
+d634 1
+a634 4
+	int64_t flags;
+	struct delayed_work *dw = container_of(work, struct delayed_work, work);
+	work_container_t *container = container_of(dw, struct work_container, work);
+	dwc_workq_t *wq = container->wq;
+d636 7
+a642 1
+	container->cb(container->data);
+d644 6
+a649 2
+#ifdef DEBUG
+	DWC_CIRCLEQ_REMOVE(&wq->entries, container, entry);
+d651 6
+d658 3
+a660 4
+	if (container->name) {
+        	DWC_DEBUG("Work done: %s, container=%p",
+                          container->name, container); //GRAYG
+		DWC_FREE(container->name);
+a661 1
+	DWC_FREE(container);
+d663 3
+a665 4
+	DWC_SPINLOCK_IRQSAVE(wq->lock, &flags);
+	wq->pending --;
+	DWC_SPINUNLOCK_IRQRESTORE(wq->lock, flags);
+	DWC_WAITQ_TRIGGER(wq->waitq);
+d668 3
+a670 1
+static int work_done(void *data)
+d672 2
+a673 2
+	dwc_workq_t *workq = (dwc_workq_t *)data;
+	return workq->pending == 0;
+d675 1
+d677 1
+a677 1
+int DWC_WORKQ_WAIT_WORK_DONE(dwc_workq_t *workq, int timeout)
+d679 2
+a680 1
+	return DWC_WAITQ_WAIT_TIMEOUT(workq->waitq, work_done, workq, timeout);
+a681 1
+EXPORT_SYMBOL(DWC_WORKQ_WAIT_WORK_DONE);
+d683 1
+a683 1
+dwc_workq_t *DWC_WORKQ_ALLOC(char *name)
+d685 2
+a686 9
+	dwc_workq_t *wq = DWC_ALLOC(sizeof(*wq));
+	wq->wq = create_singlethread_workqueue(name);
+	wq->pending = 0;
+	wq->lock = DWC_SPINLOCK_ALLOC();
+	wq->waitq = DWC_WAITQ_ALLOC();
+#ifdef DEBUG
+	DWC_CIRCLEQ_INIT(&wq->entries);
+#endif
+	return wq;
+a687 1
+EXPORT_SYMBOL(DWC_WORKQ_ALLOC);
+d689 1
+a689 1
+void DWC_WORKQ_FREE(dwc_workq_t *wq)
+a690 163
+#ifdef DEBUG
+	if (wq->pending != 0) {
+		struct work_container *wc;
+		DWC_ERROR("Destroying work queue with pending work");
+		DWC_CIRCLEQ_FOREACH(wc, &wq->entries, entry) {
+			DWC_ERROR("Work %s still pending", wc->name);
+		}
+	}
+#endif
+	destroy_workqueue((struct workqueue_struct *)wq->wq);
+	DWC_SPINLOCK_FREE(wq->lock);
+	DWC_WAITQ_FREE(wq->waitq);
+	DWC_FREE(wq);
+}
+EXPORT_SYMBOL(DWC_WORKQ_FREE);
+
+void DWC_WORKQ_SCHEDULE(dwc_workq_t *wq, dwc_work_callback_t work_cb, void *data, char *format, ...)
+{
+	int64_t flags;
+	work_container_t *container;
+	static char name[128];
+
+	va_list args;
+	va_start(args, format);
+        if (format)
+        	DWC_VSNPRINTF(name, 128, format, args);
+	va_end(args);
+
+	DWC_SPINLOCK_IRQSAVE(wq->lock, &flags);
+	wq->pending ++;
+	DWC_SPINUNLOCK_IRQRESTORE(wq->lock, flags);
+	DWC_WAITQ_TRIGGER(wq->waitq);
+
+	container = DWC_ALLOC_ATOMIC(sizeof(*container));
+
+	container->data = data;
+	container->cb = work_cb;
+	container->wq = wq;
+        if (format) {
+                container->name = DWC_STRDUP(name);
+                DWC_DEBUG("Queueing work: %s, contianer=%p",
+                          container->name, container);
+        } else
+                container->name = NULL;
+        
+	INIT_WORK(&container->work.work, do_work);
+
+#ifdef DEBUG
+	DWC_CIRCLEQ_INSERT_TAIL(&wq->entries, container, entry);
+#endif
+
+	queue_work(wq->wq, &container->work.work);
+
+}
+EXPORT_SYMBOL(DWC_WORKQ_SCHEDULE);
+
+void DWC_WORKQ_SCHEDULE_DELAYED(dwc_workq_t *wq, dwc_work_callback_t work_cb, void *data, uint32_t time, char *format, ...)
+{
+	int64_t flags;
+	work_container_t *container;
+	static char name[128];
+
+	va_list args;
+	va_start(args, format);
+        if (format)
+        	DWC_VSNPRINTF(name, 128, format, args);
+	va_end(args);
+
+	DWC_SPINLOCK_IRQSAVE(wq->lock, &flags);
+	wq->pending ++;
+	DWC_SPINUNLOCK_IRQRESTORE(wq->lock, flags);
+	DWC_WAITQ_TRIGGER(wq->waitq);
+
+	container = DWC_ALLOC_ATOMIC(sizeof(*container));
+
+	container->data = data;
+	container->cb = work_cb;
+	container->wq = wq;
+        if (format) { //GRAYG
+        	container->name = DWC_STRDUP(name);
+                DWC_DEBUG("Queueing work: %s, contianer=%p",
+                          container->name, container);
+        } else
+           container->name = NULL;
+	INIT_DELAYED_WORK(&container->work, do_work);
+
+#ifdef DEBUG
+	DWC_CIRCLEQ_INSERT_TAIL(&wq->entries, container, entry);
+#endif
+
+	queue_delayed_work(wq->wq, &container->work, msecs_to_jiffies(time));
+
+}
+EXPORT_SYMBOL(DWC_WORKQ_SCHEDULE_DELAYED);
+
+
+int DWC_WORKQ_PENDING(dwc_workq_t *wq)
+{
+	return wq->pending;
+}
+EXPORT_SYMBOL(DWC_WORKQ_PENDING);
+
+dwc_spinlock_t *DWC_SPINLOCK_ALLOC(void)
+{
+	spinlock_t *sl = (spinlock_t *)1;
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	sl = DWC_ALLOC(sizeof(*sl));
+	spin_lock_init(sl);
+#endif
+	return (dwc_spinlock_t *)sl;
+}
+EXPORT_SYMBOL(DWC_SPINLOCK_ALLOC);
+
+void DWC_SPINLOCK_FREE(dwc_spinlock_t *lock)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	DWC_FREE(lock);
+#endif
+}
+EXPORT_SYMBOL(DWC_SPINLOCK_FREE);
+
+void DWC_SPINLOCK(dwc_spinlock_t *lock)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	spin_lock((spinlock_t *)lock);
+#endif
+}
+EXPORT_SYMBOL(DWC_SPINLOCK);
+
+void DWC_SPINUNLOCK(dwc_spinlock_t *lock)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+	spin_unlock((spinlock_t *)lock);
+#endif
+}
+EXPORT_SYMBOL(DWC_SPINUNLOCK);
+
+void DWC_SPINLOCK_IRQSAVE(dwc_spinlock_t *lock, uint64_t *flags)
+{
+	unsigned long f;
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+        spin_lock_irqsave((spinlock_t *)lock, f);
+#else
+	local_irq_save(f);
+#endif
+        *flags = f;
+}
+EXPORT_SYMBOL(DWC_SPINLOCK_IRQSAVE);
+
+void DWC_SPINUNLOCK_IRQRESTORE(dwc_spinlock_t *lock, uint64_t flags)
+{
+#if defined(CONFIG_PREEMPT) || defined(CONFIG_SMP)
+        spin_unlock_irqrestore((spinlock_t *)lock, flags);
+#else
+        // in kernel 2.6.31, at least, we check for unsigned long
+        local_irq_restore((unsigned long)flags);
+#endif
+}
+EXPORT_SYMBOL(DWC_SPINUNLOCK_IRQRESTORE);
+
+dwc_mutex_t *DWC_MUTEX_ALLOC(void)
+{
+	dwc_mutex_t *mutex = (dwc_mutex_t*)DWC_ALLOC(sizeof(struct mutex));
+d692 1
+a692 2
+	mutex_init(m);
+	return mutex;
+a693 1
+EXPORT_SYMBOL(DWC_MUTEX_ALLOC);
+a694 9
+#if (defined(DWC_LINUX) && defined(CONFIG_DEBUG_MUTEXES))
+#else
+void DWC_MUTEX_FREE(dwc_mutex_t *mutex)
+{
+	mutex_destroy((struct mutex *)mutex);
+	DWC_FREE(mutex);
+}
+EXPORT_SYMBOL(DWC_MUTEX_FREE);
+#endif
+d696 1
+a696 6
+void DWC_MUTEX_LOCK(dwc_mutex_t *mutex)
+{
+	struct mutex *m = (struct mutex *)mutex;
+	mutex_lock(m);
+}
+EXPORT_SYMBOL(DWC_MUTEX_LOCK);
+d698 1
+a698 1
+int DWC_MUTEX_TRYLOCK(dwc_mutex_t *mutex)
+d700 1
+a700 2
+	struct mutex *m = (struct mutex *)mutex;
+	return mutex_trylock(m);
+a701 1
+EXPORT_SYMBOL(DWC_MUTEX_TRYLOCK);
+d703 1
+a703 1
+void DWC_MUTEX_UNLOCK(dwc_mutex_t *mutex)
+d705 1
+a705 2
+	struct mutex *m = (struct mutex *)mutex;
+	mutex_unlock(m);
+a706 1
+EXPORT_SYMBOL(DWC_MUTEX_UNLOCK);
+d708 1
+a708 1
+dwc_thread_t *DWC_THREAD_RUN(dwc_thread_function_t thread_function, char *name, void *data)
+d710 1
+a710 5
+	struct task_struct *thread = kthread_run(thread_function, data, name);
+	if (thread == ERR_PTR(-ENOMEM)) {
+		return NULL;
+	}
+	return (dwc_thread_t *)thread;
+a711 1
+EXPORT_SYMBOL(DWC_THREAD_RUN);
+d713 1
+a713 1
+int DWC_THREAD_STOP(dwc_thread_t *thread)
+d715 1
+a715 1
+	return kthread_stop((struct task_struct *)thread);
+a716 1
+EXPORT_SYMBOL(DWC_THREAD_STOP);
+a717 5
+dwc_bool_t DWC_THREAD_SHOULD_STOP()
+{
+	return kthread_should_stop();
+}
+EXPORT_SYMBOL(DWC_THREAD_SHOULD_STOP);
+d721 1
+a721 2
+struct dwc_timer
+{
+a729 18
+static void set_scheduled(dwc_timer_t *t, int s)
+{
+	uint64_t flags;
+	DWC_SPINLOCK_IRQSAVE(t->lock, &flags);
+	t->scheduled = s;
+	DWC_SPINUNLOCK_IRQRESTORE(t->lock, flags);
+}
+
+static int get_scheduled(dwc_timer_t *t)
+{
+	int s;
+	uint64_t flags;
+	DWC_SPINLOCK_IRQSAVE(t->lock, &flags);
+	s = t->scheduled;
+	DWC_SPINUNLOCK_IRQRESTORE(t->lock, flags);
+	return s;
+}
+
+d733 6
+a738 2
+	set_scheduled(timer, 0);
+	/*DWC_DEBUG("Timer %s callback", timer->name);*/
+d745 1
+d750 1
+d768 1
+a786 1
+EXPORT_SYMBOL(DWC_TIMER_ALLOC);
+d790 5
+a794 1
+	if (get_scheduled(timer)) {
+d796 1
+d799 1
+a804 1
+EXPORT_SYMBOL(DWC_TIMER_FREE);
+d808 7
+a814 3
+	if (!get_scheduled(timer)) {
+		set_scheduled(timer, 1);
+		//cgg: DWC_DEBUG("Scheduling timer %s to expire in +%d msec", timer->name, time);
+d817 2
+a818 3
+	}
+	else {
+                //cgg: DWC_DEBUG("Modifying timer %s to expire in +%d msec", timer->name, time);
+d821 2
+a823 1
+EXPORT_SYMBOL(DWC_TIMER_SCHEDULE);
+a828 1
+EXPORT_SYMBOL(DWC_TIMER_CANCEL);
+d830 6
+a835 5
+struct dwc_tasklet
+{
+	struct tasklet_struct t;
+	dwc_tasklet_callback_t cb; 
+	void *data;
+d838 1
+a838 1
+static void tasklet_callback(unsigned long data)
+d840 1
+a840 3
+	dwc_tasklet_t *t = (dwc_tasklet_t *)data;
+	t->cb(t->data);
+}
+d842 3
+a844 10
+dwc_tasklet_t *DWC_TASK_ALLOC(dwc_tasklet_callback_t cb, void *data)
+{
+	dwc_tasklet_t *t = DWC_ALLOC(sizeof(*t));
+	
+	if(t) {
+		t->data = data;
+		t->cb = cb;
+		tasklet_init(&t->t, tasklet_callback, (unsigned long)t);
+	} else {
+		DWC_ERROR("Cannot allocate memory for tasklet\n");
+d846 4
+a849 2
+	
+	return t;
+a850 1
+EXPORT_SYMBOL(DWC_TASK_ALLOC);
+d852 1
+a852 1
+void DWC_TASK_FREE(dwc_tasklet_t *t)
+d854 1
+a854 1
+	DWC_FREE(t);
+a855 1
+EXPORT_SYMBOL(DWC_TASK_FREE);
+d857 1
+a857 1
+void DWC_TASK_SCHEDULE(dwc_tasklet_t *task)
+d859 13
+a871 3
+	tasklet_schedule(&task->t);
+}
+EXPORT_SYMBOL(DWC_TASK_SCHEDULE);
+d873 3
+a875 1
+/* Timing */
+d877 1
+a877 3
+void DWC_UDELAY(uint32_t usecs)
+{
+	udelay(usecs);
+a878 1
+EXPORT_SYMBOL(DWC_UDELAY);
+d880 2
+a881 1
+void DWC_MDELAY(uint32_t msecs)
+d883 8
+a890 3
+	mdelay(msecs);
+}
+EXPORT_SYMBOL(DWC_MDELAY);
+d892 55
+a946 1
+void DWC_MSLEEP(uint32_t msecs)
+d948 1
+a948 1
+	msleep(msecs);
+a949 1
+EXPORT_SYMBOL(DWC_MSLEEP);
+d951 13
+a963 1
+uint32_t DWC_TIME(void)
+d965 2
+a966 1
+	return jiffies_to_msecs(jiffies);
+a967 1
+EXPORT_SYMBOL(DWC_TIME);
+d969 14
+d984 4
+a987 1
+/* Wait Queues */
+d989 1
+a989 1
+struct dwc_waitq
+d991 32
+a1022 2
+	wait_queue_head_t queue;
+	int abort;
+d1025 31
+a1055 1
+dwc_waitq_t *DWC_WAITQ_ALLOC(void)
+d1057 1
+a1057 4
+	dwc_waitq_t *wq = DWC_ALLOC(sizeof(*wq));
+	init_waitqueue_head(&wq->queue);
+	wq->abort = 0;
+	return wq;
+a1058 1
+EXPORT_SYMBOL(DWC_WAITQ_ALLOC);
+d1060 1
+a1060 1
+void DWC_WAITQ_FREE(dwc_waitq_t *wq)
+d1062 33
+d1096 2
+a1098 1
+EXPORT_SYMBOL(DWC_WAITQ_FREE);
+d1100 8
+a1107 6
+static int32_t check_result(dwc_waitq_t *wq, int result)
+{	int32_t msecs;
+	if (result > 0) {
+		msecs = jiffies_to_msecs(result);
+		if (!msecs) {
+			return 1;
+a1108 1
+		return msecs;
+d1110 23
+d1134 4
+a1137 2
+	if (result == 0) {
+		return -DWC_E_TIMEOUT;
+d1140 5
+a1144 2
+	if ((result == -ERESTARTSYS) || (wq->abort == 1)) {
+		return -DWC_E_ABORT;
+d1147 10
+a1156 1
+	return -DWC_E_UNKNOWN;
+d1159 2
+a1160 1
+int32_t DWC_WAITQ_WAIT(dwc_waitq_t *wq, dwc_waitq_condition_t condition, void *data)
+d1162 37
+a1198 3
+	int result = wait_event_interruptible(wq->queue,
+						  condition(data) || wq->abort);
+	return check_result(wq, result);
+a1199 1
+EXPORT_SYMBOL(DWC_WAITQ_WAIT);
+d1201 1
+a1201 2
+int32_t DWC_WAITQ_WAIT_TIMEOUT(dwc_waitq_t *wq, dwc_waitq_condition_t condition,
+			       void *data, int32_t msecs)
+d1203 1
+a1203 4
+	int result = wait_event_interruptible_timeout(wq->queue,
+							  condition(data) || wq->abort,
+							  msecs_to_jiffies(msecs));
+	return check_result(wq, result);
+d1205 152
+d1358 14
+d1373 1
+a1373 1
+void DWC_WAITQ_TRIGGER(dwc_waitq_t *wq)
+d1375 24
+a1398 1
+	wake_up_interruptible(&wq->queue);
+a1399 1
+EXPORT_SYMBOL(DWC_WAITQ_TRIGGER);
+d1401 1
+a1401 1
+void DWC_WAITQ_ABORT(dwc_waitq_t *wq)
+d1403 9
+a1411 2
+	wq->abort = 1;
+	DWC_WAITQ_TRIGGER(wq);
+d1413 9
+a1421 1
+EXPORT_SYMBOL(DWC_WAITQ_ABORT);
+@
+
+
+1.2
+log
+@Update to latest code from Raspberry Pi github. Improve debugging. Fix race condition that could lead to timeout callbacks inappropriately firing.
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github. Tweaks specific to Broadcom hardware have been placed in BCM2835 #ifdef's to allow them to easily be identified/controlled if we need the driver to support different SoCs in future
+  c/cmodule, c/dwc_common_riscos, c/port, c/softc_device, h/cmodule - Improved debugging code
+  c/softc_device - Schedule timeout before starting transfer instead of after. Fixes issue where a transfer that completes inbetween dwc_otg_hcd_urb_enqueue() and callout_reset() would result in the timeout being enabled even though the transfer is already complete
+  s/triggercbs - Synced with latest USBDriver version for consistency
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Fixes some, if not all, stability issues
+
+
+Version 0.04. Tagged as 'DWCDriver-0_04'
+@
+text
+@d1024 1
+a1024 1
+	DWC_DEBUG("Timer %s callback", timer->name);
+@
+
+
+1.1
+log
+@Add initial version of DWCDriver - USB driver for Synopsys DWC OTG controllers
+Detail:
+  A fairly simple wrapper for Synopsys's open source "DWC_otg" Linux driver, based around a GPL-free version of the DWC_otg 2.90a sources received from the Raspberry Pi foundation.
+  Instead of interfacing with the Linux USB stack a new host interface layer has been implemented to allow it to talk to the standard BSD-derived RISC OS stack.
+  RTSupport is used to provide the threading functionality that the DWC driver relies upon.
+  Interesting files:
+  - c/cmodule, h/cmodule - Main module frontend
+  - c/dwc_common_riscos, h/dwc_common_riscos - Implementation of the OS support layer required by the DWC driver
+  - c/dwc_otg_riscos, h/dwc_otg_riscos - Core code for the BSD driver implementation, driver init/shutdown, and for handling calls from the DWC host driver to us
+  - c/port - Some support functions required by BSD-style code inherited from the other USB drivers
+  - c/softc_device - Code to handle requests from the BSD layer to attached USB devices
+  - c/softc_root - Code to handle requests from the BSD layer to the controller root hub
+  - dwc/doc/* - Original Synopsys release notes & user guide pdfs
+  - dwc/driver/*, dwc/dwc_common_port/* - Synopsys code and documentation. A few tweaks were required to allow it to compile under Norcroft, but otherwise it's functionally equivalent to the original sources.
+Admin:
+  Tested in BCM2835 ROM
+  There are a few loose ends still to tidy up (search for "DWCTODO"), mainly regarding implementation of Isochronous support, but otherwise the driver seems stable enough for daily use.
+
+
+Version 0.01. Tagged as 'DWCDriver-0_01'
+@
+text
+@d87 1
+d115 1
+d117 3
+d431 11
+a726 1
+	DWC_DEBUG("Work done: %s, container=%p", container->name, container);
+d728 2
+d792 2
+a793 1
+	DWC_VSNPRINTF(name, 128, format, args);
+d806 7
+a812 2
+	container->name = DWC_STRDUP(name);
+	DWC_DEBUG("Queueing work: %s, contianer=%p", container->name, container);
+d832 2
+a833 1
+	DWC_VSNPRINTF(name, 128, format, args);
+d846 6
+a851 2
+	container->name = DWC_STRDUP(name);
+	DWC_DEBUG("Queueing work: %s, contianer=%p", container->name, container);
+d922 2
+a923 1
+        local_irq_restore(flags);
+d1089 1
+a1089 1
+		DWC_DEBUG("Scheduling timer %s to expire in +%d msec", timer->name, time);
+d1094 1
+a1094 1
+		DWC_DEBUG("Modifying timer %s to expire in +%d msec", timer->name, time);
+@
+

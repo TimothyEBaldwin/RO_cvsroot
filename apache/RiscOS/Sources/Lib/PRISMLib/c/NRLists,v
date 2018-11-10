@@ -1,0 +1,645 @@
+head	1.5;
+access;
+symbols
+	PRISMLib-0_24:1.5
+	PRISMLib-0_23:1.5
+	PRISMLib-0_22:1.5
+	PRISMLib-0_21:1.5
+	PRISMLib-0_20:1.5
+	PRISMLib-0_19:1.5
+	PRISMLib-0_18:1.5
+	PRISMLib-0_17:1.5
+	PRISMLib-0_16:1.5
+	PRISMLib-0_15:1.5
+	PRISMLib-0_14:1.5
+	PRISMLib-0_13:1.4
+	PRISMLib-0_12:1.4
+	PRISMLib-0_11:1.4
+	PRISMLib-0_10:1.4
+	PRISMLib-0_09:1.4
+	PRISMLib-0_08:1.3
+	PRISMLib-0_07:1.3
+	PRISMLib-0_06:1.3
+	PRISMLib-0_05:1.2
+	PRISMLib-0_04:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2005.05.11.12.07.03;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2005.05.06.15.44.53;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2005.04.29.10.00.22;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2005.04.29.08.47.41;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2005.04.14.16.06.08;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  New function.
+Detail:
+  New NRLists.c function to find an element in a linked list (slow - just
+  a simple linear search).
+Admin:
+  Test harness updated; all tests pass.
+
+Version 0.14. Tagged as 'PRISMLib-0_14'
+@
+text
+@/* Copyright 2005 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    NRLists.c                                         */
+/*          (C) 2005 Tematic Ltd.                             */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Manage doubly-linked lists. The structures given  */
+/*          must have a next and prev word as the first and   */
+/*          second items respectively; the list is recorded   */
+/*          through a pointer to the head item.               */
+/*                                                            */
+/*          Simple, non-reentrant routines. For reentrancy,   */
+/*          see RLists.c.                                     */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 10-Mar-2005 (ADH): Imported into PRISMLib from    */
+/*                             the copy in the PRISM module.  */
+/*          14-Apr-2005 (ADH): Renamed to RLists / _nrl_.     */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <kernel.h>
+
+#ifdef TRACE2
+  #define TRACE
+#endif
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+#include <PRISM/PRISM.h>
+
+#include "Errors.h"
+#include "NRLists.h"
+
+/* Local structures */
+
+typedef struct list
+{
+  struct list * next;
+  struct list * prev;
+
+  /* ... */
+}
+list;
+
+/**************************************************************/
+/* prismlib_nrl_add_to_head()                                 */
+/*                                                            */
+/* Add an item to the head of the given list. The contents of */
+/* the item are zero-initialised.                             */
+/*                                                            */
+/* Parameters:  Pointer to the head of the list pointer,      */
+/*              updated on exit;                              */
+/*                                                            */
+/*              Size of the item to add in bytes.             */
+/*                                                            */
+/* Re-entrancy: Function must not be re-entered for the same  */
+/*              list, but may be re-entered for other lists.  */
+/*                                                            */
+/* Threading:   Contents of list being operated upon must not */
+/*              be externally modified whilst the function    */
+/*              executes.                                     */
+/*                                                            */
+/* Interrupts:  Interrupts are not disabled during execution. */
+/**************************************************************/
+
+_kernel_oserror * prismlib_nrl_add_to_head
+                  (
+                    void         ** head,
+                    const size_t    size
+                  )
+{
+  list ** lhead = (list **) head;
+  list  * new;
+
+  dprintf(("Lists", "prismlib_nrl_add_to_head: Called (head = &%08X, size = %d)\n", (int) head, size));
+
+  if (head == NULL)
+  {
+    return prismlib_make_error(prism_error_INVALID_PARAMETERS,
+                               1,
+                               "prismlib_nrl_add_to_head()");
+  }
+
+  new = calloc(size, 1);
+  if (new == NULL) return prismlib_make_error(prism_error_MEMORY_EXHAUSTED, 0);
+
+  dprintf(("Lists", "prismlib_nrl_add_to_head: New item is at &%08X\n", (int) new));
+
+  if (*lhead != NULL)
+  {
+    (*lhead)->prev = new;
+    new->next      = *lhead;
+  }
+
+  *lhead = new;
+
+  dprintf(("Lists", "prismlib_nrl_add_to_head: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* prismlib_nrl_add_to_tail()                                 */
+/*                                                            */
+/* Add an item to the tail of the given list. The contents of */
+/* the item are zero-initialised.                             */
+/*                                                            */
+/* Parameters:  Pointer to the head of the list pointer, may  */
+/*              be updated on exit;                           */
+/*                                                            */
+/*              Pointer to a void *, updated to point to the  */
+/*              new item on exit;                             */
+/*                                                            */
+/*              Size of the item to add.                      */
+/*                                                            */
+/* Re-entrancy: Function must not be re-entered for the same  */
+/*              list, but may be re-entered for other lists.  */
+/*                                                            */
+/* Threading:   Contents of list being operated upon must not */
+/*              be externally modified whilst the function    */
+/*              executes.                                     */
+/*                                                            */
+/* Interrupts:  Interrupts are not disabled during execution. */
+/**************************************************************/
+
+_kernel_oserror * prismlib_nrl_add_to_tail
+                  (
+                    void         **          head,
+                    void         ** restrict added,
+                    const size_t             size
+                  )
+{
+  list ** lhead = (list **) head;
+  list  * new;
+
+  dprintf(("Lists", "prismlib_nrl_add_to_tail: Called (head = &%08X, size = %d)\n", (int) head, size));
+
+  if (head == NULL || added == NULL)
+  {
+    return prismlib_make_error(prism_error_INVALID_PARAMETERS,
+                               1,
+                               "prismlib_nrl_add_to_tail()");
+  }
+
+  new = calloc(size, 1);
+  if (new == NULL) return prismlib_make_error(prism_error_MEMORY_EXHAUSTED, 0);
+
+  dprintf(("Lists", "prismlib_nrl_add_to_tail: New item is at &%08X\n", (int) new));
+
+  if (*lhead != NULL)
+  {
+    list * tail;
+
+    for (tail = (*lhead); tail->next != NULL; tail = tail->next);
+
+    tail->next = new;
+    new->prev  = tail;
+  }
+  else
+  {
+    *lhead = new;
+  }
+
+  *added = new;
+
+  dprintf(("Lists", "prismlib_nrl_add_to_tail: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* prismlib_nrl_add_at_given()                                */
+/*                                                            */
+/* Add an item before the given one in the list. The contents */
+/* of the item are zero-initialised.                          */
+/*                                                            */
+/* Parameters:  Pointer to the head of the list pointer, may  */
+/*              be updated on exit;                           */
+/*                                                            */
+/*              Pointer to a void *, updated to point to the  */
+/*              new item on exit;                             */
+/*                                                            */
+/*              Pointer to item to add after (or NULL to add  */
+/*              at the list's tail);                          */
+/*                                                            */
+/*              Size of the item to add.                      */
+/*                                                            */
+/* Re-entrancy: Function must not be re-entered for the same  */
+/*              list, but may be re-entered for other lists.  */
+/*                                                            */
+/* Threading:   Contents of list being operated upon must not */
+/*              be externally modified whilst the function    */
+/*              executes.                                     */
+/*                                                            */
+/* Interrupts:  Interrupts are not disabled during execution. */
+/**************************************************************/
+
+_kernel_oserror * prismlib_nrl_add_at_given
+                  (
+                    void         **          head,
+                    void         ** restrict added,
+                    const void    *          position,
+                    const size_t             size
+                  )
+{
+  list ** lhead = (list **) head;
+  list *  lpos  = (list  *) position;
+  list *  new;
+
+  dprintf(("Lists", "prismlib_nrl_add_at_given: Called (head = &%08X, position = &%08X, size = %d)\n", (int) head, (int) position, size));
+
+  if (head == NULL || added == NULL)
+  {
+    return prismlib_make_error(prism_error_INVALID_PARAMETERS,
+                               1,
+                               "prismlib_nrl_add_at_given()");
+  }
+
+  if (position == NULL) return prismlib_nrl_add_to_tail(head, added, size);
+
+  new = calloc(size, 1);
+  if (new == NULL) return prismlib_make_error(prism_error_MEMORY_EXHAUSTED, 0);
+
+  dprintf(("Lists", "prismlib_nrl_add_at_given: New item is at &%08X\n", (int) new));
+
+  if (lpos->prev != NULL) lpos->prev->next = new;
+
+  new->prev  = lpos->prev;
+  lpos->prev = new;
+  new->next  = lpos;
+
+  *added = new;
+
+  if (*lhead == lpos) *lhead = new;
+
+  dprintf(("Lists", "prismlib_nrl_add_at_given: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* prismlib_nrl_remove()                                      */
+/*                                                            */
+/* Remove an item from the given list. If the item held any   */
+/* pointers to any allocated memory (apart from other list    */
+/* items), that memory should be freed before calling here.   */
+/*                                                            */
+/* Parameters:  Pointer to the head of the list pointer, may  */
+/*              be updated on exit;                           */
+/*                                                            */
+/*              Pointer to the item to remove.                */
+/*                                                            */
+/* Re-entrancy: Function must not be re-entered for the same  */
+/*              list, but may be re-entered for other lists.  */
+/*                                                            */
+/* Threading:   Contents of list being operated upon must not */
+/*              be externally modified whilst the function    */
+/*              executes.                                     */
+/*                                                            */
+/* Interrupts:  Interrupts are not disabled during execution. */
+/**************************************************************/
+
+_kernel_oserror * prismlib_nrl_remove
+                  (
+                    void ** head,
+                    void  * item
+                  )
+{
+  list ** lhead = (list **) head;
+  list *  litem = (list *)  item;
+
+  dprintf(("Lists", "prismlib_nrl_remove: Called (head = &%08X, item = &%08X)\n", (int) head, (int) item));
+
+  if (head == NULL || item == NULL)
+  {
+    return prismlib_make_error(prism_error_INVALID_PARAMETERS,
+                               1,
+                               "prismlib_nrl_remove()");
+  }
+
+  if (litem->next != NULL) litem->next->prev = litem->prev;
+  if (litem->prev != NULL) litem->prev->next = litem->next;
+  else *lhead = litem->next;
+
+  free(litem);
+
+  dprintf(("Lists", "prismlib_nrl_remove: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* prismlib_nrl_remove_all()                                  */
+/*                                                            */
+/* Remove all items from the given list. If the items hold    */
+/* any pointers to allocated memory (apart from other list    */
+/* items), that memory should be freed before calling here.   */
+/*                                                            */
+/* Parameters:  Pointer to the head of the list pointer,      */
+/*              updated on exit to be NULL.                   */
+/*                                                            */
+/* Re-entrancy: Function must not be re-entered for the same  */
+/*              list, but may be re-entered for other lists.  */
+/*                                                            */
+/* Threading:   Contents of list being operated upon must not */
+/*              be externally modified whilst the function    */
+/*              executes.                                     */
+/*                                                            */
+/* Interrupts:  Interrupts are not disabled during execution. */
+/**************************************************************/
+
+_kernel_oserror * prismlib_nrl_remove_all(void ** head)
+{
+  list ** lhead = (list **) head;
+  list  * item;
+
+  dprintf(("Lists", "prismlib_nrl_remove_all: Called (head = &%08X)\n", (int) head));
+
+  if (head == NULL)
+  {
+    return prismlib_make_error(prism_error_INVALID_PARAMETERS,
+                               1,
+                               "prismlib_nrl_remove_all()");
+  }
+
+  while (*lhead != NULL)
+  {
+    item = (*lhead)->next;
+    free(*lhead);
+    (*lhead) = item;
+  }
+
+  dprintf(("Lists", "prismlib_nrl_remove_all: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* prismlib_nrl_find()                                        */
+/*                                                            */
+/* Perform a simple linear search of the given list for the   */
+/* given item.                                                */
+/*                                                            */
+/* Parameters:  Pointer to the head of the list;              */
+/*                                                            */
+/*              Pointer to the item to find.                  */
+/*                                                            */
+/* Returns:     'true' if found, else 'false'.                */
+/*                                                            */
+/* Re-entrancy: Function is re-entrant.                       */
+/*                                                            */
+/* Threading:   Contents of list being operated upon must not */
+/*              be externally modified whilst the function    */
+/*              executes.                                     */
+/*                                                            */
+/* Interrupts:  Interrupts are not disabled during execution. */
+/**************************************************************/
+
+bool prismlib_nrl_find
+     (
+       void * head,
+       void * item
+     )
+{
+  list * lhead = (list *) head;
+  list * litem = (list *) item;
+  bool   found = false;
+
+  dprintf(("Lists", "prismlib_nrl_find: Called (head = &%08X, item = &%08X)\n", (int) head, (int) item));
+
+  if (item == NULL) return false;
+
+  for (; lhead != NULL; lhead = lhead->next)
+  {
+    if (lhead == litem)
+    {
+      found = true;
+      break;
+    }
+  }
+
+  dprintf(("Lists",
+           "prismlib_nrl_find: Successful, found = %s\n",
+
+           found == true ? "true" : "false"));
+
+  return found;
+}
+@
+
+
+1.4
+log
+@  New functions; bug fixes; test harness.
+Detail:
+  New functions added in "NRArrays.c|h". Some shared kinds of function
+  pointers turned into standard types and put into "FuncTypes.h" - not
+  all function pointers used throughout are there, only shared ones at
+  the moment (this may change in future). New test harness showed up
+  a few bugs, mostly trivial (e.g. incorrect generation of an error
+  message resulting in "%0" appearing instead of a parameter).
+Admin:
+  Tested :-) - test harness runs to completion. See Tests/!ReadMe to
+  find out which things the test harness does or does not test. The
+  test harness requires BuildSys 4.35.
+
+Version 0.09. Tagged as 'PRISMLib-0_09'
+@
+text
+@d68 2
+a69 2
+/* Parameters: Pointer to the head of the list pointer,       */
+/*             updated on exit;                               */
+d71 10
+a80 1
+/*             Size of the item to add in bytes.              */
+d125 7
+a131 2
+/* Parameters: Pointer to the head of the list pointer, may   */
+/*             be updated on exit;                            */
+d133 2
+a134 2
+/*             Pointer to a void *, updated to point to the   */
+/*             new item on exit;                              */
+d136 5
+a140 1
+/*             Size of the item to add.                       */
+d194 10
+a203 2
+/* Parameters: Pointer to the head of the list pointer, may   */
+/*             be updated on exit;                            */
+d205 2
+a206 2
+/*             Pointer to a void *, updated to point to the   */
+/*             new item on exit;                              */
+d208 3
+a210 2
+/*             Pointer to item to add after (or NULL to add   */
+/*             at the list's tail);                           */
+d212 1
+a212 1
+/*             Size of the item to add.                       */
+d265 2
+a266 2
+/* Parameters: Pointer to the head of the list pointer, may   */
+/*             be updated on exit;                            */
+d268 10
+a277 1
+/*             Pointer to the item to remove.                 */
+d316 11
+a326 2
+/* Parameters: Pointer to the head of the list pointer,       */
+/*             updated on exit to be NULL.                    */
+d354 52
+@
+
+
+1.3
+log
+@  Clarification, correction, and new functions.
+Detail:
+  Clarification in NRLists.c to indicate that items are zero-initialised
+  on creation. Fix to Interrupts.h which was including <kernel.h> when it
+  really wanted <swis.h> (which itself includes kernel.h). New functions:
+  Lock.c|h implement a (very) mundane lock system which can be used to
+  defend against re-entrancy. These may well be added to with more
+  sophisticated facilities over time, or removed entirely if the current
+  thinking on why they are needed changes.
+Admin:
+  Compiles, used by PFCBuffer sources, but no run-time testing yet.
+
+Version 0.06. Tagged as 'PRISMLib-0_06'
+@
+text
+@d74 5
+a78 1
+_kernel_oserror * prismlib_nrl_add_to_head(void ** head, const size_t size)
+d89 1
+a89 1
+                               "prismlib_nrl_add_to_head");
+d125 6
+a130 1
+_kernel_oserror * prismlib_nrl_add_to_tail(void ** head, void ** restrict added, const size_t size)
+d141 1
+a141 1
+                               "prismlib_nrl_add_to_tail");
+d188 7
+a194 1
+_kernel_oserror * prismlib_nrl_add_at_given(void ** head, void ** restrict added, const void * position, const size_t size)
+d206 1
+a206 1
+                               "prismlib_nrl_add_at_given");
+d244 5
+a248 1
+_kernel_oserror * prismlib_nrl_remove(void ** head, void * item)
+d259 1
+a259 1
+                               "prismlib_nrl_remove");
+d295 1
+a295 1
+                               "prismlib_nrl_remove_all");
+@
+
+
+1.2
+log
+@  New header file; 'restrict' added in NRLists.
+Detail:
+  NRLists.c|h can't use 'restrict' too much as it does create aliases to
+  quite a few of the function parameters, but here and there it applies,
+  so added it. New header file is "Interrupts.h", containing four simple
+  macros to turn interrupts on and off. Makes use of Norcroft optimisation
+  hack "__swi" as in RLists.c, which I don't like, but does result in code
+  that's about as simple as it can be.
+Admin:
+  Compiled through test use in PFCBuffer's in-prorgress Session.c; DecAOF
+  output from the resulting object file looks about right, but no run-time
+  testing.
+
+Version 0.05. Tagged as 'PRISMLib-0_05'
+@
+text
+@d65 2
+a66 1
+/* Add an item to the head of the given list.                 */
+d109 2
+a110 1
+/* Add an item to the tail of the given list.                 */
+d164 2
+a165 1
+/* Add an item before the given one in the list.              */
+@
+
+
+1.1
+log
+@  Overhaul to improve library consistency and support new naming
+  conventions.
+Detail:
+  Extensive set of changes to follow naming conventions covered in
+  PRISM/Docs/Naming and introduce a better library structure with
+  more consistent file naming (important for exported headers) as
+  well as function names (important for ease of use).
+Admin:
+  Requires header export of PRISM 0.21 or later. Used in many other
+  modules tested on an Iyonix as part of a wider set of changes.
+
+Version 0.04. Tagged as 'PRISMLib-0_04'
+@
+text
+@d119 1
+a119 1
+_kernel_oserror * prismlib_nrl_add_to_tail(void ** head, void ** added, const size_t size)
+d176 1
+a176 1
+_kernel_oserror * prismlib_nrl_add_at_given(void ** head, void ** added, const void * position, const size_t size)
+@
+

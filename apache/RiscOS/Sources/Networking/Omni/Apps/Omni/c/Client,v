@@ -1,0 +1,1110 @@
+head	1.9;
+access;
+symbols
+	Omni-2_30:1.9
+	Omni-2_29:1.9
+	Omni-2_28:1.9
+	Omni-2_27:1.9
+	Omni-2_26:1.9
+	Omni-2_25:1.9
+	Omni-2_24:1.9
+	Omni-2_23:1.9
+	Omni-2_22:1.9
+	Omni-2_21:1.8
+	Omni-2_20:1.8
+	Omni-2_19:1.8
+	Omni-2_18:1.7
+	Omni-2_17:1.7
+	Omni-2_16:1.7
+	Omni-2_15:1.6
+	Omni-2_14:1.6
+	Omni-2_13:1.6
+	Omni-2_12:1.5
+	Omni-2_11:1.5
+	Omni-2_10:1.5
+	Omni-2_09:1.5
+	Omni-2_08:1.4
+	Omni-2_07:1.3
+	Omni-2_06:1.3
+	Omni-2_05:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2016.09.10.18.32.12;	author rsprowson;	state Exp;
+branches;
+next	1.8;
+commitid	o6STXeGW5koBYLlz;
+
+1.8
+date	2013.11.22.17.57.01;	author rsprowson;	state Exp;
+branches;
+next	1.7;
+commitid	9mAsVrxUXmieFiex;
+
+1.7
+date	2011.12.14.13.51.12;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	Zvyz3NZzpUnQ5aLv;
+
+1.6
+date	2004.09.02.22.46.09;	author jballance;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2000.08.17.09.37.44;	author blaughto;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.03.23.17.44.09;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.07.19.24.14;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@Export some Omni constants
+Create an export Interface/OmniClient.h with the SWI numbers and subreason codes in.
+Use these in Client.c in place of local copy.
+Minor typos in Docs/SWI_Spec corrected.
+
+Version 2.22. Tagged as 'Omni-2_22'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	Client.c - core application routines
+ *
+ * Project:	!Omni OmniClient(tm) project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	24 August 1994
+ * Last Edited:	23 October 1994
+ *
+ * Copyright 1994 by ANT Limited
+ */
+
+#include <assert.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+#include "Interface/OmniClient.h"
+
+#include <Desk/Msgs.h>
+#include <Desk/Str.h>
+
+#include <DebugLib/DebugLib.h>
+
+#include "Client.h"
+#include "Defs.h"
+#include "Core.h"
+#include "ExtLib.h"
+#include "Filer.h"
+#include "Heap.h"
+#include "MakeError.h"
+
+/*  Register a new Client protocol.
+ */
+extern client_record *ClientCreate(_kernel_swi_regs *r)
+{
+  client_record *cr = NULL;
+  char buf[128];
+
+  dprintf (("", "ClientCreate:create new client protocol\n"
+                "id                 : %x\n"
+                "flags              : %x\n"
+                "sprite name        : %s\n"
+                "client name        : %s\n"
+                "client description : %s\n"
+                "fs name            : %s\n",
+                r->r[0], r->r[1], (char *) r->r[2], (char *) r->r[3], (char *) r->r[4], (char *) r->r[6]));
+  if (r->r[0] <= 0)
+  {
+    r->r[0] = (int) MakeError(err_BADPROTOCOL);
+    return(NULL);
+  }
+  if ((cr = ClientFind(r->r[0], NULL, -1, NULL)) != NULL) return(cr);
+  cr = (client_record *) rma_alloc(sizeof(client_record));
+  if (cr == NULL)
+  {
+    r->r[0] = (int) MakeError(err_NOMEM_REGISTRATION);
+    return(NULL);
+  }
+
+  /* Load any better set of themed client sprites we might have
+   * to override any sitting in ResourceFS. The fs name is used as the
+   * base name, the Wimp will search for mode specific suffixes as needed.
+   */
+  sprintf(buf, "IconSprites <"app_DIR"$Dir>.Themes.%s", (char *)r->r[6]);
+  _swix(OS_CLI, _IN(0), buf);
+
+  /* Link the client into the chain */
+  Desk_LinkList_AddToTail(&client_anchor, &(cr->header));
+  cr->client_id = r->r[0];
+  cr->flags = r->r[1];
+  cr->spritename = cpyrma((char *) r->r[2]);
+  cr->clientname = cpyrma((char *) r->r[3]);
+  cr->clientdesc = cpyrma((char *) r->r[4]);
+  cr->site_id = r->r[5];
+  cr->fsname = cpyrma((char *) r->r[6]);
+  dprintf (("", "ClientCreate:new client list length %d\n", Desk_LinkList_ListLength(&client_anchor)));
+  return(cr);
+}
+
+
+/*  Delete an Client protocol entry.
+ */
+extern void ClientDelete(client_record *cr)
+{
+  dprintf (("", "ClientDelete:\n"));
+
+  if (cr == NULL) return;
+  if (cr->client_id != -1)
+  {
+    /* Close any active protocol mounts ? */
+  }
+
+  Desk_LinkList_Unlink(&client_anchor, &(cr->header));
+  RMAFREE(cr);
+  dprintf (("", "ClientDelete:new clients list length %d\n", Desk_LinkList_ListLength(&client_anchor)));
+}
+
+
+/*  Return number of items in Client linked list.
+ */
+extern int ClientCount(void)
+{
+  client_record *cr = (client_record *) client_anchor.next;
+  int count = 0;
+
+  while (cr != NULL)
+  {
+    count++;
+    cr = (client_record *) cr->header.next;
+  }
+  return(count);
+}
+
+
+/*  Find item in linked list from either client_id (name=NULL) or name.
+ *  OR from menuitem (if menuitem != -1)
+ */
+extern client_record *ClientFind(int client_id, char *name, int menuitem, char *fsname)
+{
+  client_record *cr = (client_record *) client_anchor.next;
+  int loop = 0;
+  int searchtype = 0;
+
+  dprintf (("", "ClientFind:\n"));
+  if (name != NULL) searchtype = 1;
+  if (menuitem != -1) searchtype = 2;
+  if (fsname != NULL) searchtype = 3;
+  while (cr != NULL)
+  {
+    dprintf (("", "ClientFind: %x searchtype:%d \n", (int) cr,searchtype));
+    if (searchtype == 2 && flagSET(cr, flag_SPECIAL))
+    {
+      cr = (client_record *) cr->header.next;
+      continue;
+    }
+    switch (searchtype)
+    {
+      case 0: if (cr->client_id == client_id) return(cr);
+              break;
+      case 1: if (!Desk_stricmp(cr->clientname, name)) return(cr);
+              break;
+      case 2: dprintf (("", "ClientFind: %d %d\n", menuitem, loop));
+	      if (menuitem == loop) return(cr);
+	      break;
+      case 3: dprintf (("", "ClientFind: %s %s\n", cr->fsname, fsname));
+              if (!Desk_stricmp(cr->fsname, fsname)) return(cr);
+              break;
+      default:
+        break;
+    }
+    loop++;
+    cr = (client_record *) cr->header.next;
+  }
+  return(NULL);
+}
+
+
+/*  Build a menu list of currently registered clients.
+ *  Returns NULL if no clients registered.
+ */
+static char *ClientList(bool dboxes)
+{
+  static char menu[512];
+  client_record *r = (client_record *) client_anchor.next;
+  char buf[128];
+  char *p;
+
+  /* Initialise menu */
+  if (r == NULL) return(NULL);
+
+  /* Build list of client names */
+  strcpy(menu, "");
+  while (r != NULL)
+  {
+    if (flagSET(r, flag_SPECIAL))
+    {
+      r = (client_record *) r->header.next;
+      continue;
+    }
+    if (dboxes) sprintf(buf, ">%s, ", r->clientname);
+      else sprintf(buf, "%s%s, ", flagSET(r, flag_FS) ? "" : "~", r->clientname);
+    strcat(menu, buf);
+    r = (client_record *) r->header.next;
+  }
+  p = strrchr(menu, ',');
+  if (p && !strcmp(p, ", ")) *p = '\0';
+  dprintf (("", "ClientList: %s\n", menu));
+  return((char *) &menu[0]);
+}
+
+
+/*  Build a menu of currently registered clients.
+ */
+extern Desk_menu_ptr ClientMakeMenu(Desk_menu_ptr oldmenu)
+{
+  char *menu = ClientList(Desk_FALSE);
+  char tmp[32];
+  char txt[32];
+
+  /* Initialise menu */
+  if (oldmenu != NULL) Menu_Dispose(oldmenu);
+  /* Create menu */
+  Desk_Msgs_Lookup("mhdr.icon_mo", tmp, 31);
+  Desk_Msgs_Lookup("menu.icon_mo", txt, 31);
+  if (menu == NULL) return(Desk_Menu_New(tmp, txt));
+    else return(Desk_Menu_New(tmp, menu));
+}
+
+
+/*  Build an info menu of currently registered clients.
+ */
+extern Desk_menu_ptr ClientMakeInfoMenu(Desk_menu_ptr oldmenu)
+{
+  char icon[32];
+  char tmp[32];
+  char menu[512];
+  char *m = ClientList(Desk_TRUE);
+
+  /* Initialise menu */
+  if (oldmenu != NULL) Menu_Dispose(oldmenu);
+  /* Create menu */
+  if (m == NULL) return(NULL);
+  Desk_Msgs_Lookup("menu.icon_i", icon, 31);
+  Desk_Msgs_Lookup("mhdr.icon_i", tmp, 31);
+  sprintf(menu, "%s|%s", icon, m);
+  dprintf (("", "%s", menu));
+  return(Desk_Menu_New(tmp, menu));
+}
+
+
+extern _kernel_oserror *ClientMount (int           client_id,
+                                     const char *  server,
+                                     const char *  user,
+                                     const char *  pw,
+                                     const char *  mount,
+                                     const char *  path,
+                                     const char *  auth,
+                                     int *         mount_id)
+{
+  /* Have to use _kernel_swi for this call because Omni code relies on output
+   * parameters being filled in even if an error occurs, and _swix does not
+   * do this.
+   */
+
+  _kernel_swi_regs   r;
+  _kernel_oserror *  e;
+
+  assert (mount_id != NULL);
+
+  r.r[0] = OmniOp_Mount;
+  r.r[1] = (int) server;
+  r.r[2] = (int) user;
+  r.r[3] = (int) pw;
+  r.r[4] = (int) mount;
+  r.r[5] = (int) path;
+  r.r[6] = (int) auth;
+
+  e = _kernel_swi (client_id, &r, &r);
+
+  *mount_id = r.r[1];
+
+  return e;
+}
+
+
+extern _kernel_oserror *ClientDismount (int  client_id,
+                                        int  mount_id)
+{
+  return _swix (client_id, _INR (0, 1),
+                OmniOp_Dismount, mount_id);
+}
+
+
+extern _kernel_oserror *ClientEnumerateServers (int           client_id,
+                                                char *        buffer,
+                                                unsigned int  buffer_size,
+                                                int           context,
+                                                char **       buffer_out,
+                                                int *         context_out)
+{
+  return _swix (client_id, _INR (0, 3) | _OUT (1) | _OUT (3),
+                OmniOp_EnumerateServers, buffer, buffer_size, context,
+                buffer_out, context_out);
+}
+
+
+extern _kernel_oserror *ClientEnumerateServerMounts (int           client_id,
+                                                     char *        buffer,
+                                                     unsigned int  buffer_size,
+                                                     int           context,
+                                                     int           server_id,
+                                                     char *        server_name,
+                                                     char **       buffer_out,
+                                                     int *         context_out)
+{
+  return _swix (client_id, _INR (0, 5) | _OUT (1) | _OUT (3),
+                OmniOp_EnumerateMountsOnServer, buffer, buffer_size, context, server_id, server_name,
+                buffer_out, context_out);
+}
+
+
+extern _kernel_oserror *ClientEnumerateActiveMounts (int           client_id,
+                                                     char *        buffer,
+                                                     unsigned int  buffer_size,
+                                                     int           context,
+                                                     char **       buffer_out,
+                                                     int *         context_out)
+{
+  return _swix (client_id, _INR (0, 3) | _OUT (1) | _OUT (3),
+                OmniOp_EnumerateActiveMounts, buffer, buffer_size, context,
+                buffer_out, context_out);
+}
+
+
+extern _kernel_oserror *ClientOpenRoot (int  client_id,
+                                        int  mount_id)
+{
+  return _swix (client_id, _INR (0, 1),
+                OmniOp_OpenRoot, mount_id);
+}
+
+
+extern _kernel_oserror *ClientOpenUserRoot (int  client_id,
+                                            int  mount_id)
+{
+  return _swix (client_id, _INR (0, 1),
+                OmniOp_OpenUserRoot, mount_id);
+}
+
+
+extern _kernel_oserror *ClientGetInactiveMountInfo (int     client_id,
+                                                    int     server_id,
+                                                    char *  path,
+                                                    int *   flags)
+{
+  assert (flags != NULL);
+
+  return _swix (client_id, _INR (0, 2) | _OUT (1),
+                OmniOp_GetInactiveMountInfo, server_id, path,
+                flags);
+}
+
+
+extern _kernel_oserror *ClientGetActiveMountInfo (int      client_id,
+                                                  int      mount_id,
+                                                  char **  server,
+                                                  char **  user,
+                                                  char **  mount,
+                                                  char **  path,
+                                                  char **  auth,
+                                                  int *    server_id)
+{
+  assert (server    != NULL &&
+          user      != NULL &&
+          mount     != NULL &&
+          path      != NULL &&
+          auth      != NULL &&
+          server_id != NULL);
+
+  return _swix (client_id, _INR (0, 1) | _OUTR (1, 6),
+                OmniOp_GetActiveMountInfo, mount_id,
+                server, user, mount, path, auth, server_id);
+}
+
+
+extern _kernel_oserror *ClientCreatePrintJob (int             client_id,
+                                              const char *    server_name,
+                                              const char *    printer_name,
+                                              const char *    user_name,
+                                              const char *    password,
+                                              const char *    options,
+                                              unsigned int    size,
+                                              int *           pjob_id)
+{
+  assert (pjob_id != NULL);
+
+  /* Ensure that pjob_id will be set to 0 if an error occurs */
+  *pjob_id = 0;
+
+  return _swix (client_id, _INR (0, 6) | _OUT (1),
+                OmniOp_CreatePrintJob, server_name, printer_name, user_name, password, options, size,
+                pjob_id);
+}
+
+
+extern _kernel_oserror *ClientSendPrintData (int             client_id,
+                                             int             pjob_id,
+                                             char *          data,
+                                             unsigned int    size,
+                                             unsigned int *  remaining)
+{
+  assert (remaining != NULL);
+
+  return _swix (client_id, _INR (0, 3) | _OUT (3),
+                OmniOp_SendPrintJobData, pjob_id, data, size,
+                remaining);
+}
+
+
+extern _kernel_oserror *ClientEndPrintJob (int  client_id,
+                                           int  pjob_id)
+{
+  return _swix (client_id, _INR (0, 1),
+                OmniOp_EndPrintJob, pjob_id);
+}
+
+
+extern _kernel_oserror *ClientAbortPrintJobs (int  client_id,
+                                              int  pjob_id)
+{
+  return _swix (client_id, _INR (0, 1),
+                OmniOp_AbortPrintJob, pjob_id);
+}
+
+
+extern _kernel_oserror *ClientGetPrintJobInfo (int             client_id,
+                                               int             pjob_id,
+                                               unsigned int *  local_status,
+                                               unsigned int *  local_bytes_sent,
+                                               void **         local_err_status_ptr,
+                                               unsigned int *  remote_status,
+                                               unsigned int *  remote_bytes_sent,
+                                               void **         remote_err_status_ptr)
+{
+  /* This uses _kernel_swi instead of _swix because I want some
+   * outputs to be optional (i.e. not filled in if they're NULL),
+   * which is much easier to do with _kernel_swi.
+   */
+
+  _kernel_swi_regs   r;
+  _kernel_oserror *  e;
+
+  r.r[0] = OmniOp_GetPrintJobInfo;
+  r.r[1] = pjob_id;
+
+  e = _kernel_swi (client_id, &r, &r);
+
+  if (local_status != NULL)
+  {
+    *local_status = r.r[1];
+  }
+  if (local_bytes_sent != NULL)
+  {
+    *local_bytes_sent = r.r[2];
+  }
+  if (local_err_status_ptr != NULL)
+  {
+    *local_err_status_ptr = (void *) r.r[3];
+  }
+  if (remote_status != NULL)
+  {
+    *remote_status = r.r[4];
+  }
+  if (remote_bytes_sent != NULL)
+  {
+    *remote_bytes_sent = r.r[5];
+  }
+  if (remote_err_status_ptr != NULL)
+  {
+    *remote_err_status_ptr = (void *) r.r[6];
+  }
+
+  return e;
+}
+
+
+extern _kernel_oserror *ClientClearPrintJobs (int  client_id,
+                                              int  pjob_id)
+{
+  return _swix (client_id, _INR (0, 1),
+                OmniOp_ClearPrintJob, pjob_id);
+}
+
+
+extern _kernel_oserror *ClientEnumeratePrinters (int           client_id,
+                                                 char *        buffer,
+                                                 unsigned int  buffer_size,
+                                                 int           context,
+                                                 char **       buffer_out,
+                                                 int *         context_out)
+{
+  return _swix (client_id, _INR (0, 3) | _OUT (1) | _OUT (3),
+                OmniOp_EnumeratePrinters, buffer, buffer_size, context,
+                buffer_out, context_out);
+}
+
+
+extern _kernel_oserror *ClientDomainLogout (int  client_id)
+{
+  return _swix (client_id, _IN (0),
+                OmniOp_DomainLogout);
+}
+@
+
+
+1.8
+log
+@Allow OmniClient clients to provide theme specific sprites
+OmniClient will now check its disc based sprites to see if there are any higher res or theme specific ones available (if there aren't then it is still assumed that the client has *ICONSPRITES'd his own as before).
+No longer looks for "_22" suffix manually, the Wimp will do that for us.
+Added file type sprites extracted from earlier CVS history.
+New application sprites for Morris4 and Ursula imported, thanks to Chris Wraight for these.
+
+Version 2.19. Tagged as 'Omni-2_19'
+@
+text
+@d36 3
+a38 2
+#include <kernel.h>
+#include <swis.h>
+a52 22
+enum
+{
+  ClientOp_Mount                 = 0,
+  ClientOp_Dismount              = 1,
+  ClientOp_Free                  = 2,
+  ClientOp_EnumerateServers      = 3,
+  ClientOp_EnumerateServerMounts = 4,
+  ClientOp_EnumerateActiveMounts = 5,
+  ClientOp_OpenRoot              = 6,
+  ClientOp_OpenUserRoot          = 7,
+  ClientOp_GetInactiveMountInfo  = 8,
+  ClientOp_GetActiveMountInfo    = 9,
+  ClientOp_CreatePrintJob        = 10,
+  ClientOp_SendPrintData         = 11,
+  ClientOp_EndPrintJob           = 12,
+  ClientOp_AbortPrintJobs        = 13,
+  ClientOp_GetPrintJobInfo       = 14,
+  ClientOp_ClearPrintJobs        = 15,
+  ClientOp_EnumeratePrinters     = 16,
+  ClientOp_DomainLogout          = 17
+};
+
+d271 1
+a271 1
+  r.r[0] = ClientOp_Mount;
+d291 1
+a291 1
+                ClientOp_Dismount, mount_id);
+d303 1
+a303 1
+                ClientOp_EnumerateServers, buffer, buffer_size, context,
+d318 1
+a318 1
+                ClientOp_EnumerateServerMounts, buffer, buffer_size, context, server_id, server_name,
+d331 1
+a331 1
+                ClientOp_EnumerateActiveMounts, buffer, buffer_size, context,
+d340 1
+a340 1
+                ClientOp_OpenRoot, mount_id);
+d348 1
+a348 1
+                ClientOp_OpenUserRoot, mount_id);
+d360 1
+a360 1
+                ClientOp_GetInactiveMountInfo, server_id, path,
+d382 1
+a382 1
+                ClientOp_GetActiveMountInfo, mount_id,
+d402 1
+a402 1
+                ClientOp_CreatePrintJob, server_name, printer_name, user_name, password, options, size,
+d416 1
+a416 1
+                ClientOp_SendPrintData, pjob_id, data, size,
+d425 1
+a425 1
+                ClientOp_EndPrintJob, pjob_id);
+d433 1
+a433 1
+                ClientOp_AbortPrintJobs, pjob_id);
+d454 1
+a454 1
+  r.r[0] = ClientOp_GetPrintJobInfo;
+d492 1
+a492 1
+                ClientOp_ClearPrintJobs, pjob_id);
+d504 1
+a504 1
+                ClientOp_EnumeratePrinters, buffer, buffer_size, context,
+d512 1
+a512 1
+                ClientOp_DomainLogout);
+@
+
+
+1.7
+log
+@Resolve some warnings.
+Was actually looking for a different problem, turned out to be nothing to do with OmniClient.
+
+Version 2.16. Tagged as 'Omni-2_16'
+@
+text
+@a38 1
+#include <Desk/ColourTran.h>
+a39 2
+#include <Desk/Resource.h>
+#include <Desk/Screen.h>
+d45 1
+d79 1
+d102 8
+d375 1
+a375 1
+                                                    char *  mount_path,
+d381 1
+a381 1
+                ClientOp_GetInactiveMountInfo, server_id, mount_path,
+@
+
+
+1.6
+log
+@  2 bug fixes to avoid AODT failures
+
+Detail:
+  c.FileType c. 298 .. initialise strings to null
+  c.Event c.line 1943 .. dont use mw if it has been freed
+
+Admin:
+  tested at castle
+  castle added ip
+
+
+Version 2.13. Tagged as 'Omni-2_13'
+@
+text
+@d89 1
+a89 6
+                r->r[0],
+                r->r[1],
+                (char *) r->r[2],
+                (char *) r->r[3],
+                (char *) r->r[4],
+                (char *) r->r[6]));
+d261 1
+a261 1
+  dprintf (("", menu));
+@
+
+
+1.5
+log
+@  * Fixed Omni$Running system variable bug introduced in previous revision.
+  * Fixed bug where Quit->All in expert mode would only quit the filer and
+    not the whole filing system.
+  * Fixed bug where just quitting the filer and attempting to re-run OmniClient
+    would produce the error "Some protocols in the mounts file are not
+    available, and have been ignored".
+  * Added resources and fleshed-out install phase.
+Detail:
+  * An internal error would be generated every time the Omni$Running system
+    variable was read.  This was my fault, due to a change I made when removing
+    the s.Base file in the previous revision .  The code variable block used
+    to reference a location defined in s.Base, in which to store the generated
+    string in.  I changed this to store it in the code variable block directly,
+    but forgot to change an LDR to an ADR at the same time.
+
+  * The application cleanup code was calling InitVars to reset global variables
+    to their initial state, thus trashing the global_run_state variable which
+    indicated that the entire filing system should be killed.  This was
+    overly paranoid, as InitVars is always called on initialisation, which is
+    perfectly adequete.  c.corefini removed as a result, as all it did was
+    call InitVars.
+
+  * The failure to restart cleanly on every 2nd attempt was caused by a
+    horrible interaction between OmniClient's finalisation code, it's !Run
+    file, callbacks and service calls.  It's too complicated to explain here,
+    so if you're interested then ask me.  It's been hackily fixed for now by
+    placing a call to Inet:Utils.TriggerCBs in Omni's !Run file, between the
+    place where it kills the OmniClient module and reloads it (if it detects
+    that the module is still running, but the task is not).  A cleaner solution
+    should be implemented by making OmniClient able to restart its task in an
+    intelligent manner, without requiring the module to be killed.
+
+  * Previously, only Messages, Templates and Templates3D resource files were
+    present, and nothing was done with them.  Added the remaining resources
+    and fleshed-out the install phase to contruct the full application
+    distribution instead of just copying the OmniClient module.
+Admin:
+  Tested on a Risc PC.
+
+Version 2.09. Tagged as 'Omni-2_09'
+@
+text
+@d170 1
+a170 1
+    dprintf (("", "ClientFind: %x\n", (int) cr));
+@
+
+
+1.4
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@d82 13
+a94 1
+  dprintf (("", "ClientCreate:create new client protocol\n"));
+@
+
+
+1.3
+log
+@  * Fixed bug which I introduced in previous version, where errors that
+    occurred when trying to connect to a mount would cause two errors to be
+    reported.
+Detail:
+  * When I went through blindly changing all _kernel_swi or Desk_SWI calls
+    to _swix, I failed to notice that one or two of the calls rely on the
+    output parameters being filled in even if an error occurs - _swix does not
+    do this.  I've now created a set of type safe C veneers for all calls to
+    client modules, which use _swix or _kernel_swi as necessary.  This has the
+    additional benefit of making the code more readable and getting rid of
+    quite a few uses of magic numbers.
+Admin:
+  * Compiled and tested on a Risc PC.
+
+Version 2.06. Tagged as 'Omni-2_06'
+@
+text
+@d95 1
+a95 1
+  /* Menu_Close(); */
+d120 1
+a120 5
+  if (taskhandle > 0)
+  {
+    Menu_Close();
+    Desk_menu_currentopen = NULL;
+  }
+@
+
+
+1.2
+log
+@  Several major bugfixes and further tidying to make Omni fit into our
+  build environment better.
+Detail:
+  * Bug fix: ClientList function (Client.c) creates a textual menu desription
+    for a list of clients (Info and Mounts submenus).  The description was
+    generated on the stack and a pointer to it was returned.  The buffer is now
+    static.
+  * Bug fix: select or adjust clicks on the Omni icon just after it's loaded
+    would kill the task part of Omni.  FilerCreate function (List.c) always
+    calls FilerDelete, which would always attempt to close any existing filer
+    window.  However, on the first call, no window exists so it passes the Wimp
+    a 0 window handle.  This only appeared to happen on RISC OS 4, but I suspect
+    this is to do with RISC OS 4's stricter protection of zero page.  Current
+    fix is for FilerDelete to check if window handle is 0 before closing it;
+    this is not very elegant - would be nicer to only call FilerDelete when the
+    window was actually closed.
+  * Bug fix: writable icon handling overhauled completely.  Many of the buffers
+    which Omni would read the contents of writable icons into were too short
+    to hold the maximum amount of text allowed in the icon.  New Icon_GetText
+    call added (ExtLib.c) to allow Omni to work directly on indirected icon
+    buffers wherever possible, thus removing the whole issue.
+  * Stripped commented-out code from several places.
+  * Changed use of Desk_bool to bool in most places.  This is a bit grim, but
+    the way Desk_bool is implemented means you need to cast it in many places,
+    which is even more grim.
+  * Removed a few error assignements(!) because
+    a) they weren't even being checked
+    b) Desk's psuedo-exception system should now catch them
+  * Got rid of home-grown strcasecmp calls and used Desk's instead.
+  * Removed many local constants definitions and get them from system header
+    files instead.
+  * Removed Hdrs.h which would include *every* header file in *every* C file
+    in the interests of compilation times.  C files now only include what they
+    need.
+  * Reimplemented the fully recursive Menu_Dispose along the lines of the
+    non-recursive Desk_Menu_Dispose, which had changed since ANT's DeskLib
+    split-off.
+  * Altered quite a bit of code to prevent compiler warnings (mainly
+    "use of '=' in condition context" and "variable declared but not used").
+  * Uses 'proper' module finalisation instead of atexit in the interests of
+    consistency and symmetry.
+  * Added MemCheck support.
+  * Reimplemented rma_alloc and rma_free in C (side effect of MemCheck support).
+  * Altered assembler to use system header files instead of local ones.
+  * Omni previously used a seeming random mixture of _kernel_swi and Desk_SWI
+    SWI veneers.  All have now been changed to use _swix/_swi as appropriate.
+  * Converted to use srccommit.
+Admin:
+  Files removed:
+   c.Error
+   c.StrCaseCmp
+   h.Debug
+   h.Hdrs
+   h.ModuleWrap
+   h.OmniClient
+   h.StrCaseCmp
+   hdr.Macros
+   hdr.RegDefs
+   hdr.SwiNos
+
+  Files added:
+   Docs.DeskLibDiffs
+   Docs.EventHandling
+   h.Omni
+
+  * Compiled.
+  * All windows, menus checked to make sure they at least display.
+  * Played around with a new NFS and LanMan mounts.
+  * Basically, there shouldn't be any showstoppers, but the change from a very
+    old DeskLib to Desk is a large one.  I'd be surprised if there aren't a
+    few problems and this should definitely be thrashed a bit by people
+    willing to do so before anyone has any confidence in it.
+
+
+
+Version 2.05. Tagged as 'Omni-2_05'
+@
+text
+@d31 1
+d54 22
+d260 264
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d31 12
+a42 6
+#include "Hdrs.h"
+#include "kernel.h"
+#include "Desk/Screen.h"            	/* Getting screen size info, etc   */
+#include "Desk/SWI.h"              	/* Low level OS calls              */
+#include "Desk/ColourTran.h"
+#include "Desk/Resource.h"          	/* Handles finding resource files  */
+d46 7
+d59 1
+a59 1
+  TRACE("ClientCreate:create new client protocol\n");
+d72 1
+a72 1
+  Menu_Close();
+d81 1
+a81 1
+  TRACE1("ClientCreate:new client list length %d\n", Desk_LinkList_ListLength(&client_anchor));
+d90 1
+a90 1
+  TRACE("ClientDelete:\n");
+d104 1
+a104 1
+  TRACE1("ClientDelete:new clients list length %d\n", Desk_LinkList_ListLength(&client_anchor));
+d133 1
+a133 1
+  TRACE("ClientFind:\n");
+d139 1
+a139 1
+    TRACE1("ClientFind: %x\n", (int) cr);
+d149 1
+a149 1
+      case 1: if (!strcasecmp(cr->clientname, name)) return(cr);
+d151 1
+a151 1
+      case 2: TRACE2("ClientFind: %d %d\n", menuitem, loop);
+d154 2
+a155 2
+      case 3: TRACE2("ClientFind: %s %s\n", cr->fsname, fsname);
+              if (!strcasecmp(cr->fsname, fsname)) return(cr);
+d170 1
+a170 1
+static char *ClientList(Desk_bool dboxes)
+d196 1
+a196 1
+  TRACE1("ClientList: %s\n", menu);
+d210 1
+a210 1
+  if (oldmenu != NULL) Menu_Dispose(oldmenu, Desk_TRUE);
+d229 1
+a229 1
+  if (oldmenu != NULL) Menu_Dispose(oldmenu, Desk_TRUE);
+@
+
+
+1.1.1.1
+log
+@  Initial import of Omni into CVS.
+
+Detail:
+  This is an import of the sources obtained from ANT some time ago, with
+  sufficient changes to allow it to build in our standard environment.  In
+  particular, this involved converting Omni to use Desk instead of DeskLib.
+  ANT's DeskLib was not 'off-the-shelf' - it was based on DeskLib 2.04 (very
+  old), with their own modifications.
+  
+  This means that there are quite severe bugs in the Omni code, which will
+  show up if you attempt to use this version, which were previously masked by
+  some of ANT's DeskLib alterations.  (Hopefully) most of these have already
+  been identified, fixed and will be checked-in soon.  I felt that a
+  minimal version that would simply build would be worthwhile, so that as
+  many changes as possible end up under CVS' control.
+
+Admin:
+  Compiled.
+  Untested.
+@
+text
+@@

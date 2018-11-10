@@ -1,0 +1,1067 @@
+head	1.7;
+access;
+symbols
+	Omni-2_30:1.7
+	Omni-2_29:1.7
+	Omni-2_28:1.7
+	Omni-2_27:1.7
+	Omni-2_26:1.7
+	Omni-2_25:1.7
+	Omni-2_24:1.7
+	Omni-2_23:1.6
+	Omni-2_22:1.6
+	Omni-2_21:1.6
+	Omni-2_20:1.6
+	Omni-2_19:1.6
+	Omni-2_18:1.6
+	Omni-2_17:1.5
+	Omni-2_16:1.5
+	Omni-2_15:1.4
+	Omni-2_14:1.4
+	Omni-2_13:1.4
+	Omni-2_12:1.4
+	Omni-2_11:1.3
+	Omni-2_10:1.3
+	Omni-2_09:1.3
+	Omni-2_08:1.3
+	Omni-2_07:1.2
+	Omni-2_06:1.2
+	Omni-2_05:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2016.09.24.10.58.39;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	vqcfLpgQE8f71xnz;
+
+1.6
+date	2013.03.14.20.18.44;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	6rnS12BNmFl5ANHw;
+
+1.5
+date	2011.12.14.13.51.14;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	Zvyz3NZzpUnQ5aLv;
+
+1.4
+date	2003.03.18.14.32.03;	author srevill;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.07.19.24.14;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Add support for drag-to-iconbar for all of Omni's clients
+The bones of support for this were already present, but disabled by the 'EXPERT' switch.
+Since the other filers have supported the operation since Ursula, enable & refactor the code to use the same protocol the other filers use.
+Allow a non root destinate to be used if the variable 'FSTitle + Filer$DefaultDir' is set.
+Remove dead UserDrag code.
+Tested with LanManFS and (Omni) NetFiler.
+
+Version 2.24. Tagged as 'Omni-2_24'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	CoreInit.c - core initialisation routines
+ *
+ * Project:	!Omni OmniClient(tm) project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	13 July 1994
+ * Last Edited:	14 February 1995
+ *
+ * Copyright 1994,1995 by ANT Limited
+ */
+
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include "Global/Services.h"
+
+#include <Desk/ColourTran.h>
+#include <Desk/Event.h>
+#include <Desk/EventMsg.h>
+#include <Desk/Error.h>
+#include <Desk/File.h>
+#include <Desk/Handler.h>
+#include <Desk/Hourglass.h>
+#include <Desk/LinkList.h>
+#include <Desk/Menu.h>
+#include <Desk/Msgs.h>
+#include <Desk/Resource.h>
+#include <Desk/Screen.h>
+#include <Desk/Sound.h>
+#include <Desk/Sprite.h>
+#include <Desk/Template.h>
+#include <Desk/Window.h>
+
+#include <DebugLib/DebugLib.h>
+
+#include "Core.h"
+#include "CoreInit.h"
+#include "Defs.h"
+#include "Events.h"
+#include "Expert.h"
+#include "ExtLib.h"
+#include "Filer.h"
+#include "Heap.h"
+#include "Mount.h"
+#include "Omni.h"
+#include "OmniClient.h"
+#include "Redraw.h"
+
+#define wimp_VERSION	310		/* Min version of Wimp required to run */
+
+
+#ifdef app_TIMED
+
+static int *resource_spritearea = NULL;	/* Private sprite pool */
+static Desk_window_handle wind_message = NULL;
+
+/*  Set up a private sprite pool for application sprites.
+ */
+static bool SpriteArea(void)
+{
+  int		poolsize;
+  char		temp[64];
+
+  sprintf(temp, "%s^.Sprites", resource_pathname);
+  if ((poolsize = Desk_File_Size(temp)) == 0)
+  {
+    Desk_Msgs_Report(1, "coreinit.nosprite");
+    return false;
+  }
+  poolsize+=4;
+  if ((resource_spritearea = (int *) heap_alloc(poolsize+4)) == NULL)
+  {
+    Desk_Error_OutOfMemory(Desk_FALSE, "private sprite area");
+    return false;
+  }
+  resource_spritearea[0] = poolsize;
+  resource_spritearea[2] = 16;
+  Desk_Sprite_InitArea((sprite_area) resource_spritearea);
+  Desk_Sprite_Load((sprite_area) resource_spritearea, temp);
+  return true;
+}
+
+
+/*  Set indirected sprite for a icon
+ */
+extern void Desk_Icon_SetSprite(Desk_window_handle window, Desk_icon_handle icon, char *string)
+{
+  Desk_icon_createblock 	i;
+  Desk_icon_handle		ih;
+
+  /* Set up a sprite icon with the icon that represents the relevant file type. */
+  i.window = window;
+  Desk_Wimp_GetIconState(i.window, icon, &i.icondata);
+  Desk_Wimp_DeleteIcon(window, icon);
+
+  i.icondata.flags.value &= ~Desk_icon_TEXT;
+  i.icondata.flags.value |= Desk_icon_SPRITE + Desk_icon_INDIRECTED;
+  strcpy((char*) i.icondata.data.indirectsprite.name, string);
+  i.icondata.data.indirectsprite.spritearea = (void *) resource_spritearea;
+  Desk_Wimp_CreateIcon(&i, &ih); /* will recreate with same number. */
+
+  /* Update icon on screen */
+  Desk_Wimp_SetIconState(window, icon, 0, 0);
+}
+
+
+/*  Pop up message window (startup & on mode change).
+ */
+extern Desk_bool MessageWindow(Desk_event_pollblock *event, void *reference)
+{
+  if (wind_message)
+  {
+    Desk_Window_Delete(wind_message);
+    Desk_Window_ModeChange();
+  }
+  Desk_Sound_SysBeep();
+  wind_message = Desk_Window_CreateSpriteArea("message", Desk_template_TITLEMIN, resource_spritearea);
+  if (wind_message)
+  {
+    Desk_Window_Show(wind_message, Desk_open_CENTERED);
+    /* Display hi-res sprite if a square pixel mode */
+    Desk_Screen_CacheModeInfo();
+    if (Desk_screen_eig.y <= 1) Desk_Icon_SetSprite(wind_message, message_logo, "antlogo_22");
+      else Desk_Icon_SetSprite(wind_message, message_logo, "antlogo");
+    Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, MessageWindow, NULL);
+    return(Desk_TRUE);
+  }
+  return(Desk_FALSE);
+}
+
+/*  Check for valid system clock
+ *  for prerelease timebomb 'feature'
+ */
+static bool CheckClock(void)
+{
+  struct tm 	*timeptr;
+  time_t    	thetime;
+  bool      	ok = true;
+#ifdef app_DELETE
+  char      	*app_path = app_IMAGE;
+#else
+  Desk_event_pollblock *event;
+  void *reference;
+#endif
+
+  dprintf (("", "coreinit.CheckClock\n"));
+
+  Desk_Error2_Try
+  {
+    Risc_Time(&thetime);
+    timeptr = localtime(&thetime);
+    if (timeptr == NULL) ok = false;
+    /* Months start from 0, eg, August == 7 */
+    if ((timeptr->tm_year != 95) || (timeptr->tm_mon > 4)) ok = false;
+
+    /* Invalid system clock - this application must die ! */
+    if (!ok)
+    {
+#ifdef app_DELETE
+      /* Try and delete application runimage */
+      _swi (OS_FSControl, _INR (0, 3), OS_FSControl_Wipe, app_path, 0, 3)
+      Desk_Error_ReportFatal(1, "*** Beta-Release timed out *** Please request a newer version.");
+#else
+      if (Desk_Template_Find("message") != NULL)
+      {
+        /* Set up private sprite pool for application sprites */
+        if (SpriteArea())
+        {
+          MessageWindow(event, reference);
+          ok = (wind_message);
+          if (ok) Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, MessageWindow, NULL);
+        }
+      }
+#endif
+    }
+  }
+  Desk_Error2_Catch
+  {
+#ifdef app_DELETE
+    /* Give a bogus error message */
+    Desk_Msgs_ReportFatal(1, "coreinit.nowrite");
+#endif
+    ok = false;
+  }
+  Desk_Error2_EndCatch
+
+  return ok;
+}
+#endif
+
+
+/*  Initialise templates and messages system from country configuration.
+ */
+extern void InitResources(char *path)
+{
+  int        len, type;
+  char       country[16];
+  int        country_num;
+
+  dprintf (("", "coreinit.InitResources\n"));
+
+  /* Read in country number */
+  country_num = _kernel_osbyte(240, 0, 255) & 255;
+
+  /* Set up a service call to translate the number to a text name */
+  Desk_Error2_CheckOS (_swix (OS_ServiceCall, _INR (0, 5) | _OUT (1) | _OUT (5),
+                              0, Service_International, 2, country_num, country, 15,
+                              &type, &len));
+  if (type == 0)
+  {
+    char temp[96];
+
+    /* Country code recognized OK */
+    country[len] = (char) 0;
+    sprintf(path, "<%s$Dir>.Resources.%s.", app_DIR, country);
+
+    /* Try and find the appropriate Messages file */
+    sprintf(temp, "%sMessages", path);
+    if (!Desk_File_Exists(temp))
+    {
+      /* Couldn't locate resources directory/messages file - default */
+      sprintf(path, "<%s$Dir>.%s", app_DIR, "Resources.UK.");
+    }
+  }
+  else
+  {
+    /* Unknown country code - use 'UK' */
+    Desk_Error_Report(0, "Unknown country code, using 'UK'");
+    sprintf(path, "<%s$Dir>.%s", app_DIR, "Resources.UK.");
+  }
+  dprintf (("", "coreinit.InitResources: %s\n", path));
+}
+
+
+/*  Reset all extern variables
+ */
+extern void InitVars(void)
+{
+  taskhandle = 0;
+  Desk_LinkList_Init(&mount_anchor);
+  Desk_LinkList_Init(&mlist_anchor);
+  Desk_LinkList_Init(&plist_anchor);
+  Desk_LinkList_Init(&mwind_anchor);
+  wind_info = NULL;
+  wind_client = NULL;
+  wind_mounttmp = NULL;
+  wind_mountinfo = NULL;
+  wind_mountdom = NULL;
+  global_run_state = RunState_Running;
+  wind_filer.w = NULL;
+  Desk_LinkList_Init(&wind_filer.anchor);
+  wind_filer.nitems = 0;
+  wind_filer.index = NULL;
+  Desk_LinkList_Init(&wind_filer.items);
+  wind_filer.item = 0;
+  menu_icon = NULL;
+  menu_icon_i = NULL;
+  menu_icon_d = NULL;
+  menu_icon_m = NULL;
+  menu_icon_mo = NULL;
+  menu_icon_q = NULL;
+  menu_main = NULL;
+  menu_main_d = NULL;
+  menuwindow = NULL;
+  mountwindow = NULL;
+  clientwindow = NULL;
+  select_item = 0;
+  select_wind = NULL;
+  select_transient = false;
+  all_predone = false;
+  Desk_LinkList_Init(&redraw_anchor);
+}
+
+
+/*  Read global program configuration from <app_DIR>$Options variable.
+ */
+extern void ConfigRead(void)
+{
+  char *s = omni_getenv(app_DIR"$Options");
+  char *p = NULL;
+  int n;
+
+  prog_config.sort = sort_NAME;
+  prog_config.display = display_LARGE;
+  prog_config.expert = Desk_FALSE;
+  prog_config.autolocate = Desk_FALSE;
+  dprintf (("", "ConfigRead: %s\n", s ? s : "no options"));
+
+  if (!s) return;
+
+  if ((p = strchr(s, 's')) != NULL)
+  {
+    n = atoi((char *) p+1);
+    dprintf (("", "ConfigRead: sort '%s' %d\n", p, n));
+    if ((n >= sort_NONE) && (n <= sort_PROTOCOL)) prog_config.sort = n;
+  }
+  if ((p = strchr(s, 'd')) != NULL)
+  {
+    n = atoi((char *) p+1);
+    dprintf (("", "ConfigRead: display '%s' %d\n", p, n));
+    if ((n >= display_LARGE) && (n <= display_FULL)) prog_config.display = n;
+  }
+#ifdef EXPERT
+  if ((p = strchr(s, 'x')) != NULL) prog_config.expert = Desk_TRUE;
+#endif
+  if ((p = strchr(s, 'a')) != NULL) prog_config.autolocate = Desk_TRUE;
+}
+
+
+/*  Set global program configuration as <app_DIR>$Options variable.
+ */
+extern void ConfigWrite(void)
+{
+  char buf[10];
+
+  sprintf(buf, "s%d d%d%s%s", prog_config.sort, prog_config.display,
+    (prog_config.expert) ? " x" : "", (prog_config.autolocate) ? " a" : "");
+  _kernel_setenv(app_DIR"$Options", buf);
+}
+
+
+/*  Initialise - application initialisation
+ */
+extern bool coreinit(void)
+{
+  char          appname[64];
+  char          menudescription[260];
+  mount_record	*mr = NULL;
+  int		msg_block[] =		/* List of all known message numbers, 0 terminated */
+  {
+    Desk_message_DATASAVE, Desk_message_DATASAVEOK, Desk_message_DATALOAD, Desk_message_DATAOPEN,
+    Desk_message_DATALOADOK, Desk_message_PREQUIT, Desk_message_SAVEDESK, Desk_message_HELPREQUEST,
+    Desk_message_MODECHANGE, Desk_message_WINDOWINFO, Desk_message_MENUWARN, Desk_message_MENUSDELETED,
+    Desk_message_INITTASK, 0
+  };
+  char		*err = NULL;
+  int		active;
+
+  dprintf (("", "coreinit.Entry:\n"));
+  Desk_Hourglass_Start(5);
+
+  /* Initialise heap management.
+   */
+  heap_init();
+  InitVars();
+
+  /* Check we are really in the desktop.
+   */
+  _swi (Wimp_ReadSysInfo, _IN (0) | _OUT (0), 0, &active);
+  if (active <= 0)
+  {
+    Desk_Hourglass_Off();
+    return false;
+  }
+
+  _swi (Wimp_ReadSysInfo, _IN (0) | _OUT (0), 3, &active);
+  if (active == 0)
+  {
+    Desk_Hourglass_Off();
+    return false;
+  }
+
+  /* Initialise the Wimp and Event Manager (as a RO3 task).
+   * The task name shown on the task display and error reports is set from
+   * the string "app_DIR" set as a #define.
+   */
+  dprintf (("", "coreinit.init1: %s %d\n", app_DIR, wimp_VERSION));
+  Desk_Event_Initialise3(app_NAME, wimp_VERSION, msg_block);
+  Desk_EventMsg_Initialise();
+  taskhandle = Desk_Event_taskhandle;
+  all_hasrun = true;
+
+  /* Tell Resource (and thereby Template, Msgs, etc) where our resource
+   * directory is: "<Mail$Path>".Resources.Country
+   */
+  InitResources(Desk_resource_pathname);
+
+  /* Load and cache the messages. Find out the application name.
+   */
+  dprintf (("", "coreinit.messages:\n"));
+  Desk_Msgs_LoadFile("Messages");
+  Desk_Msgs_Lookup("app.name:OmniClient", appname, 63);
+
+  /* Read and remember the current screen mode information
+   * (width and height, eig-factors, delta-x and delta-y, etc.)
+   * This is needed by the Menu code to get menu widths correct.
+   */
+  Desk_Screen_CacheModeInfo();
+
+  /* Add a handler function to a "screen mode changing" Wimp message, so
+   * that the information provided by the "Screen" functions is always
+   * correct.
+   * NOTE that the new Desk_Handler_ModeChange should also ensure that outline
+   * fonts will work if we change between lo-res and hi-res screen modes.
+   */
+  dprintf (("", "coreinit.claim:\n"));
+  Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, Desk_Handler_ModeChange, NULL);
+  Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, MountModeChange, NULL);
+
+  /* Plonk an icon onto the iconbar
+   */
+  mr = MountCreate(NULL);
+
+  /* Place the Desk_Handler_ module skeleton default handlers on all
+   * Redraw and Open-window request events (Application-wide defaults)
+   */
+  Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY, Desk_Handler_NullRedraw, NULL);
+  Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY, Desk_Handler_OpenWindow, NULL);
+  Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY, Desk_Handler_CloseWindow, NULL);
+
+  /* Load in and cache our window templates from the template file
+   * (Templates utilise the "Resource Directory"),
+   * with support for using outline fonts in the icons if the file specifies
+   * outline fonts.
+   */
+  Desk_Template_Initialise();
+  Desk_Template_UseOutlineFonts();
+  /* '3D-look' bit */
+  if ((_kernel_osbyte(161, 140, 0) & (1 << 8)) == 0) Desk_Template_LoadFile("Templates");
+    else Desk_Template_LoadFile("Template3D");
+
+  /* Add the Desk_Window_HelpHandler message handler so that help requests
+   * for the main windows and the iconbar icon are automatically handled
+   */
+  Desk_Window_AutoHelp(Desk_event_ANY, Desk_event_ANY);
+  Desk_EventMsg_Claim(Desk_message_HELPREQUEST, Desk_event_ANY, HelpHandler, NULL);
+
+  /* Read configuration */
+  ConfigRead();
+
+  /*  Menus
+   */
+  Desk_Msgs_Lookup("mhdr.icon", appname, 63);
+#ifdef EXPERT
+  Desk_Msgs_Lookup((prog_config.expert) ? "menu.icone" : "menu.icon", menudescription, 259);
+#else
+  Desk_Msgs_Lookup("menu.icon", menudescription, 259);
+#endif
+  menu_icon = Desk_Menu_New(appname, menudescription);
+  menu_icon_mo = NULL;
+  Desk_Msgs_Lookup("mhdr.icon_d", appname, 63);
+  Desk_Msgs_Lookup("menu.icon_d", menudescription, 259);
+  menu_icon_d = Desk_Menu_New(appname, menudescription);
+  Desk_Menu_AddSubMenu(menu_icon, imenu_MOUNTINFO , menu_icon_d);
+#ifdef EXPERT
+  if (prog_config.expert)
+  {
+    Desk_Msgs_Lookup("mhdr.icon_q", appname, 63);
+    Desk_Msgs_Lookup("menu.icon_q", menudescription, 259);
+    menu_icon_q = Desk_Menu_New(appname, menudescription);
+    Desk_Menu_AddSubMenu(menu_icon, imenu_QUIT, menu_icon_q);
+  }
+#endif
+
+  Desk_Msgs_Lookup("mhdr.main", appname, 63);
+  Desk_Msgs_Lookup("menu.main", menudescription, 259);
+  menu_main = Desk_Menu_New(appname, menudescription);
+  Desk_Msgs_Lookup("mhdr.main_d", appname, 63);
+  Desk_Msgs_Lookup("menu.main_d", menudescription, 259);
+  menu_main_d = Desk_Menu_New(appname, menudescription);
+  Desk_Menu_AddSubMenu(menu_main, mmenu_DISPLAY, menu_main_d);
+
+  /* Claim usermessage events */
+  Desk_EventMsg_Claim(Desk_message_CLOSEDOWN, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_DATALOAD, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_DATASAVE, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_DATAOPEN, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_PREQUIT, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_SAVEDESK, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_WINDOWINFO, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_MENUSDELETED, Desk_event_ANY, GenEvent, NULL);
+  Desk_EventMsg_Claim(Desk_message_INITTASK, Desk_event_ANY, GenEvent, NULL);
+
+  /* Mask out unwanted events */
+  Desk_Event_mask.data.ptrleave = Desk_TRUE;
+  Desk_Event_mask.data.ptrenter = Desk_TRUE;
+  Desk_Event_mask.data.gaincaret = Desk_TRUE;
+  Desk_Event_mask.data.losecaret = Desk_TRUE;
+
+  /* Check for timebomb */
+#ifdef app_TIMED
+  if (!CheckClock())
+  {
+    Desk_Hourglass_Off();
+    return false;
+  }
+#endif
+
+  /* Register atexit() handler for program quit */
+  /* atexit(close); */
+
+
+  /* Wake up any dormant protocol modules */
+  serviceomni(0);
+
+  /* Check for error at load time with <Omni$Error> variable */
+  err = omni_getenv("Omni$Error");
+  if (err) Desk_Error_Report(0, err);
+
+  /* Load configuration */
+  MountLoadFile(NULL);
+
+  /* Set global mask for pollword stuff */
+  Desk_Event_mask.data.highprioritypoll = 1;
+  Desk_Event_mask.data.r3ispollwordptr = 1;
+  /*Desk_event_pollword = &pollword;*/
+
+  /* Re-build Mounts table, for icons on iconbar */
+  _swi (Omni_EnumerateMounts, _INR (0, 1), 0, 1);
+
+
+  /* Initialisation OK */
+  Desk_Hourglass_Off();
+  return true;
+}
+@
+
+
+1.6
+log
+@Write out choices to <Choices$Write> rather than inside the application directory
+UK/Messages: English for "update" was trapped in the C code rather than in the messages
+Filer.c/CoreInit.c: name the application as OmniClient
+FileType.c: Try Choices first then Omni:
+Mount.c: Write to <Choices$Write>, for reading try Choices first then Omni:
+Defs.h: Change app_FILES to "Omni:" so path names using this define are proper
+
+Version 2.18. Tagged as 'Omni-2_18'
+@
+text
+@a154 1
+
+a489 1
+  Desk_EventMsg_Claim(Desk_message_DATALOADACK, Desk_event_ANY, GenEvent, NULL);
+a490 1
+  Desk_EventMsg_Claim(Desk_message_DATASAVEACK, Desk_event_ANY, GenEvent, NULL);
+@
+
+
+1.5
+log
+@Resolve some warnings.
+Was actually looking for a different problem, turned out to be nothing to do with OmniClient.
+
+Version 2.16. Tagged as 'Omni-2_16'
+@
+text
+@d393 1
+a393 1
+  Desk_Event_Initialise3(app_DIR"Client", wimp_VERSION, msg_block);
+@
+
+
+1.4
+log
+@Adds BASIC version of houron and houroff so it'll run on machines with
+old HourGlass modules (no *HON *HOFF).
+Enlarged tiddy little buttons in connection dialogue.
+Reorganised iconbar menu so it makes sense,and changed help.
+Increased RMEnsure to require Utility module 3.5 due to use of MSR/MRS.
+
+Version 2.12. Tagged as 'Omni-2_12'
+@
+text
+@d39 1
+a39 1
+#include <Global/Services.h>
+d302 1
+a302 1
+extern void ConfigRead()
+d337 1
+a337 1
+extern void ConfigWrite()
+@
+
+
+1.3
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@d469 1
+a469 1
+  Desk_Menu_AddSubMenu(menu_icon, imenu_DISMOUNT, menu_icon_d);
+@
+
+
+1.2
+log
+@  Several major bugfixes and further tidying to make Omni fit into our
+  build environment better.
+Detail:
+  * Bug fix: ClientList function (Client.c) creates a textual menu desription
+    for a list of clients (Info and Mounts submenus).  The description was
+    generated on the stack and a pointer to it was returned.  The buffer is now
+    static.
+  * Bug fix: select or adjust clicks on the Omni icon just after it's loaded
+    would kill the task part of Omni.  FilerCreate function (List.c) always
+    calls FilerDelete, which would always attempt to close any existing filer
+    window.  However, on the first call, no window exists so it passes the Wimp
+    a 0 window handle.  This only appeared to happen on RISC OS 4, but I suspect
+    this is to do with RISC OS 4's stricter protection of zero page.  Current
+    fix is for FilerDelete to check if window handle is 0 before closing it;
+    this is not very elegant - would be nicer to only call FilerDelete when the
+    window was actually closed.
+  * Bug fix: writable icon handling overhauled completely.  Many of the buffers
+    which Omni would read the contents of writable icons into were too short
+    to hold the maximum amount of text allowed in the icon.  New Icon_GetText
+    call added (ExtLib.c) to allow Omni to work directly on indirected icon
+    buffers wherever possible, thus removing the whole issue.
+  * Stripped commented-out code from several places.
+  * Changed use of Desk_bool to bool in most places.  This is a bit grim, but
+    the way Desk_bool is implemented means you need to cast it in many places,
+    which is even more grim.
+  * Removed a few error assignements(!) because
+    a) they weren't even being checked
+    b) Desk's psuedo-exception system should now catch them
+  * Got rid of home-grown strcasecmp calls and used Desk's instead.
+  * Removed many local constants definitions and get them from system header
+    files instead.
+  * Removed Hdrs.h which would include *every* header file in *every* C file
+    in the interests of compilation times.  C files now only include what they
+    need.
+  * Reimplemented the fully recursive Menu_Dispose along the lines of the
+    non-recursive Desk_Menu_Dispose, which had changed since ANT's DeskLib
+    split-off.
+  * Altered quite a bit of code to prevent compiler warnings (mainly
+    "use of '=' in condition context" and "variable declared but not used").
+  * Uses 'proper' module finalisation instead of atexit in the interests of
+    consistency and symmetry.
+  * Added MemCheck support.
+  * Reimplemented rma_alloc and rma_free in C (side effect of MemCheck support).
+  * Altered assembler to use system header files instead of local ones.
+  * Omni previously used a seeming random mixture of _kernel_swi and Desk_SWI
+    SWI veneers.  All have now been changed to use _swix/_swi as appropriate.
+  * Converted to use srccommit.
+Admin:
+  Files removed:
+   c.Error
+   c.StrCaseCmp
+   h.Debug
+   h.Hdrs
+   h.ModuleWrap
+   h.OmniClient
+   h.StrCaseCmp
+   hdr.Macros
+   hdr.RegDefs
+   hdr.SwiNos
+
+  Files added:
+   Docs.DeskLibDiffs
+   Docs.EventHandling
+   h.Omni
+
+  * Compiled.
+  * All windows, menus checked to make sure they at least display.
+  * Played around with a new NFS and LanMan mounts.
+  * Basically, there shouldn't be any showstoppers, but the change from a very
+    old DeskLib to Desk is a large one.  I'd be surprised if there aren't a
+    few problems and this should definitely be thrashed a bit by people
+    willing to do so before anyone has any confidence in it.
+
+
+
+Version 2.05. Tagged as 'Omni-2_05'
+@
+text
+@d65 1
+a72 5
+extern int *resource_spritearea = NULL;	/* Private sprite pool */
+extern Desk_window_handle wind_message = NULL;
+
+extern char *developed = "\n Developed by ANT Limited <sales@@ant.co.uk> \n";
+
+d78 3
+d274 1
+a274 1
+  all_done = 0;
+d304 1
+a304 1
+  char *s = getenv(app_DIR"$Options");
+d312 2
+a313 1
+  dprintf (("", "ConfigRead: %x\n", (int) s));
+d315 1
+d517 2
+a518 1
+  atexit(close);
+d524 1
+a524 1
+  err = getenv("Omni$Error");
+d537 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d31 33
+a63 8
+#include "Hdrs.h"
+#include "kernel.h"
+#include "Desk/Screen.h"            	/* Getting screen size info, etc   */
+#include "Desk/SWI.h"              	/* Low level OS calls              */
+#include "Desk/ColourTran.h"
+#include "Desk/Resource.h"          	/* Handles finding resource files  */
+#include "Desk/Sound.h"          	/* */
+#include "Desk/Sprite.h"
+d65 6
+a71 2
+extern void close(void);		/* atexit() handler */
+extern void serviceomni(int num);
+a77 1
+#define _OS_FSControl	0x000029
+d84 1
+a84 1
+static Desk_bool SpriteArea(void)
+d93 1
+a93 1
+    return(Desk_FALSE);
+d99 1
+a99 1
+    return(Desk_FALSE);
+d105 1
+a105 1
+  return(Desk_TRUE);
+d160 1
+a160 1
+static Desk_bool CheckClock(void)
+d164 1
+a164 1
+  Desk_bool      	ok = Desk_TRUE;
+d172 1
+a172 6
+  TRACE("coreinit.CheckClock\n");
+  Risc_Time(&thetime);
+  timeptr = localtime(&thetime);
+  if (timeptr == NULL) ok = Desk_FALSE;
+  /* Months start from 0, eg, August == 7 */
+  if ((timeptr->tm_year != 95) || (timeptr->tm_mon > 4)) ok = Desk_FALSE;
+d174 1
+a174 2
+  /* Invalid system clock - this application must die ! */
+  if (!ok)
+d176 9
+d186 2
+a187 3
+    /* Try and delete application runimage */
+    if (Desk_SWI(4,0,_OS_FSControl, 27, (int) app_path, 0, 3) == NULL)
+    {
+d189 12
+d202 6
+a207 12
+    else
+    {
+      /* Give a bogus error message */
+      Desk_Msgs_ReportFatal(1, "coreinit.nowrite");
+    }
+#else
+    if (!Desk_Template_Find("message")) return(Desk_FALSE);
+    /* Set up private sprite pool for application sprites */
+    if (!SpriteArea()) return(Desk_FALSE);
+    MessageWindow(event, reference);
+    ok = (wind_message);
+    if (ok) Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, MessageWindow, NULL);
+d209 1
+d211 1
+a217 2
+#define _OS_ServiceCall                0x000030
+
+d226 1
+a226 1
+  TRACE("coreinit.InitResources\n");
+d232 3
+a234 2
+  Desk_SWI(6,6, _OS_ServiceCall, 0,0x43,2,country_num,(int) country,15,
+    NULL, &type, NULL, NULL, NULL, &len);
+d257 1
+a257 1
+  TRACE1("coreinit.InitResources: %s\n", path);
+d275 1
+a275 1
+  all_done = Desk_FALSE;
+d295 2
+a296 2
+  select_transient = Desk_FALSE;
+  all_predone = Desk_FALSE;
+d313 1
+a313 1
+  TRACE1("ConfigRead: %x\n", (int) s);
+d318 1
+a318 1
+    TRACE2("ConfigRead: sort '%s' %d\n", p, n);
+d324 1
+a324 1
+    TRACE2("ConfigRead: display '%s' %d\n", p, n);
+a345 2
+#define Wimp_ReadSysInfo	0x0400F2
+
+d348 1
+a348 1
+extern Desk_bool coreinit(void)
+d363 1
+a363 1
+  TRACE("coreinit.Entry:\n");
+d373 1
+a373 1
+  Desk_SWI(1,1, Wimp_ReadSysInfo, 0, &active);
+d377 1
+a377 1
+    return(Desk_FALSE);
+d379 2
+a380 1
+  Desk_SWI(1,1, Wimp_ReadSysInfo, 3, &active);
+d384 1
+a384 1
+    return(Desk_FALSE);
+d391 1
+a391 1
+  TRACE2("coreinit.init1: %s %d\n", app_DIR, wimp_VERSION);
+d395 1
+a395 1
+  all_hasrun = Desk_TRUE;
+d404 1
+a404 1
+  TRACE("coreinit.messages:\n");
+d420 1
+a420 1
+  TRACE("coreinit.claim:\n");
+d511 1
+a511 1
+    return(Desk_FALSE);
+d534 1
+a534 1
+  Desk_SWI(2,0, SWI_BASE+0, 0, 1);
+d538 1
+a538 1
+  return(Desk_TRUE);
+@
+
+
+1.1.1.1
+log
+@  Initial import of Omni into CVS.
+
+Detail:
+  This is an import of the sources obtained from ANT some time ago, with
+  sufficient changes to allow it to build in our standard environment.  In
+  particular, this involved converting Omni to use Desk instead of DeskLib.
+  ANT's DeskLib was not 'off-the-shelf' - it was based on DeskLib 2.04 (very
+  old), with their own modifications.
+  
+  This means that there are quite severe bugs in the Omni code, which will
+  show up if you attempt to use this version, which were previously masked by
+  some of ANT's DeskLib alterations.  (Hopefully) most of these have already
+  been identified, fixed and will be checked-in soon.  I felt that a
+  minimal version that would simply build would be worthwhile, so that as
+  many changes as possible end up under CVS' control.
+
+Admin:
+  Compiled.
+  Untested.
+@
+text
+@@

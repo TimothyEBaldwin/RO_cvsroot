@@ -1,0 +1,483 @@
+head	1.3;
+access;
+symbols
+	FileDbox-1_03:1.3
+	FileDbox-1_02:1.3
+	FileDbox-1_01:1.2
+	FileDbox-1_00:1.1.1.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.1
+	sbrodie_Toolbox_Ursula_231198:1.1.1.1
+	Ursula_RiscPC:1.1.1.1.0.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.1
+	UrsulaBuild_FinalSoftload:1.1.1.1
+	rthornb_UrsulaBuild-12Aug1998:1.1.1.1
+	sbrodie_Expresso_final_190298:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2000.05.04.12.53.25;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.08.16.24.08;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.02.16.18.53.54;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.02.16.18.53.54;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  Changed to use common Makefile system.
+  Debug build facility added.
+Detail:
+  Uses core facilities from Common instead of having private copies.
+  Makefile vastly simplified to simply define a few macros, then include
+    the common Toolbox Makefile which is exported by Common.
+Admin:
+  Requires Common 0.09 or later (RiscOS/Sources/Toolbox/Common; Common-0_09)
+  Requires BuildSys 1.92 or later (RiscOS/BuildSys; BuildSys-1_92)
+  Requires Library 0.41 or later (RiscOS/Library; Library-0_41)
+
+Version 1.02. Tagged as 'FileDbox-1_02'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* Title:   main.c
+ * Purpose: main module of a Generic Object module
+ * Author:  IDJ
+ *
+ */
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "macros.h"
+#include "utils.h"
+#include "services.h"
+#include "objmodule.h"
+
+#include "filedbox.h"
+
+#include "object.h"
+#include "create.h"
+#include "delete.h"
+#include "show.h"
+#include "hide.h"
+#include "getstate.h"
+#include "miscop.h"
+#include "events.h"
+
+#include "task.h"
+
+#include "mem.h"
+#include "main.h"
+#include "rmensure.h"
+#include "debug.h"
+
+
+#define MAX_CLASS_SWI_METHODS 7
+static _kernel_oserror *(*class_swi_methods [MAX_CLASS_SWI_METHODS])(_kernel_swi_regs *r, TaskDescriptor *t) =
+       {
+            create_object,
+            delete_object,
+            NULL,
+            show_object,
+            hide_object,
+            getstate_object,
+            miscop_object
+       };
+
+
+
+/* +++++++++++++++++++++++++++++++++ finalisation code +++++++++++++++++++++++++++++++++ */
+
+#ifdef ROM
+static _kernel_oserror *__ROM;
+#else
+extern int       messages_file(void);
+#endif
+
+extern _kernel_oserror *FileDbox_finalise (int fatal, int podule, void *pw)
+{
+    /*
+     * Function to clean up before module exit
+     */
+
+    IGNORE(pw);
+    IGNORE(podule);
+    IGNORE(fatal);
+
+    /*
+     * refuse to finalise if tasks active
+     */
+
+    if (task_any_active())
+        return make_error (FileDbox_TasksActive, 0);
+
+
+    /*
+     * close our messages file
+     */
+
+    messages_file_close();
+
+
+    /*
+     * ... and deregister from ResourceFS
+     */
+
+#ifndef ROM
+    objmodule_deregister_resources(messages_file());
+#endif
+
+    /*
+     * ... and deregister from Toolbox
+     */
+    objmodule_deregister(0, FileDbox_ObjectClass);
+
+    /*
+     * need to free up memory we may have left allocated here!
+     */
+
+    mem_free_all ();
+
+#ifdef ROM
+    if(!__ROM) _swix(0x82c41, 0);
+#endif
+
+    return NULL;
+}
+
+
+/* ++++++++++++++++++++++++++++++++ initialisation code +++++++++++++++++++++++++++++++ */
+
+
+extern _kernel_oserror *FileDbox_init(char *cmd_tail, int podule_base, void *pw)
+{
+    char            *messages_filename, *res_filename;
+    _kernel_swi_regs regs;
+    _kernel_oserror *e;
+
+#ifdef ROM
+    __ROM = _swix(0x82c43, _IN(0), pw);
+#endif
+
+    IGNORE(cmd_tail);
+    IGNORE(podule_base);
+    IGNORE(pw);
+
+
+    DEBUG debug_set_var_name("FileDbox$Debug");
+
+    /*
+     * ensure that the Toolbox is there
+     */
+
+    if ((e = rmensure ("Toolbox", "Toolbox.Window", "0.00")) != NULL)
+        return e;
+
+
+    mem_init ();
+
+    /*
+     * register our resources with ResourceFS
+     */
+
+
+#ifndef ROM
+    if ((e = objmodule_register_resources(messages_file())) != NULL)
+        return e;
+#endif
+
+
+    /*
+     * register our messages file with MessageTrans
+     */
+
+    objmodule_ensure_path("FileDbox$Path", "Resources:$.Resources.FileDbox.");
+
+        messages_filename = "FileDbox:Messages";
+        res_filename = "FileDbox:Res";
+
+    if ((e = messages_file_open ("FileDbox:Messages")) != NULL)
+        return e;
+
+
+    /* register here with the Toolbox as an Object Module */
+
+    regs.r[0] = 0;
+    regs.r[1] = FileDbox_ObjectClass;
+    regs.r[2] = FileDbox_ClassSWI;
+    regs.r[3] = (int) res_filename;
+    e = objmodule_register_with_toolbox(0, FileDbox_ObjectClass, FileDbox_ClassSWI, "FileDbox:Res");
+    return e;
+}
+
+
+
+/* +++++++++++++++++++++++++++++++++ service handler code ++++++++++++++++++++++++++++++ */
+
+
+extern void FileDbox_services(int service_number, _kernel_swi_regs *r, void *pw)
+{
+    IGNORE(pw);
+
+    switch (service_number)
+    {
+
+        case Service_ToolboxTaskDied:
+            /*
+             * task dying - r0 holds task handle
+             */
+
+            task_remove (r->r[0]);
+
+            break;
+
+        case Service_ToolboxTaskBorn:
+            /* Toolbox task has just started R0  == wimp task handle */
+
+            /*
+             * create a new "task descriptor"
+             */
+
+            task_add (r->r[0]);
+
+            break;
+
+        case Service_ToolboxStarting:
+            /*
+             * register with the Toolbox as an Object Module
+             */
+
+            objmodule_register_with_toolbox(0, FileDbox_ObjectClass, FileDbox_ClassSWI, "FileDbox:Res");
+
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* ++++++++++++++++++++++++++++++++++++++ SWI code +++++++++++++++++++++++++++++++++++++ */
+
+
+extern _kernel_oserror *FileDbox_SWI_handler(int swi_no, _kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *e = NULL;
+    TaskDescriptor  *t;
+
+    IGNORE(pw);
+
+    switch (swi_no)
+    {
+        case FileDbox_ClassSWI - FileDbox_SWIChunkBase:
+            if (r->r[0] < 0 || r->r[0] >= MAX_CLASS_SWI_METHODS)
+            {
+                return make_error_hex (FileDbox_NoSuchMethod, 1, r->r[0]);
+            }
+            else
+            {
+                t = task_find (r->r[3]);
+
+                if (t == NULL)
+                {
+                    return make_error_hex (FileDbox_NoSuchTask, 1, r->r[3]);
+                }
+
+                e = (*class_swi_methods[r->r[0]])(r, t);
+            }
+            break;
+
+        case FileDbox_PostFilter - FileDbox_SWIChunkBase:
+            e = events_postfilter (r);
+            break;
+
+        case FileDbox_PreFilter - FileDbox_SWIChunkBase:
+            e = events_prefilter (r);
+            break;
+
+        default:
+            break;
+    }
+
+    return e;
+}
+
+#if debugging
+
+/* ++++++++++++++++++++++++++++++++++++++ star commands ++++++++++++++++++++++++++++++++++++*/
+
+extern _kernel_oserror *FileDbox_commands(char *arg_string, int argc, int cmd_no, void *pw)
+{
+    IGNORE(argc);
+    IGNORE(pw);
+    IGNORE(arg_string);
+
+    switch (cmd_no)
+    {
+        case 0:
+            mem_print_list();
+            break;
+
+        default:
+            break;
+    }
+
+    return NULL;
+}
+#endif
+@
+
+
+1.2
+log
+@  Fixed wrong SWI numbers on TinyStubs calls.
+  Moved to srccommit
+Admin:
+  Built.
+
+Version 1.01. Tagged as 'FileDbox-1_01'
+@
+text
+@d30 1
+d69 2
+a78 6
+    _kernel_swi_regs regs;
+#ifndef ROM
+    extern int       messages_file(void);
+    extern int       res_file(void);
+#endif
+
+d103 1
+a103 5
+    regs.r[0] = messages_file();
+    _kernel_swi (ResourceFS_DeregisterFiles, &regs, &regs);
+
+    regs.r[0] = res_file();
+    _kernel_swi (ResourceFS_DeregisterFiles, &regs, &regs);
+d109 1
+a109 5
+
+    regs.r[0] = 0;
+    regs.r[1] = FileDbox_ObjectClass;
+    _kernel_swi (Toolbox_DeRegisterObjectModule, &regs, &regs);
+
+a132 4
+#ifndef ROM
+    extern int messages_file(void);
+    extern int res_file(void);
+#endif
+d161 1
+a161 7
+    regs.r[0] = messages_file();
+    if ((e = _kernel_swi (ResourceFS_RegisterFiles, &regs, &regs)) != NULL)
+        return e;
+
+
+    regs.r[0] = res_file();
+    if ((e = _kernel_swi (ResourceFS_RegisterFiles, &regs, &regs)) != NULL)
+d170 2
+a171 5
+    if (getenv ("FileDbox$Path") == NULL) {
+        messages_filename = "Resources:Resources.FileDbox.Messages";
+        res_filename = "Resources:Resources.FileDbox.Res";
+    }
+    else {
+a173 1
+    }
+d175 1
+a175 1
+    if ((e = messages_file_open (messages_filename)) != NULL)
+d185 2
+a186 4
+    if ((e = _kernel_swi (Toolbox_RegisterObjectModule, &regs, &regs)) != NULL)
+        return e;
+
+    return NULL;
+a195 2
+    _kernel_swi_regs regs;
+    char *filename;
+d226 1
+a226 11
+            if (getenv ("FileDbox$Path") == NULL)
+               filename = "Resources:$.Resources.FileDbox.Res";
+            else
+               filename = "FileDbox:Res";
+
+
+            regs.r[0] = 0;
+            regs.r[1] = FileDbox_ObjectClass;
+            regs.r[2] = FileDbox_ClassSWI;
+            regs.r[3] = (int) filename;
+            _kernel_swi (Toolbox_RegisterObjectModule, &regs, &regs);
+d245 1
+a245 1
+    switch (swi_no + FileDbox_SWIChunkBase)
+d247 1
+a247 1
+        case FileDbox_ClassSWI:
+d265 1
+a265 1
+        case FileDbox_PostFilter:
+d269 1
+a269 1
+        case FileDbox_PreFilter:
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d129 1
+a129 1
+    if(!__ROM) _swix(0xa2c41, 0);
+d150 1
+a150 1
+    __ROM = _swix(0xa2c43, _IN(0), pw);
+@
+
+
+1.1.1.1
+log
+@Import of FileDbox to CVS (no previous source control)
+@
+text
+@@

@@ -1,0 +1,545 @@
+head	1.6;
+access;
+symbols
+	callx-0_09:1.6
+	callx-0_08:1.6
+	RO_5_07:1.5
+	callx-0_07:1.5
+	callx-0_06:1.4
+	callx-0_05:1.3
+	dellis_autobuild_BaseSW:1.2
+	dcotton_autobuild_BaseSW:1.5
+	callx-0_04:1.2
+	sforrest_daytona_appflash-0_31:1.1.1.2
+	callx-0_03:1.1.1.2
+	blaughto_daytona_appflash-0_30:1.1.1.2
+	blaughto_daytona_appflash-0_29:1.1.1.2
+	blaughto_daytona_appflash-0_28:1.1.1.2
+	blaughto_daytona_appflash-0_27:1.1.1.2
+	blaughto_daytona_appflash-0_26:1.1.1.2
+	blaughto_daytona_appflash-0_25:1.1.1.2
+	blaughto_daytona_appflash-0_24:1.1.1.2
+	callx-0_02-1_1_2_3:1.1.1.2
+	blaughto_daytona_appflash-0_23:1.1.1.2
+	blaughto_daytona_appflash-0_21:1.1.1.2
+	blaughto_daytona_appflash-0_20:1.1.1.2
+	blaughto_daytona_appflash-0_19:1.1.1.2
+	callx-0_02-1_1_2_2:1.1.1.2
+	blaughto_daytona_appflash-0_18:1.1.1.1
+	blaughto_callx-0_01:1.1.1.1
+	initial:1.1.1.1
+	Daytona:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2011.04.11.23.10.34;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	Q8QM9HiGxWw18tfv;
+
+1.5
+date	2001.03.07.11.39.45;	author blaughto;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2001.03.07.09.58.07;	author dellis;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.03.07.09.51.11;	author dellis;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.23.17.34.00;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.02.27.16.45.20;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.02.27.16.45.20;	author blaughto;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.03.18.11.47.22;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Add the ability for a callback to be run with interrupts disabled
+Detail:
+  c/callx, h/callx, s/veneer - Added new callx_add_callback_irqsoff function.
+  This is identical to callx_add_callback, except the callback function will be entered with IRQs disabled.
+  Using this function makes it safe to cancel callbacks from interrupts, as there's no longer the chance of a callback firing after it's been deleted.
+Admin:
+  Tested on rev A2 BB-xM.
+
+
+Version 0.08. Tagged as 'callx-0_08'
+@
+text
+@; Copyright 1998 Acorn Computers Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; File:    veneer.s
+; Purpose: Callx library veneer
+; Author:  Ben Laughton
+; History: 1997-08-15: BAL: Created
+
+	GET	Hdr:ListOpts
+	GET	Hdr:Macros
+	GET	Hdr:System
+	GET	Hdr:HostFS
+	GET	Hdr:NdrDebug
+	GET	Hdr:DDVMacros
+
+	AREA	|C$$Code|, CODE, READONLY
+
+	GBLL	debug
+	GBLL	hostvdu
+	GBLL	test
+
+debug	SETL	false
+hostvdu	SETL	true
+
+veneer	SETD	true
+time	SETD	false
+test	SETL	false
+
+		^ 0, r9
+callx_prev	#	4
+callx_next	#	4
+callx_flags	#	4
+callx_pw	#	4
+callx_list	#	4
+callx_time	#	4
+callx_function	#	4
+callx_data	#	4
+
+
+F_CalledOnce	*	&00000001
+F_Deleted	*	&00000002
+F_IsCallback	*	&00000004
+F_IRQsOff	*	&00000008
+
+	IMPORT	|_Lib$Reloc$Off$DP|
+	IMPORT	|_callx_remove_call_internal|
+
+	EXPORT	|_callx__veneer|
+
+|_callx__veneer|
+	STMFD	sp!, {r0-r9, sl, fp, lr}
+
+	MOV	r9, r12			; pointer to callx structure
+
+	SETPSR	SVC_mode, r5,, r4
+	MOV	r0, r0
+
+ [ test
+	LDR	r1, callx_flags
+	TST	r1, #F_IsCallback
+	BEQ	%FT09
+
+	; hacky delay to allow a callafter or callevery to occur at this
+	; critical point in the callback, to test removing a callback that is
+	; already being processed from within a callafter or callevery handler
+	SWI	XOS_ReadMonotonicTime
+	ADD	r1, r0, #10
+01	SWI	XOS_ReadMonotonicTime
+	CMP	r0, r1
+	BLT	%BT01
+
+09
+ ]
+
+ [ debug
+	SWI	XOS_ReadMonotonicTime
+	Debug	time, "v",r12,r0
+ ]
+
+	MOV	r0, sp			; input register set
+	LDR	r1, callx_pw		; module's private word pointer
+	MOV	r12, r1
+	LDR	r2, callx_data		; routine's private pointer
+
+	MOV	r5, lr			; preserve R14_svc
+	MOV	sl, sp, LSR#20
+	MOV	sl, sl, LSL#20		; SP_LWM
+	LDMIA	sl, {r6, r7}		; save old reloc modifiers over fn call
+	LDR	r12, [r12]		; -> static data
+	LDMIB	r12, {fp, r12}		; new relocation modifiers
+	STMIA	sl,  {fp, r12}		; set by module init
+
+	; Set SL to the correct offset below SP
+	; (eqvuivalent of ADD sl, sl, <number>)
+	DCD	|_Lib$Reloc$Off$DP| + &e28aa000
+
+	MOV	fp, #0			; halt C backtrace here
+
+	LDR	r3, callx_flags
+	; Callbacks can be requested to run with interrupts disabled, which
+	; helps simplify things if there's the possibility of the callback
+	; being cancelled by something interrupt-based.
+	TST	r3, #F_IRQsOff
+	BEQ	%FT10
+	SETPSR	I_bit, r0
+	; Reload the flags in case the callback was cancelled right at the last
+	; minute.
+	LDR	r3, callx_flags
+10
+
+	; Only for callbacks: if the call is marked as already deleted, then
+	; don't call the handler.
+	;
+	; This means that if a callafter/callevery triggers during execution
+	; of the above code, and the handler removes *this* callback, then
+	; we won't execute the client's callback handler even though the
+	; callback has triggered as far as the OS is concerned.  This doesn't
+	; matter as there is clearly potential for the same thing to happen
+	; within the OS's own routines - it just makes the window a bit larger.
+	TST	r3, #F_Deleted
+
+	DebugIf	EQ, veneer, "about to enter handler"
+	MOVEQ	lr, pc
+	LDREQ	pc, callx_function		; branch to call handler
+
+	DebugIf	EQ, veneer, "returned from handler"
+	; CallAfters and CallBacks are only called once, then removed by the
+	; OS, so we should remove the list element for the call.
+	; NB. This part is *not* re-entrant - if '_callx_remove_call' were to be
+	; re-entered to remove the same call then it would end up trying to
+	; free the same data twice.
+
+	PHPSEI	r8, r0			; disable IRQs
+
+	LDR	r3, callx_flags
+	TST	r3, #F_CalledOnce
+	LDRNE	r0, callx_list		; pointer to list to remove call from
+	MOVNE	r1, r9			; pointer to list item
+
+	DebugIf	NE, veneer, "removing call",r0,r1
+	BLNE	|_callx_remove_call_internal|
+	DebugIf	NE, veneer, "removed call"
+	PLP	r8			; restore IRQs
+
+	; Restore SL
+	DCD	|_Lib$Reloc$Off$DP| + &e24aa000
+	STMIA	sl, {r6, r7}		; restore old reloc modifiers
+	MOV	lr, r5			; restore old R14_svc
+	RestPSR	r4			; restore entry mode
+	MOV	r0, r0
+	LDMFD	sp!, {r0-r9, sl, fp, pc} ; return with unmodified flags
+
+ [ debug
+	InsertNDRDebugRoutines
+ ]
+
+	LTORG
+
+	END
+@
+
+
+1.5
+log
+@  * Fixed potential problem with removing an executing callback from within a
+    callafter or callevery handler.
+  * Performance improvements.
+
+Detail:
+  * There was a small opportunity at the start of the assembler veneer for a
+    callafter or callevery to interrupt a callback that had just gone off (this
+    window was only about one or two instructions).  If the callafter/callevery
+    handler deleted the executing callback then once the callback resumed
+    processing it would have tried to access data from the free'd callback data
+    structure, and then would have tried to free this structure again.
+
+  * Each call to add a handler used to result in malloc being called to
+    allocate an internal data structure.  A few of these data structures are
+    now preallocated on initialisation, hopefully avoiding the need for calls
+    to malloc/free in most circumstances.
+
+Admin:
+  Tested (last summer!) using a little test-harness module, and tested today
+  using AcornPOP3 test harness to fetch all the headers from my INBOX.  Seems
+  to work.
+
+  Apologies to Dan - I'd already done the 32 bit stuff but hadn't got around
+  to checking this in because I wanted to do more testing.  However, I'd missed
+  the fact that 32 bit PHPSEI wants a scratch register, so it wasn't in vain.
+
+Version 0.07. Tagged as 'callx-0_07'
+@
+text
+@d54 1
+d110 12
+a130 1
+	LDR	r3, callx_flags
+@
+
+
+1.4
+log
+@Somehow a branch label crept onto the same line as a macro which it
+shouldn't have.
+
+Version 0.06. Tagged as 'callx-0_06'
+@
+text
+@d31 1
+d38 12
+d52 2
+a53 1
+F_Processing	*	&00000002
+d56 1
+a56 1
+	IMPORT	|remove_call|
+d58 1
+a58 1
+	EXPORT	callx_veneer
+d60 1
+a60 1
+callx_veneer
+d62 1
+d65 16
+a80 6
+	; Set flag in data structure to indicate this call is being processed
+	PHPSEI	r0, r1			; disable IRQs
+	LDR	r1, [r9, #8]
+	ORR	r1, r1, #F_Processing
+	STR	r1, [r9, #8]
+	PLP	r0			; restore IRQs
+d82 2
+a83 2
+        SETPSR  SVC_mode, r5,, r4
+	MOV	r0, r0
+d91 1
+a91 1
+	LDR	r1, [r9, #12]		; module's private word pointer
+d93 1
+a93 1
+	LDR	r2, [r9, #28]		; routine's private pointer
+d95 1
+a95 1
+	MOV     r5, lr			; preserve R14_svc
+d98 4
+a101 4
+	LDMIA   sl, {r6, r7}            ; save old reloc modifiers over fn call
+	LDR     r12, [r12]              ; -> static data
+	LDMIB   r12, {fp, r12}          ; new relocation modifiers
+	STMIA   sl,  {fp, r12}          ; set by module init
+a102 1
+	Debug	veneer, "about to enter handler"
+d109 15
+a123 2
+	MOV	lr, pc
+	LDR	pc, [r9, #24]		; branch to call handler
+d125 1
+a125 1
+	Debug	veneer, "returned from handler"
+d128 1
+a128 1
+	; NB. This part is *not* re-entrant - if 'remove_call' were to be
+a132 1
+	LDR	r0, [r9, #8]
+d134 9
+a142 16
+	; Clear processing flag so remove_call can do its stuff (or so that
+	; clients can remove a call if it does not fall into he 'called once'
+	; category.
+	BIC	r0, r0, #F_Processing
+	STR	r0, [r9, #8]
+
+	TST	r0, #F_CalledOnce
+        BEQ     %FT10
+	LDR	r0, [r9, #16]		; pointer to list to remove call from
+	MOV	r1, r9			; pointer to list item
+
+	Debug	veneer, "removing call",r0,r1
+	BL	|remove_call|
+	Debug	veneer, "removed call"
+10
+	PLP     r8			; restore IRQs
+d148 1
+a148 1
+        RestPSR r4
+d150 1
+a150 1
+	LDMFD	sp!, {r0-r9, sl, fp, pc}
+@
+
+
+1.3
+log
+@ Fixed for 32 bit
+
+Details:
+ callx creates a veneer in assembler which makes using callafter,
+callevery and callback easier from a C module.  This used some
+non-32bit compatible code.
+
+Admin:
+ Tested in build of USB prototypes on Customer L board.
+
+Version 0.05. Tagged as 'callx-0_05'
+@
+text
+@d112 2
+a113 1
+10	PLP     r8			; restore IRQs
+@
+
+
+1.2
+log
+@Summary
+  * Uses AsmUtils for control of interrupts.
+  * Miniscule performance improvement.
+Detail
+  * The code in the veneer that sets up the return address before calling
+    the client's handler had a redundant instruction, which has now been
+    removed.  This instruction was effectively compensating for its own
+    presence :).
+Admin
+  * Compiled and tested on a Risc PC using AcornPOP3, which uses this library.
+  * Modules which use this library must now also link against AsmUtils.
+
+Version 0.04. Tagged as 'callx-0_04'
+@
+text
+@d51 1
+a51 1
+	PHPSEI	r0			; disable IRQs
+d57 1
+a57 3
+	MOV	r4, pc
+	ORR	r5, r4, #SVC_mode
+	TEQP	r5, #0
+d95 1
+a95 1
+	PHPSEI	r8			; disable IRQs
+d105 8
+a112 7
+	LDRNE	r0, [r9, #16]		; pointer to list to remove call from
+	MOVNE	r1, r9			; pointer to list item
+
+	DebugIf	NE, veneer, "removing call",r0,r1
+	BLNE	|remove_call|
+	DebugIf	NE, veneer, "removed call"
+	PLP     r8			; restore IRQs
+d118 1
+a118 1
+	TEQP	r4, #0			; restore entry mode
+d120 1
+a120 1
+	LDMFD	sp!, {r0-r9, sl, fp, pc}^ ; return with unmodified flags
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d35 2
+a36 2
+veneer	SETD	false
+time	SETD	true
+d39 1
+d50 7
+d62 1
+d65 1
+d80 1
+d87 1
+a87 3
+        MOV	lr, pc
+	ADD	lr, lr, #return-.-4
+
+a89 1
+return
+d93 3
+d97 1
+d99 7
+d113 1
+@
+
+
+1.1.1.1
+log
+@First checkin to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Uses srccommit.  Fixed potential re-entrancy problems.
+
+Version 0.02, 1.1.2.2. Tagged as 'callx-0_02-1_1_2_2'
+@
+text
+@d35 2
+a36 2
+veneer	SETD	true
+time	SETD	false
+a38 1
+F_Processing	*	&00000002
+a48 7
+	; Set flag in data structure to indicate this call is being processed
+	PHPSEI	r0			; disable IRQs
+	LDR	r1, [r9, #8]
+	ORR	r1, r1, #F_Processing
+	STR	r1, [r9, #8]
+	PLP	r0			; restore IRQs
+
+a53 1
+ [ debug
+a55 1
+ ]
+a69 1
+	Debug	veneer, "about to enter handler"
+a84 3
+	; NB. This part is *not* re-entrant - if 'remove_call' were to be
+	; re-entered to remove the same call then it would end up trying to
+	; free the same data twice.
+a85 1
+	PHPSEI	r8			; disable IRQs
+a86 7
+
+	; Clear processing flag so remove_call can do its stuff (or so that
+	; clients can remove a call if it does not fall into he 'called once'
+	; category.
+	BIC	r0, r0, #F_Processing
+	STR	r0, [r9, #8]
+
+a93 1
+	PLP     r8			; restore IRQs
+@

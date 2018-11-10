@@ -1,0 +1,334 @@
+head	1.5;
+access;
+symbols
+	RTSupport-0_17-1:1.5
+	RTSupport-0_17:1.5
+	RTSupport-0_16:1.4
+	RTSupport-0_15:1.4
+	RTSupport-0_14:1.4
+	RTSupport-0_13:1.4
+	RTSupport-0_12:1.4
+	RTSupport-0_11:1.4
+	RTSupport-0_10:1.4
+	RTSupport-0_09:1.4
+	RTSupport-0_08:1.4
+	RTSupport-0_07:1.3
+	RTSupport-0_06:1.3
+	RTSupport-0_05:1.2
+	RTSupport-0_04:1.1.1.1
+	RTSupport-0_03:1.1.1.1
+	RTSupport-0_02:1.1.1.1
+	RTSupport-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2016.06.15.19.29.30;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	itT7BGNkit9E5Baz;
+
+1.4
+date	2012.03.22.22.45.17;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	LSkTzCtrWScORVXv;
+
+1.3
+date	2011.08.04.22.35.34;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	OqQ1DRKmkhSQefuv;
+
+1.2
+date	2009.10.22.01.04.57;	author jlee;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2005.01.12.19.55.22;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2005.01.12.19.55.22;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Clear the exclusive monitor when returning to pre-empted code
+Detail:
+  s/scheduler - Add a second variant of the PreEmptionRecovery routine, which issues a CLREX on entry. Use a workspace variable to select which routine is required (for supporting multiple CPU architectures at runtime)
+  h/scheduler - Declare new symbols exported by s/scheduler
+  c/module - Initialise PreEmptionRecoveryPtr with the correct value, depending on whether the CPU supports LDREX/STREX or not
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.17. Tagged as 'RTSupport-0_17'
+@
+text
+@/* Copyright 2005 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#if !defined(RTSUPPORT_SCHEDULER_H) /* file used if not already included */
+#define RTSUPPORT_SCHEDULER_H
+/*****************************************************************************
+* $Id: scheduler,v 1.4 2012/03/22 22:45:17 jlee Exp $
+* $Name: HEAD $
+*
+* Author(s):  Ben Avison
+* Project(s): Rhenium
+*
+* ----------------------------------------------------------------------------
+* Copyright © 2004 Castle Technology Ltd. All rights reserved.
+*
+* ----------------------------------------------------------------------------
+* Purpose: Core scheduling routines
+*
+* ----------------------------------------------------------------------------
+* History: See source control system log
+*
+*****************************************************************************/
+
+
+/*****************************************************************************
+* Include header files
+*****************************************************************************/
+#include <stdbool.h>
+#include <stdint.h>
+#include "kernel.h"
+
+
+/*****************************************************************************
+* Macros
+*****************************************************************************/
+
+
+/*****************************************************************************
+* New type definitions
+*****************************************************************************/
+typedef struct
+{
+  uint32_t r0;
+  uint32_t r12;
+  volatile char *svc_stack_base;
+  volatile char *svc_stack_copy;
+  const void *default_entry;
+  volatile const uint32_t *default_pollword;
+  volatile uint32_t priority;
+  const void * volatile entry;
+  volatile const uint32_t psr;
+  volatile const uint32_t * volatile pollword;
+  volatile uint32_t timeout;
+  volatile bool timeout_flag;
+  volatile uint32_t r13_svc;
+  volatile uint32_t r10;
+  volatile uint32_t r13_sys;
+  volatile uint32_t * volatile stack_frame;
+  volatile uint32_t recovery_regs[16];
+}
+thread_t;
+
+typedef __packed volatile struct
+{
+  uint8_t next;
+  uint8_t usage;
+  uint16_t last_executed;
+}
+priority_t;
+
+
+/*****************************************************************************
+* Constants
+*****************************************************************************/
+
+/* The following have to be declared as code so that the compiler does not */
+/* attempt to relocate them. */
+extern void Pollword_PreEmpted(void);
+#define Pollword_PreEmpted (*(const uint32_t *) Pollword_PreEmpted)
+extern void Pollword_TimedOut(void);
+#define Pollword_TimedOut (*(const uint32_t *) Pollword_TimedOut)
+
+
+/*****************************************************************************
+* Global variables
+*****************************************************************************/
+extern thread_t * volatile * volatile ThreadTable;
+extern volatile size_t ThreadTableSize;
+extern volatile size_t NThreads;
+extern volatile uint32_t Context;
+extern volatile bool InBackground;
+extern volatile uint32_t NTicks;
+extern volatile void *LastKnownIRQsema;
+extern volatile uint32_t Priority;
+extern void **IRQsema;
+extern void *IRQStk;
+extern void *PreEmptionRecoveryPtr;
+extern const void * const volatile VectorClaimAddress;
+extern priority_t PriorityTable[256];
+extern _kernel_oserror ErrorBlock_PollwordInUse;
+
+#ifdef DEBUGLIB
+extern uint32_t asm_DADWriteC;
+#endif
+
+
+/*****************************************************************************
+* Function prototypes
+*****************************************************************************/
+
+/* The following have to be declared as data although they are really code */
+/* in order to persuade the compiler to relocate them. They could arguably */
+/* be declared as const since the compiler will relocate const data with */
+/* external linkage for backwards compatibility, but that might change in */
+/* the future. */
+/* Routines with APCS calling conditions are prototyped in comments. */
+
+extern uint32_t TestUnthreadV[];
+extern uint32_t Yield[];
+#define Yield(timed,pollword,timeout) \
+  ((*(bool (*)(bool, volatile const uint32_t *, uint32_t)) Yield)(timed, pollword, timeout))
+/* extern bool Yield(bool timed, volatile const uint32_t *pollword, uint32_t timeout); */
+extern uint32_t Die[];
+#define Die (*(void (*)(void)) Die)
+/* extern void Die(void); */
+extern uint32_t MyUnthreadV_OldKernel[];
+extern uint32_t MyUnthreadV[];
+extern uint32_t SomethingsGoneWrong[];
+#define SomethingsGoneWrong (*(void (*)(void)) SomethingsGoneWrong)
+/* extern void SomethingsGoneWrong(void); */
+extern uint32_t PreEmptionRecoveryCLREX[];
+extern uint32_t PreEmptionRecovery[];
+extern uint32_t ThreadResumed[];
+
+
+#endif  /* end of sentry #ifdef */
+/*****************************************************************************
+* END OF FILE
+*****************************************************************************/
+@
+
+
+1.4
+log
+@Fix some nasty bugs. Add extensive debug logging code.
+Detail:
+  s/scheduler - Fix PreEmptionRecovery and ThreadResumed to update LastKnownIRQsema with the new value of IRQsema
+  s/scheduler - Fix SVC stack copying code to decrement both pointers instead of incrementing one and decrementing the other. Fix PreEmpt loading the wrong values for SVCStackCopy and SVCStackBase.
+  s/scheduler - Fix Yielded loading Context into R2, and thus overwriting any timeout the routine specified
+  c/module, hdr/RTSupport, Resources/UK/Messages - Module now errors when RTSupport SWIs are called with nonzero flags
+  Makefile, c/module, h/scheduler, s/scheduler - Added lots of debugging code, based around debuglib for C code and DADebug for assembler code. Debug code toggled on/off by passing DEBUG=TRUE to makefile. PC-relative variables shifted to middle of file to keep them within LDR range when debugging enabled.
+Admin:
+  Tested in OMAP3 ROM on BB-xM
+  Fixes issues seen when multiple RTSupport threads are in use
+
+
+Version 0.08. Tagged as 'RTSupport-0_08'
+@
+text
+@d18 1
+a18 1
+* $Id: scheduler,v 1.3 2011/08/04 22:35:34 jlee Exp $
+d108 1
+d142 2
+@
+
+
+1.3
+log
+@Update to work with zero page relocation
+Detail:
+  c/cmodule - Try using OS_ReadSysInfo 6 to find IRQsema before falling back on the legacy address
+  h/scheduler - Add IRQsema pointer extern, update ThreadResumed extern to cope with it now being in a data area
+  s/scheduler - Use workspace IRQsema pointer instead of hardcoded legacy address. Moved PreEmptionRecovery & ThreadResumed into data area for easier access to IRQsema ptr.
+Admin:
+  Tested on rev A2 BB-xM
+
+
+Version 0.06. Tagged as 'RTSupport-0_06'
+@
+text
+@d18 2
+a19 2
+* $Id: scheduler,v 1.2 2009/10/22 01:04:57 jlee Exp $
+* $Name:  $
+d112 4
+@
+
+
+1.2
+log
+@Fixes & improvements for RTSupport module
+Detail:
+  - Makefile (hopefully temporarily) modified to use "-cpu 3" setting for compiling C files, to work around internal compiler error
+  - RT_Deregister fixed (in s/scheduler) to behave properly if a routine attempts to deregister itself after being entered from the foreground via RT_Yield
+  - Simple test program added to test correct behaviour of RT_Deregister
+  - SVC stack allocation routines rewritten to cope with the possibility that OS_DynamicArea 9/10 may be unable to move pages (e.g. RT_Deregister called while IRQSema is nonzero)
+  - Stack allocation routine also attempts to deal with kernels which have broken sparse area error reporting (anything below version 5.15), by falling back on a simpler allocation scheme that doesn't resize the dynamic area.
+  - Erroneous comment in s/scheduler fixed
+  - Erroneous #define in h/scheduler fixed
+Admin:
+  Tested on RISC OS 5.15 rev C2 beagleboard, RISC OS 5.12 Iyonix
+  Makefile fix "fixes" bug #218
+
+
+Version 0.05. Tagged as 'RTSupport-0_05'
+@
+text
+@d18 2
+a19 2
+* $Id: scheduler,v 1.1.1.1 2005/01/12 19:55:22 bavison Exp $
+* $Name: HEAD $
+d106 1
+a116 2
+extern void *ThreadResumed(void);
+
+d137 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d18 2
+a19 2
+* $Id:  $
+* $Name:  $
+d90 1
+a90 1
+#define Pollword_PreEmpted (*(const uint32_t *) Pollword_TimedOut)
+@
+
+
+1.1.1.1
+log
+@Initial import of the RTSupport module, the real-time routine scheduler.
+This has so far been demonstrated to work with a single client under
+RISC OS-STB 5.0.0 and 5.0.2.
+@
+text
+@@

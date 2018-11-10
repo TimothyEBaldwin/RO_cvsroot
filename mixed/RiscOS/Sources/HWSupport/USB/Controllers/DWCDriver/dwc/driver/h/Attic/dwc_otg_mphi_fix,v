@@ -1,0 +1,180 @@
+head	1.3;
+access;
+symbols
+	DWCDriver-0_20:1.2
+	DWCDriver-0_19:1.2
+	DWCDriver-0_18:1.2
+	DWCDriver-0_17:1.2
+	DWCDriver-0_16:1.2
+	DWCDriver-0_15:1.2
+	DWCDriver-0_14:1.1
+	DWCDriver-0_13:1.1
+	DWCDriver-0_12:1.1
+	DWCDriver-0_11:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2015.10.07.21.00.05;	author jlee;	state dead;
+branches;
+next	1.2;
+commitid	qck3WWYzKpNMGdEy;
+
+1.2
+date	2014.06.19.21.31.11;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	Q5Tr8KszgORb8bFx;
+
+1.1
+date	2014.04.26.18.18.11;	author jlee;	state Exp;
+branches;
+next	;
+commitid	3PdzN60cJJ3zNdyx;
+
+
+desc
+@@
+
+
+1.3
+log
+@Update to 'FIQ FSM' USB driver
+Detail:
+  Makefile, dwc/* - Updated to latest-ish code from Raspberry Pi github (rev c8baa9702c). Includes the 'FIQ FSM' USB driver, which replaces the older 'FIQ fix'. Note that many files appear to have no functional changes - just trailing whitespace removal to keep things in sync with github.
+  Makefile - add DEBUGLIBS back into the debug libs listing to fix debug builds
+  c/cmodule - Update to work with new FIQ FSM flags
+  c/dwc_otg_riscos - Update to work with new FIQ FSM flags. Update initialisation procedure. Change IRQ handling to try both the HCD & CIL interrupt handlers (HCD can claim interrupt is handled when there's still a CIL interrupt pending). Disable support for falling back to IRQ if the FIQ vector is claimed by someone else - will need new implementation to cope with starting & stopping the FIQ FSM.
+  s/regaccess - Update FIQ veneer & install routine to allow operation with either the dwc_otg_fiq_fsm or dwc_otg_fiq_nop functions.
+Admin:
+  Tested on Raspberry Pi 1 & 2
+
+
+Version 0.21. Tagged as 'DWCDriver-0_21'
+@
+text
+@#ifndef __DWC_OTG_MPHI_FIX_H__
+#define __DWC_OTG_MPHI_FIX_H__
+#ifdef __riscos
+/* Use the proper memory barriers! Not sure why Linux doesn't run into problems without them */
+#define FIQ_WRITE(_addr_,_data_) DWC_WRITE_REG32((uint32_t volatile *) (_addr_),_data_)
+#define FIQ_READ(_addr_) DWC_READ_REG32((uint32_t volatile *) (_addr_))
+#else
+#define FIQ_WRITE(_addr_,_data_) (*(volatile uint32_t *) (_addr_) = (_data_))
+#define FIQ_READ(_addr_) (*(volatile uint32_t *) (_addr_))
+#endif
+
+typedef struct {
+	volatile void* base;
+	volatile void* ctrl;
+	volatile void* outdda;
+	volatile void* outddb;
+	volatile void* intstat;
+} mphi_regs_t;
+
+void dwc_debug_print_core_int_reg(gintsts_data_t gintsts, const char* function_name);
+void dwc_debug_core_int_mask(gintsts_data_t gintmsk, const char* function_name);
+void dwc_debug_otg_int(gotgint_data_t gotgint, const char* function_name);
+
+extern gintsts_data_t gintsts_saved;
+
+#ifdef DEBUG
+#define DWC_DBG_PRINT_CORE_INT(_arg_) dwc_debug_print_core_int_reg(_arg_,__func__)
+#define DWC_DBG_PRINT_CORE_INT_MASK(_arg_) dwc_debug_core_int_mask(_arg_,__func__)
+#define DWC_DBG_PRINT_OTG_INT(_arg_) dwc_debug_otg_int(_arg_,__func__)
+
+#else
+#define DWC_DBG_PRINT_CORE_INT(_arg_)
+#define DWC_DBG_PRINT_CORE_INT_MASK(_arg_)
+#define DWC_DBG_PRINT_OTG_INT(_arg_)
+
+#endif
+
+typedef enum {
+	FIQDBG_SCHED = (1 << 0),
+	FIQDBG_INT   = (1 << 1),
+	FIQDBG_ERR   = (1 << 2),
+	FIQDBG_PORTHUB = (1 << 3),
+} FIQDBG_T;
+
+void _fiq_print(FIQDBG_T dbg_lvl, char *fmt, ...);
+#ifdef FIQ_DEBUG
+#define fiq_print _fiq_print
+#else
+#ifdef __riscos
+#define fiq_print(x, ...)
+#else
+#define fiq_print(x, y, ...)
+#endif
+#endif
+
+extern bool fiq_fix_enable, nak_holdoff_enable, fiq_split_enable;
+
+#ifdef __riscos
+#define RISCOS_FIQ_DOWNGRADE
+typedef struct {
+	void *hal_sb;
+	void *hal_irqenable;
+	void *hal_irqdisable;
+	int fiq_downgrade_device;
+	volatile bool irq_masked;
+	volatile bool fiq_trigger;
+} fiq_downgrade_t;
+extern fiq_downgrade_t fiq_downgrade;
+extern int halcall(int arg,void *func,void *sb);
+#endif
+
+#endif
+@
+
+
+1.2
+log
+@Enable part one of the FIQ fix
+Detail:
+  This change enables the basic 'FIQ fix', where SOF interrupts are handled by a FIQ handler and all other interrupts are delegated to IRQ.
+  During testing it was observed that when the FIQ fix was enabled, what appears to be the host-side VCHIQ process would randomly die. It could take anywhere from several seconds (including during ROM init) or several hours for this to happen.
+  After much investigation it looks like the cause was the use of the MPHI peripheral as a mechanism to trigger an IRQ from the FIQ handler. Changing the code in dwc_otg_hcd_handle_intr() so that it 'flushes' MPHI more often (after every interrupt instead of after every 60) seemed to reduce the problem, while changing the IRQ generation mechanism to use a different IRQ source (e.g. timer) made the crash go away entirely
+  In the end I've settled on the compromise of using the MPHI peripheral, but in a way in which we only need to poke it once on startup, instead of once for every desired IRQ. Once we have it generating an IRQ we then rely on masking/unmasking the IRQ in the interrupt controller to get the desired effect of downgrading FIQs to IRQs. See the RISCOS_FIQ_DOWNGRADE #define.
+  Changed files:
+  - c/cmodule - Use symbolic constant for the USB controller ID instead of a magic number. Get the MPHI details from HAL_USBControllerInfo. Pay attention to Service_ClaimFIQ/Service_ReleaseFIQ and enable/disable the FIQ fix as appropriate.
+  - c/dwc_common_riscos - Disable some debug functions which were accidentally left in non-debug builds. Change work queue/tasklet thread initialisation to fix a deadlock issue seen on reboot.
+  - c/dwc_otg_riscos - Set up the MPHI and enable/disable the FIQ handler as required
+  - cmhg/modhead - Pay attention to Service_ClaimFIQ/Service_ReleaseFIQ
+  - dwc/driver/c/dwc_otg_hcd_intr, dwc/driver/h/dwc_otg_mphi_fix - RISCOS_FIQ_DOWNGRADE code
+  - dwc/dwc_common_port/h/dwc_os - Make sure __DWC_WARN, __DWC_ERROR, DWC_EXCEPTION are compiled out in non-debug builds
+  - h/dwc_otg_riscos - declare extra functions/variables related to FIQ fix
+  - s/regaccess - Routine to install the FIQ handler on the FIQ vector, and simple HAL call wrapper
+Admin:
+  Tested on Raspberry Pi
+  Requires Kernel-5_35-4_79_2_227, BCM2835-0_34
+
+
+Version 0.15. Tagged as 'DWCDriver-0_15'
+@
+text
+@@
+
+
+1.1
+log
+@Update to latest code from Raspberry Pi github
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github (rev e0001dd59d). Includes the fabled 'FIQ fix' code, although the code isn't yet enabled in the RISC OS version of the driver.
+  c/cmodule - Add extra flags for controlling driver behaviour, as required by the new core code
+  c/dwc_otg_riscos - Add some missing driver parameters (although we leave them at default). Handle DWC_E_SHUTDOWN xfer errors, which will now be produced when the driver is shutting down
+  c/softc_device - Disable interrupts around dwc_otg_hcd_urb_enqueue, to mirror behaviour of Linux code (previously, it was the responsibility of the DWC code to disable interrupts for the appropriate part of the operation)
+  s/regaccess - Add some extra IRQ/memory barrier functions required by the new code (mainly the FIQ fix). Make DWC_MODIFY_REG32 operate atomicly (mirrors change in Linux version)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.11. Tagged as 'DWCDriver-0_11'
+@
+text
+@d3 5
+d10 1
+d58 14
+@
+

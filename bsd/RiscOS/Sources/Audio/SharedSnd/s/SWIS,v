@@ -1,0 +1,2500 @@
+head	1.9;
+access;
+symbols
+	SharedSnd-1_20:1.9
+	SharedSnd-1_19:1.9
+	SharedSnd-1_18:1.8
+	SharedSnd-1_17:1.6
+	SharedSnd-1_16:1.6
+	SharedSnd-1_15:1.6
+	SharedSnd-1_14:1.5
+	SharedSnd-1_13:1.4
+	SharedSnd-1_12:1.3
+	SharedSnd-1_11:1.3
+	SharedSnd-1_10:1.3
+	SharedSnd-1_09:1.3
+	SharedSnd-1_08:1.3
+	SharedSnd-1_07:1.3
+	ESP_SharedSnd-1_06_merge:1.2.2.1
+	SharedSnd-1_06:1.3
+	ESP_SharedSnd-1_06:1.2.0.2
+	ESP_SharedSnd-1_06_bp:1.2
+	SharedSnd-1_05:1.2
+	SharedSnd-1_04:1.2
+	SharedSnd-1_03:1.2
+	SharedSnd-1_02:1.2
+	SharedSnd-1_01:1.2
+	SharedSnd-1_00:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2016.06.18.16.46.47;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	GZPyEQx8oxuR5Yaz;
+
+1.8
+date	2016.06.18.16.39.01;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	ODW0ixlFy50c3Yaz;
+
+1.7
+date	2016.06.18.16.19.19;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	L0sIVnG3vL4sWXaz;
+
+1.6
+date	2013.09.07.09.58.38;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	DDb7J4xWmm0Dsu4x;
+
+1.5
+date	2013.09.07.09.48.59;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	xd8cpTeM2vojpu4x;
+
+1.4
+date	2013.09.04.07.14.42;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	2RDI391I6q1nE54x;
+
+1.3
+date	2011.08.15.23.10.49;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.06.28.20.21.56;	author bavison;	state Exp;
+branches
+	1.2.2.1;
+next	1.1;
+
+1.1
+date	2001.06.28.18.11.58;	author bavison;	state Exp;
+branches;
+next	;
+
+1.2.2.1
+date	2011.08.15.14.11.19;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@Use PSR manipulation macros. Macroise driver calling. Simplify error checks.
+Detail:
+  s/Drivers - Macroise driver calling to reduce amount of duplicate code. Also avoid NOP if storing PC stores PC+8 and not PC+12.
+  s/Handler - Use PSR manipulation macros for switching modes and controlling IRQs. Remove redundant IRQ disabling around atomic store of one word in doHandlerCallBack.
+  s/Module - Use PSR manipulation macros for switching modes
+  s/SWIS - Simplify range checking on handler and driver numbers; treat as unsigned numbers instead of signed.
+  s/Vars - Remove local definitions of IRQ flags & SVC mode
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 1.19. Tagged as 'SharedSnd-1_19'
+@
+text
+@; Copyright (c) 1995, Expressive Software Projects
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met:
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of Expressive Software Projects nor the names of its
+;       contributors may be used to endorse or promote products derived from
+;       this software without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+; ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+; DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+; (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+; ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+; (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+; 
+ ; ------------------- SWI Code --------------
+
+swiControlWord  ROUT
+        ; Provides the address of a control word
+        ; used by Replay for 1 of n playback
+        ; On entry:
+        ;    none
+        ; On exit:
+        ;    r0 = control word address
+        ADD     r0,ws,#work_ControlWord
+        MOV     pc,lr
+
+ ; -------------
+
+ [ debugxc
+
+swiTest ROUT
+        ; Test stuff
+        Entry
+
+
+        EXIT
+
+ ;----------
+
+swiInfo ROUT
+        ; Get info
+        Entry
+
+        LDR     r0,[ws,#work_SampleFrequency]
+        LDR     r1,[ws,#work_SamplePeriod]
+
+        EXIT
+
+
+ ; ---------
+
+ ]
+
+swiInstallHandler ROUT
+        ; Install a linear handler
+        ; On entry:
+        ;  r0 = Handler address
+        ;  r1 = parameter to pass
+        ;  r2 = flags
+        ;  r3 = name of handler
+        ;  r4 = Type if bit 0 of flags = 1
+        ; On exit:
+        ;  r0 = Handler number
+        Entry   "r1-r11,ws"
+
+        Debug   sw,"Install handler"
+
+        CMP     r0,#0                     ; Check handler address non-zero
+        BEQ     swiInstallHandlerExitExit
+
+        ADD     r8,ws,#work_handlerTable ; Get address of table
+        MOV     r6,#handlerMax            ; Maximum number available
+
+        ; Look first for handler already exists
+
+swiInstallHandlerCheckSlot
+        LDR     r5,[r8,#handler_Address]
+        CMP     r5,r0                         ; Check address
+        BNE     swiInstallHandlerCheckNext   ; Not equal
+
+        LDR     r7,[r8,#handler_Parameter]   ; Check parameter
+        CMP     r7,r1
+        BEQ     swiInstallHandlerGo          ; Address & Parameter are same so tidy rest of entry
+
+swiInstallHandlerCheckNext
+        ADD     r8,r8,#handlerTableLen   ; Try next slot
+        SUBS    r6,r6,#1
+        BNE     swiInstallHandlerCheckSlot
+
+        ; OK so doesn't already exist
+        ; Now look for an empty slot
+        ADD     r8,ws,#work_handlerTable ; Get address of table
+        MOV     r6,#handlerMax            ; Maximum number available
+
+swiInstallHandlerFindSlot
+        LDR     r5,[r8,#handler_Address]
+        CMP     r5,#0
+        BEQ     swiInstallHandlerGo       ; Free slot
+
+        ADD     r8,r8,#handlerTableLen   ; Try next slot
+        SUBS    r6,r6,#1
+        BNE     swiInstallHandlerFindSlot
+
+        ; No more slots available
+
+        B       installMaxError
+
+swiInstallHandlerGo
+        ; OK So enter new handler
+        ; r8 = slot pointer
+        BL      stopSound                ; Make sure nothing happening
+
+        STR     r0,[r8,#handler_Address]
+        STR     r1,[r8,#handler_Parameter]
+        STR     r2,[r8,#handler_Flags]
+
+        TST     r2,#1    ; Type in r4 if flags bit 0 set, otherwise set to 0 (immediate)
+        MOVEQ   r4,#handlerType_Default
+        STR     r4,[r8,#handler_Type]     ; Type
+
+        ; Set handler type variables
+        RSB     r0,r6,#handlerMax    ; Handler number
+
+        BL      setHandlerType
+
+        ; Name
+        ADD     r5,r8,#handler_Name       ; Position of name
+        MOV     r2,#handlerNameLen        ; Make sure we don't overflow
+        SUB     r2,r2,#1
+
+swiInstallHandlerNameLoop
+        LDRB    r7,[r3],#1
+        STRB    r7,[r5],#1
+        SUBS    r2,r2,#1     ; If we have reached 31 then force a 0 into name buffer
+        MOVEQ   r7,#0
+        STREQB  r7,[r5]
+
+        CMPNE   r7,#0        ; Look for 0 terminator if end of name length not reached
+        BNE     swiInstallHandlerNameLoop  ; Carry on with name
+
+
+        ; And initialise the other parameters in the table
+        MOV     r0,#0                       ; Volume LR
+        SUB     r0,r0,#1                    ; = &FFFF FFFF
+        STR     r0,[r8,#handler_Volume]
+
+        MOV     r0,r8                       ; Set up scaled volume
+        BL      scaleHandlerVolume
+
+        MOV     r0,#0
+        STR     r0,[r8,#handler_SampleFrequency] ; Rate not defined
+
+        MOV     r0,#1<<24
+        STR     r0,[r8,#handler_Fraction]   ; Initialise fraction to 1
+
+
+swiInstallHandlerExit
+        BL      startSound                   ; Set sound going again and provoke a driver check
+
+        RSB     r0,r6,#handlerMax            ; Return handler number
+        ADD     r0,r0,#1                      ; In the range 1 - handlerMax
+swiInstallHandlerExitExit
+        CLRV
+        EXIT
+
+ ;
+
+installMaxError
+
+        PullEnv
+        ADR     r0,ErrorBlock_SSound_MaxHandlers
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_MaxHandlers,,EMaxH
+
+ ; -----------
+
+swiRemoveHandler ROUT
+        ; Remove a particular handler
+        ; Slot number in r0, 1 - 10
+        Entry   "r0-r11,ws"
+
+        Debug   sw,"Remove handler"
+
+        ADD     r1,ws,#work_handlerTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#handlerMax            ; If > max then error
+        BHS     swiHandlerNumError
+
+        MOV     r3,#handlerTableLen
+        MLA     r2,r3,r0,r1
+
+        LDR     r1,[r2,#handler_Address]   ; Does this handler exist?
+        CMP     r1,#0
+        BEQ     swiHandlerExistError       ; If not then exit
+
+        ; r0 = Handler number (0-n)
+
+        LDR     r4,[r2,#handler_Type]
+        BL      clearHandlerType
+
+        BL      stopSound         ; Stop sound and wait for end of buffer fill
+
+        MOV     r0,#0                       ; Remove involves simply setting Address to 0
+        STR     r0,[r2,#handler_Address]
+
+        BL      startSound
+
+        CLRV
+        EXIT
+
+ ;
+swiHandlerNumError
+        PullEnv
+swiHandlerNumError1
+        ADR     r0,ErrorBlock_SSound_BadHandler
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_BadHandler,,EOutR
+
+swiHandlerExistError
+        PullEnv
+swiHandlerExistError1
+        ADR     r0,ErrorBlock_SSound_NoSuchHandler
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_NoSuchHandler,,ENIns
+        
+ ; -----------
+
+swiHandlerType  ROUT
+        ; Set the type of the handler
+        ; On entry:
+        ;    r0 = handler number
+        ;    r1 = Type
+        ; On exit:
+        Entry   "r6-r11,ws"
+
+        MOV     r7,r1   ; Type into r7
+
+        ADD     r1,ws,#work_handlerTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#handlerMax            ; If > max then error
+        PullEnv HS
+        BHS     swiHandlerNumError1
+
+        MOV     r3,#handlerTableLen
+        MLA     r6,r3,r0,r1
+
+        LDR     r1,[r6,#handler_Address]   ; Does this handler exist?
+        CMP     r1,#0
+        PullEnv EQ
+        BEQ     swiHandlerExistError1       ; If not then exit
+
+        ; r0 = Handler number (0-n)
+
+        LDR     r4,[r6,#handler_Type]
+        BL      clearHandlerType
+
+        STR     r7,[r6,#handler_Type]
+        MOV     r4,r7
+        BL      setHandlerType
+
+        EXIT
+
+
+ ; -----------
+
+swiHandlerInfo  ROUT
+        ; r0 = handler number
+        ; On exit:
+        ;  r0 = number of next available handler or 0 for none
+        ;  r1 = flags
+        ;  r2 = name
+        ;  r3 = Sample frequency
+        ;  r4 = Sample type
+        ;  r5 = Volume
+
+        Entry   "r6-r11,ws"
+
+        Debug   sw,"Handler info"
+
+        ADD     r1,ws,#work_handlerTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        ; RJW; if r0 = 0 (so -1 now) on entry return number of first handler in r0
+        CMN     r0,#1
+        BEQ     swiHandlerInfoFindFirst
+
+        CMP     r0,#handlerMax            ; If > max then error
+        PullEnv HS
+        BHS     swiHandlerNumError1
+
+        MOV     r3,#handlerTableLen
+        MLA     r6,r3,r0,r1
+
+        LDR     r1,[r6,#handler_Address]   ; Does this handler exist?
+        CMP     r1,#0
+        PullEnv EQ
+        BEQ     swiHandlerExistError1       ; If not then exit
+
+        ; Get handler values
+        LDR     r1,[r6,#handler_Flags]
+        ADD     r2,r6,#handler_Name
+        LDR     r3,[r6,#handler_SampleFrequency]
+        LDR     r4,[r6,#handler_Type]
+        LDR     r5,[r6,#handler_Volume]
+
+        ; Now find next handler
+
+swiHandlerInfoLoop
+        ADD     r0,r0,#1
+        CMP     r0,#handlerMax
+        MOVEQ   r0,#0
+        BEQ     swiHandlerInfoExit
+
+        ADD     r6,r6,#handlerTableLen    ; Try next one
+        LDR     r7,[r6,#handler_Address]  ; Does it exist?
+        CMP     r7,#0
+        BEQ     swiHandlerInfoLoop        ; No, then try next one
+
+        ; RJW; Put result back into 1-10 range.
+        ADD     R0,R0,#1
+
+swiHandlerInfoExit
+        CLRV
+        EXIT
+
+swiHandlerInfoFindFirst
+        ; r0 = -1
+        ; r1 = pointer to work_handlerTable
+        ADD     r0,r0,#1
+swiHandlerInfoFindFirst_lp
+        ; r0 = handler number we are checking (0-9)
+        ADD     r0,r0,#1                ; r0 = handler number in (1-10)
+        CMP     r0,#handlerMax
+        MOVEQ   r0,#0
+        BEQ     swiHandlerInfoExit
+
+        LDR     r2,[r1,#handler_Address]
+        ADD     r1,r1,#handlerTableLen
+        CMP     r2,#0
+        BEQ     swiHandlerInfoFindFirst_lp
+
+        CLRV
+        EXIT
+
+ ; -----------
+
+swiSampleRate   ROUT
+        ; Either set the current driver rate
+        ; or set the rate for a particular handler
+        ; On entry:
+        ;  r0 = 0 for set driver rate
+        ;     > 0 for handler number
+        ;  r1 = sample frequency required
+        ;       if 0 then use current rate
+        ; On exit:
+        ;  r1 = actual sample rate
+        ;  r2 = sample period
+        ;  r3 = fractional step used get the required rate
+
+        Entry   "r4-r11,ws"
+
+        Debug   sw,"Sample rate"
+
+        CMP     r0,#0
+        BNE     swiSampleRateDo
+
+        ; Set driver rate
+        MOV     r0,r1              ; Move rate into r0
+        BL      newSampleRate     ; Sets new rate across all handlers
+                              ; all registers preserved
+
+        ;LDR    r0,[ws,#work_SampleFrequency]
+
+        Debug   sw,"Sample rate =",r0
+
+        BL      sampleRateFraction      ; Get fraction value with r0 = frequency
+                                        ; return fraction in r0
+        B       swiSampleRateExit
+
+
+swiSampleRateDo
+        ; Find handler
+
+        ADD     r2,ws,#work_handlerTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#handlerMax            ; If > max then error
+        PullEnv HS
+        BHS     swiHandlerNumError1
+
+        MOV     r3,#handlerTableLen
+        MLA     r6,r3,r0,r2
+
+        LDR     r2,[r6,#handler_Address]   ; Does this handler exist?
+        CMP     r2,#0
+        PullEnv EQ
+        BEQ     swiHandlerExistError1       ; If not then exit
+
+        ; Get fraction
+        CMP     r1,#0
+        LDREQ   r0,[ws,#work_SampleFrequency]
+        MOVNE   r0,r1
+        BL      sampleRateFraction          ; Return fraction in r0
+
+        ;  Store values in handler table
+
+        CMP     r1,#0
+        LDREQ   r1,[ws,#work_SampleFrequency]
+        STR     r1,[r6,#handler_SampleFrequency]
+        STR     r0,[r6,#handler_Fraction]
+
+swiSampleRateExit
+        MOV     r3,r0                         ; Set up return values
+        LDR     r1,[ws,#work_SampleFrequency]
+        LDR     r2,[ws,#work_SamplePeriod]
+
+        CLRV
+        EXIT
+
+ ; -----------
+
+swiHandlerVolume ROUT
+        ; Set a handler's volume
+        ; On entry:
+        ;  r0 = handler number
+        ;  r1 = LR volume to set
+        ; On exit:
+        ;  r1 = current volume
+
+        Entry   "r0,r2-r11,ws"
+
+        Debug   sw,"Handler Volume"
+
+        ; Find handler
+        ADD     r4,ws,#work_handlerTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#handlerMax            ; If > max then error
+        PullEnv HS
+        BHS     swiHandlerNumError1
+
+        MOV     r3,#handlerTableLen
+        MLA     r6,r3,r0,r4
+
+        LDR     r4,[r6,#handler_Address]   ; Does this handler exist?
+        CMP     r4,#0
+        PullEnv EQ
+        BEQ     swiHandlerExistError1       ; If not then exit
+
+        STR     r1,[r6,#handler_Volume]     ; Set volume
+        MOV     r0,r6
+        BL      scaleHandlerVolume          ; r0 = handler table entry ptr
+
+        LDR     r1,[r6,#handler_Volume]     ; Read result
+
+        CLRV
+        EXIT
+
+ ; -----------
+
+swiHandlerSampleType ROUT
+         ; Not in this version
+
+        Entry
+
+        Debug   sw,"Handler sample type"
+
+        EXIT
+
+ ; -----------
+
+swiHandlerPause ROUT
+        ; Not in this version
+
+        Entry
+
+        Debug   sw,"Handler pause"
+
+        EXIT
+
+ ; -----------
+
+swiInstallDriver ROUT
+        ; Install or make active a driver
+        ;  r0 = Pointer to driver table address
+        ;       or 1 = Linear
+        ;       or 2 = Log
+        ;  r1 = parameter to pass driver in ws when called
+        ;  r2 = flags
+        ;  r3 = Volume
+
+        Entry   "r0-r11,ws"
+
+        Debug   sw,"Install driver"
+
+        ; If r0 = 1 or 2 then Linear or Log
+        ; Otherwise regard this as a new driver
+        CMP     r0,#2
+        BHI     swiInstallDriverTable   ; >2 is a pointer
+
+        CMP     r0,#1
+        BHI     swiInstallDriverLog     ; =2
+        BLEQ    installLinearDriver     ; =1
+        B       swiInstallDriverExit    ; =0
+
+swiInstallDriverLog
+
+ [ doLog
+        BL      installLogDriver
+ ]
+        B       swiInstallDriverExit
+
+swiInstallDriverTable
+        BL      installDriver               ; Simply pass on to this routine
+
+swiInstallDriverExit
+        CLRV
+        EXIT
+
+ ; -----------
+
+swiRemoveDriver ROUT
+        ; Remove a driver from the driver table
+        ; On entry:
+        ;   r0 = driver number
+        ;        cannot remove driver 1 as this is the default driver
+
+        Entry   "r0-r11,ws"
+
+        Debug   sw,"Remove Driver"
+
+        ; First check parameter
+        ADD     r4,ws,#work_driverTable
+        SUBS    r0,r0,#1                   ; 1-10 becomes 0-9
+
+        BEQ     swiRemoveDriverError      ; = 0 , cannot remove the default driver
+
+        CMP     r0,#driverMax             ; >= max
+        BHS     swiDriverNumError
+
+        ; Does the driver exist?
+
+        MOV     r3,#driverTableLen
+        MLA     r6,r3,r0,r4
+
+        LDR     r4,[r6,#driver_Address]     ; Does this handler exist?
+        CMP     r4,#0
+        BEQ     swiDriverExistError         ; If not then exit
+
+        ; is driver current
+
+        SUB     r4,r6,ws
+        LDR     r0,[ws,#work_currentDriver]
+        CMP     r4,r0
+        BNE     swiRemoveDriverNext
+
+        ; if it is then release it first
+        BL      releaseDriver
+
+        ; and make sure at least the default driver is installed instead
+        MOV     r0,#1              ; Default driver
+        BL      swiInstallDriver
+
+swiRemoveDriverNext
+        ; Now remove the driver entry
+        MOV     r0,#0
+        STR     r0,[r6,#driver_Address]
+
+        CLRV
+        EXIT
+
+ ; -----------
+
+swiDriverNumError
+        PullEnv
+swiDriverNumError1
+        ADR     r0,ErrorBlock_SSound_BadDriver
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_BadDriver,,EDNum
+
+swiDriverExistError
+        PullEnv
+swiDriverExistError1
+        ADR     r0,ErrorBlock_SSound_NoSuchDriver
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_NoSuchDriver,,ENoDr
+
+swiRemoveDriverError
+        PullEnv
+        ADR     r0,ErrorBlock_SSound_CannotRemoveDriver
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_CannotRemoveDriver,,ECant
+
+ ; -----------
+
+swiDriverInfo   ROUT
+        ;  r0 = driver number
+        ; On exit:
+        ;  r0 = number of next available driver or 0 for none
+        ;  r1 = flags
+        ;  r2 ->name
+        ;  r3 = Volume
+        ;  r4 = Overrun count
+
+        Entry   "r5-r11,ws"
+
+        Debug   sw,"Driver info"
+
+        ADD     r4,ws,#work_driverTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#driverMax             ; >= max
+        PullEnv HS
+        BHS     swiDriverNumError1
+
+        ; Does the driver exist?
+        MOV     r3,#driverTableLen
+        MLA     r6,r3,r0,r4
+
+        LDR     r4,[r6,#driver_Address]     ; Does this handler exist?
+        CMP     r4,#0
+        PullEnv EQ
+        BEQ     swiDriverExistError1         ; If not then exit
+
+        ; Get driver values
+
+        ;LDR    r1,[r6,#driver_Flags]
+        LDR     r4,[ws,#work_currentDriver] ; Set flag according to = current driver
+        ADD     r4,r4,ws
+        CMP     r4,r6
+        MOVEQ   r1,#1        ; 1 if current
+        MOVNE   r1,#0        ; 0 if not
+
+        ADD     r2,r6,#driver_Name
+        LDR     r3,[r6,#driver_Volume]
+
+        ; Now find next driver, if it exists
+
+swiDriverInfoLoop
+        ADD     r0,r0,#1
+        CMP     r0,#driverMax
+        MOVEQ   r0,#0
+        BEQ     swiDriverInfoExit
+
+        ADD   r6,r6,#driverTableLen    ; Try next one
+        LDR     r7,[r6,#driver_Address]  ; Does it exist?
+        CMP     r7,#0
+        BEQ     swiDriverInfoLoop        ; No, then try next one
+
+swiDriverInfoExit
+        LDR     r4,[ws,#work_callBack_Count]
+
+        CLRV
+        EXIT
+
+ ; -----------
+
+swiDriverVolume ROUT
+        ; Set the volume for a driver
+        ; On entry:
+        ;    r0 = driver number
+        ;    r1 = new volume
+        ; On exit:
+        ;    r0 = current volume
+        Entry   "r1-r11,ws"
+
+        Debug   sw,"Driver volume"
+
+        ADD     r4,ws,#work_driverTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#driverMax             ; >= max
+        PullEnv HS
+        BHS     swiDriverNumError1
+
+        ; Does the driver exist?
+        MOV     r3,#driverTableLen
+        MLA     r6,r3,r0,r4
+
+        LDR     r4,[r6,#driver_Address]     ; Does this handler exist?
+        CMP     r4,#0
+        PullEnv EQ
+        BEQ     swiDriverExistError1         ; If not then exit
+
+        MOV     r0,r1      ; Volume
+        MOV     r1,r6      ; Table address
+        BL      driverVolume                 ; Set driver volume to r0
+
+        ; Note that when the driver's volume changes, all handler scaled
+        ; volumes may need to be reset
+
+        LDR     r0,[ws,#work_currentDriver] ; Is this driver current?
+        ADD     r0,r0,ws
+        CMP     r0,r6
+
+        BLEQ    scaleAllHandlerVolumes       ; If so scale all volumes
+
+        LDR     r0,[r6,#driver_Volume]       ; Return volume
+
+        CLRV
+        EXIT
+
+ ; ----------------
+
+swiDriverMixer  ROUT
+        ; Set or read the mixer for a driver
+        ; On entry:
+        ;    r0 = driver number
+        ;    r1 = function   0 = read, 1 = set
+        ;    r2 = mixer number
+        ;    r3 = value if set
+        ; On exit:
+        ;    r0 preserved
+        ;    r1 = no of mixers
+        ;    r2 = value
+        ;    r3 = name
+
+        Entry   "r0,r4-r11,ws"
+
+        Debug   sw,"Driver mixer"
+
+        ADD     r4,ws,#work_driverTable
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#driverMax             ; >= max
+        PullEnv HS
+        BHS     swiDriverNumError1
+
+        ; Does the driver exist?
+        MOV     r3,#driverTableLen
+        MLA     r6,r3,r0,r4
+
+        LDR     r4,[r6,#driver_Address]     ; Does this handler exist?
+        CMP     r4,#0
+        PullEnv EQ
+        BEQ     swiDriverExistError1         ; If not then exit
+
+        MOV     r0,r1         ; Function code
+        MOV     r1,r2         ; Mixer number
+        MOV     r2,r3         ; Value
+        MOV     r3,r6         ; Driver table pointer
+
+        BL    driverMixer
+
+        CLRV
+        EXIT
+
+        END
+@
+
+
+1.8
+log
+@Use Entry/EXIT, Push/Pull macros
+Detail:
+  s/* - Code updated to use Entry/EXIT and Push/Pull macros where possible instead of manual STM/LDM. Also add ROUTs for safety (although most routines use named local labels rather than numbered ones). A few obvious cases also fixed to reduce number of regs pushed onto stack.
+  A few other changes and fixes of note:
+  s/Log - Trim empty, unused installLogDriver routine when doLog is {FALSE}
+  s/Module - Add a veneer to swiHandler to deal with 26bit and 26/32bit neutral cases; avoids the need for individual SWI handlers to preserve NZC
+  s/SWIs:
+  - Remove 26/32bit neutral SWI exit code, now handled by veneers. CLRV on most SWI exits to replace the implicit CLRV from CMP pc,pc.
+  - swiHandlerVolume and swiDriverMixer were popping the wrong regs from the stack for most error cases; now fixed via the switch to Entry/EXIT
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 1.18. Tagged as 'SharedSnd-1_18'
+@
+text
+@a198 3
+        CMP     r0,#0                      ; If <0 then error
+        BLT     swiHandlerNumError
+
+d200 1
+a200 1
+        BGE     swiHandlerNumError
+a255 4
+        CMP     r0,#0                      ; If <0 then error
+        PullEnv LT
+        BLT     swiHandlerNumError1
+
+d257 2
+a258 2
+        PullEnv GE
+        BGE     swiHandlerNumError1
+a298 4
+        CMP     r0,#handlerMax            ; If > max then error
+        PullEnv GE
+        BGE     swiHandlerNumError1
+
+d303 3
+a305 3
+        CMP   r0,#0                      ; If <0 then error
+        PullEnv LT
+        BLT     swiHandlerNumError1
+a402 4
+        CMP     r0,#0                      ; If <0 then error
+        PullEnv LT
+        BLT     swiHandlerNumError1
+
+d404 2
+a405 2
+        PullEnv GE
+        BGE     swiHandlerNumError1
+a453 4
+        CMP     r0,#0                      ; If <0 then error
+        PullEnv LT
+        BLT     swiHandlerNumError1
+
+d455 2
+a456 2
+        PullEnv GE
+        BGE     swiHandlerNumError1
+d550 1
+a550 4
+        SUB     r0,r0,#1                   ; 1-10 becomes 0-9
+
+        CMP     r0,#0                      ; < 0
+        BLT     swiDriverNumError
+d555 1
+a555 1
+        BGE     swiDriverNumError
+a630 4
+        CMP     r0,#0                      ; < 0
+        PullEnv LT
+        BLT     swiDriverNumError1
+
+d632 2
+a633 2
+        PullEnv GE
+        BGE     swiDriverNumError1
+a690 4
+        CMP     r0,#0                      ; < 0
+        PullEnv LT
+        BLT     swiDriverNumError1
+
+d692 2
+a693 2
+        PullEnv GE
+        BGE     swiDriverNumError1
+a743 4
+        CMP     r0,#0                      ; < 0
+        PullEnv LT
+        BLT     swiDriverNumError1
+
+d745 2
+a746 2
+        PullEnv GE
+        BGE     swiDriverNumError1
+@
+
+
+1.7
+log
+@Expand tabs
+Detail:
+  s/* - Expand all tabs, to avoid space/tab use inconsistencies within some files and to match general ROOL code formatting
+Admin:
+  Binary unchanged
+
+
+Version 1.17. Not tagged
+@
+text
+@d28 1
+a28 1
+swiControlWord
+d42 1
+a42 1
+swiTest
+d44 1
+a44 1
+        STMDB sp!,{lr}
+d47 1
+a47 1
+        LDMIA sp!,{pc}
+d51 1
+a51 1
+swiInfo
+d53 1
+a53 1
+        STMDB   sp!,{lr}
+d58 1
+a58 1
+        LDMIA   sp!,{pc}
+d65 1
+a65 1
+swiInstallHandler
+d75 1
+a75 1
+        STMDB   sp!,{r1-r11,ws,lr}
+d174 2
+a175 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r1-r11,ws,pc}
+        LDMIA   sp!,{r1-r11,ws,pc}^
+d181 1
+a181 1
+        LDMIA   sp!,{r1-r11,ws,lr}
+d189 1
+a189 1
+swiRemoveHandler
+d192 1
+a192 1
+        STMDB   sp!,{r0-r11,ws,lr}
+d224 2
+a225 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r0-r11,ws,pc}      ; 32-bit exit
+        LDMIA   sp!,{r0-r11,ws,pc}^     ; 26-bit exit
+d229 1
+a229 1
+        LDMIA   sp!,{r0-r11,ws,lr}
+d237 1
+a237 1
+        LDMIA   sp!,{r0-r11,ws,lr}
+d246 1
+a246 1
+swiHandlerType
+d252 1
+a252 1
+        STMDB   sp!,{r6-r11,ws,lr}
+d260 1
+a260 1
+        LDMLTIA sp!,{r6-r11,ws,lr}
+d264 1
+a264 1
+        LDMGEIA sp!,{r6-r11,ws,lr}
+d272 1
+a272 1
+        LDMEQIA sp!,{r6-r11,ws,lr}
+d284 1
+a284 1
+        LDMIA   sp!,{r6-r11,ws,pc}
+d289 1
+a289 1
+swiHandlerInfo
+d299 1
+a299 1
+        STMDB sp!,{r6-r11,ws,lr}
+d307 1
+a307 1
+        LDMGEIA sp!,{r6-r11,ws,lr}
+d315 1
+a315 1
+        LDMLTIA sp!,{r6-r11,ws,lr}
+d323 1
+a323 1
+        LDMEQIA sp!,{r6-r11,ws,lr}
+d350 2
+a351 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r6-r11,ws,pc}      ; 32 bit exit
+        LDMIA   sp!,{r6-r11,ws,pc}^     ; 26 bit exit
+d369 2
+a370 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r6-r11,ws,pc}      ; 32 bit exit
+        LDMIA   sp!,{r6-r11,ws,pc}^     ; 26 bit exit
+d374 1
+a374 1
+swiSampleRate
+d387 1
+a387 1
+        STMDB   sp!,{r4-r11,ws,lr}
+d415 1
+a415 1
+        LDMLTIA sp!,{r4-r11,ws,lr}
+d419 1
+a419 1
+        LDMGEIA sp!,{r4-r11,ws,lr}
+d427 1
+a427 1
+        LDMEQIA sp!,{r4-r11,ws,lr}
+d448 2
+a449 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r4-r11,ws,pc}
+        LDMIA   sp!,{r4-r11,ws,pc}^
+d453 1
+a453 1
+swiHandlerVolume
+d461 1
+a461 1
+        STMDB   sp!,{r0,r2-r11,ws,lr}
+d470 1
+a470 1
+        LDMLTIA sp!,{r0,r1,r3-r11,ws,lr}
+d474 1
+a474 1
+        LDMGEIA sp!,{r0,r1,r3-r11,ws,lr}
+d482 1
+a482 1
+        LDMEQIA sp!,{r0,r1,r3-r11,ws,lr}
+d491 2
+a492 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r0,r2-r11,ws,pc}
+        LDMIA   sp!,{r0,r2-r11,ws,pc}^
+d496 1
+a496 1
+swiHandlerSampleType
+d499 1
+a499 1
+        STMDB   sp!,{r0-r11,ws,lr}
+d503 1
+a503 1
+        LDMIA   sp!,{r0-r11,ws,pc}
+d507 1
+a507 1
+swiHandlerPause
+d510 1
+a510 1
+        STMDB   sp!,{r0-r11,ws,lr}
+d514 1
+a514 1
+        LDMIA   sp!,{r0-r11,ws,pc}
+d518 1
+a518 1
+swiInstallDriver
+d527 1
+a527 1
+        STMDB   sp!,{r0-r11,ws,lr}
+d552 2
+a553 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r0-r11,ws,pc}
+        LDMIA   sp!,{r0-r11,ws,pc}^
+d557 1
+a557 26
+swiDriverNumError
+        LDMIA   sp!,{r0-r11,ws,lr}
+swiDriverNumError1
+        ADR     r0,ErrorBlock_SSound_BadDriver
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_BadDriver,,EDNum
+
+swiDriverExistError
+        LDMIA   sp!,{r0-r11,ws,lr}
+swiDriverExistError1
+        ADR     r0,ErrorBlock_SSound_NoSuchDriver
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_NoSuchDriver,,ENoDr
+
+swiRemoveDriverError
+        LDMIA   sp!,{r0-r11,ws,lr}
+        ADR     r0,ErrorBlock_SSound_CannotRemoveDriver
+        B       msgLookupError
+
+        MakeInternatErrorBlock SSound_CannotRemoveDriver,,ECant
+
+ ; -----------
+
+swiRemoveDriver
+d563 1
+a563 1
+        STMDB   sp!,{r0-r11,ws,lr}
+d607 27
+a633 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r0-r11,ws,pc}
+        LDMIA   sp!,{r0-r11,ws,pc}^
+d637 1
+a637 1
+swiDriverInfo
+d646 1
+a646 1
+        STMDB   sp!,{r5-r11,ws,lr}
+d654 1
+a654 1
+        LDMLTIA sp!,{r5-r11,ws,lr}
+d658 1
+a658 1
+        LDMGEIA sp!,{r5-r11,ws,lr}
+d667 1
+a667 1
+        LDMEQIA sp!,{r5-r11,ws,lr}
+d698 2
+a699 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r5-r11,ws,pc}
+        LDMIA   sp!,{r5-r11,ws,pc}^
+d703 1
+a703 1
+swiDriverVolume
+d710 1
+a710 1
+        STMDB   sp!,{r1-r11,ws,lr}
+d718 1
+a718 1
+        LDMLTIA sp!,{r1-r11,ws,lr}
+d722 1
+a722 1
+        LDMGEIA sp!,{r1-r11,ws,lr}
+d731 1
+a731 1
+        LDMEQIA sp!,{r1-r11,ws,lr}
+d749 2
+a750 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r1-r11,ws,pc}
+        LDMIA   sp!,{r1-r11,ws,pc}^
+d754 1
+a754 1
+swiDriverMixer
+d767 1
+a767 1
+        STMDB   sp!,{r0,r4-r11,ws,lr}
+d775 1
+a775 1
+        LDMLTIA sp!,{r0,r4-r11,ws,lr}
+d779 1
+a779 1
+        LDMGEIA sp!,{r0,r4-r11,ws,lr}
+d788 1
+a788 1
+        LDMEQIA sp!,{r1-r11,ws,lr}
+d798 2
+a799 3
+        CMP     PC,PC
+        LDMEQIA sp!,{r0,r4-r11,ws,pc}
+        LDMIA   sp!,{r0,r4-r11,ws,pc}^
+@
+
+
+1.6
+log
+@Internationalised
+Errors are now looked up via MessageTrans.
+The driver names (registered via InstallDriver or to SoundDriver_Install) are now also looked up.
+Note, the SharedSound_DriverInfo SWI used to return r2 as the pointer to a pointer to the name, the documentation seems vague as to what the intent was, but it seems more likely that a pointer to the name was what was intended. The name string is buffered (because it needs looking up for internationalisation anyway).
+
+Tested briefly, inspecting the workspace for name lookups and sending a fake Service_SoundDriver service call. Two errors deliberatly triggered to check error text.
+
+Version 1.15. Tagged as 'SharedSnd-1_15'
+@
+text
+@d29 8
+a36 8
+	; Provides the address of a control word
+	; used by Replay for 1 of n playback
+	; On entry:
+	;    none
+	; On exit:
+	;    r0 = control word address
+	ADD	r0,ws,#work_ControlWord
+	MOV	pc,lr
+d43 2
+a44 2
+	; Test stuff
+	STMDB sp!,{lr}
+d47 1
+a47 1
+	LDMIA sp!,{pc}
+d52 2
+a53 2
+	; Get info
+	STMDB	sp!,{lr}
+d55 2
+a56 2
+	LDR	r0,[ws,#work_SampleFrequency]
+	LDR	r1,[ws,#work_SamplePeriod]
+d58 1
+a58 1
+	LDMIA	sp!,{pc}
+d66 10
+a75 10
+	; Install a linear handler
+	; On entry:
+	;  r0 = Handler address
+	;  r1 = parameter to pass
+	;  r2 = flags
+	;  r3 = name of handler
+	;  r4 = Type if bit 0 of flags = 1
+	; On exit:
+	;  r0 = Handler number
+	STMDB	sp!,{r1-r11,ws,lr}
+d79 2
+a80 2
+	CMP	r0,#0                     ; Check handler address non-zero
+	BEQ	swiInstallHandlerExitExit
+d82 2
+a83 2
+	ADD	r8,ws,#work_handlerTable ; Get address of table
+	MOV	r6,#handlerMax            ; Maximum number available
+d85 1
+a85 1
+	; Look first for handler already exists
+d88 7
+a94 7
+	LDR	r5,[r8,#handler_Address]
+	CMP	r5,r0                         ; Check address
+	BNE	swiInstallHandlerCheckNext   ; Not equal
+
+	LDR	r7,[r8,#handler_Parameter]   ; Check parameter
+	CMP	r7,r1
+	BEQ	swiInstallHandlerGo          ; Address & Parameter are same so tidy rest of entry
+d97 8
+a104 8
+	ADD	r8,r8,#handlerTableLen   ; Try next slot
+	SUBS	r6,r6,#1
+	BNE	swiInstallHandlerCheckSlot
+
+	; OK so doesn't already exist
+	; Now look for an empty slot
+	ADD	r8,ws,#work_handlerTable ; Get address of table
+	MOV	r6,#handlerMax            ; Maximum number available
+d107 3
+a109 3
+	LDR	r5,[r8,#handler_Address]
+	CMP	r5,#0
+	BEQ	swiInstallHandlerGo       ; Free slot
+d111 3
+a113 3
+	ADD	r8,r8,#handlerTableLen   ; Try next slot
+	SUBS	r6,r6,#1
+	BNE	swiInstallHandlerFindSlot
+d115 1
+a115 1
+	; No more slots available
+d117 1
+a117 1
+	B	installMaxError
+d120 21
+a140 21
+	; OK So enter new handler
+	; r8 = slot pointer
+	BL	stopSound                ; Make sure nothing happening
+
+	STR	r0,[r8,#handler_Address]
+	STR	r1,[r8,#handler_Parameter]
+	STR	r2,[r8,#handler_Flags]
+
+	TST	r2,#1    ; Type in r4 if flags bit 0 set, otherwise set to 0 (immediate)
+	MOVEQ	r4,#handlerType_Default
+	STR	r4,[r8,#handler_Type]     ; Type
+
+	; Set handler type variables
+	RSB	r0,r6,#handlerMax    ; Handler number
+
+	BL	setHandlerType
+
+	; Name
+	ADD	r5,r8,#handler_Name       ; Position of name
+	MOV	r2,#handlerNameLen        ; Make sure we don't overflow
+	SUB	r2,r2,#1
+d143 5
+a147 5
+	LDRB	r7,[r3],#1
+	STRB	r7,[r5],#1
+	SUBS	r2,r2,#1     ; If we have reached 31 then force a 0 into name buffer
+	MOVEQ	r7,#0
+	STREQB	r7,[r5]
+d149 2
+a150 2
+	CMPNE	r7,#0        ; Look for 0 terminator if end of name length not reached
+	BNE	swiInstallHandlerNameLoop  ; Carry on with name
+d153 4
+a156 4
+	; And initialise the other parameters in the table
+	MOV	r0,#0                       ; Volume LR
+	SUB	r0,r0,#1                    ; = &FFFF FFFF
+	STR	r0,[r8,#handler_Volume]
+d158 2
+a159 2
+	MOV	r0,r8                       ; Set up scaled volume
+	BL	scaleHandlerVolume
+d161 2
+a162 2
+	MOV	r0,#0
+	STR	r0,[r8,#handler_SampleFrequency] ; Rate not defined
+d164 2
+a165 2
+	MOV	r0,#1<<24
+	STR	r0,[r8,#handler_Fraction]   ; Initialise fraction to 1
+d169 1
+a169 1
+	BL	startSound                   ; Set sound going again and provoke a driver check
+d171 2
+a172 2
+	RSB	r0,r6,#handlerMax            ; Return handler number
+	ADD	r0,r0,#1                      ; In the range 1 - handlerMax
+d174 3
+a176 3
+	CMP	PC,PC
+	LDMEQIA	sp!,{r1-r11,ws,pc}
+	LDMIA	sp!,{r1-r11,ws,pc}^
+d182 3
+a184 3
+	LDMIA	sp!,{r1-r11,ws,lr}
+	ADR	r0,ErrorBlock_SSound_MaxHandlers
+	B	msgLookupError
+d186 1
+a186 1
+	MakeInternatErrorBlock SSound_MaxHandlers,,EMaxH
+d191 3
+a193 3
+	; Remove a particular handler
+	; Slot number in r0, 1 - 10
+	STMDB	sp!,{r0-r11,ws,lr}
+d197 2
+a198 2
+	ADD	r1,ws,#work_handlerTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d200 2
+a201 2
+	CMP	r0,#0                      ; If <0 then error
+	BLT	swiHandlerNumError
+d203 2
+a204 2
+	CMP	r0,#handlerMax            ; If > max then error
+	BGE	swiHandlerNumError
+d206 2
+a207 2
+	MOV	r3,#handlerTableLen
+	MLA	r2,r3,r0,r1
+d209 3
+a211 3
+	LDR	r1,[r2,#handler_Address]   ; Does this handler exist?
+	CMP	r1,#0
+	BEQ	swiHandlerExistError       ; If not then exit
+d213 1
+a213 1
+	; r0 = Handler number (0-n)
+d215 2
+a216 2
+	LDR	r4,[r2,#handler_Type]
+	BL	clearHandlerType
+d218 1
+a218 1
+	BL	stopSound         ; Stop sound and wait for end of buffer fill
+d220 2
+a221 2
+	MOV	r0,#0                       ; Remove involves simply setting Address to 0
+	STR	r0,[r2,#handler_Address]
+d223 1
+a223 1
+	BL	startSound
+d225 3
+a227 3
+	CMP	PC,PC
+	LDMEQIA	sp!,{r0-r11,ws,pc}	; 32-bit exit
+	LDMIA	sp!,{r0-r11,ws,pc}^	; 26-bit exit
+d231 1
+a231 1
+	LDMIA	sp!,{r0-r11,ws,lr}
+d233 2
+a234 2
+	ADR	r0,ErrorBlock_SSound_BadHandler
+	B	msgLookupError
+d236 1
+a236 1
+	MakeInternatErrorBlock SSound_BadHandler,,EOutR
+d239 1
+a239 1
+	LDMIA	sp!,{r0-r11,ws,lr}
+d241 2
+a242 2
+	ADR	r0,ErrorBlock_SSound_NoSuchHandler
+	B	msgLookupError
+d244 2
+a245 2
+	MakeInternatErrorBlock SSound_NoSuchHandler,,ENIns
+	
+d249 6
+a254 6
+	; Set the type of the handler
+	; On entry:
+	;    r0 = handler number
+	;    r1 = Type
+	; On exit:
+	STMDB	sp!,{r6-r11,ws,lr}
+d256 1
+a256 1
+	MOV	r7,r1   ; Type into r7
+d258 2
+a259 2
+	ADD	r1,ws,#work_handlerTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d261 3
+a263 3
+	CMP	r0,#0                      ; If <0 then error
+	LDMLTIA	sp!,{r6-r11,ws,lr}
+	BLT	swiHandlerNumError1
+d265 3
+a267 3
+	CMP	r0,#handlerMax            ; If > max then error
+	LDMGEIA	sp!,{r6-r11,ws,lr}
+	BGE	swiHandlerNumError1
+d269 2
+a270 2
+	MOV	r3,#handlerTableLen
+	MLA	r6,r3,r0,r1
+d272 4
+a275 4
+	LDR	r1,[r6,#handler_Address]   ; Does this handler exist?
+	CMP	r1,#0
+	LDMEQIA	sp!,{r6-r11,ws,lr}
+	BEQ	swiHandlerExistError1       ; If not then exit
+d277 1
+a277 1
+	; r0 = Handler number (0-n)
+d279 2
+a280 2
+	LDR	r4,[r6,#handler_Type]
+	BL	clearHandlerType
+d282 3
+a284 3
+	STR	r7,[r6,#handler_Type]
+	MOV	r4,r7
+	BL	setHandlerType
+d286 1
+a286 1
+	LDMIA	sp!,{r6-r11,ws,pc}
+d292 8
+a299 8
+	; r0 = handler number
+	; On exit:
+	;  r0 = number of next available handler or 0 for none
+	;  r1 = flags
+	;  r2 = name
+	;  r3 = Sample frequency
+	;  r4 = Sample type
+	;  r5 = Volume
+d301 1
+a301 1
+	STMDB sp!,{r6-r11,ws,lr}
+d305 2
+a306 2
+	ADD	r1,ws,#work_handlerTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d308 26
+a333 26
+	CMP	r0,#handlerMax            ; If > max then error
+	LDMGEIA	sp!,{r6-r11,ws,lr}
+	BGE	swiHandlerNumError1
+
+	; RJW; if r0 = 0 (so -1 now) on entry return number of first handler in r0
+	CMN	r0,#1
+	BEQ	swiHandlerInfoFindFirst
+
+	CMP   r0,#0                      ; If <0 then error
+	LDMLTIA	sp!,{r6-r11,ws,lr}
+	BLT	swiHandlerNumError1
+
+	MOV	r3,#handlerTableLen
+	MLA	r6,r3,r0,r1
+
+	LDR	r1,[r6,#handler_Address]   ; Does this handler exist?
+	CMP	r1,#0
+	LDMEQIA	sp!,{r6-r11,ws,lr}
+	BEQ	swiHandlerExistError1       ; If not then exit
+
+	; Get handler values
+	LDR	r1,[r6,#handler_Flags]
+	ADD	r2,r6,#handler_Name
+	LDR	r3,[r6,#handler_SampleFrequency]
+	LDR	r4,[r6,#handler_Type]
+	LDR	r5,[r6,#handler_Volume]
+d335 1
+a335 1
+	; Now find next handler
+d338 9
+a346 9
+	ADD	r0,r0,#1
+	CMP	r0,#handlerMax
+	MOVEQ	r0,#0
+	BEQ	swiHandlerInfoExit
+
+	ADD	r6,r6,#handlerTableLen    ; Try next one
+	LDR	r7,[r6,#handler_Address]  ; Does it exist?
+	CMP	r7,#0
+	BEQ	swiHandlerInfoLoop        ; No, then try next one
+d348 2
+a349 2
+	; RJW; Put result back into 1-10 range.
+	ADD	R0,R0,#1
+d352 3
+a354 3
+	CMP	PC,PC
+	LDMEQIA	sp!,{r6-r11,ws,pc}	; 32 bit exit
+	LDMIA	sp!,{r6-r11,ws,pc}^	; 26 bit exit
+d357 3
+a359 3
+	; r0 = -1
+	; r1 = pointer to work_handlerTable
+	ADD	r0,r0,#1
+d361 14
+a374 14
+	; r0 = handler number we are checking (0-9)
+	ADD	r0,r0,#1		; r0 = handler number in (1-10)
+	CMP	r0,#handlerMax
+	MOVEQ	r0,#0
+	BEQ	swiHandlerInfoExit
+
+	LDR	r2,[r1,#handler_Address]
+	ADD	r1,r1,#handlerTableLen
+	CMP	r2,#0
+	BEQ	swiHandlerInfoFindFirst_lp
+
+	CMP	PC,PC
+	LDMEQIA	sp!,{r6-r11,ws,pc}	; 32 bit exit
+	LDMIA	sp!,{r6-r11,ws,pc}^	; 26 bit exit
+d379 11
+a389 11
+	; Either set the current driver rate
+	; or set the rate for a particular handler
+	; On entry:
+	;  r0 = 0 for set driver rate
+	;     > 0 for handler number
+	;  r1 = sample frequency required
+	;       if 0 then use current rate
+	; On exit:
+	;  r1 = actual sample rate
+	;  r2 = sample period
+	;  r3 = fractional step used get the required rate
+d391 1
+a391 1
+	STMDB	sp!,{r4-r11,ws,lr}
+d395 2
+a396 2
+	CMP	r0,#0
+	BNE	swiSampleRateDo
+d398 3
+a400 3
+	; Set driver rate
+	MOV	r0,r1              ; Move rate into r0
+	BL	newSampleRate     ; Sets new rate across all handlers
+d403 1
+a403 1
+	;LDR	r0,[ws,#work_SampleFrequency]
+d407 3
+a409 3
+	BL	sampleRateFraction	; Get fraction value with r0 = frequency
+					; return fraction in r0
+	B	swiSampleRateExit
+d413 1
+a413 1
+	; Find handler
+d415 2
+a416 2
+	ADD	r2,ws,#work_handlerTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d418 28
+a445 28
+	CMP	r0,#0                      ; If <0 then error
+	LDMLTIA	sp!,{r4-r11,ws,lr}
+	BLT	swiHandlerNumError1
+
+	CMP	r0,#handlerMax            ; If > max then error
+	LDMGEIA	sp!,{r4-r11,ws,lr}
+	BGE	swiHandlerNumError1
+
+	MOV	r3,#handlerTableLen
+	MLA	r6,r3,r0,r2
+
+	LDR	r2,[r6,#handler_Address]   ; Does this handler exist?
+	CMP	r2,#0
+	LDMEQIA	sp!,{r4-r11,ws,lr}
+	BEQ	swiHandlerExistError1       ; If not then exit
+
+	; Get fraction
+	CMP	r1,#0
+	LDREQ	r0,[ws,#work_SampleFrequency]
+	MOVNE	r0,r1
+	BL	sampleRateFraction          ; Return fraction in r0
+
+	;  Store values in handler table
+
+	CMP	r1,#0
+	LDREQ	r1,[ws,#work_SampleFrequency]
+	STR	r1,[r6,#handler_SampleFrequency]
+	STR	r0,[r6,#handler_Fraction]
+d448 7
+a454 7
+	MOV	r3,r0                         ; Set up return values
+	LDR	r1,[ws,#work_SampleFrequency]
+	LDR	r2,[ws,#work_SamplePeriod]
+
+	CMP	PC,PC
+	LDMEQIA	sp!,{r4-r11,ws,pc}
+	LDMIA	sp!,{r4-r11,ws,pc}^
+d459 6
+a464 6
+	; Set a handler's volume
+	; On entry:
+	;  r0 = handler number
+	;  r1 = LR volume to set
+	; On exit:
+	;  r1 = current volume
+d466 1
+a466 1
+	STMDB	sp!,{r0,r2-r11,ws,lr}
+d470 29
+a498 29
+	; Find handler
+	ADD	r4,ws,#work_handlerTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+
+	CMP	r0,#0                      ; If <0 then error
+	LDMLTIA	sp!,{r0,r1,r3-r11,ws,lr}
+	BLT	swiHandlerNumError1
+
+	CMP	r0,#handlerMax            ; If > max then error
+	LDMGEIA	sp!,{r0,r1,r3-r11,ws,lr}
+	BGE	swiHandlerNumError1
+
+	MOV	r3,#handlerTableLen
+	MLA	r6,r3,r0,r4
+
+	LDR	r4,[r6,#handler_Address]   ; Does this handler exist?
+	CMP	r4,#0
+	LDMEQIA	sp!,{r0,r1,r3-r11,ws,lr}
+	BEQ	swiHandlerExistError1       ; If not then exit
+
+	STR	r1,[r6,#handler_Volume]     ; Set volume
+	MOV	r0,r6
+	BL	scaleHandlerVolume          ; r0 = handler table entry ptr
+
+	LDR	r1,[r6,#handler_Volume]     ; Read result
+
+	CMP	PC,PC
+	LDMEQIA	sp!,{r0,r2-r11,ws,pc}
+	LDMIA	sp!,{r0,r2-r11,ws,pc}^
+d505 1
+a505 1
+	STMDB	sp!,{r0-r11,ws,lr}
+d509 1
+a509 1
+	LDMIA	sp!,{r0-r11,ws,pc}
+d514 1
+a514 1
+	; Not in this version
+d516 1
+a516 1
+	STMDB	sp!,{r0-r11,ws,lr}
+d520 1
+a520 1
+	LDMIA	sp!,{r0-r11,ws,pc}
+d525 7
+a531 7
+	; Install or make active a driver
+	;  r0 = Pointer to driver table address
+	;       or 1 = Linear
+	;       or 2 = Log
+	;  r1 = parameter to pass driver in ws when called
+	;  r2 = flags
+	;  r3 = Volume
+d533 1
+a533 1
+	STMDB	sp!,{r0-r11,ws,lr}
+d537 9
+a545 9
+	; If r0 = 1 or 2 then Linear or Log
+	; Otherwise regard this as a new driver
+	CMP	r0,#2
+	BHI	swiInstallDriverTable   ; >2 is a pointer
+
+	CMP	r0,#1
+	BHI	swiInstallDriverLog     ; =2
+	BLEQ	installLinearDriver     ; =1
+	B	swiInstallDriverExit    ; =0
+d550 1
+a550 1
+	BL	installLogDriver
+d552 1
+a552 1
+	B	swiInstallDriverExit
+d555 1
+a555 1
+	BL	installDriver               ; Simply pass on to this routine
+d558 3
+a560 3
+	CMP	PC,PC
+	LDMEQIA	sp!,{r0-r11,ws,pc}
+	LDMIA	sp!,{r0-r11,ws,pc}^
+d565 1
+a565 1
+	LDMIA	sp!,{r0-r11,ws,lr}
+d567 2
+a568 2
+	ADR	r0,ErrorBlock_SSound_BadDriver
+	B	msgLookupError
+d570 1
+a570 1
+	MakeInternatErrorBlock SSound_BadDriver,,EDNum
+d573 1
+a573 1
+	LDMIA	sp!,{r0-r11,ws,lr}
+d575 2
+a576 2
+	ADR	r0,ErrorBlock_SSound_NoSuchDriver
+	B	msgLookupError
+d578 1
+a578 1
+	MakeInternatErrorBlock SSound_NoSuchDriver,,ENoDr
+d581 3
+a583 3
+	LDMIA	sp!,{r0-r11,ws,lr}
+	ADR	r0,ErrorBlock_SSound_CannotRemoveDriver
+	B	msgLookupError
+d585 1
+a585 1
+	MakeInternatErrorBlock SSound_CannotRemoveDriver,,ECant
+d590 4
+a593 4
+	; Remove a driver from the driver table
+	; On entry:
+	;   r0 = driver number
+	;        cannot remove driver 1 as this is the default driver
+d595 1
+a595 1
+	STMDB	sp!,{r0-r11,ws,lr}
+d599 3
+a601 3
+	; First check parameter
+	ADD	r4,ws,#work_driverTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d603 2
+a604 2
+	CMP	r0,#0                      ; < 0
+	BLT	swiDriverNumError
+d606 1
+a606 1
+	BEQ	swiRemoveDriverError      ; = 0 , cannot remove the default driver
+d608 2
+a609 2
+	CMP	r0,#driverMax             ; >= max
+	BGE	swiDriverNumError
+d611 1
+a611 1
+	; Does the driver exist?
+d613 2
+a614 2
+	MOV	r3,#driverTableLen
+	MLA	r6,r3,r0,r4
+d616 3
+a618 3
+	LDR	r4,[r6,#driver_Address]     ; Does this handler exist?
+	CMP	r4,#0
+	BEQ	swiDriverExistError         ; If not then exit
+d620 1
+a620 1
+	; is driver current
+d622 4
+a625 4
+	SUB	r4,r6,ws
+	LDR	r0,[ws,#work_currentDriver]
+	CMP	r4,r0
+	BNE	swiRemoveDriverNext
+d627 2
+a628 2
+	; if it is then release it first
+	BL	releaseDriver
+d630 3
+a632 3
+	; and make sure at least the default driver is installed instead
+	MOV	r0,#1              ; Default driver
+	BL	swiInstallDriver
+d635 7
+a641 7
+	; Now remove the driver entry
+	MOV	r0,#0
+	STR	r0,[r6,#driver_Address]
+
+	CMP	PC,PC
+	LDMEQIA	sp!,{r0-r11,ws,pc}
+	LDMIA	sp!,{r0-r11,ws,pc}^
+d646 7
+a652 7
+	;  r0 = driver number
+	; On exit:
+	;  r0 = number of next available driver or 0 for none
+	;  r1 = flags
+	;  r2 ->name
+	;  r3 = Volume
+	;  r4 = Overrun count
+d654 1
+a654 1
+	STMDB	sp!,{r5-r11,ws,lr}
+d658 2
+a659 2
+	ADD	r4,ws,#work_driverTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d661 25
+a685 25
+	CMP	r0,#0                      ; < 0
+	LDMLTIA	sp!,{r5-r11,ws,lr}
+	BLT	swiDriverNumError1
+
+	CMP	r0,#driverMax             ; >= max
+	LDMGEIA	sp!,{r5-r11,ws,lr}
+	BGE	swiDriverNumError1
+
+	; Does the driver exist?
+	MOV	r3,#driverTableLen
+	MLA	r6,r3,r0,r4
+
+	LDR	r4,[r6,#driver_Address]     ; Does this handler exist?
+	CMP	r4,#0
+	LDMEQIA	sp!,{r5-r11,ws,lr}
+	BEQ	swiDriverExistError1         ; If not then exit
+
+	; Get driver values
+
+	;LDR	r1,[r6,#driver_Flags]
+	LDR	r4,[ws,#work_currentDriver] ; Set flag according to = current driver
+	ADD	r4,r4,ws
+	CMP	r4,r6
+	MOVEQ	r1,#1        ; 1 if current
+	MOVNE	r1,#0        ; 0 if not
+d687 2
+a688 2
+	ADD	r2,r6,#driver_Name
+	LDR	r3,[r6,#driver_Volume]
+d690 1
+a690 1
+	; Now find next driver, if it exists
+d693 9
+a701 9
+	ADD	r0,r0,#1
+	CMP	r0,#driverMax
+	MOVEQ	r0,#0
+	BEQ	swiDriverInfoExit
+
+	ADD   r6,r6,#driverTableLen    ; Try next one
+	LDR	r7,[r6,#driver_Address]  ; Does it exist?
+	CMP	r7,#0
+	BEQ	swiDriverInfoLoop        ; No, then try next one
+d704 1
+a704 1
+	LDR	r4,[ws,#work_callBack_Count]
+d706 3
+a708 3
+	CMP	PC,PC
+	LDMEQIA	sp!,{r5-r11,ws,pc}
+	LDMIA	sp!,{r5-r11,ws,pc}^
+d713 7
+a719 7
+	; Set the volume for a driver
+	; On entry:
+	;    r0 = driver number
+	;    r1 = new volume
+	; On exit:
+	;    r0 = current volume
+	STMDB	sp!,{r1-r11,ws,lr}
+d723 2
+a724 2
+	ADD	r4,ws,#work_driverTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d726 3
+a728 3
+	CMP	r0,#0                      ; < 0
+	LDMLTIA	sp!,{r1-r11,ws,lr}
+	BLT	swiDriverNumError1
+d730 3
+a732 3
+	CMP	r0,#driverMax             ; >= max
+	LDMGEIA	sp!,{r1-r11,ws,lr}
+	BGE	swiDriverNumError1
+d734 3
+a736 3
+	; Does the driver exist?
+	MOV	r3,#driverTableLen
+	MLA	r6,r3,r0,r4
+d738 4
+a741 4
+	LDR	r4,[r6,#driver_Address]     ; Does this handler exist?
+	CMP	r4,#0
+	LDMEQIA	sp!,{r1-r11,ws,lr}
+	BEQ	swiDriverExistError1         ; If not then exit
+d743 3
+a745 3
+	MOV	r0,r1      ; Volume
+	MOV	r1,r6      ; Table address
+	BL	driverVolume                 ; Set driver volume to r0
+d747 2
+a748 2
+	; Note that when the driver's volume changes, all handler scaled
+	; volumes may need to be reset
+d750 3
+a752 3
+	LDR	r0,[ws,#work_currentDriver] ; Is this driver current?
+	ADD	r0,r0,ws
+	CMP	r0,r6
+d754 1
+a754 1
+	BLEQ	scaleAllHandlerVolumes       ; If so scale all volumes
+d756 1
+a756 1
+	LDR	r0,[r6,#driver_Volume]       ; Return volume
+d758 3
+a760 3
+	CMP	PC,PC
+	LDMEQIA	sp!,{r1-r11,ws,pc}
+	LDMIA	sp!,{r1-r11,ws,pc}^
+d765 11
+a775 11
+	; Set or read the mixer for a driver
+	; On entry:
+	;    r0 = driver number
+	;    r1 = function   0 = read, 1 = set
+	;    r2 = mixer number
+	;    r3 = value if set
+	; On exit:
+	;    r0 preserved
+	;    r1 = no of mixers
+	;    r2 = value
+	;    r3 = name
+d777 1
+a777 1
+	STMDB	sp!,{r0,r4-r11,ws,lr}
+d781 2
+a782 2
+	ADD	r4,ws,#work_driverTable
+	SUB	r0,r0,#1                   ; 1-10 becomes 0-9
+d784 27
+a810 27
+	CMP	r0,#0                      ; < 0
+	LDMLTIA	sp!,{r0,r4-r11,ws,lr}
+	BLT	swiDriverNumError1
+
+	CMP	r0,#driverMax             ; >= max
+	LDMGEIA	sp!,{r0,r4-r11,ws,lr}
+	BGE	swiDriverNumError1
+
+	; Does the driver exist?
+	MOV	r3,#driverTableLen
+	MLA	r6,r3,r0,r4
+
+	LDR	r4,[r6,#driver_Address]     ; Does this handler exist?
+	CMP	r4,#0
+	LDMEQIA	sp!,{r1-r11,ws,lr}
+	BEQ	swiDriverExistError1         ; If not then exit
+
+	MOV	r0,r1         ; Function code
+	MOV	r1,r2         ; Mixer number
+	MOV	r2,r3         ; Value
+	MOV	r3,r6         ; Driver table pointer
+
+	BL    driverMixer
+
+	CMP	PC,PC
+	LDMEQIA	sp!,{r0,r4-r11,ws,pc}
+	LDMIA	sp!,{r0,r4-r11,ws,pc}^
+d812 1
+a812 1
+	END
+@
+
+
+1.5
+log
+@Signed pointer comparison fix
+In SWI InstallDriver reason codes > 2 are interpreted to mean a pointer to an install driver block, but this used a signed comparison so registering blocks in the top half of memory would fail.
+SWIS.s:
+ Comparison changed to process 0/1/2 and > 2 correctly
+SoundDrv.s & Handler.s:
+ Eliminated ADR range function by just using ADRL
+Module.s:
+ Zero length command table replaced by a 0 in the command entry of the module header
+Memory.s:
+ Signed loop exit changed for unsigned one (not relevant since the workspace is < 2G)
+Drivers.s:
+ SWI name moved inside doDMI switch
+
+Version 1.14. Tagged as 'SharedSnd-1_14'
+@
+text
+@d183 2
+a184 10
+	ADR	r0,installMaxMesg
+	TEQ	PC,PC
+	ORRNES	PC,R14,#Overflow_Flag	; 26 bit exit
+	MSR	CPSR_f,#Overflow_Flag	; 32 bit exit
+	MOV	PC,R14
+installMaxMesg
+
+	DCD	errn_MaxHandlers
+	= "Maximum number of handlers reached",0
+	ALIGN
+d186 1
+d233 4
+a236 9
+	ADR	r0,HandlerNumMesg
+	TEQ	PC,PC
+	ORRNES	pc,lr,#Overflow_Flag	; 26-bit exit
+	MSR	CPSR_f,#Overflow_Flag
+	MOV	PC,R14			; 32-bit exit
+HandlerNumMesg
+	DCD	errn_BadHandler
+	= "Handler number out of range",0
+	ALIGN
+d241 2
+a242 10
+	ADR	r0,HandlerExistMesg
+	TEQ     pc,pc
+	ORRNES	pc,lr,#Overflow_Flag
+	MSR     CPSR_f,#Overflow_Flag
+	MOV     pc,lr
+HandlerExistMesg
+
+	DCD  errn_NoSuchHandler
+	= "Handler not installed",0
+	ALIGN
+d244 2
+d567 4
+a570 9
+	ADR	r0,DriverNumMesg
+	TEQ	PC,PC
+	ORRNES	pc,lr,#Overflow_Flag
+	MSR	CPSR_f,#Overflow_Flag
+	MOV	PC,R14
+DriverNumMesg
+	DCD	errn_BadDriver
+	= "Driver number out of range",0
+	ALIGN
+d575 4
+a578 9
+	ADR	r0,DriverExistMesg
+	TEQ     pc,pc
+	ORRNES	pc,lr,#Overflow_Flag
+	MSR     CPSR_f,#Overflow_Flag
+	MOV     pc,lr
+DriverExistMesg
+	DCD	errn_NoSuchDriver
+	= "Driver not installed",0
+	ALIGN
+d582 4
+a585 9
+	ADR	r0,swiRemoveDriverMesg
+	TEQ     pc,pc
+	ORRNES	pc,lr,#Overflow_Flag
+	MSR     CPSR_f,#Overflow_Flag
+	MOV     pc,lr
+swiRemoveDriverMesg
+	DCD  errn_CannotRemoveDriver
+	= "Cannot remove the default driver",0
+	ALIGN
+d650 1
+a650 1
+	;  r2 = name
+@
+
+
+1.4
+log
+@Changed to use NdrDebug instead of local debug functions
+Changed GET of filenames to use <name>.<extension> form.
+Built, but not tested.
+
+Version 1.13. Tagged as 'SharedSnd-1_13'
+@
+text
+@d558 1
+a558 1
+	BGT	swiInstallDriverTable
+d561 3
+a563 5
+	BNE	swiInstallDriverLog
+
+	BL	installLinearDriver
+
+	B	swiInstallDriverExit
+d568 1
+a568 2
+	CMP	R0,#2
+	BLEQ	installLogDriver
+a571 1
+
+@
+
+
+1.3
+log
+@  Selective merge of ESP's version 1.06 (14 May 2002) of SharedSound.
+Detail:
+  Changelog not provided by ESP. I have made an additional change to use
+  the value of SoundSystemNIL from Hdr:Sound to test if SoundChannels is not
+  installed - this constant changed in RISC OS 5 for 32-bitting reasons.
+Admin:
+  Builds, and briefly tested. Coincidentally, this is also our version 1.06.
+
+Version 1.06. Tagged as 'SharedSnd-1_06'
+@
+text
+@d40 1
+a40 1
+ [ debug1
+d77 1
+a77 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Install handler",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d202 1
+a202 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Remove handler",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d247 1
+a247 1
+	=  "Handler number out of range",0
+d261 1
+a261 1
+	=  "Handler not installed",0
+d321 1
+a321 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Handler info",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d411 2
+a412 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Sample rate",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d423 1
+a423 7
+ [ debugS
+	SWI	XOS_WriteS
+	= "Sample rate",0
+	ALIGN
+	MOV	r10,r0
+	BL	printr10
+ ]
+d486 2
+a487 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Handler Volume",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d525 1
+a525 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Handler sample type",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+a534 7
+ [ debug
+	SWI	XOS_WriteS
+	= "Handler pause",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+
+d536 1
+d553 1
+a553 7
+ [ debug
+	SWI	XOS_WriteS
+
+	= "Install driver",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d634 1
+a634 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Remove Driver",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d693 1
+a693 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Driver info",0
+	ALIGN
+	SWI XOS_NewLine
+ ]
+d758 1
+a758 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Driver volume",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+d816 1
+a816 6
+ [ debug
+	SWI	XOS_WriteS
+	= "Driver mixer",0
+	ALIGN
+	SWI	XOS_NewLine
+ ]
+@
+
+
+1.2
+log
+@  Module scrutinised for problems, and many found and fixed.
+Detail:
+  * Module flags word and header entry reinstated.
+  * Many exits from SWIs had lost their 32-bit compatibility.
+  * Unconditional TEQP made conditional, and an MSR replaced with an MRS.
+  * A few unnecessary mode checks and alternate returns simplified because
+    transient callbacks and 8-bit fill code have never needed to preserve
+    processor flags.
+  * Driver mixer calling bug fixed again.
+  * Spelling and grammatical errors in comments and error messages re-fixed.
+  * Other insignificant stuff.
+Admin:
+  Still untested, but worth trying in a 32-bit build now.
+
+Version 1.01. Tagged as 'SharedSnd-1_01'
+@
+text
+@d195 1
+a195 1
+	DCD	&1E6
+d256 1
+a256 1
+	DCD	&1E6
+d270 1
+a270 1
+	DCD  &1E6
+d641 1
+a641 1
+	DCD	&1E6
+d654 1
+a654 1
+	DCD	&1E6
+d666 1
+a666 1
+	DCD  &1E6
+@
+
+
+1.2.2.1
+log
+@Import of latest sources from ESP.
+This represents ESP's version 1.06 (14 May 2002). The files are exactly as
+received, but they are not expected to build as they are against the public
+headers.
+@
+text
+@d191 1
+a191 1
+	MSR	CPSR_flg,#Overflow_Flag	; 32 bit exit
+d195 1
+a195 1
+	DCD	errn_MaxHandlers
+d253 1
+a253 1
+	MSR	CPSR_flg,#Overflow_Flag
+d256 1
+a256 1
+	DCD	errn_BadHandler
+d266 1
+a266 1
+	MSR     CPSR_flg,#Overflow_Flag
+d270 1
+a270 1
+	DCD  errn_NoSuchHandler
+d638 1
+a638 1
+	MSR	CPSR_flg,#Overflow_Flag
+d641 1
+a641 1
+	DCD	errn_BadDriver
+d651 1
+a651 1
+	MSR     CPSR_flg,#Overflow_Flag
+d654 1
+a654 1
+	DCD	errn_NoSuchDriver
+d663 1
+a663 1
+	MSR     CPSR_flg,#Overflow_Flag
+d666 1
+a666 1
+	DCD  errn_CannotRemoveDriver
+@
+
+
+1.1
+log
+@  Import of version 1.00 of SharedSound from WSS - this is a merge of
+  RISC OS Ltd, ESP and Pace sources. I've added the Makefile, Mk* and
+  VersionNum files.
+
+Detail (courtesy of WSS):
+  * Incorporates fixes made to 0.58c to fix the callbacks on sound
+    rate changes.
+
+  * Incorporates RISC OS Ltd changes to response to
+    TaskManager_Acknowledgements service.
+
+  * Includes 8 bit Log and PowerWave drivers.
+
+  * Now built with Objasm, not BASIC assembler.
+
+  * SharedSound_HandlerInfo SWI fixed to conform to spec. Also
+    extended to accept r0 = 0 on entry, in which case r0 = number of
+    first registered handler (or 0 for none) on exit; R1-R5 corrupted.
+
+    Therefore the following code enumerates handlers:
+
+    REM Get first handler number.
+    SYS "SharedSound_HandlerInfo",0 TO next% ; flags%
+    REM While no errors, and not finished
+    WHILE (next% <> 0) AND ((flags% AND 1) = 0)
+     SYS"SharedSound_HandlerInfo",next% TO next%,a%,b%,c%,d%,e%
+    ENDWHILE
+
+  * Sends Service_Sound (&54) with reason code 6 (SharedSound Starting)
+    on (callback after) initialisation.
+
+  * Sends Service_Sound (&54) with reason code 7 (SharedSound Dying)
+    on finalisation.
+
+  * Some small optimisations
+
+  * Version bumped to 1.00 (to allow RISC OS Ltd space to make changes
+    to their versions).
+
+  * Table of helpful fill code routines now passed to handlers in R8.
+
+  * SharedSound reinitialises correctly on lower layers reinitialising.
+
+  * More care taken to remove outstanding callbacks on finalise.
+
+  * Dual 26/32 bit version.
+
+Admin:
+  * Not tested by us.
+
+  * 8-bit sound system code is known not to be ROM safe. However, it is
+    currently switched out (see the doLog option in s.Gets).
+
+  * This version *will not work* on a 32-bit system. There are at least two
+    issues with it that I've spotted with a quick glance through the code -
+    the lack of the module flags word, and an unconditional TEQP instruction.
+    This version has been checked in nevertheless as a record of what WSS
+    delivered to us.
+
+Version 1.00. Tagged as 'SharedSnd-1_00'
+@
+text
+@d196 1
+a196 1
+	= "Maximum nunber of handlers reached",0
+d264 4
+a267 1
+	ORRS	pc,lr,#Overflow_Flag
+d649 4
+a652 1
+	ORRS	pc,lr,#Overflow_Flag
+d661 4
+a664 1
+	ORRS	pc,lr,#Overflow_Flag
+@
+

@@ -1,0 +1,666 @@
+head	1.5;
+access;
+symbols
+	ModMalloc-0_06:1.4
+	ModMalloc-0_05:1.4
+	ModMalloc-0_04:1.4
+	RO_5_07:1.3
+	ModMalloc-0_03:1.3
+	dellis_autobuild_BaseSW:1.2
+	sbrodie_sedwards_16Mar2000:1.2
+	ModMalloc-0_02:1.2
+	dcotton_autobuild_BaseSW:1.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.2
+	Ursula_RiscPC:1.2.0.4
+	rthornb_UrsulaBuild-19Aug1998:1.2
+	UrsulaBuild_FinalSoftload:1.2
+	rthornb_UrsulaBuild-12Aug1998:1.2
+	aglover_UrsulaBuild-05Aug1998:1.2
+	rthornb_UrsulaBuild-29Jul1998:1.2
+	rthornb_UrsulaBuild-22Jul1998:1.2
+	rthornb_UrsulaBuild-15Jul1998:1.2
+	rthornb_UrsulaBuild-07Jul1998:1.2
+	rthornb_UrsulaBuild-17Jun1998:1.2
+	rthornb_UrsulaBuild-03Jun1998:1.2
+	rthornb_UrsulaBuild-27May1998:1.2
+	rthornb_UrsulaBuild-21May1998:1.2
+	rthornb_UrsulaBuild_01May1998:1.2
+	afrost_NC2_Generic:1.1.1.2
+	afrost_Funai01-33:1.1.1.2
+	Spinner_RCA116:1.1.1.2
+	Spinner_B20_2:1.1.1.2
+	Spinner_19_3:1.1.1.2
+	Spinner_B18:1.1.1.2
+	Spinner_B17:1.1.1.2
+	Spinner_B15:1.1.1.2
+	Spinner_B14:1.1.1.2
+	Spinner_B13:1.1.1.2
+	Spinner_B12:1.1.1.2
+	Spinner_B10:1.1.1.2
+	Spin_merge:1.1.1.2
+	Daytona:1.1.0.6
+	Daytona_bp:1.1
+	Ursula:1.2.0.2
+	Ursula_bp:1.2
+	Spinner_B7:1.1.1.2
+	ARTtmp_merge:1.1.1.1
+	Spin_3Apr97:1.1.1.2
+	RCA_bp:1.1
+	RCA:1.1.0.2
+	ARTtmp:1.1.1.1.0.2
+	initial:1.1.1.1
+	Spinner:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2014.12.13.10.36.27;	author rsprowson;	state dead;
+branches;
+next	1.4;
+commitid	Dy0rcHdPfe7MOR1y;
+
+1.4
+date	2008.04.25.00.40.06;	author bavison;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2004.03.03.17.23.28;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.05.21.10.06.56;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.03.18.17.15.20;	author jsmith;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	97.03.18.17.15.20;	author jsmith;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	97.03.27.16.57.22;	author jsmith;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Makefile recreated from fragments
+
+Version 0.07. Tagged as 'ModMalloc-0_07'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdlib.h>
+#include <string.h>
+
+#include "swis.h"
+
+#include "Desk.Debug.h"
+#include "Desk.Error.h"
+#include "Desk.LinkList.h"
+
+#ifdef MemCheck_MEMCHECK
+#include "MemCheck.MemCheck.h"
+#endif
+
+#include "ModMalloc.ModMalloc.h"
+
+
+typedef struct	{
+	Desk_linklist_header	header;
+	int			size;	/* Size including header	*/
+	}
+	ModMalloc_header;
+
+static Desk_linklist_header	ModMalloc_blocks = { NULL, NULL};
+
+
+
+#ifdef MemCheck_MEMCHECK
+	#pragma -c0
+	/* We don't want MemCheck checking accesses from within here...	*/
+#endif
+
+
+#ifdef Desk_DEBUG
+	static void	ModMalloc_Debug_ShowBlocks( void)
+		{
+		ModMalloc_header*	header;
+		Desk_Debug2_Printf( Desk_error_PLACE "ModMalloc blocks are:\n");
+		for	(
+			header = (ModMalloc_header*) Desk_LinkList_FirstItem( &ModMalloc_blocks);
+			header;
+			header = (ModMalloc_header*) Desk_LinkList_NextItem( &header->header)
+			)
+			{
+			Desk_Debug2_Printf( Desk_error_PLACE "0x%p-0x%p (%i)\n", header+1, (char*) header + header->size, header->size-sizeof( *header));
+			}
+		Desk_Debug2_Printf( Desk_error_PLACE "\n");
+		}
+#else
+	#define	ModMalloc_Debug_ShowBlocks()
+#endif
+
+
+
+static _kernel_oserror*	ModMalloc__Free( void* ptr)
+	{
+	ModMalloc_header*	header;
+	_kernel_oserror*	e;
+
+	Desk_Debug_Printf( Desk_error_PLACE "ModMalloc__Free( 0x%p)\n", ptr);
+	ModMalloc_Debug_ShowBlocks();
+
+	if ( !ptr)	return NULL;
+
+#ifdef MemCheck_MEMCHECK
+	MemCheck_UnRegisterMiscBlock( ptr);
+#endif
+
+	header	= ( (ModMalloc_header*) ptr) - 1;
+
+		{
+#ifdef MemCheck_MEMCHECK
+		MemCheck_checking	oldchecking = MemCheck_SetChecking( 0, 0);
+#endif
+		#ifdef Desk_DEBUG
+			if ( !Desk_LinkList_InList( &ModMalloc_blocks, &header->header))	{
+				Desk_Debug_Printf( Desk_error_PLACE "Attempt to free unrecognised modmalloc block 0x%p\n", ptr);
+				}
+		#endif
+		Desk_LinkList_Unlink( &ModMalloc_blocks, &header->header);
+#ifdef MemCheck_MEMCHECK
+		MemCheck_RestoreChecking( oldchecking);
+#endif
+		}
+
+
+	/*last	= header->prev;*/
+	e	= _swix( OS_Module, _IN(0)|_IN(2), 7, header);
+
+	if (e)	{
+		Desk_Debug_Printf( "ModMalloc_Free 0x%p failed\n", ptr);
+
+		return e;
+		}
+	/*
+	if ( ModMalloc_lastblock == header
+	ModMalloc_lastblock = last;
+	*/
+	return NULL;
+	}
+
+void	ModMalloc_Free( void* ptr)
+	{
+	ModMalloc__Free( ptr);
+	}
+
+
+void	ModMalloc_FreeDownTo( void* first)
+	{
+	ModMalloc_header*	firstheader = (first) ? ((ModMalloc_header*) first) - 1 : NULL;
+	ModMalloc_header*	header;
+	Desk_Debug_Printf( "ModMalloc_FreeAll called\n");
+	for	(
+		header = (ModMalloc_header*) Desk_LinkList_LastItem( &ModMalloc_blocks);
+		header;
+		header = (ModMalloc_header*) Desk_LinkList_PreviousItem( &header->header)
+		)
+		{
+		Desk_Debug_Printf( "ModMalloc_FreeAll: freeing 0x%p\n", (void *)(header+1));
+		if ( ModMalloc__Free( header+1))	{
+			Desk_Debug_Printf( "ModMalloc__Free returned error - teminating ModMalloc_FreeDownTo\n");
+			break;
+			}
+
+		if ( header==firstheader)	break;
+		/*
+		if ( header==header->prev)	{
+			Desk_Debug_Printf( "Circular list - terminating ModMalloc_FreeDownTo\n");
+			break;
+			}
+		*/
+		}
+	Desk_Debug_Printf( "ModMalloc_FreeAll finished\n");
+	}
+
+
+void	ModMalloc_FreeAll( void)
+	{
+	ModMalloc_FreeDownTo( NULL);
+	}
+
+
+void*	ModMalloc_Malloc( size_t size)
+	{
+	ModMalloc_header*	header;
+	_kernel_oserror*	e;
+	/*
+	static int		inited = 0;
+
+	if (!inited)	{
+		inited = 1;
+		atexit( ModMalloc_FreeAll);
+		}
+	*/
+	ModMalloc_Debug_ShowBlocks();
+	size += sizeof( ModMalloc_header);
+	e = _swix( OS_Module, _IN(0)|_IN(3)|_OUT(2), 6, size, &header);
+	if (e)	{
+		Desk_Debug_Printf( "ModMalloc_Malloc can't allocate memory\n");
+		return NULL;
+		}
+
+
+#ifdef MemCheck_MEMCHECK
+	MemCheck_RegisterMiscBlock( header, sizeof( *header));
+#endif
+
+	/*header->prev	= ModMalloc_lastblock;*/
+	header->size	= size;
+	/*ModMalloc_lastblock = header;*/
+
+	/*
+	#ifdef MemCheck_MEMCHECK
+		memcpy( &ModMalloc_blocks, "\0\0\0\0\0\0\0\0", 8);
+	#endif
+	*/
+
+	// Make sure previous item (if it exists) is known to MemCheck while we are adding to the link list.
+#ifdef MemCheck_MEMCHECK
+	if ( Desk_LinkList_LastItem( &ModMalloc_blocks))
+		MemCheck_RegisterMiscBlock( Desk_LinkList_LastItem( &ModMalloc_blocks), sizeof( ModMalloc_header));
+#endif
+
+	Desk_LinkList_AddToTail( &ModMalloc_blocks, &header->header);
+
+#ifdef MemCheck_MEMCHECK
+	if ( Desk_LinkList_PreviousItem( &header->header))
+		MemCheck_UnRegisterMiscBlock( Desk_LinkList_PreviousItem( &header->header));
+
+	MemCheck_UnRegisterMiscBlock( header);
+
+	MemCheck_RegisterMiscBlock( header+1, size - sizeof( ModMalloc_header));
+#endif
+
+	return (void*) (header+1);
+	}
+
+
+
+
+#define	ModMalloc_MIN( x, y)	( (x<y) ? x : y)
+
+void*	ModMalloc_Realloc( void* ptr, size_t newsize)
+	{
+	ModMalloc_header*	header = ( (ModMalloc_header*) ptr) - 1;
+	ModMalloc_header*	newheader;
+	Desk_linklist_header*	oldprev;
+	Desk_os_error*		e;
+
+#ifdef MemCheck_MEMCHECK
+	MemCheck_RegisterMiscBlock( header, sizeof( *header));
+#endif
+
+	oldprev = Desk_LinkList_PreviousItem( &header->header);
+	Desk_LinkList_Unlink( &ModMalloc_blocks, &header->header);
+
+	newsize += sizeof( ModMalloc_header);
+
+	e = _swix( OS_Module, _IN(0)|_INR(2,3)|_OUT(2), 13, header, newsize-header->size, &newheader);
+
+	if ( e)	{
+		Desk_LinkList_InsertAfter( &ModMalloc_blocks, oldprev, &header->header);
+#ifdef MemCheck_MEMCHECK
+		MemCheck_UnRegisterMiscBlock( header);
+#endif
+		return NULL;
+		}
+
+#ifdef MemCheck_MEMCHECK
+	MemCheck_UnRegisterMiscBlock( header);
+	MemCheck_RegisterMiscBlock( newheader, sizeof( *newheader));
+#endif
+
+	newheader->size = newsize;
+	Desk_LinkList_InsertAfter( &ModMalloc_blocks, oldprev, &newheader->header);
+#ifdef MemCheck_MEMCHECK
+	MemCheck_UnRegisterMiscBlock( newheader);
+#endif
+
+	return newheader+1;
+	}
+
+
+
+
+void*	ModMalloc_Calloc( size_t n, size_t size)
+	{
+	void*	ptr = ModMalloc_Malloc( n*size);
+	ModMalloc_Debug_ShowBlocks();
+	if (!ptr)	{
+		Desk_Debug_Printf( "ModMalloc_Calloc failed\n");
+		return ptr;
+		}
+	memset( ptr, 0, n*size);
+	/*
+	Don't need to call MeMCheck functions
+	here - done by ModMalloc_Malloc/Free
+	 */
+	return ptr;
+	}
+@
+
+
+1.4
+log
+@  Now suitable for release.
+Detail:
+  Removed dependence upon Every and Makatic tools, at least for the
+  standard application and module builds. Makatic can still be used if you
+  have it on your run path (and this will help if you want to create one
+  of the debug builds).
+  All references to the MemCheck library (also part of WSS's commercial
+  product Dr Smith's Toolkit) are now wrapped in #ifdefs, and so the library
+  can now be built without it.
+Admin:
+  Tested briefly in a ROM build.
+
+Version 0.04. Tagged as 'ModMalloc-0_04'
+@
+text
+@@
+
+
+1.3
+log
+@* Fixed a warning generated by new stricter C compiler
+* Turned off throwback so any future warnings don't create a throwback
+  window during ROM builds
+
+Version 0.03. Tagged as 'ModMalloc-0_03'
+@
+text
+@d24 1
+d26 1
+d78 1
+d80 1
+d85 1
+d87 1
+d94 1
+d96 1
+d177 1
+d179 1
+d192 1
+d195 1
+d199 1
+d206 1
+d223 1
+d225 1
+d236 1
+d238 1
+d242 1
+d245 1
+d249 1
+d251 1
+@
+
+
+1.2
+log
+@Spinner branch merged
+@
+text
+@d70 1
+a70 1
+	
+d73 1
+a73 1
+	
+d75 1
+a75 1
+	
+d77 1
+a77 1
+	
+d79 1
+a79 1
+	
+d90 2
+a91 2
+	
+	
+d94 1
+a94 1
+	
+d97 1
+a97 1
+		
+d124 1
+a124 1
+		Desk_Debug_Printf( "ModMalloc_FreeAll: freeing 0x%p\n", header+1);
+d129 1
+a129 1
+		
+d154 1
+a154 1
+	
+d167 2
+a168 2
+	
+	
+d170 1
+a170 1
+	
+d174 1
+a174 1
+	
+d180 1
+a180 1
+	
+d184 1
+a184 1
+	
+d186 1
+a186 1
+	
+d189 1
+a189 1
+	
+d191 1
+a191 1
+	
+d193 1
+a193 1
+	
+d208 1
+a208 1
+	
+d210 1
+a210 1
+	
+d213 1
+a213 1
+	
+d215 1
+a215 1
+	
+d217 1
+a217 1
+	
+d223 1
+a223 1
+	
+d226 1
+a226 1
+	
+d230 1
+a230 1
+	
+d247 1
+a247 1
+	Don't need to call MeMCheck functions 
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d24 1
+a24 3
+#ifdef MemCheck_MEMCHECK
+	#include "MemCheck:MemCheck.h"
+#endif
+d76 2
+d80 10
+a89 1
+	Desk_LinkList_Unlink( &ModMalloc_blocks, &header->header);
+d97 1
+a103 4
+	#ifdef MemCheck_MEMCHECK
+		MemCheck_UnRegisterMiscBlock( ptr);
+	#endif
+	
+d169 2
+a173 1
+	Desk_LinkList_AddToTail( &ModMalloc_blocks, &header->header);
+d175 1
+d177 1
+a177 1
+		MemCheck_RegisterMiscBlock( header+1, size - sizeof( ModMalloc_header));
+d179 15
+d206 1
+a206 1
+	Desk_linklist_header*	oldprev = Desk_LinkList_PreviousItem( &header->header);
+d209 3
+d220 1
+d224 3
+d229 1
+a231 19
+	/*
+	ModMalloc_header*	header = ( (ModMalloc_header*) ptr) - 1;
+	void*			newptr = ModMalloc_Malloc( newsize);
+	ModMalloc_Debug_ShowBlocks();
+	if (!newptr)	{
+		Desk_Debug_Printf( "ModMalloc_Realloc failed\n");
+		return NULL;
+		}
+	
+	if ( ptr)	{
+		memcpy( newptr, ptr, ModMalloc_MIN( header->size-sizeof( ModMalloc_header), newsize));
+		ModMalloc_Free( ptr);
+		}
+	
+	Don't need to call MeMCheck functions
+	here - done by ModMalloc_Malloc/Free
+	
+	return newptr;
+	*/
+@
+
+
+1.1.1.1
+log
+@Initial import of ModMalloc library
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Checks for freeing unrecognised blocks. Added Module MemCheck version
+@
+text
+@d24 3
+a26 1
+#include "MemCheck.MemCheck.h"
+a77 2
+	MemCheck_UnRegisterMiscBlock( ptr);
+	
+d80 1
+a80 10
+		{
+		MemCheck_checking	oldchecking = MemCheck_SetChecking( 0, 0);
+		#ifdef Desk_DEBUG
+			if ( !Desk_LinkList_InList( &ModMalloc_blocks, &header->header))	{
+				Desk_Debug_Printf( Desk_error_PLACE "Attempt to free unrecognised modmalloc block 0x%p\n", ptr);
+				}
+		#endif
+		Desk_LinkList_Unlink( &ModMalloc_blocks, &header->header);
+		MemCheck_RestoreChecking( oldchecking);
+		}
+a87 1
+		
+d94 4
+a162 2
+	MemCheck_RegisterMiscBlock( header, sizeof( *header));
+	
+d166 1
+a167 1
+	/*
+d169 1
+a169 1
+		memcpy( &ModMalloc_blocks, "\0\0\0\0\0\0\0\0", 8);
+a170 15
+	*/
+	
+	// Make sure previous item (if it exists) is known to MemCheck while we are adding to the link list.
+	if ( Desk_LinkList_LastItem( &ModMalloc_blocks))
+		MemCheck_RegisterMiscBlock( Desk_LinkList_LastItem( &ModMalloc_blocks), sizeof( ModMalloc_header));
+	
+	Desk_LinkList_AddToTail( &ModMalloc_blocks, &header->header);
+	
+	if ( Desk_LinkList_PreviousItem( &header->header))
+		MemCheck_UnRegisterMiscBlock( Desk_LinkList_PreviousItem( &header->header));
+	
+	MemCheck_UnRegisterMiscBlock( header);
+	
+	MemCheck_RegisterMiscBlock( header+1, size - sizeof( ModMalloc_header));
+	
+d183 1
+a183 1
+	Desk_linklist_header*	oldprev;
+a185 3
+	MemCheck_RegisterMiscBlock( header, sizeof( *header));
+	
+	oldprev = Desk_LinkList_PreviousItem( &header->header);
+a193 1
+		MemCheck_UnRegisterMiscBlock( header);
+a196 3
+	MemCheck_UnRegisterMiscBlock( header);
+	MemCheck_RegisterMiscBlock( newheader, sizeof( *newheader));
+	
+a198 1
+	MemCheck_UnRegisterMiscBlock( newheader);
+d201 19
+@

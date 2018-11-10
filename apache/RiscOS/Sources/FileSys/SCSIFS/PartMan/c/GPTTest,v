@@ -1,0 +1,341 @@
+head	1.5;
+access;
+symbols
+	PartMan-0_16:1.5
+	PartMan-0_15:1.4
+	PartMan-0_14:1.4
+	PartMan-0_13:1.3
+	PartMan-0_12:1.2
+	PartMan-0_11:1.2
+	PartMan-0_10:1.1.1.1
+	PartMan-0_09:1.1.1.1
+	start:1.1.1.1
+	INITIAL:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.07.19.23.40.04;	author jballance;	state Exp;
+branches;
+next	1.4;
+commitid	zYSuPY5l4rV2VNKA;
+
+1.4
+date	2018.07.13.22.58.19;	author jballance;	state Exp;
+branches;
+next	1.3;
+commitid	tBYQcy1tZbkGS1KA;
+
+1.3
+date	2017.01.09.21.24.54;	author jballance;	state Exp;
+branches;
+next	1.2;
+commitid	yFxEcnSEVzAI2lBz;
+
+1.2
+date	2016.12.06.08.24.15;	author jballance;	state Exp;
+branches;
+next	1.1;
+commitid	n7zTGodkOF8GOTwz;
+
+1.1
+date	2016.11.28.22.08.42;	author jballance;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	HKcQ8iJU5OQNCWvz;
+
+1.1.1.1
+date	2016.11.28.22.08.42;	author jballance;	state Exp;
+branches;
+next	;
+commitid	HKcQ8iJU5OQNCWvz;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Improved reboot behaviour, and added routines to check for boot disc.
+Detail:
+  Various routines added to detect and help prevent formatting of
+  current boot disc. Also improved detection of already mounted discs
+  when PartMan is rebooted.
+Admin:
+ tested on iMx6
+
+Version 0.16. Tagged as 'PartMan-0_16'
+@
+text
+@/* Copyright 2016 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include        "PMInclude.h"
+#include        "GPThdr.h"
+#include        "FormatDef.h"
+#include        "FormatBits.h"
+#include        "Format.h"
+#include        "PMModule.h"
+#include        "scsisvce.h"
+#include        "Diagnostic.h"
+
+#define task_name "gpttst"          /* the name of our task */
+static _kernel_swi_regs reg;
+#define MaxPartitions 7
+#define NumParts 2
+
+int main (int argc,char* argv[])
+{
+  int i;
+  int partn[MaxPartitions];
+  int partcount=NumParts;
+  if(argc<2)
+  {
+    printf("Drive ID not given\n");
+    return 0;
+  }
+  int ID=atoi(argv[1]);
+
+  if(CheckBootDiscID(ID,0,true))
+  {
+    printf("Target drive contains the boot disc - aborting\n");
+    return 0;
+  }
+
+  if(argc==3)
+  {
+    int param=atoi(argv[2]);
+    if ((param)&&(param<=MaxPartitions))
+      {
+        partcount=param;
+      }
+      else
+      {
+        printf("Either *gpttest with no parameters to get 4 equal partitions\n or *gpttest <n> where n is between 1 and %d\n",MaxPartitions);
+        return NULL;
+      }
+  }
+  FormatParams  FPs[MaxPartitions];
+  FormatParamsp FPp = FPs;
+
+  testfileinit ();
+  BufSecInit();
+  int capacity, sectorsize;
+   ReadDiscCapacity(ID, OverrideKey ,&capacity, &sectorsize);
+   capacity-=8; // compensate for what is used by partition tables etc
+   partcount=(partcount<MaxPartitions)?partcount:MaxPartitions;
+   int partsize = capacity/partcount;
+   for(i=0;i<partcount;i++)
+   {
+     partn[i]=partsize;
+   }
+   printf("Formatting SCSI ID %x with %d partitions size %x\n",ID,partcount,partsize);
+   // initialise what we want to do
+   FPp->partition=0;
+//   FPp->type=GUIDWinNorm;
+//   strncpy(FPp->discname,"Windows1",FPNameLenMAX);
+   FPp->type=GUIDFilecore;
+   strncpy(FPp->discname,"Filecore1",FPNameLenMAX);
+   FPp++;
+   if(partcount>1)
+   {
+   FPp->partition=1;
+   FPp->type=GUIDFilecore;
+   strncpy(FPp->discname,"Filecore2",FPNameLenMAX);
+   }
+   if(partcount>2)
+   {
+   FPp++;
+   FPp->type=GUIDFilecore;
+   FPp->partition=2;
+   strncpy(FPp->discname,"Filecore3",FPNameLenMAX);
+   }
+   if(partcount>3)
+   {
+   FPp++;
+//   FPp->type=GUIDWinNorm;
+//   strncpy(FPp->discname,"Windows1",FPNameLenMAX);
+   FPp->type=GUIDFilecore;
+   FPp->partition=3;
+   strncpy(FPp->discname,"Filecore4",FPNameLenMAX);
+   }
+   if(partcount>4)
+   {
+   FPp++;
+   FPp->type=GUIDFilecore;
+   FPp->partition=4;
+   strncpy(FPp->discname,"Filecore5",FPNameLenMAX);
+   }
+   if(partcount>5)
+   {
+   FPp++;
+   FPp->type=GUIDFilecore;
+   FPp->partition=5;
+   strncpy(FPp->discname,"Filecore6",FPNameLenMAX);
+   }
+   if(partcount>6)
+   {
+   FPp++;
+   FPp->type=GUIDFilecore;
+   FPp->partition=6;
+   strncpy(FPp->discname,"Filecore7",FPNameLenMAX);
+   }
+
+   //_swix(OS_Module,_INR(0,1) ,3, "SCSIFS");
+    _swix(OS_ServiceCall,_INR(0,2),ID,Service_SCSIDetached,0x7);
+
+ int result;
+ result=PartitionDisc(ID, MaxPartitions, partcount, partn);
+ testprint("result = %d\n",result);
+
+ if(CheckGPTValid(ID))
+ {
+   ReadGPTInfo(ID);
+   FPp = FPs;
+   for (i=0; i<partcount;i++)
+   {
+     FormatPartition( ID, FPp++,sectorsize);
+   }
+   freepointers();
+ }
+ else
+ {
+   testprint(" CheckGPTValid returned false\n");
+ }
+
+
+   _swix(OS_ServiceCall,_INR(0,2),ID,Service_SCSIAttached,0x7);
+printf("Completed\n");
+}
+
+void wimp_error(_kernel_oserror *er)
+{
+  /*
+   * Generic routine to handle error reporting
+   * through the wimp
+   */
+
+  if(er!=(_kernel_oserror *)NULL)
+  {
+  testprint("WE:%x %s\n",er->errnum,(int)(er->errmess));
+   reg.r[0] = (int) er;
+   reg.r[1] =       0;
+   reg.r[2] = (int) task_name;
+   _kernel_swi(Wimp_ReportError, &reg, &reg);
+  }
+}
+@
+
+
+1.4
+log
+@  Extend PartMan behaviour and add SWI and *command to list the
+  detected partition start addresses and lengths. Improve
+  interaction with SCSIFS.
+Detail:
+  Improved robustness. Made tolerant of some obstinate USB SD card
+  readers that previously would cause the system to lock whilst the device
+  was plugged in.
+Admin:
+  tested on iMx6
+
+Version 0.14. Tagged as 'PartMan-0_14'
+@
+text
+@a30 1
+  int ID=1; // scsi devi id to use
+d34 1
+a34 1
+  if(argc==2)
+d36 14
+a49 1
+    int param=*argv[1]-0x30;
+d126 1
+a126 1
+   _swix(OS_Module,_INR(0,1) ,3, "SCSIFS");
+a128 1
+
+@
+
+
+1.3
+log
+@   More work on filecore format routine.
+Detail:
+   The routine embedded in the sources will now write a correct filecore format
+   across the full range of IDLen values, though in use it will generally select
+   the largest IDLen value as this permits the most files to be stored on disc.
+Admin:
+   tested in iMx6
+
+
+Version 0.13. Tagged as 'PartMan-0_13'
+@
+text
+@d27 1
+a27 1
+#define NumParts 3
+@
+
+
+1.2
+log
+@   progress, bug fixes, and improved diagnostics
+Detail:
+  still needs optimisation of formatter element
+Admin:
+
+
+Version 0.11. Tagged as 'PartMan-0_11'
+@
+text
+@d114 1
+d133 5
+a137 4
+   {
+     testprint(" CheckGPTValid returned false\n");
+   }
+   printf("Checked and completed\n");
+d139 1
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d119 1
+a119 1
+ testprint1("result = %d\n",result);
+d148 1
+a148 1
+  testprint2("WE:%x %s\n",er->errnum,(int)(er->errmess));
+@
+
+
+1.1.1.1
+log
+@  Initial import of PartMan module
+Detail:
+  This is early work. It can be used 'manually' to format up a disc using
+  the GPT partition header system. Current working format is filecore, though
+  with a non optimal format. Functional, but work in progress.
+Admin:
+@
+text
+@@

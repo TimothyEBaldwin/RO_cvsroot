@@ -1,0 +1,274 @@
+head	1.3;
+access;
+symbols
+	AsmUtils-0_19:1.3
+	AsmUtils-0_18:1.3
+	AsmUtils-0_17:1.2
+	AsmUtils-0_16:1.2
+	AsmUtils-0_15:1.1
+	AsmUtils-0_14:1.1
+	AsmUtils-0_13:1.1
+	AsmUtils-0_12:1.1
+	AsmUtils-0_11:1.1
+	AsmUtils-0_10:1.1
+	RO_5_07:1.1
+	dellis_autobuild_BaseSW:1.1
+	AsmUtils-0_09:1.1
+	AsmUtils-0_08:1.1
+	AsmUtils-0_07:1.1
+	sbrodie_sedwards_16Mar2000:1.1
+	AsmUtils-0_06:1.1
+	AsmUtils-0_05:1.1
+	dcotton_autobuild_BaseSW:1.1
+	AsmUtils-0_04:1.1
+	AsmUtils-0_03:1.1
+	AsmUtils-0_02:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2016.05.08.17.13.42;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	74eXlqYwcboOyH5z;
+
+1.2
+date	2012.09.16.10.43.10;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	8gMOKXLJM5Wn9Kkw;
+
+1.1
+date	99.11.29.11.33.32;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Prefer CPS over MSR when performing PSR manipulation
+Detail:
+  s/irqs - ensure_irqs_off / ensure_irqs_on now use CPS when building for ARMv6+, as it has better performance than MSR
+Admin:
+  Tested on Cortex-A15
+
+
+Version 0.18. Tagged as 'AsmUtils-0_18'
+@
+text
+@; Copyright 1999 Pace Micro Technology plc
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; irqs.s
+;
+; The code from this source file has been taken from the ANC interrupt
+; management code and from ART interrupt management code.
+;
+; See irqs.h for interface details
+;
+; NOTE:  Counter-intuitively, irqs_on matches restore_irqs and NOT
+;        ensure_irqs_on.
+;
+
+        GET   Hdr:ListOpts
+        GET   Hdr:Macros
+        GET   Hdr:System
+        GET   Hdr:APCS.<APCS>
+        GET   Hdr:CPU.Arch
+
+        EXPORT  irqs_off
+        EXPORT  irqs_on
+
+        EXPORT  ensure_irqs_off
+        EXPORT  ensure_irqs_on
+        EXPORT  restore_irqs
+
+        GBLS    cond
+        
+        AREA    |AsmUtils$irqs$$Code|, CODE, READONLY, PIC
+
+; ensure_irqs_off/ irqs_off:  Disable IRQs, returning a value
+; suitable for passing to restore_irqs/irqs_on.
+ensure_irqs_off
+irqs_off
+    [ NoARMv6
+      [ :LNOT: (No32bitCode :LOR: No26bitCode)
+        ; 32 or 26 bit selected at run time
+        ; The 26 bit case preserves flags, so works with APCS-R (and APCS-32)
+        TEQ     pc, pc
+cond    SETS    "NE"
+      |  
+cond    SETS    "AL"
+      ]
+      [ :LNOT: No26bitCode
+        AND$cond   r0, lr, #I_bit
+        ORR$cond.S pc, lr, #I_bit
+      ]
+      [ :LNOT: No32bitCode
+        MRS     r0, CPSR
+        ORR     r1, r0, #I32_bit        ; set IRQs
+        TEQ     r0, r1                  ; any change?
+        MSRNE   CPSR_c, r1              ; disable IRQs if enabled before
+        AND     r0, r0, #I32_bit        ; return previous state of bit
+        Return  ,LinkNotStacked
+      ]
+    |
+        ; Skipping the CPS is faster if we know IRQs are already off, although
+        ; it does put us at the mercy of branch prediction.
+        MRS     r0, CPSR
+        ANDS    r0, r0, #I32_bit
+        Return  ,LinkNotStacked,NE
+        CPSID   i
+        Return  ,LinkNotStacked
+    ]
+
+; restore_irqs/irqs_on:  Re-enable IRQs if they were enabled prior to
+; the earlier call to ensure_irqs_off/ensure_irqs_on/irqs_off
+restore_irqs
+irqs_on
+      [ :LNOT: (No32bitCode :LOR: No26bitCode)
+        ; 32 or 26 bit selected at run time
+        ; The 26 bit case preserves flags, so works with APCS-R (and APCS-32)
+        TEQ     pc, pc
+cond    SETS    "NE"
+      |  
+cond    SETS    "AL"
+      ]
+      [ :LNOT: No26bitCode
+        BIC$cond   lr, lr, #I_bit
+        ORR$cond.S pc, lr, r0
+      ]
+      [ :LNOT: No32bitCode
+        MRS     r1, CPSR                ; obtain current PSR
+        BIC     r2, r1, #I32_bit        ; clear IRQ bit
+        ORR     r2, r2, r0              ; restore state from parameter
+        TEQ     r1, r2                  ; changed?
+        MSRNE   CPSR_c, r2              ; update PSR if it has changed
+        Return  ,LinkNotStacked
+      ]
+
+; ensure_irqs_on:  Enable IRQs, returning a value
+; suitable for passing to restore_irqs/irqs_on
+ensure_irqs_on
+    [ NoARMv6
+      [ :LNOT: (No32bitCode :LOR: No26bitCode)
+        ; 32 or 26 bit selected at run time
+        ; The 26 bit case preserves flags, so works with APCS-R (and APCS-32)
+        TEQ     pc, pc
+cond    SETS    "NE"
+      |  
+cond    SETS    "AL"
+      ]
+      [ :LNOT: No26bitCode
+        AND$cond   r0, lr, #I_bit
+        BIC$cond.S pc, lr, #I_bit
+      ]
+      [ :LNOT: No32bitCode
+        MRS     r0, CPSR
+        BIC     r1, r0, #I32_bit        ; enable IRQs
+        TEQ     r0, r1                  ; any change?
+        MSRNE   CPSR_c, r1              ; enable IRQs if disabled before
+        AND     r0, r0, #I32_bit        ; return previous state of bit
+        Return  ,LinkNotStacked
+      ]
+    |
+        ; Skipping the CPS is faster if we know IRQs are already on, although
+        ; it does put us at the mercy of branch prediction.
+        MRS     r0, CPSR
+        ANDS    r0, r0, #I32_bit
+        Return  ,LinkNotStacked,EQ
+        CPSIE   i
+        Return  ,LinkNotStacked
+    ]
+
+        END
+@
+
+
+1.2
+log
+@Allow No32bitCode=FALSE No26bitCode=FALSE to work
+For disc targets the above condition is true, so things using AsmUtils in this situtation might be run on something with no MSR/MRS.
+No32bitCode=TRUE with No26bitCode=TRUE remains invalid, but the 3 other combinations are now supported.
+Binaries inspected by eye for 3 combinations.
+
+Version 0.16. Tagged as 'AsmUtils-0_16'
+@
+text
+@d30 1
+d47 1
+d68 9
+d106 1
+d127 9
+@
+
+
+1.1
+log
+@  IRQ management support added.
+Detail:
+  IRQ management code has been added, provided irqs_on/irqs_off
+    and ensure_irqs_on/ensure_irqs_off/restore_irqs.
+  Removed the hardwiring of No26bitCode from sixtyfour.s :-)
+  Missing #endif's added to other header files.
+Admin:
+  Code examined in decaof to validate output.
+  Required by ShareFS 3.45 et al.
+
+Version 0.02. Tagged as 'AsmUtils-0_02'
+@
+text
+@d22 2
+a23 4
+; NOTE 1:  Counter-intuitively, irqs_on matches restore_irqs and NOT
+; ensure_irqs_on.
+;
+; NOTE 2:  This code prefers to use 32-bit code where possible.
+d38 2
+d46 13
+a58 1
+        [ No26bitCode :LOR: :LNOT: No32bitCode
+d65 1
+a65 4
+        |
+        AND     r0, lr, # I_bit
+        ORRS    pc, lr, # I_bit
+        ]
+d71 13
+a83 1
+        [ No26bitCode :LOR: :LNOT: No32bitCode
+d90 1
+a90 4
+        |
+        BIC     lr, lr, # I_bit
+        ORRS    pc, lr, r0
+        ]
+d95 13
+a107 1
+        [ No26bitCode :LOR: :LNOT: No32bitCode
+d114 1
+a114 4
+        |
+        AND     r0, lr, # I_bit
+        BICS    pc, lr, # I_bit
+        ]
+a116 1
+
+@
+

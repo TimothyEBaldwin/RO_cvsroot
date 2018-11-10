@@ -1,0 +1,281 @@
+head	1.4;
+access;
+symbols
+	TServer-0_16:1.4
+	TServer-0_15:1.4
+	TServer-0_14:1.4
+	TServer-0_12:1.3
+	TServer-0_11:1.3
+	TServer-0_10:1.2
+	TServer-0_09:1.1
+	TServer-0_08:1.1
+	TServer-0_07:1.1
+	TServer-0_06:1.1
+	TServer-0_05:1.1
+	TServer-0_04:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2004.05.06.16.34.04;	author bavison;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2002.03.04.17.17.39;	author srevill;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.11.17.18.33.59;	author dellis;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.10.18.14.14.37;	author dellis;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  New version from John, including contributions from Dan.
+Detail:
+  Only starts a task window once an application starts, otherwise commands
+  operate from within callbacks.
+  Many other unspecified updates.
+Admin:
+  As distributed to SVD.
+  We don't seem to have ever received version 0.13.
+
+Version 0.14. Tagged as 'TServer-0_14'
+@
+text
+@; Copyright 2001 Pace Micro Technology plc
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:APCS.<APCS>
+        GET     Hdr:ModHand
+
+STACK_SIZE * 8192
+
+
+	IMPORT	|Image$$RO$$Base|
+	IMPORT	|_Lib$Reloc$Off$DP|
+	IMPORT	tserver
+        IMPORT  appstack
+
+	EXPORT	|_entermodule|
+
+	AREA	|_entermodulearea|,REL,CODE,READONLY
+
+        ; Entered in USR26 or USR32 mode
+|_entermodule|
+	LDR	r10,[r12]	; Workspace ptr from private word (we need r12 later)
+	LDMIB	r10,{v2,v3}	; Module relocations
+	MOV	r0,#ModHandReason_Claim
+	MOV	r3,#STACK_SIZE
+	SWI	OS_Module
+
+	LDR	v4, =appstack ; A Ptr to stack variable
+	ADD	v4, v4, v3    ; gets relocated for user variable
+        STR     r2, [v4]      ; module needs to know the stack
+	MOV	sl,r2
+	ADD	sp,sl,r3
+	STMIA	sl,{v2,v3}
+
+	; This is equivalent of 'ADD r10, r10, #0' + |_Lib$Reloc$Off$DP|
+	DCD	|_Lib$Reloc$Off$DP| + &E28AA000
+
+	MOV	fp,#0
+        MOV     r0, r12
+	BL	tserver
+
+	; This is equivalent of 'SUB r10, r10, #0' + |_Lib$Reloc$Off$DP|
+	DCD	|_Lib$Reloc$Off$DP| + &E24AA000
+
+	SWI	OS_Exit
+
+; call the SWP instruction
+; E: r0 = value to set
+;    r1 = address of word
+; X: r0 = value of word
+        EXPORT  atomic_swap
+atomic_swap
+        MOV     r2, r1
+        MOV     r1, r0
+        SWP     r0, r1, [r2]
+        MOV     pc, lr
+
+tw_prepare
+	DCB 4				; VDU 4
+	DCB 23,1,0,0,0,0,0,0,0,0	; turn cursor off
+tw_endprepare
+ ALIGN
+
+; set the width of the screen
+	EXPORT	taskwindow_postfilter
+taskwindow_postfilter
+	STMFD	sp!, {r0-r1,lr}
+	SWI	XOS_WriteI + 28	; set the current text window
+	MOV	r0, r12		; word containing text window
+	MOV	r1, #4
+	SWI	XOS_WriteN
+
+	ADR	r0, tw_prepare		; text mode, no cursor
+	MOV	r1, #tw_endprepare - tw_prepare
+	SWI	XOS_WriteN
+
+	LDMFD	sp!, {r0-r1,pc}
+
+
+	END
+
+
+; EOF cstart.s
+@
+
+
+1.3
+log
+@  Commit of latest TServer from Dan Ellis.
+Detail:
+> I've made tserver listen to TELOPT_NAWS and set the window size in a
+> postfilter.  (You may also have seen my similar patch to zap's taskwindow
+> mode).
+>
+> This means that help and directory listings work properly in a telnet
+> session.
+Admin:
+  Builds.
+
+Version 0.11. Tagged as 'TServer-0_11'
+@
+text
+@d93 1
+d95 1
+@
+
+
+1.2
+log
+@  - task closedown cleaned up
+  - media not present upcall trapped
+  - VDU processing much enhanced
+  - task quit fixed
+
+Detail:
+  The stack claimed from RMA is now released on Service_WimpCloseDown rather
+than on exit.  This means it also gets released if the program exits
+abnormally.  Service_WimpCloseDown also resets the task handle, so that if
+the Wimp exits and restarts, TServer will restart as well, previously it was
+failing to do this because it hadn't reset its task handle.
+
+  There was a problem with media not present error boxes popping up, for
+example when an attempt was made to access an unavailable share. This has
+been fixed by sitting on UpCallV and cancelling it if the current task is one
+of ours (determined by calling Wimp_ReadSysInfo).  This results in an
+immediate response of 'shared disc not available' which is quite
+satisfactory.
+
+  Additional VDU Sequences now understood:
+
+  6 and 21 turn on and off VDU output (control whether anything gets written
+to the socket)
+
+  17 sets foreground and background text colour
+
+  30 homes the cursor
+
+  31 tabs the cursor to position x, y.
+
+  Multibyte VDU sequences other than these aren't eaten at the
+moment.
+
+  Task quit wan't being listened to.  Typing ShellCLI_TaskQuit in a session
+will now quit it cleanly.  (you may like to alias this to something a little
+easier to type!).
+
+Admin:
+  Tested extensively on RiscPC and STB3.
+
+
+
+Version 0.10. Tagged as 'TServer-0_10'
+@
+text
+@d36 2
+a37 2
+	LDR	r12,[r12]	; Workspace ptr from private word
+	LDMIB	r12,{v2,v3}	; Module relocations
+d53 1
+d60 32
+@
+
+
+1.1
+log
+@  - Now uses no wimpslot so can just be run
+  - Now supports multiple telnet sessions
+
+Detail:
+  Previously the module had to be started with *desktop so that it was
+started with the service call mechanism in order that the wimpslot could be
+explicitly set.  Since the only memory required for C is for the Stack,
+this is allocated in RMA.  Internal memory allocation is done from the RMA
+explicitly.
+
+  This enables the module to be run simply by double clicking on it rather
+than having to start it's Task part separately, a technique used by ShareFS,
+and maybe of use in other components.
+
+  There is now support for multiple telnet sessions.  Previously only one was
+supported at a time.  If debugit output is switched on, it will be displayed
+in the last session opened.
+
+Admin:
+  Tested on a RiscPC.
+
+
+
+
+Version 0.04. Tagged as 'TServer-0_04'
+@
+text
+@d28 1
+d36 2
+a37 2
+	LDR	r12,[r12]	;Workspace ptr from private word
+	LDMIB	r12,{v2,v3}	;Module relocations
+d41 4
+a57 8
+	MOV	v1,r0
+
+	MOV	r2,sl
+	MOV	r0,#7
+	SWI	XOS_Module
+	MOV	r0,#0
+
+	MOV	r0,v1
+@
+

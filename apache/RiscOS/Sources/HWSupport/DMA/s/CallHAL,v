@@ -1,0 +1,407 @@
+head	4.3;
+access;
+symbols
+	DMA-0_23:4.3
+	DMA-0_22:4.3
+	DMA-0_21:4.3
+	DMA-0_20:4.3
+	DMA-0_19:4.2
+	DMA-0_18:4.2
+	RO_5_07:4.2
+	DMA-0_17:4.2
+	DMA-0_16:4.1
+	HAL_merge:1.1.2.3
+	DMA-0_15-4_4_2_6:1.1.2.3
+	DMA-0_15-4_4_2_5:1.1.2.2
+	DMA-0_15-4_4_2_4:1.1.2.2
+	DMA-0_15-4_4_2_3:1.1.2.2
+	DMA-0_15-4_4_2_2:1.1.2.2
+	DMA-0_15-4_4_2_1:1.1.2.1
+	HAL:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	2013.01.20.12.18.34;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	THRcEfGlI1hZCWAw;
+
+4.2
+date	2003.01.30.16.10.49;	author bavison;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2002.12.13.18.48.12;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2001.11.27.14.57.57;	author bavison;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	2001.11.27.14.57.57;	author bavison;	state Exp;
+branches;
+next	1.1.2.2;
+
+1.1.2.2
+date	2002.10.03.17.35.12;	author bavison;	state Exp;
+branches;
+next	1.1.2.3;
+
+1.1.2.3
+date	2002.12.13.17.25.00;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@API enhancements and fixes
+ModHead.s: Allow list type channels to specify NoInitIRQ. Respect the flag when deciding whether or not to unmask the IRQ at the HAL level
+DMA.s: Use the cached device flags rather than incurring a function call, refactor the call to DMASetListTransfer to use the CallHAL macro
+SWI.s: The transfer unit size check was against the wrong register
+hdr/DMADevice: Comment updated to reflect wider flag use
+
+Tested with IOMD HAL, no longer aborts on module init because the channel interrupt fires before any lists have been prepared (it does have an initial IRQ), with various transfer sizes.
+
+Version 0.20. Tagged as 'DMA-0_20'
+@
+text
+@; Copyright 2001 Pace Micro Technology plc
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; CallHAL
+;
+; On entry:
+;   r0-r3 hold first 4 arguments
+;   up to 4 more arguments are on the stack
+;
+; On exit:
+;   r4-r13 are always preserved
+;   optionally r0-r3 and r14 may be preserved
+;
+; Macro parameters:
+;   $routine = name of routine to call
+;   $savelist = list of additional registers to save
+;               across the call (from the set r0,r1,r2,r3,r14);
+;               note that if there is more than one register in the list,
+;               this means that the list must be enclosed by quotes
+
+        MACRO
+$label  CallHAL $routine, $savelist
+        LCLS    reglist
+reglist SETS    "r12"
+      [ "$savelist"<>""
+reglist SETS    "$reglist,$savelist"
+      ]
+        Push    "$reglist"
+        MOV     r14,pc
+        LDR     pc,[r0,#HALDevice_$routine]
+        Pull    "$reglist"
+        MEND
+
+        END
+@
+
+
+4.2
+log
+@  A few weeks' dedicated work, mainly to support UDMA hard discs.
+Detail:
+  Features:
+  * Supports physical channels using a new type of HAL device (&303) where
+    the hardware takes a pointer to a scatter list up front to effect the
+    entire transfer, and which may report hardware errors at any time.
+    For full details, see Doc.HAL_DMAAPI.
+  * Page tables are no longer generated when using a bounce-buffer, since
+    they aren't actually any use except in determining if unsafe pages
+    intersect with the transfer. Instead, bounce-buffer transfers are halted
+    whenever any page becomes unsafe, and no new bounce-buffer transfers can
+    be started while any pages are unsafe.
+  * For both bounce-buffer and list-type devices, the Activate entry is
+    now called after the transfer is programmed (with SetCurrentTransfer
+    or SetListTransfer), since this is likely to be more useful for these
+    types of devices. Note that for interrupt-driven buffer devices, it
+    is still assumed that the default state of the device is to be in an
+    underrun interrupt state, so the transfer is not programmed until the
+    first time the interrupt routine is entered.
+  * Now ensures that scatter list start addresses and lengths are all
+    multiples of the transfer unit size (this check is done during page
+    table construction, so will be returned via the Completed callback,
+    rather than directly from DMA_QueueTransfer like the total length check).
+  * When there is no interrupt associated with a physical channel (both for
+    buffer- or list-type devices), if the polling of the hardware within SWI
+    DMA_ExamineTransfer detects that the transfer has completed, then
+    the transfer is shut down in the same was as though an interrupt had
+    happened (ie the Completed callback is called without an error).
+  * Added SWI DMA_AllocateLogicalChannels to act as a centralised allocator
+    for session-unique logical DMA channels. Primarily a service to
+    third-party authors of "HAL" devices.
+  Bugfixes:
+  * Now handles Service_MessageFileClosed to allow safe MessageTrans lookups
+    in the background.
+  * If a controller device was removed before its constituent channel
+    devices, removing the channel device would abort.
+  * Interrupt trampoline construction was wrong, the address of the
+    interrupt handler code wasn't relocated. Also, non-vectored interrupts
+    weren't correctly handled.
+  * Transfers suspended by Service_PagesUnsafe weren't blocking the logical
+    channel, so you could queue another transfer on the same channel and it
+    would start immediately (although transfers already queued before the
+    service call wouldn't have been started).
+  * Transfers which had completed within Service_PagesUnsafe handler weren't
+    being delinked from the queue.
+  * Service_PagesSafe wasn't handled properly, meaning that none of the
+    transfers that were halted by Service_PagesUnsafe were restarted! This
+    was due to the use of routines in common with DMA_SuspendTransfer and
+    DMA_ResumeTransfer which started with the first HALised version - these
+    suspend a logical channel, unlike the original IOMD code which
+    effectively suspends a physical channel. Thus the code to search for
+    transfers to restart needs to be quite different, since the physical
+    channel may be idle, or occupied with another logical channel, and
+    each physical channel may have multiple associated logical channels
+    that were on unsafe transfers!
+  * When you deregistered a logical channel (including during module death)
+    the Completed callback was called for all queued transfers, incorrectly
+    including those that had not yet had the matching Start callback called.
+  * There was a stack imbalance in the buffer device interrupt handler
+    because the retained part of the old code assumed Hdr:Proc stack
+    management, which the new code doesn't use (it's entered with the return
+    address on the stack).
+Admin:
+  Tested with UDMA test harnesses on Tungsten (ADFS not yet complete).
+
+Version 0.17. Tagged as 'DMA-0_17'
+@
+text
+@a30 1
+;   $stackedargs = number of arguments that are on the stack (0-4)
+@
+
+
+4.1
+log
+@Folded in HAL branch.
+
+Version 0.16. Tagged as 'DMA-0_16'
+@
+text
+@d34 1
+a34 1
+$label  CallHAL $routine, $savelist, $stackedargs
+@
+
+
+1.1
+log
+@file CallHAL was initially added on branch HAL.
+@
+text
+@d1 46
+@
+
+
+1.1.2.1
+log
+@  Commit of the HALised DMA Manager code, as it was when the IA division
+  was closed.
+Detail:
+  This didn't get far beyond the design stage, but what there is is best kept
+  safe in CVS in case it gets accidentally deleted again...
+Admin:
+  Don't even think about trying to build this version.
+
+Version 0.15, 4.4.2.1. Tagged as 'DMA-0_15-4_4_2_1'
+@
+text
+@a0 105
+; Copyright 2001 Pace Micro Technology plc
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+; CallHAL
+;
+; Attempt to insulate HAL caller from the differences between the HAL's
+; device-based and non-device-based calling standards
+;
+; On entry:
+;   r0-r3 hold first 4 arguments
+;   up to 4 more arguments are on the stack
+;
+; On exit:
+;   r4-r13 are always preserved
+;   optionally r0-r3 and r14 may be preserved
+;
+; Macro parameters:
+;   $routine = name of routine to call
+;   $savelist = *comma-separated* list of additional registers to save
+;               across the call (from the set r0,r1,r2,r3,r14);
+;               note that if there is more than one register in the list,
+;               this means that the list must be enclosed by quotes
+;   $stackedargs = number of arguments that are on the stack (0-4)
+
+ [ {TRUE}
+
+        MACRO
+$label  CallHAL $routine, $savelist, $stackedargs
+        LCLS    arglist
+arglist SETS    ""
+      [ "$stackedargs"<>""
+        LCLA    tempa
+tempa   SETA    3+$stackedargs
+        WHILE   tempa>3
+      [ :LEN:arglist=0
+arglist SETS    "r"
+      |
+arglist SETS    "$arglist,r"
+      ]
+arglist SETS    "$arglist":CC::CHR:(48+tempa)
+tempa   SETA    tempa-1
+        WEND
+      ]
+        LCLS    reglist
+reglist SETS    "r8,r9"
+      [ "$savelist"<>""
+reglist SETS    "$reglist,$savelist"
+      ]
+      [ :LEN:arglist>0
+reglist SETS    "$reglist,$arglist"
+      ]
+        Push    "$reglist"
+      [ "$stackedargs"<>""
+        LCLA    listlen
+listlen SETA    1
+        LCLS    temps
+temps   SETS    reglist
+        WHILE   :LEN:temps>0
+      [ temps:LEFT:1 = ","
+listlen SETA    listlen+1
+      ]
+temps   SETS    temps:RIGHT:(:LEN:temps-1)
+        WEND
+      [ $stackedargs=1
+        LDR     r4,[sp,#4*$listlen]
+      |
+        ADD     r8,sp,#4*$listlen
+        LDMIA   r8,{$arglist}
+      ]
+      ]
+        MOV     r8,#0   ; OS_Hardware 0 calls routine immediately
+        MOV     r9,#EntryNo_HAL_$routine
+        SWI     XOS_Hardware
+        Pull    "$reglist"
+        MEND
+
+ |
+
+        MACRO
+$label  CallHAL $routine, $savelist, $stackedargs
+        LCLS    reglist
+reglist SETS    "r12"
+      [ "$savelist"<>""
+reglist SETS    "$reglist,$savelist"
+      ]
+        Push    "$reglist"
+        MOV     r14,pc
+        LDR     pc,[r0,#DMADev_$routine]
+        Pull    "$reglist"
+        MEND
+
+ ]
+
+        END
+@
+
+
+1.1.2.2
+log
+@  An intermediate version.
+Detail:
+  Finally, all IOMD dependencies have been expunged, and the module will
+  build again. Any specific support for new features of other DMA controllers
+  has yet to be added, though. New exported header added, for use by DMA
+  device code.
+Admin:
+  Untested. However, should theoretically work if someone were to write the
+  appropriate routines for the IOMD HAL.
+
+Version 0.15, 4.4.2.2. Tagged as 'DMA-0_15-4_4_2_2'
+@
+text
+@a37 2
+        GET     hdr:HALEntries
+
+d83 1
+a83 1
+        MOV     r9,#EntryNo_HAL_DMA_$routine
+d99 1
+a99 1
+        LDR     pc,[r0,#HALDevice_$routine]
+@
+
+
+1.1.2.3
+log
+@  Lots of improvements, working towards support for UDMA etc.
+Detail:
+  * No longer uses temporay HAL DMA entry points, all hardware access is
+    accomplished using device entry points.
+  * Supports multiple DMA controllers, including dynamic addition and
+    removal of controllers (using OS_Hardware 4 and Service_Hardware).
+  * Added *DMAChannels, which enumerates the currently registered DMA
+    channels, listed according to physical location.
+  * Logical channel blocks are dynamically allocated (as a requirement of
+    the above changes) so logical channel handles are now pointers, no
+    longer an array index. Just so you know.
+  * Removed now-obsolete EnumerateLogical entry from controller device API.
+  * Added pointer-to-controller-device item in publically visible part of
+    channel device structure.
+  * Moved memory-to-memory channel device entries to end of channel device
+    structure (I'm considering removing them).
+  * Added support for GPA debugging listing (requires BuildSys 3.86).
+Admin:
+  Tested on Tungsten (ie floppies still work).
+
+Version 0.15, 4.4.2.6. Tagged as 'DMA-0_15-4_4_2_6'
+@
+text
+@d17 3
+d30 1
+a30 1
+;   $savelist = list of additional registers to save
+d36 56
+d104 2
+@
+
+

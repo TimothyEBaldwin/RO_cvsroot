@@ -1,0 +1,498 @@
+head	1.6;
+access;
+symbols
+	EtherUSB-0_41:1.6
+	EtherUSB-0_40:1.6
+	EtherUSB-0_39:1.6
+	EtherUSB-0_38:1.6
+	EtherUSB-0_37:1.6
+	EtherUSB-0_36:1.6
+	EtherUSB-0_35:1.6
+	EtherUSB-0_34:1.6
+	EtherUSB-0_33:1.6
+	EtherUSB-0_32:1.6
+	EtherUSB-0_31:1.6
+	EtherUSB-0_30:1.6
+	EtherUSB-0_29:1.6
+	EtherUSB-0_28:1.6
+	EtherUSB-0_27:1.6
+	EtherUSB-0_26:1.6
+	EtherUSB-0_25:1.5
+	EtherUSB-0_24:1.5
+	EtherUSB-0_23:1.5
+	EtherUSB-0_22:1.5
+	EtherUSB-0_21:1.5
+	EtherUSB-0_20:1.5
+	EtherUSB-0_19:1.5
+	EtherUSB-0_18:1.5
+	EtherUSB-0_17:1.5
+	EtherUSB-0_16:1.4
+	EtherUSB-0_15:1.4
+	EtherUSB-0_14:1.3
+	jpeacock-0_13:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2013.10.13.13.54.41;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	cLeOtNKk3nePB89x;
+
+1.5
+date	2012.05.19.08.44.28;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	6JuVMhjS8DSNlj5w;
+
+1.4
+date	2012.05.19.08.39.05;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	sBdKYcdaXJwXjj5w;
+
+1.3
+date	2012.05.19.08.30.23;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	R1EOINZ5A36Ygj5w;
+
+1.2
+date	2012.05.19.08.22.11;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	SzPjH7uh6hKVdj5w;
+
+1.1
+date	2012.05.19.08.19.06;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	q3rEKeu2RrS2cj5w;
+
+
+desc
+@@
+
+
+1.6
+log
+@Internationalised
+AutoSense script updated to be able to parse both the hardwired english output (0.08-0.25 inclusive) and internationalised text (0.26+).
+Tested RAM loaded on a Raspberry Pi.
+
+Version 0.26. Tagged as 'EtherUSB-0_26'
+@
+text
+@//
+// Copyright (c) 2006, James Peacock
+// All rights reserved.
+// 
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met: 
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+//       may be used to endorse or promote products derived from this software
+//       without specific prior written permission.
+// 
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
+/*
+ * Backend for devices compatible with the USB communications device class.
+ */
+
+#include <stddef.h>
+#include <assert.h>
+#include <string.h>
+#include <stdio.h>
+
+#include "backends.h"
+#include "module.h"
+#include "utils.h"
+#include "USB/USBDevFS.h"
+#include "usb.h"
+#include "net.h"
+
+#define USB_DEVICE_CLASS_CDC 0x02
+#define USB_INTERFACE_CLASS_CDC 0x02
+#define USB_INTERFACE_CLASS_CDC_ETHERNET 0x06
+#define USB_INTERFACE_CLASS_DATA 0x0a
+
+typedef __packed struct
+{
+  uint8_t   bLength;
+  uint8_t   bDescriptorType;
+  uint8_t   bDescriptorSubType;
+  uint16_t  bcdCDC;
+} usb_cdc_header_descriptor_t;
+
+typedef __packed struct
+{
+  uint8_t   bLength;
+  uint8_t   bDescriptorType;
+  uint8_t   bDescriptorSubType;
+  uint8_t   bMasterInterface;
+  uint8_t   bSlaveInterface[];
+} usb_cdc_union_descriptor_t;
+
+typedef __packed struct
+{
+  uint8_t   bLength;
+  uint8_t   bDescriptorType;
+  uint8_t   bDescriptorSubType;
+  uint8_t   iMACAddress;                 // Index of string descriptor.
+  uint32_t  bmEthernetStatistics;        // Mask of supported stats.
+  uint16_t  wMaxSegmentSize;             // Max segment size of ethernet dev.
+  uint16_t  wNumberOfMCFilters;          // b15: imperfect, b0-14:no filters.
+  uint8_t   bNumberPowerFilters;         // No. pattern filters for wakeup.
+} usb_cdc_ethernet_descriptor_t;
+
+typedef struct
+{
+  uint8_t  config;
+  uint8_t  master_if;
+  uint8_t  master_alt;
+  uint8_t  slave_if;
+  uint8_t  slave_alt;
+  usb_pipe_t rx_pipe;
+  usb_pipe_t tx_pipe;
+} ws_t;
+
+static _kernel_oserror* device_open(const USBServiceCall* usb,
+                                    const char*          options,
+                                    void**               private)
+{
+  if (usb->ddesc.bDeviceClass!=USB_DEVICE_CLASS_CDC ||
+      usb->ddesc.bDeviceSubClass!=0 ||
+      usb->ddesc.bDeviceProtocol!=0)
+  {
+    return err_translate(ERR_UNSUPPORTED);
+  }
+
+  const usb_cdc_header_descriptor_t*   cdc_header   = NULL;
+  const usb_cdc_union_descriptor_t*    cdc_union    = NULL;
+  const usb_cdc_ethernet_descriptor_t* cdc_ethernet = NULL;
+  const usb_config_descriptor_t*       config       = NULL;
+
+  // Scan the descriptors to pick out the ones we are interested in.
+  const void* descriptor = usb_descriptor_list(usb);
+  while (descriptor)
+  {
+    const unsigned type = usb_descriptor_type(descriptor);
+    const size_t   size = usb_descriptor_size(descriptor);
+
+    if (type==UDESC_CONFIG && size>=sizeof(usb_config_descriptor_t))
+    {
+      config = descriptor;
+      cdc_header = NULL;
+      cdc_union = NULL;
+      cdc_ethernet = NULL;
+    }
+    else if (config && type==UDESC_CS_INTERFACE && size>=3)
+    {
+      const uint8_t* p = (const uint8_t*)descriptor;
+      switch (p[2])
+      {
+        case 0x00:
+          // Header - indicates a concatenated set of functional descriptors
+          // for a interface.
+          if (size>=sizeof(usb_cdc_header_descriptor_t))
+          {
+            cdc_header = descriptor;
+            cdc_union = NULL;
+            cdc_ethernet = NULL;
+          }
+          break;
+
+        case 0x06:
+          // Union: Specifies master and at least one slave interface
+          // numbers as 0 based index in this configuration.
+          // The master is the controlling interface.
+          // The slave is the data inteface.
+          if (cdc_header &&
+              !cdc_union &&
+              size>=sizeof(usb_cdc_union_descriptor_t) &&
+              size>=5)
+          {
+            cdc_union = descriptor;
+          }
+          break;
+
+        case 0x0f:
+          // Ethernet:
+          if (cdc_header &&
+              !cdc_ethernet &&
+              size>=sizeof(usb_cdc_ethernet_descriptor_t))
+          {
+            cdc_ethernet = descriptor;
+          }
+          break;
+      }
+    }
+    descriptor = usb_descriptor_next(descriptor);
+  }
+
+  if (!(config      &&
+        cdc_header  &&
+        cdc_union   &&
+        cdc_ethernet)) return err_translate(ERR_UNSUPPORTED);
+
+  const usb_interface_descriptor_t* master =
+    usb_find_interface(usb, config->bConfigurationValue,
+                       cdc_union->bMasterInterface, 0);
+
+  if (!master) return err_translate(ERR_UNSUPPORTED);
+
+  // Find slave interface alternative with suitable looking endpoints.
+  // Some devices, including my cable modem, seem to get these the wrong
+  // way round...
+  const usb_interface_descriptor_t* slave = NULL;
+  const usb_interface_descriptor_t* reversed_slave = NULL;
+
+  for (unsigned alt=0; alt!=256; ++alt)
+  {
+    const usb_interface_descriptor_t* s
+      = usb_find_interface(usb, config->bConfigurationValue,
+                           cdc_union->bSlaveInterface[0], alt);
+
+    if (!s) break;
+    if (s->bInterfaceClass==USB_INTERFACE_CLASS_DATA &&
+        s->bNumEndpoints>=2)
+    {
+      slave = s;
+      break;
+    }
+
+    if (!reversed_slave &&
+        s->bInterfaceClass       ==USB_INTERFACE_CLASS_CDC &&
+        s->bInterfaceSubClass    ==USB_INTERFACE_CLASS_CDC_ETHERNET &&
+        master->bInterfaceClass  ==USB_INTERFACE_CLASS_DATA &&
+        master->bNumEndpoints    >=2)
+    {
+      reversed_slave = s;
+    }
+  }
+
+  if (!slave && reversed_slave)
+  {
+    slave = master;
+    master = reversed_slave;
+  }
+
+  if (!slave) return err_translate(ERR_UNSUPPORTED);
+
+  ws_t* ws = xalloc(sizeof(ws_t));
+  if (!ws) return err_translate(ERR_NO_MEMORY);
+
+  ws->config     = config->bConfigurationValue;
+  ws->master_if  = master->bInterfaceNumber;
+  ws->master_alt = master->bAlternateSetting;
+  ws->slave_if   = slave->bInterfaceNumber;
+  ws->slave_alt  = slave->bAlternateSetting;
+  ws->rx_pipe    = 0;
+  ws->tx_pipe    = 0;
+
+  *private = ws;
+  return NULL;
+}
+
+
+static _kernel_oserror* device_start(net_device_t* dev, const char* options)
+{
+  ws_t* ws = dev->private;
+
+  // Setting the slave interface should kick the device into life.
+  _kernel_oserror* e = usb_set_config(dev->name, ws->config);
+  if (!e) e = usb_set_interface(dev->name, ws->master_if, ws->master_alt);
+  if (!e) e = usb_set_interface(dev->name, ws->slave_if, ws->slave_alt);
+
+  if (!e) e = usb_open(dev->name,
+                       &ws->rx_pipe,
+                       USBRead,
+                       NULL,
+                       NULL,
+                       "Devices#bulk:$.%s",
+                       dev->name);
+
+  if (!e) e = usb_open(dev->name,
+                       &ws->tx_pipe,
+                       USBWrite,
+                       NULL,
+                       NULL,
+                       "Devices#bulk:$.%s",
+                       dev->name);
+  if (e)
+  {
+    usb_close(&ws->rx_pipe);
+    usb_close(&ws->tx_pipe);
+    return e;
+  }
+
+  return NULL;
+}
+
+static _kernel_oserror* device_stop(net_device_t* dev)
+{
+  ws_t* ws = dev->private;
+  usb_close(&ws->rx_pipe);
+  usb_close(&ws->tx_pipe);
+  return NULL;
+}
+
+static _kernel_oserror* device_close(void** private)
+{
+  xfree(*private);
+  return NULL;
+}
+
+static _kernel_oserror* device_transmit(net_device_t* dev,
+                                        const net_tx_t* pkt)
+{
+  return err_translate(ERR_TX_BLOCKED);
+}
+
+
+static const net_backend_t s_backend = {
+  .name        = N_CDC,
+  .description = "DescCDC",
+  .open        = device_open,
+  .start       = device_start,
+  .stop        = device_stop,
+  .close       = device_close,
+  .transmit    = device_transmit,
+  .info        = NULL,
+  .config      = NULL
+};
+
+_kernel_oserror* cdc_register(void)
+{
+  return net_register_backend(&s_backend);
+}
+
+@
+
+
+1.5
+log
+@Save 4.5kB by making the table of errors with objasm (so they're not all padded to 252 bytes by the compiler to fit into _kernel_oserror structs).
+The 'moduleerr.s' source should be made redundant by internationalising the module.
+
+Version 0.17. Tagged as 'EtherUSB-0_17'
+@
+text
+@d286 1
+a286 1
+  .description = "USB Communications Class Ethernet [Not functional yet]",
+@
+
+
+1.4
+log
+@Uses common USB header files exported by the USB stack.
+Use ModHand/Variables/RISCOS/OsByte headers.
+Note, this has meant some header files needed reordering to prevent circular dependencies.
+
+Version 0.15. Tagged as 'EtherUSB-0_15'
+@
+text
+@d98 1
+a98 1
+    return &err_unsupported;
+d167 1
+a167 1
+        cdc_ethernet)) return &err_unsupported;
+d173 1
+a173 1
+  if (!master) return &err_unsupported;
+d211 1
+a211 1
+  if (!slave) return &err_unsupported;
+d214 1
+a214 1
+  if (!ws) return &err_no_memory;
+d280 1
+a280 1
+  return &err_tx_blocked;
+@
+
+
+1.3
+log
+@Brought under srccommit control for update of version numbers.
+Makefile recreated from fragments
+CMHG file renamed to avoid needing special rule to tell where it is.
+
+Version 0.14. Tagged as 'EtherUSB-0_14'
+@
+text
+@d33 5
+a39 1
+#include "net.h"
+d41 1
+d43 1
+a43 5
+
+#include <stddef.h>
+#include <assert.h>
+#include <string.h>
+#include <stdio.h>
+d90 1
+a90 1
+static _kernel_oserror* device_open(const usb_service_t* usb,
+d94 3
+a96 3
+  if (usb->device.bDeviceClass!=USB_DEVICE_CLASS_CDC ||
+      usb->device.bDeviceSubClass!=0 ||
+      usb->device.bDeviceProtocol!=0)
+d113 1
+a113 1
+    if (type==USB_DESCRIPTOR_CONFIG && size>=sizeof(usb_config_descriptor_t))
+d120 1
+a120 1
+    else if (config && type==USB_DESCRIPTOR_CS_INTERFACE && size>=3)
+@
+
+
+1.2
+log
+@Explicit BSD licence heading blocks added to those source files that did not have them.
+No code changes, not tagged.
+@
+text
+@d34 1
+a37 2
+#include "module.h"
+#include "version.h"
+@
+
+
+1.1
+log
+@Import of sources to EtherUSB.
+Special thanks to James Peacock for allowing ROOL to host these sources.
+This import represents version 0.13 by James and the backend contributors, the only change being that the makefile wipes the directories it creates on cleaning so there's no need to import those to CVS.
+Tagged as jpeacock-0_13.
+@
+text
+@d1 29
+a29 3
+/* EtherUSB
+ * (C) James Peacock, 2006.
+ *
+@
+

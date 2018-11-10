@@ -1,0 +1,614 @@
+head	1.4;
+access;
+symbols
+	HTTP-1_00:1.4
+	HTTP-0_99:1.3
+	HTTP-0_98:1.3
+	HTTP-0_97:1.3
+	HTTP-0_96:1.3
+	HTTP-0_95:1.3
+	HTTP-0_94:1.3
+	HTTP-0_93:1.3
+	HTTP-0_92:1.3
+	HTTP-0_91:1.3
+	HTTP-0_90:1.3
+	HTTP-0_89:1.3
+	HTTP-0_88:1.3
+	dcotton_autobuild_BaseSW:1.3
+	HTTP-0_87:1.3
+	HTTP-0_86:1.3
+	HTTP-0_85:1.3
+	HTTP-0_84:1.3
+	HTTP-0_83:1.3
+	sbrodie_HTTP_0_82:1.3
+	sbrodie_HTTP_0_81:1.2
+	sbrodie_HTTP_0_80:1.1
+	sbrodie_HTTP_0_79:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2018.09.25.17.17.56;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	CVj93RyBuh7rCvTA;
+
+1.3
+date	98.04.27.11.56.10;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.04.24.12.10.15;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.03.31.11.05.08;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Fix possible NULL pointer dereference, add clarity
+decompress.c: remove double assignment to ses->compression, let it fall through
+start.c: don't dereference 'ses' until after the check for it being NULL
+Found by cppcheck static analysis.
+
+Version 1.00. Tagged as 'HTTP-1_00'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * HTTP (c.decompress)
+ *
+ * © Acorn Computers Ltd. 1998
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include "kernel.h"
+#include "swis.h"
+#include "sys/errno.h"
+#include "module.h"
+#include "socklib.h"
+#include "cookie.h"
+#include "protocol.h"
+#include "writedata.h"
+#include "header.h"
+#include "generic.h"
+
+#ifdef COMPRESSION
+
+int decompress(Session *ses, char *buffer, int bufsize, int toread, int *rawread)
+{
+        int dataread;
+        int orig_toread = toread;
+
+        ses->zstream.next_out = (Bytef *) buffer;
+        ses->zstream.avail_out = bufsize;
+
+        for (;;) {
+
+            switch (ses->compstate) {
+                case compress_INFLATE:
+                    #ifdef TRACE
+                    protocol_debug("decompress: INFLATE\n");
+                    #endif
+
+                    if (ses->zstream.avail_in) {
+                            /* Something left over from last time */
+                            int ret;
+
+                            #ifdef TRACE
+                            protocol_debug("inflate: Next byte in stream is %02x\n", *ses->zstream.next_in);
+                            #endif
+
+                            ret = inflate(&ses->zstream, Z_NO_FLUSH);
+                            if (ret == Z_STREAM_END) {
+                                    inflateEnd(&ses->zstream);
+                                    /*ses->compression = compression_NONE;*/
+                                    ses->compstate = compress_READ_GZIP_TRAILER;
+	                            ses->zstream.next_in = ses->compbuf;
+                            }
+                            else if (ret != Z_OK) {
+                                    #ifdef TRACE
+                                    protocol_debug("inflate error: %s\n", ses->zstream.msg);
+                                    #endif
+                                    *rawread = orig_toread - toread;
+                                    return 0;
+                            }
+                    }
+                    while (ses->zstream.avail_in == 0 && ses->zstream.avail_out > 0 && toread > 0 && ses->compstate == compress_INFLATE) {
+                            int ret;
+                            int s;
+
+                            s = toread > ses->compbufsize ? ses->compbufsize : toread;
+                            if (s == 0) {
+                                    #ifdef TRACE
+                                    protocol_debug("No buffer space left!\n");
+                                    #endif
+                                    errno = EWOULDBLOCK;
+                                    dataread = -1;
+				    if (toread < orig_toread) {
+				            *rawread = orig_toread - toread;
+				            return (char *) ses->zstream.next_out - buffer;
+				    }
+                            }
+                            else {
+	                            dataread = ses->op->s_recv(ses->sd, ses->compbuf, s, 0);
+                            }
+                            if (dataread > 0) {
+                                    toread -= dataread;
+                                    ses->zstream.next_in = ses->compbuf;
+                                    ses->zstream.avail_in = dataread;
+                                    ret = inflate(&ses->zstream, Z_NO_FLUSH);
+                                    if (ret == Z_STREAM_END) {
+                                            inflateEnd(&ses->zstream);
+                                            /*ses->compression = compression_NONE;*/
+                                            ses->compstate = compress_READ_GZIP_TRAILER;
+		                            ses->zstream.next_in = ses->compbuf;
+                                    }
+                                    else if (ret != Z_OK) {
+                                            #ifdef TRACE
+                                            protocol_debug("inflate error: %s\n", ses->zstream.msg);
+                                            #endif
+                                            *rawread = orig_toread - toread;
+                                            return 0;
+                                    }
+                            }
+                            else if (dataread == 0) {
+                                    inflateEnd(&ses->zstream);
+                                    ses->compression = compression_NONE;
+                                    ses->compstate = compress_FINISHED;
+                                    *rawread = orig_toread - toread;
+                                    return dataread;
+                            }
+                            else if (errno == EWOULDBLOCK) {
+                                    const ptrdiff_t outsize = (char *) ses->zstream.next_out - buffer;
+                                    *rawread = orig_toread - toread;
+		                    if (outsize > 0) return outsize;
+		                    return -1;
+                            }
+                            else {
+                                    *rawread = orig_toread - toread;
+                                    return dataread;
+                            }
+                    }
+                    *rawread = orig_toread - toread;
+                    #ifdef TRACE
+                    protocol_debug("decompress: %d bytes read; return value %d\n", *rawread, (char *) ses->zstream.next_out - buffer);
+                    #endif
+                    if ((char *)ses->zstream.next_out == buffer && *rawread) {
+                            if (ses->compstate == compress_INFLATE) {
+	        	            #ifdef TRACE
+		                    protocol_debug("decompress: still inflating, therefore returning EWOULDBLOCK\n");
+                		    #endif
+                        	    errno = EWOULDBLOCK;
+	                            return -1;
+                            }
+                            if (ses->compstate == compress_READ_GZIP_TRAILER) {
+                                    #ifdef TRACE
+                                    protocol_debug("decompress: still waiting for 8 bytes trailer = therefore returning EWOULDBLOCK\n");
+                                    #endif
+                                    errno = EWOULDBLOCK;
+                                    return -1;
+                            }
+	        	    #ifdef TRACE
+	                    protocol_debug("decompress: inflation has completed - therefore returning zero\n");
+               		    #endif
+                   }
+                    return (char *) ses->zstream.next_out - buffer;
+
+                case compress_READ_GZIP_HEADER:
+                    #ifdef TRACE
+                    protocol_debug("decompress: READ_GZIP_HEADER\n");
+                    #endif
+
+                    if (ses->zstream.next_in == Z_NULL) {
+                            ses->zstream.next_in = ses->compbuf;
+                            ses->zstream.avail_in = 0;
+                    }
+
+                    dataread = ses->op->s_recv(ses->sd, ses->zstream.next_in, toread > 10 - ses->zstream.avail_in ? 10 - ses->zstream.avail_in : toread, 0);
+                    if (dataread <= 0) {
+                            *rawread = orig_toread - toread;
+                            return dataread;
+                    }
+
+                    toread -= dataread;
+                    ses->zstream.avail_in += dataread;
+                    ses->zstream.next_in += dataread;
+                    if (ses->zstream.avail_in < 10) {
+                            *rawread = orig_toread - toread;
+                            errno = EWOULDBLOCK;
+                            return -1;
+                    }
+
+                    if (ses->compbuf[0] != 0x1F || ses->compbuf[1] != 0x8B ||
+                        ses->compbuf[2] != 8 || (ses->compbuf[3] & 0xE0) != 0) {
+                            *rawread = orig_toread - toread;
+	                    #ifdef TRACE
+        	            protocol_debug("decompress: compbuf wrong (%02x,%02x,%02x,%02x)\n", ses->compbuf[0], ses->compbuf[1], ses->compbuf[2],ses->compbuf[3]);
+                	    #endif
+                            return 0;
+                    }
+
+                    ses->compflags = ses->compbuf[3];
+                    ses->compstate = compress_READ_GZIP_EXTRA;
+                    ses->zstream.next_in = ses->compbuf;
+                    ses->zstream.avail_in = 0;
+                    if (toread == 0) {
+                            *rawread = orig_toread - toread;
+                            errno = EWOULDBLOCK;
+                            return -1;
+                    }
+                    /* Fall through */
+
+                case compress_READ_GZIP_EXTRA:
+                    #ifdef TRACE
+                    protocol_debug("decompress: READ_GZIP_EXTRA\n");
+                    #endif
+
+                    if (ses->compflags & 0x04) {
+                            if (ses->zstream.avail_in < 2) {
+		                    if (toread == 0) {
+                		            dataread = -1;
+		                            errno = EWOULDBLOCK;
+		                    }
+                                    else {
+                                            dataread = ses->op->s_recv(ses->sd, ses->zstream.next_in, toread > 2 - ses->zstream.avail_in ? 2 - ses->zstream.avail_in : toread, 0);
+                                    }
+                                    if (dataread <= 0) {
+                                            *rawread = orig_toread - toread;
+                                            return dataread;
+                                    }
+                                    toread -= dataread;
+                                    ses->zstream.avail_in += dataread;
+                                    ses->zstream.next_in += dataread;
+                                    if (ses->zstream.avail_in < 2) {
+                                            *rawread = orig_toread - toread;
+                                            errno = EWOULDBLOCK;
+                                            return -1;
+                                    }
+                                    ses->zstream.avail_in = ses->compbuf[0] + 256 * ses->compbuf[1];
+                                    #ifdef TRACE
+                                    protocol_debug("%d bytes of gzip extra data to discard\n", ses->zstream.avail_in);
+                                    #endif
+                            }
+                    }
+                    ses->compstate = compress_READING_GZIP_EXTRA;
+                    /* Fall through */
+
+                case compress_READING_GZIP_EXTRA:
+                    #ifdef TRACE
+                    protocol_debug("decompress: READING_GZIP_EXTRA\n");
+                    #endif
+		    if (ses->compflags & 0x04) {
+                            int s;
+                          suck_more:
+                            s = ses->compbufsize > ses->zstream.avail_in ? ses->zstream.avail_in : ses->compbufsize;
+                            s = toread > s ? s : toread;
+			    if (s == 0) {
+			            errno = EWOULDBLOCK;
+			            dataread = -1;
+			    }
+                            else {
+                                    dataread = ses->op->s_recv(ses->sd, ses->compbuf, s, 0);
+                            }
+                            if (dataread <= 0) {
+                                    *rawread = orig_toread - toread;
+                                    return dataread;
+                            }
+
+                            toread -= dataread;
+                            ses->zstream.avail_in -= dataread;
+                            if (ses->zstream.avail_in > 0)
+                                    goto suck_more;
+		    }
+
+                    ses->compstate = compress_READ_GZIP_NAME;
+                    ses->zstream.next_in = ses->compbuf;
+                    ses->zstream.avail_in = 0;
+                    /* Fall through */
+
+                case compress_READ_GZIP_NAME:
+                    #ifdef TRACE
+                    protocol_debug("decompress: READ_GZIP_NAME\n");
+                    #endif
+
+                    if (ses->compflags & 0x08) {
+                            int s;
+
+                            suck_more_fname:
+                            s = toread > ses->compbufsize ? ses->compbufsize : toread;
+			    if (s == 0) {
+			            errno = EWOULDBLOCK;
+			            dataread = -1;
+			    }
+			    else {
+	                            dataread = ses->op->s_recv(ses->sd, ses->compbuf, s, 0);
+			    }
+                            if (dataread <= 0) {
+                                    *rawread = orig_toread - toread;
+                                    return dataread;
+                            }
+                            toread -= dataread;
+                            for (ses->zstream.next_in=ses->compbuf,
+                                 ses->zstream.avail_in=dataread;
+                                 ses->zstream.avail_in;
+                                 ses->zstream.next_in++,
+                                 ses->zstream.avail_in--) {
+                                    if (*ses->zstream.next_in == 0) goto finished_fname;
+                            }
+
+                            goto suck_more_fname;
+
+	                    finished_fname:
+        	            /* Don't forget to skip over the '\0' */
+                	    ses->zstream.next_in++;
+	                    ses->zstream.avail_in--;
+                    }
+                    ses->compstate = compress_READ_GZIP_COMMENT;
+                    /* Fall through */
+
+                case compress_READ_GZIP_COMMENT:
+                    #ifdef TRACE
+                    protocol_debug("decompress: READ_GZIP_COMMENT\n");
+                    #endif
+
+                    if (ses->compflags & 0x10) {
+                            int s;
+                          suck_more_comment:
+                            for ( ; ses->zstream.avail_in;
+                                ses->zstream.next_in++,
+                                 ses->zstream.avail_in--) {
+                                    if (*ses->zstream.next_in == 0) goto finished_comment;
+                            }
+                            s = toread > ses->compbufsize - 2 ? ses->compbufsize - 2 : toread;
+			    if (s == 0) {
+			            errno = EWOULDBLOCK;
+			            dataread = -1;
+			    }
+			    else {
+                            	dataread = ses->op->s_recv(ses->sd, ses->compbuf, s, 0); /* Leave room for CRC... */
+			    }
+                            if (dataread <= 0) {
+                                    *rawread = orig_toread - toread;
+                                    return dataread;
+                            }
+                            toread -= dataread;
+                            ses->zstream.next_in = ses->compbuf;
+                            ses->zstream.avail_in = dataread;
+                            goto suck_more_comment;
+
+	                  finished_comment:
+        	            /* Don't forget to skip over the '\0' */
+                	    ses->zstream.next_in++;
+	                    ses->zstream.avail_in--;
+                    }
+                    ses->compstate = compress_READ_GZIP_HCRC;
+                    /* Fall through */
+
+                case compress_READ_GZIP_HCRC:
+                    #ifdef TRACE
+                    protocol_debug("decompress: READ_GZIP_HCRC\n");
+                    #endif
+
+                    if (ses->compflags & 0x02) {
+                            if (ses->zstream.avail_in < 2) {
+                                    int s;
+                                    s = toread > 2 - ses->zstream.avail_in ? 2 - ses->zstream.avail_in : toread;
+                                    if (s == 0) {
+                                            errno = EWOULDBLOCK;
+                                            dataread = -1;
+                                    }
+                                    else {
+	                                    dataread = ses->op->s_recv(ses->sd, ses->zstream.next_in, s, 0);
+                                    }
+                                    if (dataread <= 0) {
+                                            *rawread = orig_toread - toread;
+                                            return dataread;
+                                    }
+
+                                    toread -= dataread;
+                                    ses->zstream.next_in += dataread;
+                                    ses->zstream.avail_in += dataread;
+                                    if (ses->zstream.avail_in < 2) {
+                                            *rawread = orig_toread - toread;
+                                            errno = EWOULDBLOCK;
+                                            return -1;
+                                    }
+                            }
+                            else {
+                                    ses->zstream.next_in += 2;
+                            }
+                            ses->zstream.avail_in -= 2;
+                    }
+                    ses->compstate = compress_INFLATE;
+                    break;
+
+                case compress_READ_GZIP_TRAILER:
+                    #ifdef TRACE
+                    protocol_debug("decompress: READ_GZIP_TRAILER (avail_in = %d, orig_toread = %d)\n", ses->zstream.avail_in, orig_toread);
+                    #endif
+
+		    if (ses->compression != compression_GZIP) {
+		            *rawread = orig_toread - toread;
+			    ses->compstate = compress_FINISHED;
+		            return 0;
+		    }
+                    else if (ses->zstream.avail_in < 8) {
+		    	int s;
+                        s = toread > 8 - ses->zstream.avail_in ? 8 - ses->zstream.avail_in : toread;
+			if (s == 0) {
+			        errno = EWOULDBLOCK;
+			        dataread = -1;
+			}
+			else {
+	                        dataread = ses->op->s_recv(ses->sd, ses->compbuf, s, 0);
+			}
+       	            	if (dataread <= 0) {
+                       	    	*rawread = orig_toread - toread;
+                            	return dataread;
+                        }
+
+                    	toread -= dataread;
+                    	ses->zstream.avail_in += dataread;
+                        if (ses->zstream.avail_in < 8) {
+                                *rawread = orig_toread - toread;
+                                errno = EWOULDBLOCK;
+                                return -1;
+                        }
+                    }
+
+		    ses->zstream.avail_in -= 8;
+                    ses->compstate = compress_FINISHED;
+                    /* Fall through */
+
+                case compress_FINISHED:
+                    dataread=0;
+                    ses->compression = compression_NONE;
+		    *rawread = orig_toread - toread;
+		    return 0;
+            }
+        }
+
+        *rawread = orig_toread - toread;
+        return dataread;
+}
+
+#endif
+@
+
+
+1.3
+log
+@HTTP 0.82
+
+* First block of data was being thrown on the floor during
+  decompression in some cases.  This is now fixed.
+
+* Debug output now knows about cookie related SWIs and won't claim that
+  they are unknown SWIs.
+
+* Transfers which are both Chunked and compressed work correctly now.
+@
+text
+@d422 1
+a422 1
+                    ses->compression = compression_NONE;
+@
+
+
+1.2
+log
+@AcornHTTP version 0.81
+
+On the fly decompression now works.  Both deflated and gzipped files
+are handled and will, if the server asks us to, be decompressed on the
+fly during download.  (Chunked compressed downloads are untested)
+@
+text
+@d24 1
+d121 6
+@
+
+
+1.1
+log
+@Added support for Content-Encoding: gzip and deflate.
+Appears to work on the one server I've found to test against - more
+servers need to be found. Particularly, we need to test unusual gzip
+headers and interaction with chunking.
+@
+text
+@d55 7
+a61 1
+                            int ret = inflate(&ses->zstream, Z_NO_FLUSH);
+d64 3
+a66 2
+                                    ses->compression = compression_NONE;
+                                    ses->compstate = compress_FINISHED;
+d78 17
+a94 1
+                            dataread = ses->op->s_recv(ses->sd, ses->compbuf, toread > ses->compbufsize ? ses->compbufsize : toread, 0);
+d102 3
+a104 2
+                                            ses->compression = compression_NONE;
+                                            ses->compstate = compress_FINISHED;
+d127 22
+d169 1
+d177 1
+a177 1
+                        ses->compbuf[2] != 8) {
+d179 3
+d189 5
+a201 1
+                            int s;
+d203 7
+a209 1
+                                    dataread = ses->op->s_recv(ses->sd, ses->zstream.next_in, toread > 2 - ses->zstream.avail_in ? 2 - ses->zstream.avail_in : toread, 0);
+d216 1
+d222 4
+a225 1
+                                    ses->zstream.avail_out = ses->compbuf[0] + 256 * ses->compbuf[1];
+d227 10
+d238 1
+a238 1
+                            s = ses->compbufsize > ses->zstream.avail_out ? ses->compbufsize : ses->zstream.avail_out;
+d240 7
+a246 2
+                            dataread = ses->op->s_recv(ses->sd, ses->compbuf, s, 0);
+                            toread -= dataread;
+d252 3
+a254 2
+                            ses->zstream.avail_out -= dataread;
+                            if (ses->zstream.avail_out > 0)
+d256 1
+a256 1
+                    }
+d269 2
+d272 8
+a279 1
+                            dataread = ses->op->s_recv(ses->sd, ses->compbuf, toread > ses->compbufsize ? ses->compbufsize : toread, 0);
+d295 4
+a299 1
+                    finished_fname:
+d309 1
+d316 8
+a323 1
+                            dataread = ses->op->s_recv(ses->sd, ses->compbuf, toread > ses->compbufsize - 2 ? ses->compbufsize - 2 : toread, 0); /* Leave room for CRC... */
+d333 4
+a337 1
+                  finished_comment:
+d348 9
+a356 1
+                                    dataread = ses->op->s_recv(ses->sd, ses->zstream.next_in, toread > 2 - ses->zstream.avail_in ? 2 - ses->zstream.avail_in : toread, 0);
+d371 3
+d379 38
+d419 3
+a421 1
+
+@

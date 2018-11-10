@@ -1,0 +1,396 @@
+head	4.1;
+access;
+symbols
+	FileCore-3_75:4.1
+	FileCore-3_74:4.1
+	FileCore-3_73:4.1
+	FileCore-3_72:4.1
+	FileCore-3_71:4.1
+	FileCore-3_70:4.1
+	FileCore-3_69:4.1
+	FileCore-3_68:4.1
+	FileCore-3_67:4.1
+	FileCore-3_66:4.1
+	FileCore-3_65:4.1
+	FileCore-3_64:4.1
+	FileCore-3_63:4.1
+	FileCore-3_62:4.1
+	FileCore-3_61:4.1
+	FileCore-3_60:4.1
+	FileCore-3_59:4.1
+	FileCore-3_58:4.1
+	FileCore-3_57:4.1
+	FileCore-3_56:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.1
+date	2013.02.24.21.09.03;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	rgJG8ZFRF8o9ruFw;
+
+
+desc
+@@
+
+
+4.1
+log
+@Extend upper permissable file size to 4GB-1
+Tested for ~200,000 cycles in various configurations with FSBash, with no integrity problems, nor bad maps. However, background transfers (currently only used by ADFS) is still being endurance tested, hence is currently disabled.
+Users should note that they can create big files without needing to reformat their drives, however if reverting to an older copy of FileCore the files must not be opened, loaded, or deleted (it's fine to view the directory, just don't expect old FileCore to know how to parse such long fragment runs).
+Current versions of DiscKnight (1.49) do not understand long fragment runs.
+
+FSBash
+------
+* Reviewed and expunged various signed comparisons of file pointers in the existing tests
+* Added new tests for big files which attempt to aggrevate all the usual problems passing over and up to important boundaries
+* Makefile recreated from fragments
+* Some compiler warning squashed
+
+Docs
+----
+* Some notes added for big file support
+
+Misc
+----
+Commands: swapped to using Command macro
+HelpText: labels renamed to help Command macro
+GenSWIs: text table name for SectorDiscOp ammended to match exported header and corresponding secondary module names (ADFS_SectorDiscOp et al). The usefulness of calling the base instantiation of FileCore_SectorDiscOp is minimal, especially from BASIC.
+Messages: message for attempting to check an old map disc made less terse
+hdr/FileCore: typo
+
+Version 3.56. Tagged as 'FileCore-3_56'
+@
+text
+@/* Copyright 2013 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include "kernel.h"
+#include "swis.h"
+#include "tester.h"
+#include "logger.h"
+
+void big_file_test( char *name )
+{
+        _kernel_oserror *err;
+        _kernel_swi_regs r;
+        _kernel_swi_regs newr;
+        uint64_t offset;
+        uint32_t i;
+        int      handle;
+
+        logprintf( "big_file_test( \"%s\" ) ", name );
+
+        r.r[0] = 55;
+        r.r[1] = (int)"$";
+        err = _kernel_swi( OS_FSControl, &r, &r );
+        if ( (err != NULL) || (r.r[1] == 0) )
+        {
+                /* Implies not a big enough disc for 4GB file, non fatal fail */
+                logprintf( "skipped due to lack of free space\n" );
+                return;
+        }
+
+        /* Create large maximal +ve */
+        r.r[0] = 11;
+        r.r[1] = (int)name;
+        r.r[2] = 0xFFD;
+        r.r[4] = 0;
+        r.r[5] = (int)0x7FFFFFFF;
+        err = _kernel_swi( OS_File, &r, &r);
+        if ( err != NULL )
+        {
+                /* Failed to create the object */
+                pout_error( err );
+                logprintf( "on create of maximal +ve object\n" );
+                return;
+        }
+
+        /* Re open */
+        r.r[0] = 0xCF;
+        r.r[1] = (int)name;
+        err = _kernel_swi( OS_Find, &r, &r );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when opening up\n" );
+                return;
+        }
+        handle = r.r[0];
+
+        /* Set pointer to just short of end */
+        r.r[0] = 1;
+        r.r[1] = handle;
+        r.r[2] = 0x7FFFFF11;
+        _kernel_swi( OS_Args, &r, &r );
+
+        /* Write over the threshold to top bit set */
+        for ( i = 0;
+              i < 256;
+              i++)
+        {
+                r.r[0] = i;
+                r.r[1] = handle;
+                err = _kernel_swi( OS_BPut, &r, &r );
+                if ( err )
+                {
+                        pout_error( err );
+                        logprintf( "when flipping sign of unsigned extent" );
+                        goto tidyup;
+                }
+        }
+
+        /* Check where we are */
+        r.r[0] = 0;
+        r.r[1] = handle;
+        err = _kernel_swi( OS_Args, &r, &newr );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when getting pointer" );
+                goto tidyup;
+        }
+        else
+        {
+                check_regs_unchanged( &r, &newr, 0x3FB );
+                if ( newr.r[2] != (0x7FFFFF11uL + 256) )
+                {
+                        logprintf( "wrong pointer %u versus %u", newr.r[2], (0x7FFFFF11uL + 256) );
+                        goto tidyup;
+                }
+        }
+
+        /* Read over the boundary */
+        r.r[0] = 3;
+        r.r[1] = handle;
+        r.r[2] = (int)random_write_result;
+        r.r[3] = 256;
+        r.r[4] = 0x7FFFFF11;
+        err = _kernel_swi( OS_GBPB, &r, &r );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when reading padding" );
+                goto tidyup;
+        }
+        else
+        {
+                for ( i = 0;
+                      i < 256;
+                      i++ )
+                {
+                        if ( random_write_result[ i ] != i )
+                        {
+                                logprintf( "sequential bytes not in order at %u", i );
+                                goto tidyup;
+                        }
+                }
+        }
+
+        /* Close and delete */
+        r.r[0] = 0;
+        r.r[1] = handle;
+        _kernel_swi( OS_Find, &r, &r );
+        r.r[0] = 6;
+        r.r[1] = (int)name;
+        _kernel_swi( OS_File, &r, &r );
+        if ( r.r[4] != (0x7FFFFF11uL + 256) )
+        {
+                logprintf( "catalogue deletion had wrong length\n" );
+                return;
+        }
+
+        /* Create large */        
+        r.r[0] = 11;
+        r.r[1] = (int)name;
+        r.r[2] = 0xFFD;
+        r.r[4] = 0;
+        r.r[5] = (int)0xFFFFF000 + myrand();
+        err = _kernel_swi( OS_File, &r, &r);
+        if ( err != NULL )
+        {
+                /* Failed to create the object */
+                pout_error( err );
+                logprintf( "on create of big object\n" );
+                return;
+        }
+
+        /* Re open */
+        r.r[0] = 0xCF;
+        r.r[1] = (int)name;
+        err = _kernel_swi( OS_Find, &r, &r );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when opening up\n" );
+                return;
+        }
+        handle = r.r[0];
+
+        /* Try to ensure size and check it doesn't wrap to 0 */
+        r.r[0] = 6;
+        r.r[1] = handle;
+        r.r[2] = (int)0xFFFFFFFF;
+        err = _kernel_swi( OS_Args, &r, &newr );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when ensuring 4G-1" );
+                goto tidyup;
+        }
+        else
+        {
+                /* Normally R2 gets rounded up to a sector, but not for 4G-1 */
+                check_regs_unchanged( &r, &newr, 0x3FF );
+        }
+
+        /* Test the write zeros entry */
+        r.r[0] = 3;
+        r.r[1] = handle;
+        r.r[2] = (int)0xFFFFFFFF;
+        err = _kernel_swi( OS_Args, &r, &newr );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when padding to 4G-1" );
+                goto tidyup;
+        }
+        else
+        {
+                check_regs_unchanged( &r, &newr, 0x3FF );
+        }
+        r.r[0] = 3;
+        r.r[1] = handle;
+        r.r[2] = (int)random_write_result;
+        r.r[3] = 256;
+        r.r[4] = (int)0xFFFFFEFF;
+        err = _kernel_swi( OS_GBPB, &r, &r );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when reading padding" );
+                goto tidyup;
+        }
+        else
+        {
+                for ( i = 0;
+                      i < 256;
+                      i++ )
+                {
+                        if ( random_write_result[ i ] != 0 )
+                        {
+                                logprintf( "non zero zero padding at 0xFFFFFF%02X", i );
+                                goto tidyup;
+                        }
+                }
+        }
+
+        /* Spray some copies of the above test pattern into various
+         * places in the test file, not sector aligned of course, that's too easy
+         */
+        for ( i = 0;
+              i < RandomDataAmount;
+              i++ )
+        {
+                random_data_area[ i ] = myrand() & 0xff;
+        }
+
+        for ( offset = 0;
+              offset < 0x100000000uLL;
+              offset = offset + 0x2000000 - 100 )
+        {
+                r.r[0] = 1;
+                r.r[1] = handle;
+                r.r[2] = (int)random_data_area;
+                r.r[3] = (RandomDataAmount / 100) * 100;
+                r.r[4] = (int)offset;
+                if ( (uint32_t)(r.r[4] + r.r[3]) < (uint32_t)r.r[4] )
+                {
+                        /* Overflowed, dial it down a bit */
+                        r.r[3] = 0xFFFFFFFF - r.r[4];
+                }
+                err = _kernel_swi( OS_GBPB, &r, &r );
+                if ( err )
+                {
+                        pout_error( err );
+                        logprintf( "writing random data at %u", r.r[4] );
+                        goto tidyup;
+                }
+        }
+
+        r.r[0] = 255;
+        r.r[1] = handle;
+        err = _kernel_swi( OS_Args, &r, &newr );
+        if ( err )
+        {
+                pout_error( err );
+                logprintf( "when flushing 4G-1");
+                goto tidyup;
+        }
+        else
+        {
+                check_regs_unchanged( &r, &newr, 0x3FF );
+        }
+
+        for ( offset = 0;
+              offset < 0x100000000uLL;
+              offset = offset + 0x2000000 - 100 )
+        {
+                r.r[0] = 3;
+                r.r[1] = handle;
+                r.r[2] = (int)random_write_result;
+                r.r[3] = (RandomDataAmount / 100) * 100;
+                r.r[4] = (int)offset;
+                if ( (uint32_t)(r.r[4] + r.r[3]) < (uint32_t)r.r[4] )
+                {
+                        /* Overflowed, dial it down a bit */
+                        r.r[3] = 0xFFFFFFFF - r.r[4];
+                }
+                err = _kernel_swi( OS_GBPB, &r, &newr );
+                if ( err )
+                {
+                        pout_error( err );
+                        logprintf( "reading random data from %u", r.r[4] );
+                        goto tidyup;
+                }
+                else
+                {
+                        if ( memcmp( random_write_result, random_data_area, r.r[3] ) != 0 )
+                        {
+                                problems++;
+                                logprintf( "data corrupt at %u", r.r[4] );
+                        }
+                }
+        }
+
+tidyup:
+        r.r[0] = 0;
+        r.r[1] = handle;
+        _kernel_swi( OS_Find, &r, &r );
+
+        if ( !problems )
+        {
+                /* Check type is file and length is 4G-1 */
+                check_catalogue_info( name, 1, 0, 0, 0xFFFFFFFF, 0, 0x9 );
+        }
+
+        logprintf( "\n" );
+}
+@

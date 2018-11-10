@@ -1,0 +1,334 @@
+head	1.4;
+access;
+symbols
+	OMAPVideo-0_41:1.4
+	OMAPVideo-0_40:1.3
+	OMAPVideo-0_39:1.3
+	OMAPVideo-0_38:1.3
+	OMAPVideo-0_37:1.3
+	OMAPVideo-0_36:1.2
+	OMAPVideo-0_35:1.2
+	OMAPVideo-0_34:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2018.05.31.21.49.08;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	qHkabDo5zjgySuEA;
+
+1.3
+date	2015.06.14.13.52.13;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	I7TOmn2EUkLh1ppy;
+
+1.2
+date	2015.05.31.17.43.43;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	vMWraheejEtCKCny;
+
+1.1
+date	2015.05.17.17.50.22;	author jlee;	state Exp;
+branches;
+next	;
+commitid	J3i0xRSaySaJePly;
+
+
+desc
+@@
+
+
+1.4
+log
+@Big refactor, introduce GraphicsV overlay API support
+Detail:
+  This change introduces initial support for the GraphicsV overlay API.
+  RGB & YUV overlays are supported, along with rotation and scaling.
+  Vertical flipping isn't supported yet, and there are still a number of bugs to track down, along with some potential improvements.
+  The code has also been refactored significantly, in an attempt to protect all critical state with spinlocks/mutexes (as appropriate), and to reduce the number of globals so that it's easier to see what's touching what. Previously very little locking was performed, which could lead to issues if VSyncs or synclost interrupts occurred during certain operations. Now, the data should be structured in such a way that this shouldn't cause problems.
+  Notable things:
+  * State which needs to be writable from interrupt handlers is protected by spinlocks
+  * State which needs to be readable from interrupt handlers is protected by reader-writer spinlocks
+  * State which doesn't need to be accessed from interrupt handlers is unprotected (mutexes can be introduced in the future to make the code SMP-safe)
+  * Using non-alpha screen modes for the desktop will currently result in only "basic" overlays being supported (i.e. overlays which appear ontop of the desktop). In some cases this could be improved by falling back to a software pointer, but for now the only way to get Z-Order overlays is to use a screen mode with an alpha channel.
+  * Memory allocation for overlays is abstracted via the buffer interface (h/buffer). This has three implementations: basic buffers for untransformed overlays, VRFB-transformed buffers for OMAP3, and TILER-transformed buffers for OMAP4.
+  * Ultimately all overlay memory is allocated as physically contiguous pages within a PMP - although since TILER contains its own MMU this isn't strictly necessary on OMAP4
+  * Overlay memory is mapped as write-through cacheable for CPU access; experimentation with different cache policies has yet to be performed. However a potential future optimisation would be to perform lazy unmapping of overlay buffers, reducing the map/unmap overhead in well-behaved code which only maps buffers when they're needed
+Admin:
+  Tested on BB-xM, Pandaboard
+
+
+Version 0.41. Tagged as 'OMAPVideo-0_41'
+@
+text
+@/*
+ * Copyright (c) 2010, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include <string.h>
+#include "Global/RISCOS.h"
+#include "Global/HALEntries.h"
+#include "Global/GraphicsV.h"
+#include "swis.h"
+
+#include "DebugLib/DebugLib.h"
+
+#include "dispc.h"
+#include "dsi.h"
+#include "graphicsv.h"
+#include "dss.h"
+#include "regs.h"
+#include "consts.h"
+#include "vars.h"
+
+int dispc_irq_handler(_kernel_swi_regs *r, void *pw)
+{
+	(void) r;
+	(void) pw;
+	/* Get cause */
+	uint32_t cause = dispc->irqstatus & dispc->irqenable;
+	if(!cause)
+		return 1; /* Wasn't us! */
+	/* SYNCLOST handling - as per note on p2192 of spruf98d:
+	   * Disable offending display (LCD or TV)
+	   * Wait for current frame to complete (FRAMEDONE or EVSYNC_EVEN/EVSYNC_ODD)
+	   * Perform DSS SOFTRESET
+	   * Reprogram and pray it's fixed! */
+	if(cause & DISPC_IRQ_SYNCLOST2)
+	{
+		/* This still feels icky */
+		dispc->irqstatus = DISPC_IRQ_FRAMEDONE2;
+		dispc->control2 &= ~DISPC_CONTROL_LCDENABLE;
+		dispc->irqenable = (dispc->irqenable & ~DISPC_IRQ_SYNCLOST2) | DISPC_IRQ_FRAMEDONE2;
+		set_ban(BHUB_SYNCLOST);
+	}
+	if(cause & DISPC_IRQ_SYNCLOSTTV)
+	{
+		dispc->irqstatus = DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD;
+		dispc->control1 &= ~DISPC_CONTROL_TVENABLE;
+		dispc->irqenable = (dispc->irqenable & ~DISPC_IRQ_SYNCLOSTTV) | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD;
+		set_ban(BHUB_SYNCLOSTDIGITAL);
+	}
+#ifdef DEBUGLIB
+	if((cause & ~(DISPC_IRQ_VSYNC2 | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) != 0)
+		dprintf(("","dispc_irq_handler: Cause %08x\n",cause));
+#endif
+	/* Clear IRQs */
+	dispc->irqstatus = cause;
+	/* Clear in interrupt controller */
+	_swix(OS_Hardware, _IN(0) | _INR(8,9), dev->dev.devicenumber&~(1u<<31), OSHW_CallHAL, EntryNo_HAL_IRQClear);
+	/* We can now enable interrupts? */
+	int irqs = _kernel_irqs_disabled();
+	if(irqs)
+		_kernel_irqs_on();
+	/* Only tell RISC OS about VSync if we haven't encountered SYNCLOST, and only if it's the right kind of vsync */
+	overlaytarget default_display = modelocked_read_lock()->default_display;
+	modelocked_read_unlock();
+	if((cause & DISPC_IRQ_VSYNC2) && (default_display == TARGET_LCD2) && !(ban_hardware_update & BHUB_SYNCLOST))
+	{
+		/* Let RISC OS know it was a VSync */
+		_kernel_oserror *e =_swix(OS_CallAVector,_IN(4) | _IN(9),GraphicsV_VSync | (graphicsv_driver_number<<24),GraphicsV);
+		if(e)
+			dprintf(("","%08x %s\n",e->errnum,e->errmess));
+	}
+	if(((cause & DISPC_IRQ_FRAMEDONE2) && (ban_hardware_update & BHUB_SYNCLOST))
+	|| ((cause & (DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD)) && (ban_hardware_update & BHUB_SYNCLOSTDIGITAL)))
+	{
+		uint32_t oldctrl = dispc->control2;
+		/* SYNCLOST handling, part two
+		   Reset the DSS, then reprogram whatever outputs were active before the incident */
+		dprintf(("","dispc_irq_handler: dss_reset: cause %08x ban %08x oldctrl %08x\n",cause,ban_hardware_update,oldctrl));
+		/* Clear all bans beforehand? Seems icky */
+		bool restore_lcd = ((oldctrl & DISPC_CONTROL_LCDENABLE) || (ban_hardware_update & BHUB_SYNCLOST));
+		clear_ban(BHUB_SYNCLOST);
+		clear_ban(BHUB_SYNCLOSTDIGITAL);
+		dss_reset();
+		{
+			const irqlocked_t *irqlocked = irqlocked_lock();
+			for(int i=0;i<TARGET_MAX;i++)
+			{
+				(headattrs[i].settransparent)((overlaytarget) i,irqlocked);
+				(headattrs[i].setbackground)((overlaytarget) i,irqlocked);
+			}
+			irqlocked_unlock();
+		}
+		const modelocked_t *modelocked = modelocked_read_lock();
+		if(restore_lcd)
+		{
+			(headattrs[TARGET_LCD2].setmode)(TARGET_LCD2,&modelocked->heads[TARGET_LCD2]);
+		}
+		/* Reprogram the overlays */
+		{
+			const irqlocked_t *irqlocked = irqlocked_lock();
+			for(int i=0;i<OVERLAY_MAX;i++)
+			{
+				dispc_update_overlay((overlayidx) i,modelocked,irqlocked);
+			}
+			irqlocked_unlock();
+		}
+		modelocked_read_unlock();
+	}
+	if(irqs)
+		_kernel_irqs_off();
+	return 0;
+}
+@
+
+
+1.3
+log
+@Misc tweaks
+Detail:
+  c/cmodule, c/sdma, h/regs, h/sdma, omap3/c/omap, omap4/c/omap - Move *SDMARegs handling from c/cmodule to c/sdma. Define DUMPREG in h/regs instead of in each individual file that uses it.
+  omap3/c/dispc_plat, omap4/c/dispc_plat - Fix setting of GO bits in dispc_flush_transparency_cfg()
+  omap4/c/dss - Update comment
+  omap4/c/omap - Use designated initialisers for omapformats array to ensure it stays in sync with enum ordering. Strip dead code.
+Admin:
+  Changes supplied by Willi Theiss
+  Tested on BB-xM
+
+
+Version 0.37. Tagged as 'OMAPVideo-0_37'
+@
+text
+@a36 1
+#include "globals.h"
+d41 2
+a42 39
+
+void dispc_flush_transparency_cfg(bool go)
+{
+	int irqs;
+	if(!begin_quick_hardware_update(&irqs))
+		return;
+	uint32_t orig_config2 = dispc->config2;
+	uint32_t config2 = orig_config2 & ~(DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION);
+	config2 |= transparency_lut[TARGET_LCD2][current_transparencycfgs[TARGET_LCD2]];
+	uint32_t orig_config1 = dispc->config1;
+	uint32_t config1 = orig_config1 & ~(DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION | DISPC_CONFIG_TCKTVENABLE | DISPC_CONFIG_TCKTVSELECTION | DISPC_CONFIG_LCDALPHABLENDERENABLE | DISPC_CONFIG_TVALPHABLENDERENABLE);
+
+	/* TODO - Check for errors (e.g. VIDSRC when colour space conversion/scaling in use */
+	if (config2 != orig_config2)
+	{
+		dispc->config2 = config2;
+		if(go)
+		{
+			uint32_t control = dispc->control2;
+			config2 = config2 ^ orig_config2;
+			if ((control & DISPC_CONTROL_LCDENABLE) && (config2 & (DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION)))
+				control |= DISPC_CONTROL_GOLCD;
+			dispc->control2 = control;
+		}
+	}
+	if(config1 != orig_config1)
+	{
+		dispc->config1 = config1;
+		if(go)
+		{
+			uint32_t control = dispc->control1;
+			config1 = config1 ^ orig_config1;
+			if ((control & DISPC_CONTROL_TVENABLE) && (config1 & (DISPC_CONFIG_TCKTVENABLE | DISPC_CONFIG_TCKTVSELECTION | DISPC_CONFIG_TVALPHABLENDERENABLE)))
+				control |= DISPC_CONTROL_GOTV;
+			dispc->control1 = control;
+		}
+	}
+	end_quick_hardware_update(irqs);
+}
+d85 2
+a105 1
+		for(int i=0;i<TARGET_MAX;i++)
+d107 7
+a113 2
+			(headattrs[i].settransparent)((overlaytarget) i);
+			(headattrs[i].setbackground)((overlaytarget) i);
+d115 1
+d118 10
+a127 1
+			(headattrs[TARGET_LCD2].setmode)(TARGET_LCD2);
+d129 1
+@
+
+
+1.2
+log
+@OMAP4 tweaks and fixes
+Detail:
+  c/cmodule - Debug code updated to use new register names
+  h/dss - Remove regmf field from clock_divider_t
+  h/regs3 - Correct typo in OVERLAY_ATTRIBUTES register field
+  h/regs4 - Rename many registers to match the name used in the OMAP4 TRM (previously used OMAP3 naming due to shared code being used for both chips). Fix the occasional mistake. Also removed configuration4 register from DSI PLL (not mentioned in recent TRMs)
+  omap4/c/dispc_plat - Updated for new register names
+  omap4/c/dsi - Remove setting of DSI PLL configuration4 register
+  omap4/c/dss - Update for new register names. Removal of regm4 from clock_divider_t. Update FIFO configuration so that the larger WB FIFO is used instead of the GFX one.
+  omap4/c/omap - Update for new register names and FIFO setup. Fix omap4_vetmode_ldc2() returning true for invalid widths instead of false.
+Admin:
+  Changes supplied by Willi Theiss
+  Tested on Pandaboard
+
+
+Version 0.35. Tagged as 'OMAPVideo-0_35'
+@
+text
+@d75 1
+a75 1
+				control |= DISPC_CONTROL_TVENABLE;
+@
+
+
+1.1
+log
+@Big code refactor
+Detail:
+  Support for different OMAP revisions has now been abstracted, with code specific to a certain OMAP revision now located in the omap3 and omap4 folders. This has resulted in some code duplication, but greater readability due to the removal of the #defines that were in use before. This new structure should also make it easier to implement new features, especially those only supported by certain OMAPs.
+  Each platform provides a headattrs struct and an overlayattrs struct, which are the primary interface the core code uses to control the backend. Eventually it may be possible to produce one build of the module which supports multiple OMAP revisions at runtime, but for now some #defines and OMAP-specific code remains in the common files.
+  This change also adds support for extra pixel formats, gamma table support for OMAP4, and fixes several bugs.
+Admin:
+  Tested on BeagleBoard, PandaBoard
+
+
+Version 0.34. Tagged as 'OMAPVideo-0_34'
+@
+text
+@d52 1
+a52 1
+	uint32_t config1 = orig_config1 & ~(DISPC_CONFIG_TCKLCDENABLE | DISPC_CONFIG_TCKLCDSELECTION | DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_LCDALPHABLENDERENABLE | DISPC_CONFIG_TVALPHABLENDERENABLE);
+d74 2
+a75 2
+			if ((control & DISPC_CONTROL_DIGITALENABLE) && (config1 & (DISPC_CONFIG_TCKDIGENABLE | DISPC_CONFIG_TCKDIGSELECTION | DISPC_CONFIG_TVALPHABLENDERENABLE)))
+				control |= DISPC_CONTROL_DIGITALENABLE;
+d103 1
+a103 1
+	if(cause & DISPC_IRQ_SYNCLOSTDIGITAL)
+d106 2
+a107 2
+		dispc->control1 &= ~DISPC_CONTROL_DIGITALENABLE;
+		dispc->irqenable = (dispc->irqenable & ~DISPC_IRQ_SYNCLOSTDIGITAL) | DISPC_IRQ_EVSYNC_EVEN | DISPC_IRQ_EVSYNC_ODD;
+@
+

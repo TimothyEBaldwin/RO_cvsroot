@@ -1,0 +1,917 @@
+head	1.6;
+access;
+symbols
+	Omni-2_30:1.6
+	Omni-2_29:1.5
+	Omni-2_28:1.5
+	Omni-2_27:1.5
+	Omni-2_26:1.5
+	Omni-2_25:1.5
+	Omni-2_24:1.5
+	Omni-2_23:1.5
+	Omni-2_22:1.5
+	Omni-2_21:1.5
+	Omni-2_20:1.5
+	Omni-2_19:1.5
+	Omni-2_18:1.5
+	Omni-2_17:1.4
+	Omni-2_16:1.4
+	Omni-2_15:1.4
+	Omni-2_14:1.4
+	Omni-2_13:1.4
+	Omni-2_12:1.3
+	Omni-2_11:1.3
+	Omni-2_10:1.3
+	Omni-2_09:1.3
+	Omni-2_08:1.3
+	Omni-2_07:1.2
+	Omni-2_06:1.2
+	Omni-2_05:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2018.09.20.21.05.41;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	ljMsoSQjcEAv2TSA;
+
+1.5
+date	2013.03.14.20.18.45;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	6rnS12BNmFl5ANHw;
+
+1.4
+date	2004.09.02.22.46.09;	author jballance;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.07.19.24.15;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@Various fixes
+Events.c: refactor ActiveMounts() to not return a pointer to a local buffer array; avoid potential NULL pointer issue on 'ir'.
+FileType.c: avoid undefined sprintf() when destination appears as one of the args
+List.c: defer dereferencing 'wr' until checked for NULL
+Print.c: don't leak 'tmp' on error
+Parse.c: defer dereferencing 'wr' until checked for NULL, tweak dprintf() to avoid potential NULL pointer read in debug output
+Found by cppcheck static analysis.
+
+Version 2.30. Tagged as 'Omni-2_30'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	FileType.c - core application routines
+ *
+ * Project:	!Omni OmniClient(tm) project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	3 November 1994
+ * Last Edited:	18 November 1994
+ *
+ * Copyright 1994 by ANT Limited
+ */
+
+#include <ctype.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <kernel.h>
+
+#include <Desk/Hourglass.h>
+#include <Desk/Str.h>
+
+#include <DebugLib/DebugLib.h>
+
+#include "Client.h"
+#include "Defs.h"
+#include "ExtLib.h"
+#include "Filer.h"
+#include "FileType.h"
+#include "Heap.h"
+
+
+/*  Case-[in]sensitive string match against (possibly) wildcarded 's1'.
+ */
+static bool wildmatch(char *s1, char *s2, bool caseless)
+{
+  char *star = NULL;
+
+  /* Check for problem/fast cases */
+  if ((!s1) || (!s2)) return false;
+  dprintf (("", "wildmatch: '%s' '%s'\n", s1, s2));
+  if ((strlen(s1) == 0) && (strlen(s2) != 0)) return false;
+  if (!strcmp(s1, "*")) return true;
+
+  if ((star = strchr(s1, '*')) != NULL)
+  {
+    char p1[8];
+    char p2[8];
+
+    /* 0 or more chars to match ... */
+    strncpy(p1, s1, star-s1);
+    p1[star-s1] = '\0';
+    strncpy(p2, s2, star-s1);
+    p2[star-s1] = '\0';
+    if (!wildmatch(p1, p2, caseless)) return false;
+    if (!strcmp(star, "*")) return true;
+    s2 = (char *) (s2 + (star-s1));
+    s1 = (char *) (star + 1);
+    while (*s2 != '\0')
+    {
+      if (wildmatch(s1, s2, caseless)) return true;
+      s2++;
+    }
+    return false;
+  }
+  else
+  {
+    /* easy case */
+    if (strlen(s1) != strlen(s2)) return false;
+    while (*s1 != '\0')
+    {
+      if (caseless)
+      {
+        if ((tolower(*s1) != tolower(*s2)) && (*s1 != '?')) return false;
+      }
+      else
+      {
+        if ((*s1 != *s2) && (*s1 != '?')) return false;
+      }
+      s1++;
+      s2++;
+    }
+    return true;
+  }
+}
+
+
+/*  Free chain of filetype extensions.
+ */
+extern void FileType_FreeChain(void)
+{
+  ext_record *er = (ext_record *) ext_anchor.next;
+
+  /* Free all items in chain */
+  dprintf (("", "FileType_FreeChain: enter\n"));
+  while (er)
+  {
+    ext_record *er_tmp = (ext_record *) er->header.next;
+    Desk_LinkList_Unlink(&ext_anchor, &(er->header));
+    RMAFREE(er);
+    er = er_tmp;
+  }
+
+  /* Reset global anchor */
+  Desk_LinkList_Init(&ext_anchor);
+  dprintf (("", "FileType_FreeChain: exit\n"));
+}
+
+
+/*  Create a new filetype translation item.
+ */
+static bool CreateItem(int client_id, char *ext, int filetype, int flags)
+{
+  ext_record *er = NULL;
+
+  dprintf (("", "CreateItem: %x '%s' ", client_id, ext));
+  dprintf (("", "0x%x %x\n", filetype, flags));
+  /* Allocate memory for record */
+  er = (ext_record *) rma_alloc(sizeof(ext_record));
+  if (er == NULL) return false;
+  er->client_id = client_id;
+  er->flags = flags;
+  er->filetype = filetype;
+  strncpy(er->ext, ext, 8);
+  er->ext[7] = '\0';
+  Desk_LinkList_AddToTail(&ext_anchor, &(er->header));
+  dprintf (("", "CreateItem:new ext list length %d\n", Desk_LinkList_ListLength(&ext_anchor)));
+  return true;
+}
+
+
+/*  Locate a filetype item from extension or filetype.
+ */
+static ext_record *FindItem(int client_id, char *ext, int filetype)
+{
+  ext_record *er = (ext_record *) ext_anchor.next;
+  int searchtype = 0;
+
+  dprintf (("", "FindItem: entry\n"));
+  if (filetype != -1) searchtype = 1;
+  while (er != NULL)
+  {
+    dprintf (("", "FindItem: %x\n", (int) er));
+    switch (searchtype)
+    {
+      case 0: if ((er->client_id == client_id) && (eflagSET(er, ext_TOTYPE)) &&
+                  (wildmatch(er->ext, ext, !eflagSET(er, ext_CASE)))) return(er);
+              break;
+      case 1: if ((er->client_id == client_id) && (!eflagSET(er, ext_TOTYPE)) &&
+                  (er->filetype == filetype)) return(er);
+              break;
+      default:
+        break;
+    }
+    er = (ext_record *) er->header.next;
+  }
+  return(NULL);
+}
+
+
+/*  Load & parse filetypes file.
+ */
+extern void FileType_Load(void)
+{
+  FILE *f; 
+  char line[256];
+  client_record *cr = NULL;
+  client_record dummy_cr;
+
+  /* Open failed ? no error */
+  f = fopen("Choices:"app_DIR".Extensions", "r");
+  if (f == NULL)
+  {
+    f = fopen(app_FILES"Extensions", "r");
+  }
+  dprintf (("", "FileType_Load: %d\n", (int) f));
+  FileType_FreeChain();
+  if (f == NULL) return;
+  dummy_cr.client_id = -1;
+
+  /* Display hourglass during operation */
+  Desk_Hourglass_On();
+
+  /* Read lines from file until EOF */
+  while (fgets(line, 255, f) != NULL)
+  {
+    char *s = NULL;
+    char *ext = NULL;
+    int filetype = -1;
+    int flags = 0;
+
+    /* Comment line - ignore */
+    if (line[0] == '#') continue;
+    if ((s = strchr(line, '#')) != NULL) *s = '\0';
+    dprintf (("", "load: '%s'\n", line));
+
+    /* New protocol name */
+    if (!strchr(line, ','))
+    {
+      if ((s = strtok(line, " \n\r")) == NULL) continue;
+        else strip(s);
+      if ((!s) || (strlen(s) < 2)) continue;
+      dprintf (("", "load: protocol = '%s'\n", s));
+      if (!Desk_stricmp(s, "default"))
+      {
+        cr = &dummy_cr;
+        dprintf (("", "load: valid default protocol\n"));
+        continue;
+      }
+      if ((cr = ClientFind(-1, NULL, -1, s)) == NULL)
+      {
+        dprintf (("", "load: invalid protocol - skipping\n"));
+      }
+      else
+      {
+        dprintf (("", "load: valid protocol\n"));
+      }
+      continue;
+    }
+
+    /* Normal line? */
+    if (!cr) continue;
+    if ((s = strtok(line, ",")) == NULL) continue;
+      else strip(s);
+    dprintf (("", "load: part1 = '%s'\n", s));
+    /* Filetype first ? */
+    if ((s[0] == '&') || ((s[0] == '0') && ((s[1] == 'x') || (s[1] == 'X'))))
+    {
+      if (s[0] == '&') filetype = (int) strtoul(&s[1], NULL, 16);
+        else filetype = (int) strtoul(s, NULL, 16);
+    } else ext = s;
+    if ((s = strtok(NULL, " ,\n\r")) == NULL) continue;
+      else strip(s);
+    dprintf (("", "load: part2 = '%s'\n", s));
+    flags = 0;
+    if (filetype == -1)
+    {
+      if (s[0] == '&') filetype = (int) strtoul(&s[1], NULL, 16);
+        else filetype = (int) strtoul(s, NULL, 16);
+      flags |= ext_TOTYPE;
+    } else ext = s;
+    if ((s = strtok(NULL, " \n\r")) != NULL)
+    {
+      strip(s);
+      dprintf (("", "load: part3 = '%s'\n", s));
+      if (strchr(s, 'k') || strchr(s, 'K')) flags |= ext_KEEP;
+      if (strchr(s, 's') || strchr(s, 'S')) flags |= ext_SUBDIR;
+      if (strchr(s, 'c') || strchr(s, 'C')) flags |= ext_CASE;
+    }
+    CreateItem(cr->client_id, ext, filetype, flags);
+  }
+
+  /* Close file and exit */
+  Desk_Hourglass_Off();
+  fclose(f);
+}
+
+
+/*  Translate any illegal chars in string into RISCOS-friendly ones.
+ */
+static void sanitise(char *s)
+{
+#ifdef DEBUGLIB
+  char *d = s;
+#endif
+
+  dprintf (("", "santise: '%s'\n", s));
+  while (*s != '\0')
+  {
+    if (*s == '.') *s = '/';
+    if (*s == ':') *s = ';';
+    if (*s == '*') *s = '?';
+    if (*s == '#') *s = '?';
+    if (*s == '$') *s = '?';
+    if (*s == '&') *s = '?';
+    if (*s == '@@') *s = '?';
+    if (*s == '^') *s = '~';
+    if (*s == '%') *s = '?';
+    if (*s == ' ') *s = '_';
+    if (*s == '\\') *s = '/';
+    s++;
+  }
+  dprintf (("", "santise: exit '%s'\n", d));
+}
+
+
+/*  Convert from Client to Acorn filename/filetype.
+ */
+extern int FileType_ConvertToType(int client_id, char *srcname, char *dstp, char *flagsp)
+{
+  ext_record *er = NULL;
+  client_record *cr = NULL;
+  char dst[32];
+  char flags[8];
+  char ext[8];
+  char sep;
+  *dst=*ext='\0';   /* ensure terminated */
+  
+  dprintf (("", "FileType_ConvertToType: '%s'\n", srcname));
+  cr = ClientFind(client_id, NULL, -1, NULL);
+  if (cr == NULL) return(-1);
+
+  /* Look for protocol-specific extension separator character */
+  sep = (cr->flags & flag_EXTmask) >> flag_EXTshft;
+  dprintf (("", "FileType_ConvertToType: sep: '%c' srcname:'%s' flags:%08x\n", sep,srcname,cr->flags));
+  dprintf(("","srcname: len:%d, term:%x addr:%p",strlen(srcname),*(srcname+strlen(srcname)),srcname));
+  if (sep > 0)
+  {
+    char *  s = strrchr (srcname, sep);
+  dprintf(("","got: s:%p",s));
+
+    if (s != NULL)
+    {
+      int len = s-srcname;
+      /* Extension character found */
+      strncpy(ext, (char *) s+1, 8);
+      ext[strlen(s+1)] = '\0';
+      strncpy(dst, srcname, len);
+      dst[len] = '\0';
+      dprintf (("", "Found ext: %d %d\n", ((int) s), ((int) srcname)));
+      dprintf (("", "Found ext: '%s' '%s'\n", ext, dst));
+      sanitise(dst);
+      er = FindItem(client_id, ext, -1);
+      if (!er) er = FindItem(-1, ext, -1);
+      strcpy(flags, "");
+
+      /* Update flags */
+      if (er)
+      {
+        dprintf (("", "Found Item! match on '%s' %x\n", er->ext, er->filetype));
+        if (eflagSET(er, ext_KEEP))
+        {
+  dprintf(("","dst: s:%p",s));
+          strcat(dst, "/");
+          strcat(dst, ext);
+          strcat(flags, "k");
+        }
+        if (eflagSET(er, ext_SUBDIR)) strcat(flags, "s");
+        if (eflagSET(er, ext_CASE)) strcat(flags, "c");
+      }
+    }
+    else
+    {
+  dprintf(("","dst:%p ext:%p strlen(dst):%d strlen(ext):%d",dst,ext,strlen(dst),strlen(ext)));
+      if (strlen(ext) > 0)
+      {
+        strcat(dst, "/");
+        strcat(dst, ext);
+      }
+    }
+  }
+  else
+  {
+    /* No extension found, look for wildcard match */
+    dprintf (("", "No found ext:\n"));
+    er = FindItem(client_id, "", -1);
+    if (!er) er = FindItem(-1, "", -1);
+    strcpy(dst, srcname);
+    strcpy(flags, "");
+    sanitise(dst);
+  }
+
+  /* Return filetype, if we know one */
+  if (dstp) strcpy(dstp, dst);
+  if (flagsp) strcpy(flagsp, flags);
+  if (er) return(er->filetype);
+    else return(-1);
+}
+
+
+/*  Convert from Acorn to Client filename.
+ */
+extern void FileType_ConvertToExtension(int client_id, char *srcname, char *dstp, char *flagsp,
+				int filetype)
+{
+  ext_record *er = NULL;
+  client_record *cr = NULL;
+  char dst[32];
+  char flags[8];
+  char ext[8];
+  char sep;
+
+  dprintf (("", "FileType_ConvertToExtension:\n"));
+  cr = ClientFind(client_id, NULL, -1, NULL);
+  if (cr == NULL) return;
+
+  /* 'sep' is protocol-specific extension separator character */
+  sep = (cr->flags & flag_EXTmask) >> flag_EXTshft;
+
+  er = FindItem(client_id, NULL, filetype);
+  if (!er) er = FindItem(-1, NULL, filetype);
+  strcpy(dst, srcname);
+  strcpy(flags, "");
+
+  /* Update flags */
+  if (er)
+  {
+    if (eflagSET(er, ext_KEEP))
+    {
+      strncat(dst, &sep, 1);
+      strcat(dst, ext);
+      strcat(flags, "k");
+    }
+    if (eflagSET(er, ext_SUBDIR)) strcat(flags, "s");
+    if (eflagSET(er, ext_CASE)) strcat(flags, "c");
+  }
+  if (dstp) strcpy(dstp, dst);
+  if (flagsp) strcpy(flagsp, flags);
+}
+@
+
+
+1.5
+log
+@Write out choices to <Choices$Write> rather than inside the application directory
+UK/Messages: English for "update" was trapped in the C code rather than in the messages
+Filer.c/CoreInit.c: name the application as OmniClient
+FileType.c: Try Choices first then Omni:
+Mount.c: Write to <Choices$Write>, for reading try Choices first then Omni:
+Defs.h: Change app_FILES to "Omni:" so path names using this define are proper
+
+Version 2.18. Tagged as 'Omni-2_18'
+@
+text
+@d419 2
+a420 1
+      sprintf(dst, "%s%c%s", dst, sep, ext);
+@
+
+
+1.4
+log
+@  2 bug fixes to avoid AODT failures
+
+Detail:
+  c.FileType c. 298 .. initialise strings to null
+  c.Event c.line 1943 .. dont use mw if it has been freed
+
+Admin:
+  tested at castle
+  castle added ip
+
+
+Version 2.13. Tagged as 'Omni-2_13'
+@
+text
+@d184 1
+a184 1
+  FILE *f = fopen(app_FILES"Extensions", "r");
+d190 5
+@
+
+
+1.3
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@d311 2
+a312 1
+
+d319 2
+d324 1
+d347 1
+d358 1
+@
+
+
+1.2
+log
+@  Several major bugfixes and further tidying to make Omni fit into our
+  build environment better.
+Detail:
+  * Bug fix: ClientList function (Client.c) creates a textual menu desription
+    for a list of clients (Info and Mounts submenus).  The description was
+    generated on the stack and a pointer to it was returned.  The buffer is now
+    static.
+  * Bug fix: select or adjust clicks on the Omni icon just after it's loaded
+    would kill the task part of Omni.  FilerCreate function (List.c) always
+    calls FilerDelete, which would always attempt to close any existing filer
+    window.  However, on the first call, no window exists so it passes the Wimp
+    a 0 window handle.  This only appeared to happen on RISC OS 4, but I suspect
+    this is to do with RISC OS 4's stricter protection of zero page.  Current
+    fix is for FilerDelete to check if window handle is 0 before closing it;
+    this is not very elegant - would be nicer to only call FilerDelete when the
+    window was actually closed.
+  * Bug fix: writable icon handling overhauled completely.  Many of the buffers
+    which Omni would read the contents of writable icons into were too short
+    to hold the maximum amount of text allowed in the icon.  New Icon_GetText
+    call added (ExtLib.c) to allow Omni to work directly on indirected icon
+    buffers wherever possible, thus removing the whole issue.
+  * Stripped commented-out code from several places.
+  * Changed use of Desk_bool to bool in most places.  This is a bit grim, but
+    the way Desk_bool is implemented means you need to cast it in many places,
+    which is even more grim.
+  * Removed a few error assignements(!) because
+    a) they weren't even being checked
+    b) Desk's psuedo-exception system should now catch them
+  * Got rid of home-grown strcasecmp calls and used Desk's instead.
+  * Removed many local constants definitions and get them from system header
+    files instead.
+  * Removed Hdrs.h which would include *every* header file in *every* C file
+    in the interests of compilation times.  C files now only include what they
+    need.
+  * Reimplemented the fully recursive Menu_Dispose along the lines of the
+    non-recursive Desk_Menu_Dispose, which had changed since ANT's DeskLib
+    split-off.
+  * Altered quite a bit of code to prevent compiler warnings (mainly
+    "use of '=' in condition context" and "variable declared but not used").
+  * Uses 'proper' module finalisation instead of atexit in the interests of
+    consistency and symmetry.
+  * Added MemCheck support.
+  * Reimplemented rma_alloc and rma_free in C (side effect of MemCheck support).
+  * Altered assembler to use system header files instead of local ones.
+  * Omni previously used a seeming random mixture of _kernel_swi and Desk_SWI
+    SWI veneers.  All have now been changed to use _swix/_swi as appropriate.
+  * Converted to use srccommit.
+Admin:
+  Files removed:
+   c.Error
+   c.StrCaseCmp
+   h.Debug
+   h.Hdrs
+   h.ModuleWrap
+   h.OmniClient
+   h.StrCaseCmp
+   hdr.Macros
+   hdr.RegDefs
+   hdr.SwiNos
+
+  Files added:
+   Docs.DeskLibDiffs
+   Docs.EventHandling
+   h.Omni
+
+  * Compiled.
+  * All windows, menus checked to make sure they at least display.
+  * Played around with a new NFS and LanMan mounts.
+  * Basically, there shouldn't be any showstoppers, but the change from a very
+    old DeskLib to Desk is a large one.  I'd be surprised if there aren't a
+    few problems and this should definitely be thrashed a bit by people
+    willing to do so before anyone has any confidence in it.
+
+
+
+Version 2.05. Tagged as 'Omni-2_05'
+@
+text
+@d277 1
+a277 1
+#ifdef DEBUG
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a30 2
+#include "Hdrs.h"
+#include "kernel.h"
+d32 18
+d54 1
+a54 1
+static Desk_bool wildmatch(char *s1, char *s2, Desk_bool caseless)
+d59 4
+a62 4
+  if ((!s1) || (!s2)) return(Desk_FALSE);
+  TRACE2("wildmatch: '%s' '%s'\n", s1, s2);
+  if ((strlen(s1) == 0) && (strlen(s2) != 0)) return(Desk_FALSE);
+  if (!strcmp(s1, "*")) return(Desk_TRUE);
+d74 2
+a75 2
+    if (!wildmatch(p1, p2, caseless)) return(Desk_FALSE);
+    if (!strcmp(star, "*")) return(Desk_TRUE);
+d80 1
+a80 1
+      if (wildmatch(s1, s2, caseless)) return(Desk_TRUE);
+d83 1
+a83 1
+    return(Desk_FALSE);
+d88 1
+a88 1
+    if (strlen(s1) != strlen(s2)) return(Desk_FALSE);
+d93 1
+a93 1
+        if ((tolower(*s1) != tolower(*s2)) && (*s1 != '?')) return(Desk_FALSE);
+d97 1
+a97 1
+        if ((*s1 != *s2) && (*s1 != '?')) return(Desk_FALSE);
+d102 1
+a102 1
+    return(Desk_TRUE);
+d114 1
+a114 1
+  TRACE("FileType_FreeChain: enter\n");
+d125 1
+a125 1
+  TRACE("FileType_FreeChain: exit\n");
+d131 1
+a131 1
+static Desk_bool CreateItem(int client_id, char *ext, int filetype, int flags)
+d135 2
+a136 2
+  TRACE2("CreateItem: %x '%s' ", client_id, ext);
+  TRACE2("0x%x %x\n", filetype, flags);
+d138 2
+a139 1
+  if (!(er = (ext_record *) rma_alloc(sizeof(ext_record)))) return(Desk_FALSE);
+d146 2
+a147 2
+  TRACE1("CreateItem:new ext list length %d\n", Desk_LinkList_ListLength(&ext_anchor));
+  return(Desk_TRUE);
+d158 1
+a158 1
+  TRACE("FindItem: entry\n");
+d162 1
+a162 1
+    TRACE1("FindItem: %x\n", (int) er);
+d190 1
+a190 1
+  TRACE1("FileType_Load: %d\n", (int) f);
+d209 1
+a209 1
+    TRACE1("load: '%s'\n", line);
+d217 2
+a218 2
+      TRACE1("load: protocol = '%s'\n", s);
+      if (!strcasecmp(s, "default"))
+d221 1
+a221 1
+        TRACE("load: valid default protocol\n");
+d226 1
+a226 1
+        TRACE("load: invalid protocol - skipping\n");
+d230 1
+a230 1
+        TRACE("load: valid protocol\n");
+d239 1
+a239 1
+    TRACE1("load: part1 = '%s'\n", s);
+d248 1
+a248 1
+    TRACE1("load: part2 = '%s'\n", s);
+d259 1
+a259 1
+      TRACE1("load: part3 = '%s'\n", s);
+d281 1
+a281 1
+  TRACE1("santise: '%s'\n", s);
+d297 1
+a297 1
+  TRACE1("santise: exit '%s'\n", d);
+a309 1
+  char *s = NULL;
+d312 3
+a314 2
+  TRACE1("FileType_ConvertToType: '%s'\n", srcname);
+  if (!(cr = ClientFind(client_id, NULL, -1, NULL))) return(-1);
+d318 1
+a318 1
+  if ((sep > 0) && (s = strrchr(srcname, sep)))
+d320 1
+a320 12
+    int len = s-srcname;
+    /* Extension character found */
+    strncpy(ext, (char *) s+1, 8);
+    ext[strlen(s+1)] = '\0';
+    strncpy(dst, srcname, len);
+    dst[len] = '\0';
+    TRACE2("Found ext: %d %d\n", ((int) s), ((int) srcname));
+    TRACE2("Found ext: '%s' '%s'\n", ext, dst);
+    sanitise(dst);
+    er = FindItem(client_id, ext, -1);
+    if (!er) er = FindItem(-1, ext, -1);
+    strcpy(flags, "");
+d322 1
+a322 2
+    /* Update flags */
+    if (er)
+d324 15
+a338 2
+      TRACE2("Found Item! match on '%s' %x\n", er->ext, er->filetype);
+      if (eflagSET(er, ext_KEEP))
+d340 9
+a348 3
+        strcat(dst, "/");
+        strcat(dst, ext);
+        strcat(flags, "k");
+a349 2
+      if (eflagSET(er, ext_SUBDIR)) strcat(flags, "s");
+      if (eflagSET(er, ext_CASE)) strcat(flags, "c");
+d363 1
+a363 1
+    TRACE("No found ext:\n");
+d391 3
+a393 2
+  TRACE("FileType_ConvertToExtension:\n");
+  if (!(cr = ClientFind(client_id, NULL, -1, NULL))) return;
+@
+
+
+1.1.1.1
+log
+@  Initial import of Omni into CVS.
+
+Detail:
+  This is an import of the sources obtained from ANT some time ago, with
+  sufficient changes to allow it to build in our standard environment.  In
+  particular, this involved converting Omni to use Desk instead of DeskLib.
+  ANT's DeskLib was not 'off-the-shelf' - it was based on DeskLib 2.04 (very
+  old), with their own modifications.
+  
+  This means that there are quite severe bugs in the Omni code, which will
+  show up if you attempt to use this version, which were previously masked by
+  some of ANT's DeskLib alterations.  (Hopefully) most of these have already
+  been identified, fixed and will be checked-in soon.  I felt that a
+  minimal version that would simply build would be worthwhile, so that as
+  many changes as possible end up under CVS' control.
+
+Admin:
+  Compiled.
+  Untested.
+@
+text
+@@

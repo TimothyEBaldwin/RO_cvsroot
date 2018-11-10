@@ -1,0 +1,650 @@
+head	1.9;
+access;
+symbols
+	EtherUSB-0_41:1.9
+	EtherUSB-0_40:1.8
+	EtherUSB-0_39:1.8
+	EtherUSB-0_38:1.7
+	EtherUSB-0_37:1.7
+	EtherUSB-0_36:1.7
+	EtherUSB-0_35:1.7
+	EtherUSB-0_34:1.7
+	EtherUSB-0_33:1.7
+	EtherUSB-0_32:1.7
+	EtherUSB-0_31:1.7
+	EtherUSB-0_30:1.7
+	EtherUSB-0_29:1.7
+	EtherUSB-0_28:1.7
+	EtherUSB-0_27:1.7
+	EtherUSB-0_26:1.7
+	EtherUSB-0_25:1.7
+	EtherUSB-0_24:1.7
+	EtherUSB-0_23:1.6
+	EtherUSB-0_22:1.6
+	EtherUSB-0_21:1.6
+	EtherUSB-0_20:1.6
+	EtherUSB-0_19:1.6
+	EtherUSB-0_18:1.6
+	EtherUSB-0_17:1.6
+	EtherUSB-0_16:1.5
+	EtherUSB-0_15:1.4
+	EtherUSB-0_14:1.3
+	jpeacock-0_13:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2018.03.21.23.54.42;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	FAdt578EOH7cRnvA;
+
+1.8
+date	2018.01.18.23.12.29;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	lRremJsVERKgCpnA;
+
+1.7
+date	2013.04.07.17.47.10;	author jlee;	state Exp;
+branches;
+next	1.6;
+commitid	7koGNmobBUDhYRKw;
+
+1.6
+date	2012.05.19.08.44.28;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	6JuVMhjS8DSNlj5w;
+
+1.5
+date	2012.05.19.08.42.20;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	1BHJUY7zoQz3lj5w;
+
+1.4
+date	2012.05.19.08.39.05;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	sBdKYcdaXJwXjj5w;
+
+1.3
+date	2012.05.19.08.30.23;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	R1EOINZ5A36Ygj5w;
+
+1.2
+date	2012.05.19.08.22.11;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	SzPjH7uh6hKVdj5w;
+
+1.1
+date	2012.05.19.08.19.06;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	q3rEKeu2RrS2cj5w;
+
+
+desc
+@@
+
+
+1.9
+log
+@Add SMSC78xx support
+Detail:
+  c/smsc78xx, c/module, c/products, h/backends, Makefile - Add SMSC78xx driver, for the chip used in the Raspberry Pi 3B+
+  c/config, c/mii, h/mii - Add support for gigabit MIIs & associated (auto) configuration
+  c/net, h/net - Handle gigabit link types. Pass verbose flag through to backend info function.
+  c/smsc95xx - Make configure_link const-correct
+  Resources/UK/CmdHelp - Update *EJConfig syntaxt text to include 1000 option
+  Resources/UK/Messages - Add 78xx backend name & device-specific info tokens
+Admin:
+  Tested on Raspberry Pi 3B & 3B+
+  Manually configured gigabit links aren't supported yet
+  Gigabit half-duplex isn't supported (78xx MAC limitation)
+  For the 78xx, manually-configured full-duplex links appear to suffer terrible RX performance (as seen on 95xx). All supported auto modes appear to work correctly.
+
+
+Version 0.41. Tagged as 'EtherUSB-0_41'
+@
+text
+@//
+// Copyright (c) 2006, James Peacock
+// All rights reserved.
+// 
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met: 
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+//       may be used to endorse or promote products derived from this software
+//       without specific prior written permission.
+// 
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#include "swis.h"
+#include "Global/NewErrors.h"
+#include "Global/Variables.h"
+
+#include "module.h"
+#include "utils.h"
+#include "USB/USBDevFS.h"
+#include "usb.h"
+#include "config.h"
+#include "net.h"
+
+//---------------------------------------------------------------------------
+
+_kernel_oserror* config_parse_token(const char** ptr,
+                                    char* blk,
+                                    size_t blk_size)
+{
+  const char* p = *ptr;
+  while (*p==32 || *p==9) ++p;
+  char* blk_end = blk + blk_size;
+  while (*p>32 && blk!=blk_end) *blk++ = tolower(*p++);
+  if (blk==blk_end) return err_translate(ERR_BAD_SYNTAX);
+  *blk = 0;
+  *ptr = p;
+  return NULL;
+}
+
+//---------------------------------------------------------------------------
+
+_kernel_oserror* config_parse_unit(const char** ptr, unsigned *out)
+{
+  const char prefix[] = MODULE_DCI_NAME;
+
+  char blk[sizeof(prefix)+10];
+  const char* end = *ptr;
+  _kernel_oserror* e = config_parse_token(&end, blk, sizeof(blk));
+  if (e) return e;
+  const char* p = blk;
+  if (memcmp(blk, prefix, sizeof(prefix)-1)==0) p += sizeof(prefix)-1;
+  if (!*p) return err_translate(ERR_BAD_UNIT);
+
+  unsigned unit = 0;
+  while (*p)
+  {
+    const char ch = *p++;
+    if (ch<'0' || ch>'9') return err_translate(ERR_BAD_UNIT);
+    unit = unit * 10 + ch-'0';
+    if (unit>=MODULE_MAX_UNITS) return err_translate(ERR_BAD_UNIT);
+  }
+  *out = unit;
+  *ptr = end;
+  return NULL;
+}
+//---------------------------------------------------------------------------
+
+#define REQUIRE(abs, field) if (!(abs)->field) return err_translate(ERR_UNSUPPORTED)
+
+_kernel_oserror* config_parse_arguments(const net_device_t* dev,
+                                        const char*         arg_string,
+                                        net_config_t*       cfg,
+                                        bool*               configured)
+{
+  const net_abilities_t* abs = &dev->abilities;
+  *configured = false;
+  memset(cfg, 0, sizeof(net_config_t));
+
+  // Default to using auto-negotiation if device claims to support it
+  if (abs->autoneg) cfg->autoneg = true;
+  // Allow all supported pause modes by default
+  cfg->allow_tx_pause = abs->tx_pause;
+  cfg->allow_rx_pause = abs->rx_pause;
+  cfg->allow_symmetric_pause = abs->symmetric_pause;
+
+  char blk[20];
+  while(true)
+  {
+    _kernel_oserror *e = config_parse_token(&arg_string, blk, sizeof(blk));
+    if (e) return e;
+    if (blk[0]==0) break;
+    *configured = true;
+
+    if (strcmp(blk, "auto")==0)
+    {
+      REQUIRE(abs, autoneg);
+      cfg->autoneg = true;
+    }
+    else if (strcmp(blk, "noauto")==0)
+    {
+      cfg->autoneg = false;
+    }
+    else if (strcmp(blk, "1000")==0)
+    {
+      REQUIRE(abs, speed_1000Mb);
+      cfg->speed = net_speed_1000Mb;
+    }
+    else if (strcmp(blk, "100")==0)
+    {
+      REQUIRE(abs, speed_100Mb);
+      cfg->speed = net_speed_100Mb;
+    }
+    else if (strcmp(blk, "10")==0)
+    {
+      REQUIRE(abs, speed_10Mb);
+      cfg->speed = net_speed_10Mb;
+    }
+    else if (strcmp(blk, "half")==0)
+    {
+      REQUIRE(abs, half_duplex);
+      cfg->duplex = net_duplex_half;
+    }
+    else if (strcmp(blk, "full")==0)
+    {
+      REQUIRE(abs, full_duplex);
+      cfg->duplex = net_duplex_full;
+    }
+    else if (strcmp(blk, "promiscuous")==0)
+    {
+      REQUIRE(abs, promiscuous);
+      cfg->promiscuous = true;
+    }
+    else if (strcmp(blk, "multicast")==0)
+    {
+      REQUIRE(abs, multicast);
+      cfg->multicast = true;
+    }
+   else
+    {
+      return err_translate(ERR_BAD_SYNTAX);
+    }
+  }
+
+  if (!cfg->autoneg)
+  {
+    // For manual configuration, ensure all required parameters have been provided
+    if ((cfg->speed == net_speed_unknown) || (cfg->duplex == net_duplex_unknown)
+    // Manually configured 1Gb links aren't supported yet (would require manual MASTER-SLAVE resolution?)
+        || (cfg->speed == net_speed_1000Mb)
+       )
+    {
+      return err_translate(ERR_BAD_CONFIG);
+    }
+  }
+
+  return NULL;
+}
+
+#undef REQUIRE
+
+//---------------------------------------------------------------------------
+_kernel_oserror* config_new_device(net_device_t* d, net_config_t* config)
+{
+  const net_status_t* s = &d->status;
+  char name[48];
+  snprintf(name, sizeof(name), "EtherUSB$MAC_%02X%02X%02X%02X%02X%02X",
+           s->mac[0], s->mac[1], s->mac[2], s->mac[3], s->mac[4], s->mac[5]);
+
+  const char* value = getenv(name);
+  if (!value)
+  {
+    snprintf(name, sizeof(name), "EtherUSB$VP_%04X_%04X",
+             d->vendor, d->product);
+    value = getenv(name);
+  }
+  if (!value)
+  {
+    snprintf(name, sizeof(name), "EtherUSB$Loc_%02X_%02X_%02X_%02X_%02X_%02X",
+             d->usb_location[0], d->usb_location[1], d->usb_location[2],
+             d->usb_location[3], d->usb_location[4], d->usb_location[5]);
+    value = getenv(name);
+  }
+  if (!value)
+  {
+    value = "";
+  }
+  else
+  {
+    syslog("%s: configure '%s'", d->name, value);
+
+    _kernel_oserror* e = config_parse_unit(&value, &d->dib.dib_unit);
+    if (e)
+    {
+      char token[8];
+      e = config_parse_token(&value, token, sizeof(token));
+      if (e) return e;
+
+      if (!(token[0]=='a' && token[1]=='n' && token[2]=='y' && token[3]==0))
+      {
+        return err_translate(ERR_BAD_UNIT);
+      }
+    }
+    else
+    {
+      syslog("%s: taking unit number from %s",d->name,name);
+      d->dib.dib_slot.sl_minor = d->dib.dib_unit;
+    }
+  }
+
+  bool configured = false;
+  _kernel_oserror* e = config_parse_arguments(d, value, config, &configured);
+  return e;
+}
+
+
+//---------------------------------------------------------------------------
+_kernel_oserror* config_reserved_units(bool flags[MODULE_MAX_UNITS],net_device_t *d)
+{
+  memset(flags, 0, MODULE_MAX_UNITS);
+
+  const char* name = NULL;
+  while (true)
+  {
+    char value[256];
+    size_t size = 0;
+
+    _kernel_oserror *e = _swix(OS_ReadVarVal, _INR(0,4)|_OUTR(2,3),
+                               "EtherUSB$MAC_*",
+                               value, sizeof(value)-1, name, VarType_Expanded,
+                               &size, &name);
+
+    if (e)
+    {
+      if (e->errnum == ErrorNumber_VarCantFind)
+        break;
+      return e;
+    }
+
+    value[size] = 0;
+    const char* ptr = value;
+    unsigned unit = MODULE_MAX_UNITS;
+    e = config_parse_unit(&ptr, &unit);
+    if (!e && unit<MODULE_MAX_UNITS) flags[unit] = true;
+  }
+
+  name = NULL;
+  while (true)
+  {
+    char value[256];
+    size_t size = 0;
+
+    _kernel_oserror *e = _swix(OS_ReadVarVal, _INR(0,4)|_OUTR(2,3),
+                               "EtherUSB$VP_*",
+                               value, sizeof(value)-1, name, VarType_Expanded,
+                               &size, &name);
+
+    if (e)
+    {
+      if (e->errnum == ErrorNumber_VarCantFind)
+        break;
+      return e;
+    }
+
+    value[size] = 0;
+    const char* ptr = value;
+    unsigned unit = MODULE_MAX_UNITS;
+    e = config_parse_unit(&ptr, &unit);
+    if (!e && unit<MODULE_MAX_UNITS)
+    {
+      flags[unit] = true;
+      unsigned long vendor,product;
+      if(sscanf(name+12,"%lx_%lx",&vendor,&product) == 2)
+      {
+        if((vendor == d->vendor) && (product == d->product))
+        {
+          syslog("%s: taking unit number from %s",d->name,name);
+          d->dib.dib_unit = d->dib.dib_slot.sl_minor = unit;
+        }
+      }
+    }      
+  }
+
+  name = NULL;
+  while (true)
+  {
+    char value[256];
+    size_t size = 0;
+
+    _kernel_oserror *e = _swix(OS_ReadVarVal, _INR(0,4)|_OUTR(2,3),
+                               "EtherUSB$Loc_*",
+                               value, sizeof(value)-1, name, VarType_Expanded,
+                               &size, &name);
+
+    if (e)
+    {
+      if (e->errnum == ErrorNumber_VarCantFind)
+        break;
+      return e;
+    }
+
+    value[size] = 0;
+    const char* ptr = value;
+    unsigned unit = MODULE_MAX_UNITS;
+    e = config_parse_unit(&ptr, &unit);
+    if (!e && unit<MODULE_MAX_UNITS)
+    {
+      flags[unit] = true;
+      unsigned long location[6];
+      if(sscanf(name+13,"%lx_%lx_%lx_%lx_%lx_%lx",&location[0],&location[1],&location[2],&location[3],&location[4],&location[5]) == 6)
+      {
+        if((location[0] == d->usb_location[0])
+        && (location[1] == d->usb_location[1])
+        && (location[2] == d->usb_location[2])
+        && (location[3] == d->usb_location[3])
+        && (location[4] == d->usb_location[4])
+        && (location[5] == d->usb_location[5]))
+        {
+          syslog("%s: taking unit number from %s",d->name,name);
+          d->dib.dib_unit = d->dib.dib_slot.sl_minor = unit;
+        }
+      }
+    }      
+  }
+
+  return NULL;
+}
+
+@
+
+
+1.8
+log
+@Improvements to SMSC 95xx backend and common MII handling
+Detail:
+  c/smsc95xx - Convert code to use the common MII backend. Reduce verbosity of debug output. Fix two sets of status callbacks running (callback_status_adapter + device_status). Tweak/refactor a couple of other bits as necessary in order to get 10M links working reliably.
+  c/mii, h/mii, h/net - Allow backends to indicate their level of support for PAUSE functionality, so that we can advertise it correctly when performing auto-negotiation (previously no pause ability would have been advertised)
+  c/config - Ensure config_parse_arguments passes through the PAUSE capabilities to the output net_config_t. Use the (currently unused) ERR_BAD_CONFIG for if autonegotiation is disabled but either speed or duplex setting not specified (avoids MII code or backends getting confused as to what options they should use)
+  Resources/UK/Messages - Tweak wording of ERR_BAD_CONFIG so that it's more sensible for the new usage
+  doc/!ReadMe - Remove the note about 10M links not being supported by the SMSC 95xx backend. Update the changelog to point people towards CVS for recent changes.
+Admin:
+  Tested on PandaBoard + Raspberry Pi 3, using SMSC 95xx and AX88772 devices
+  SMSC testing results:
+  * Previously, 10M links were non-functional
+  * Previously, manually-configured 100M full duplex links would suffer terrible performance
+  * Previously, any attempt to reconfigure a link on Pi 3 would result in a "Device broken or misbehaving" error? (or at least, that's how 0.38 is behaving for me now)
+  * Now, all combinations of configuration (speed + link + auto/noauto) appear to work correctly, except for manually-configured full-duplex links, which still suffer from terrible performance
+  AX88772 was used to verify MII changes haven't broken anything for other backends; testing showed no significant differences to previous version (all speed + link + auto/noauto modes working)
+  Resolves ticket #342:
+  https://www.riscosopen.org/tracker/tickets/342
+  Note that currently the SMSC 95xx backend is the only backend to advertise PAUSE functionality via the common MII code; a future improvement would be to set up the other backends appropriately (set correct flags in net_abilities_t)
+
+
+Version 0.39. Tagged as 'EtherUSB-0_39'
+@
+text
+@d124 5
+d167 5
+a171 1
+    if ((cfg->speed == net_speed_unknown) || (cfg->duplex == net_duplex_unknown))
+@
+
+
+1.7
+log
+@Add more ways of specifying device configuration. Adjust unit number allocation & SMSC MAC handling.
+Detail:
+  c/smsc95xx - Adjust MAC handling some more:
+    - Unit number check removed from EtherUSB$MAC_Configured code in fill_arbitraryMAC(), to increase compatibility with previous version
+    - EtherUSB$MAC_Configured check is now performed before the devices currently-programmed MAC is checked; this should ensure it always takes priority over the other methods (especially when reiniting EtherUSB after setting the variable)
+    - OS_ReadSysInfo 4 & machine ID hash checks remain in their previous place, after the currently-programmed MAC check
+  c/config, h/config:
+    - Add support for using EtherUSB$VP_* and EtherUSB$Loc_* system variables to configure devices, by specifying USB vendor/product IDs or USB device tree locations, respectively.
+    - Allow config_reserved_units() to select a devices unit number by looking for VP_ or Loc_ system variables.
+  c/net, h/net:
+    - Add USB device vendor & product ID, and device tree location, to net_device_t struct.
+    - Display vendor/product ID & device tree location in verbose ejinfo output
+    - Adjust unit number selection: Attempt to select a unit number before calling backend->start, so that the unit number can be used in MAC allocation if required (i.e. by net_default_mac()).
+    - Change net_default_mac() to use OS_ReadSysInfo 5 instead of OS_ReadSysInfo 2; OS_ReadSysInfo 2 strips out the first and last byte of the ID, making the psuedo-unique MAC somewhat less unique.
+  c/usb, h/usb - Add utility function for reading the location of a device within the USB device tree.
+Admin:
+  Tested on BB-xM, Raspberry Pi
+  Overriding MAC via EtherUSB$MAC_Configured now works as expected (was previously failing due to unit number being MODULE_MAX_UNITS)
+  Unit number reservation/selection & device configuration via all three variable types (MAC, VP, Loc) verified
+
+
+Version 0.24. Tagged as 'EtherUSB-0_24'
+@
+text
+@d102 4
+d160 8
+@
+
+
+1.6
+log
+@Save 4.5kB by making the table of errors with objasm (so they're not all padded to 252 bytes by the compiler to fit into _kernel_oserror structs).
+The 'moduleerr.s' source should be made redundant by internationalising the module.
+
+Version 0.17. Tagged as 'EtherUSB-0_17'
+@
+text
+@d35 1
+d165 1
+a165 1
+  char name[32];
+d172 13
+d205 1
+d217 1
+a217 1
+_kernel_oserror* config_reserved_units(bool flags[MODULE_MAX_UNITS])
+d232 6
+a237 1
+    if (e) return e->errnum==292 ? NULL : e;
+d245 80
+@
+
+
+1.5
+log
+@Added autosense, and autosense install rule to makefile.
+Now uses AsmUtils for irqs_on/irqs_off
+Squash a few unused variable warnings, not in the backends though as porting updates would be more complex for those that come from (for example) NetBSD.
+Changed to use structure definitions from sys/dcistructs.h (mostly an exercise in prefixing member names).
+
+Version 0.16. Tagged as 'EtherUSB-0_16'
+@
+text
+@d34 1
+a41 1
+#include "swis.h"
+d54 1
+a54 1
+  if (blk==blk_end) return &err_bad_syntax;
+d72 1
+a72 1
+  if (!*p) return &err_bad_unit;
+d78 1
+a78 1
+    if (ch<'0' || ch>'9') return &err_bad_unit;
+d80 1
+a80 1
+    if (unit>=MODULE_MAX_UNITS) return &err_bad_unit;
+d88 1
+a88 1
+#define REQUIRE(abs, field) if (!(abs)->field) return &err_unsupported
+d151 1
+a151 1
+      return &err_bad_syntax;
+d186 1
+a186 1
+        return &err_bad_unit;
+@
+
+
+1.4
+log
+@Uses common USB header files exported by the USB stack.
+Use ModHand/Variables/RISCOS/OsByte headers.
+Note, this has meant some header files needed reordering to prevent circular dependencies.
+
+Version 0.15. Tagged as 'EtherUSB-0_15'
+@
+text
+@d177 1
+a177 1
+    _kernel_oserror* e = config_parse_unit(&value, &d->dib.unit);
+d191 1
+a191 1
+      d->dib.slot.minor = d->dib.unit;
+@
+
+
+1.3
+log
+@Brought under srccommit control for update of version numbers.
+Makefile recreated from fragments
+CMHG file renamed to avoid needing special rule to tell where it is.
+
+Version 0.14. Tagged as 'EtherUSB-0_14'
+@
+text
+@d33 3
+d37 3
+a40 1
+#include "utils.h"
+d214 1
+a214 1
+                               value, sizeof(value)-1, name, 3,
+@
+
+
+1.2
+log
+@Explicit BSD licence heading blocks added to those source files that did not have them.
+No code changes, not tagged.
+@
+text
+@d33 1
+a37 1
+#include "module.h"
+@
+
+
+1.1
+log
+@Import of sources to EtherUSB.
+Special thanks to James Peacock for allowing ROOL to host these sources.
+This import represents version 0.13 by James and the backend contributors, the only change being that the makefile wipes the directories it creates on cleaning so there's no need to import those to CVS.
+Tagged as jpeacock-0_13.
+@
+text
+@d1 28
+@
+

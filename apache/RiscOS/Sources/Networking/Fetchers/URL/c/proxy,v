@@ -1,0 +1,506 @@
+head	1.8;
+access;
+symbols
+	URL-0_58:1.8
+	URL-0_57:1.8
+	URL-0_56:1.8
+	URL-0_55:1.8
+	URL-0_54:1.7
+	URL-0_53:1.6
+	URL-0_52:1.6
+	URL-0_51:1.6
+	URL-0_50:1.6
+	dellis_autobuild_BaseSW:1.6
+	URL-0_49:1.6
+	URL-0_48:1.5
+	URL-0_47:1.5
+	URL-0_46:1.5
+	sbrodie_sedwards_16Mar2000:1.5
+	dcotton_autobuild_BaseSW:1.6
+	URL-0_45:1.5
+	URL-0_44:1.5
+	URL-0_43:1.5
+	URL-0_42:1.5
+	URL-0_41:1.5
+	URL-0_40:1.5
+	URL-0_39:1.4
+	sbrodie_URL_0_38:1.3
+	sbrodie_URL_0_37:1.3
+	sbrodie_URL_0_36:1.3
+	sbrodie_URL_0_35:1.3
+	sbrodie_URL_0_33:1.3
+	sbrodie_Expresso_final_190298:1.2
+	sbrodie_URL_0_31:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2005.06.02.08.56.27;	author ahodgkin;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2005.03.30.16.04.15;	author srevill;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2000.09.14.11.11.59;	author sbrodie;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	98.09.16.10.38.13;	author sbrodie;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	98.06.29.13.57.15;	author sbrodie;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	98.02.27.13.57.00;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.02.10.18.56.48;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.01.29.18.32.35;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.01.29.18.32.35;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@  Fix for CC complaint.
+Detail:
+  CC was not happy with "const register", but likes "register const".
+Admin:
+  Rolls in a change to c/proxy similar to that made by srevill a while
+  ago, just with #include <name> semantics to match other standard
+  headers included in that file (proxy.c).
+
+Version 0.55. Tagged as 'URL-0_55'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* -*-C-*-
+ *
+ * Copyright (C) Pace Micro Technology, 2000.
+ *
+ * SetProxy sets up a proxy service for all or some requests.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "swis.h"
+#include "url.h"
+#include "protocol.h"
+#include "utils.h"
+#include "generic.h"
+#include "externs.h"
+
+static void freeproxylist(Proxy *p)
+{
+    	while (p) {
+        	Proxy *const next=p->next;
+        	free(p->proxy);
+        	free(p->url_base);
+        	free(p);
+        	p=next;
+        }
+}
+
+static _kernel_oserror *deleteproxy(int r)
+{
+    	if (r == 0) {
+        	/* Global proxies */
+        	freeproxylist(no_proxy_list);
+        	no_proxy_list=NULL;
+        	freeproxylist(global_proxy_list);
+        	global_proxy_list=NULL;
+        	return NULL;
+        }
+    	else {
+	        /* Client proxies */
+        	Client *c = find_client(r);
+        	if (c == NULL) {
+        	        return make_error(url_ERROR_CLIENT_ID_NOT_FOUND, 0);
+        	}
+
+        	freeproxylist(c->client.proxy);
+        	c->client.proxy=NULL;
+        	freeproxylist(c->client.no_proxy);
+        	c->client.no_proxy=NULL;
+        	return NULL;
+        }
+}
+
+static Proxy *proxy_new_entry(void)
+{
+        Proxy *p = malloc(sizeof(Proxy));
+
+        if (p == NULL) return p;
+        p->proxy = NULL;
+        p->url_base = NULL;
+        p->next = NULL;
+        return p;
+}
+
+enum {
+        op_proxy,
+        op_no_proxy
+};
+
+static Proxy **proxy_find_list(int session, int want_proxy)
+{
+	/*
+	 * if session = 0 we are dealing with the global case, so look to see if we
+	 * are dealing with an individual one 1st
+	 */
+        if (session != 0) {
+		/* try and find the client reference */
+                Client *list = find_client(session);
+
+		/* failed */
+                if (list == NULL) return NULL;
+
+                if (want_proxy == op_proxy) {
+                        return &list->client.proxy;
+                }
+                else {
+                        return &list->client.no_proxy;
+                }
+        }
+        else {
+                if (want_proxy == op_proxy) {
+                        return &global_proxy_list;
+                }
+                else {
+                        return &no_proxy_list;
+                }
+        }
+}
+
+_kernel_oserror *setproxy(_kernel_swi_regs *r)
+{
+	Proxy *proxy;
+	Proxy **p;
+
+	char *base = (char *) r->r[2];
+	char *method = (char *) r->r[3];
+	int op = r->r[4];
+
+        dprintf(("setproxy", "setproxy: flags: %08x  Session: %08x  Base: `%s'  Method: `%s'"
+          "<%sProxy>\n", r->r[0], r->r[1], base?base:"<NULL>", method?method:"<NULL>",
+          r->r[4] == op_no_proxy ? "Don't ": ""));
+
+	if (base == NULL) {
+        	return deleteproxy(r->r[1]);
+        }
+
+        p = proxy_find_list(r->r[1], op);
+        if (p == NULL) {
+		return make_error(url_ERROR_CLIENT_ID_NOT_FOUND, 0);
+        }
+
+	if (*p != NULL) {
+	        Proxy *list = *p, *last = NULL;
+	        const char *const user_base = method;
+
+	        for (list = *p; list != NULL;) {
+	                if (strcmp(list->url_base, user_base) == 0) {
+	                        /* Found a duplicate - free it */
+				Proxy *const next = list->next;
+				if (last == NULL) {
+				        *p = next;
+				}
+				else {
+		                        last->next = next;
+		                }
+	                        free(list->proxy);
+	                        free(list->url_base);
+				free(list);
+	                        list = next;
+	                        continue;
+	                }
+			last = list;
+			list = list->next;
+	        }
+
+	        proxy = proxy_new_entry();
+		if (last != NULL) {
+		        last->next = proxy;
+		}
+		else {
+		        *p = proxy;
+		}
+	}
+	else {
+	        proxy = *p = proxy_new_entry();
+	}
+
+	if (proxy == NULL) {
+	        return make_error(url_ERROR_MEMORY_EXHAUSTED, 0);
+	}
+
+    	/* fill in the details */
+        proxy->proxy = Strdup(base);
+       	proxy->url_base = Strdup(method);
+
+    	return NULL;
+}
+
+
+_kernel_oserror *proxy_enumerate(_kernel_swi_regs *r)
+{
+	Proxy **p;
+
+        p = proxy_find_list(r->r[1], (r->r[0] & 1));
+        if (p == NULL) {
+		return make_error(url_ERROR_CLIENT_ID_NOT_FOUND, 0);
+        }
+
+    	if (r->r[2] >= 0) {
+		int ctr;
+                for (ctr=0; ctr<r->r[2] && *p != NULL; ++ctr) {
+                        p = &(*p)->next;
+                }
+        }
+
+        if (*p == NULL || r->r[2] < 0) {
+                r->r[2] = -1;
+        }
+        else {
+                r->r[3] = (int) (*p)->url_base;
+                r->r[4] = (int) (*p)->proxy;
+                r->r[2] ++;
+        }
+
+        return NULL;
+}
+@
+
+
+1.7
+log
+@  Fix for new compiler
+Detail:
+  Obsolete #include of strings.h changed to string.h as this is
+  now faulted by the latest cc.
+Admin:
+  To be tested in STB ROM build
+
+Version 0.54. Tagged as 'URL-0_54'
+@
+text
+@d24 1
+a26 1
+#include "string.h"
+@
+
+
+1.6
+log
+@  New export phase for exporting SWI number symbols.
+Detail:
+  Exports a header file for C code to use to define SWI numbers for
+    the URL module.  Include "Interface/URL.h" to get the header.
+  Updated to use DebugLib instead of its own private debugging system.
+Admin:
+  Requires RiscOS/BuildSys 2.51 or later.
+  Requires RiscOS/Library 0.53 or later
+
+Version 0.49. Tagged as 'URL-0_49'
+@
+text
+@d26 1
+a26 1
+#include "strings.h"
+@
+
+
+1.5
+log
+@  No longer uses TinyStubs (due to __ctype)
+  Extra ResourceFS files added for shared fetcher use.
+Detail:
+  TinyStubs usage for ROM builds removed due to library static data
+    reference problems.
+  Added code for direct SWI calling to protocol modules.  This code
+    is switched out on the DIRECTSWI macro which is set in Makefile.
+  RCS log tags removed from source files.
+  New tests added to OddURLs test file.
+Admin:
+  Built from clean; tested in RAM build.
+
+Version 0.40. Tagged as 'URL-0_40'
+@
+text
+@d17 1
+a17 3
+ * $Version: networking $
+ *
+ * $Source: /projects2/renaissa/cvsroot/RiscOS/Sources/Networking/Fetchers/URL/c/proxy,v $
+d123 3
+a125 5
+	#ifdef TRACE
+	protocol_debug("setproxy: flags: %08x  Session: %08x  Base: `%s'  Method: `%s'  <%sProxy>\n",
+		r->r[0], r->r[1], base?base:"<NULL>", method?method:"<NULL>",
+		r->r[4] == op_no_proxy ? "Don't ": "");
+	#endif
+@
+
+
+1.4
+log
+@New SWI added to enumerate proxies, plus new test program for the SWI.
+New *-command for dumping proxy information - only in debug builds.
+
+Version 0.39. Tagged as 'URL-0_39'
+@
+text
+@a20 14
+ * $Log: proxy,v $
+ * Revision 1.3  1998/02/27 13:57:00  sbrodie
+ * URL version 0.33
+ *
+ * A fix to prevent errors during registration of duplicate proxy settings
+ * which is not shown up by Browse, but is shown up by the FTPProxy utility.
+ *
+ * Revision 1.1.1.1  1998/01/29 18:32:35  sbrodie
+ * Import from SrcFiler of Browser fetchers
+ *
+ * Revision 1.1  95/09/08  09:35:09  pwain
+ * Initial revision
+ *
+ *
+@
+
+
+1.3
+log
+@URL version 0.33
+
+A fix to prevent errors during registration of duplicate proxy settings
+which is not shown up by Browse, but is shown up by the FTPProxy utility.
+@
+text
+@d22 6
+d100 30
+a131 1
+	Client *list;
+d149 3
+a151 20
+	/*
+	 * if r1=0 we are dealing with the global case, so look to see if we
+	 * are dealing with an individual one 1st
+	 */
+    	if (r->r[1] != 0) {
+		/* try and find the client reference */
+        	list = find_client(r->r[1]);
+
+		/* failed */
+		if (list == NULL) {
+			return make_error(url_ERROR_CLIENT_ID_NOT_FOUND, 0);
+		}
+
+		/* get its proxy record */
+		if (op == op_proxy) {
+	    		p = &list->client.proxy;
+	        }
+        	else {
+        	        p = &list->client.no_proxy;
+	        }
+a152 8
+    	else {
+    	        if (op == op_proxy) {
+    	                p = &global_proxy_list;
+    	        }
+    	        else {
+    	                p = &no_proxy_list;
+    	        }
+    	}
+d199 29
+@
+
+
+1.2
+log
+@URL version 0.31.
+Build process changed to use standard !Mk... taskobey scripts.
+Makefile is now capable of producing RAM and ROM versions of URL.
+Resources moved into standard subdirectory of Resources:$.Resources.URL
+General code tidies to remove all compilation warnings
+@
+text
+@d168 7
+a174 1
+	        proxy = last->next = proxy_new_entry();
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d19 5
+a23 1
+ * $Source: /ax/networking:Phileas/URL/proxy.c: $
+a24 1
+ * $Log:	proxy.c,v $
+d40 1
+d81 1
+a81 1
+        
+d99 1
+a99 1
+	
+d147 1
+a147 1
+	        
+d167 1
+a167 1
+	        
+@
+
+
+1.1.1.1
+log
+@Import from SrcFiler of Browser fetchers
+@
+text
+@@

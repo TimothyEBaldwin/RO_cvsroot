@@ -1,0 +1,1945 @@
+head	1.8;
+access;
+symbols
+	PandoraKey-0_40:1.8
+	PandoraKey-0_39:1.7
+	PandoraKey-0_38:1.6
+	PandoraKey-0_37:1.5
+	PandoraKey-0_36:1.4
+	PandoraKey-0_35:1.3
+	PandoraKey-0_34:1.2
+	PandoraKey-0_33:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2016.08.20.21.50.48;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	ra8TseTgfuLBK5jz;
+
+1.7
+date	2013.11.19.08.50.14;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	MjoKy0Ubmz2FJRdx;
+
+1.6
+date	2012.12.05.01.51.42;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	tr2TJbLoDrcDDYuw;
+
+1.5
+date	2012.10.05.23.51.15;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	VhE6AXfuZjiSTfnw;
+
+1.4
+date	2012.09.30.16.40.42;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	1ciBVWwgjq19Gzmw;
+
+1.3
+date	2012.09.27.01.14.13;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	2xstkR6TMK9hE6mw;
+
+1.2
+date	2012.09.21.15.20.38;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	h3qyid2koqGBwplw;
+
+1.1
+date	2012.09.20.20.17.25;	author jlee;	state Exp;
+branches;
+next	;
+commitid	uhAYkPZf1YUpcjlw;
+
+
+desc
+@@
+
+
+1.8
+log
+@Fix compatibility with latest firmware. Add debouncing for nub mouse button functionality.
+Detail:
+  c/nubs - Add debouncing logic for the nub mouse button functionality, to solve some reliability issues with mouse clicks. Code also refactored so that the state of each nub is tracked separately.
+  c/pandorakey - Because we poll the keyboard matrix registers, we must make sure that all its interrupts are masked, as the registers will only update while there are no unserviced interrupts. Fixes an issue with latest firmware where u-boot no longer leaves all the interrupts masked by default.
+Admin:
+  Tested on Pandora
+
+
+Version 0.40. Tagged as 'PandoraKey-0_40'
+@
+text
+@/** @@file
+
+  Implements ... under RISC OS.
+
+  */
+/* Created 08.10.2011 T. Milius
+   Changed 31.03.2012 T. Milius */
+/* Copyright (c) 2011-2012 by Thomas Milius Stade, Germany
+* All rights reserved.
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions are met:
+*     * Redistributions of source code must retain the above copyright
+*       notice, this list of conditions and the following disclaimer.
+*     * Redistributions in binary form must reproduce the above copyright
+*       notice, this list of conditions and the following disclaimer in the
+*       documentation and/or other materials provided with the distribution.
+*     * Neither the name of Thomas Milius Stade, Germany nor the
+*       names of its contributors may be used to endorse or promote products
+*       derived from this software without specific prior written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY Thomas Milius Stade, Germany ``AS IS'' AND ANY
+* EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+* WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED. IN NO EVENT SHALL Thomas Milius Stade, Germany BE LIABLE FOR ANY
+* DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+* (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+* LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+* ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+* (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+* SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
+/** @@mainpage
+    @@author Thomas Milius Stade, Germany
+    @@version 0.31
+    @@date 31.03.2012
+
+ Implements ... under RISC OS.
+
+    */
+/* RISC OS */
+
+/* !!!!!!!!!! libraries !!!!!!!!!! */
+/* ---------- ANSI-C ---------- */
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ------------ RISC OS ------------ */
+#include "kernel.h"
+#include "swis.h"
+#include "Global/HALEntries.h"
+#include "Global/HALDevice.h"
+#include "Global/RISCOS.h"
+#include "Global/Keyboard.h"
+#include "Global/Pointer.h"
+#include "Global/NewErrors.h"
+
+/* ------------ Own ------------ */
+#include "pandorakeyhead.h"
+#include "pandorakey.h"
+#include "nubs.h"
+#include "gpio.h"
+#include "gpiokey.h"
+
+/* !!!!!!!!!!! definitions !!!!!!!!!! */
+
+/* !!!!!!!!!! data structures !!!!!!!!!! */
+static const unsigned char keypad_regoffset_rowcontent[MAX_ROWS]={0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+
+static const unsigned long key_mapping[2][MAX_ROWS][MAX_COLUMNS]={
+/* No FN */
+{
+/* Row 0 */
+{KeyNo_Digit9,       KeyNo_Digit8,    KeyNo_LetterI,          KeyNo_LetterJ,       KeyNo_LetterN,       KeyNo_LetterM,      KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 1 */                                                                                             
+{KeyNo_Digit0,       KeyNo_Digit7,    KeyNo_LetterU,          KeyNo_LetterH,       KeyNo_LetterB,       KeyNo_Space,        KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 2 */                                                                                             
+/* ignore FN. handled elsewhere */                                                                      
+{KeyNo_BackSpace,    KeyNo_Digit6,    KeyNo_LetterY,          KeyNo_LetterG,       KeyNo_LetterV,       KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 3 */                                                                                             
+{KeyNo_LetterO,      KeyNo_Digit5,    KeyNo_LetterT,          KeyNo_LetterF,       KeyNo_LetterC,       KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 4 */                                                                                             
+{KeyNo_LetterP,      KeyNo_Digit4,    KeyNo_LetterR,          KeyNo_LetterD,       KeyNo_LetterX,       KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 5 */                                                                                             
+{KeyNo_LetterK,      KeyNo_Digit3,    KeyNo_LetterE,          KeyNo_LetterS,       KeyNo_LetterZ,       KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 6 */                                                                                             
+{KeyNo_LetterL,      KeyNo_Digit2,    KeyNo_LetterW,          KeyNo_LetterA,       KeyNo_Dot,           KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 7 */                                                                                             
+{KeyNo_Return,       KeyNo_Digit1,    KeyNo_LetterQ,          KeyNo_ShiftLeft,     KeyNo_Comma,         KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING}
+},                                                                                                      
+/* FN */                                                                                                
+{                                                                                                       
+/* Row 0 */                                                                                             
+{KeyNo_Function9,    KeyNo_Function8, KeyNo_BrightnessUp,     KeyNo_AcuteAccent,   KeyNo_DollarSign,    KeyNo_EuroSign,     KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 1 */                                                                                             
+{KeyNo_Function10,   KeyNo_Function7, KeyNo_BrightnessDown,   KeyNo_BackTick,      KeyNo_VerticalLine,  KeyNo_Tab,          KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 2 */
+/* ignore FN. handled elsewhere */
+{KeyNo_Insert,       KeyNo_Function6, KeyNo_LowLine,          KeyNo_Equals,        KeyNo_BackSlash,     KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 3 */
+{KeyNo_Function11,   KeyNo_Function5, KeyNo_ExclamationMark,  KeyNo_PlusSign,      KeyNo_NotFittedLeft, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 4 */
+{KeyNo_Function12,   KeyNo_Function4, KeyNo_RightParenthesis, KeyNo_Minus,         KeyNo_QuestionMark,  KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 5 */                                                                                            
+{KeyNo_Pound,        KeyNo_Function3, KeyNo_LeftParenthesis,  KeyNo_QuotationMark, KeyNo_Slash,         KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 6 */                                                                                            
+{KeyNo_YenSign,      KeyNo_Function2, KeyNo_CommercialAt,     KeyNo_Tick,          KeyNo_Colon,         KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 7 */                                                                                            
+{KEYMAPPING_NOTHING, KeyNo_Function1, KeyNo_Escape,           KeyNo_CapsLock,      KeyNo_SemiColon,     KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING}
+}
+};
+
+static struct {
+  int last_active_driver;
+  bool driver_enabled;
+  bool ticker_handler_running;
+  bool handler_stopped;
+  char device_name[30 + 1]; 
+  unsigned long special_key_status;
+  unsigned long pandora_key_status[ROW_STATUS_ARRAY_SIZE]; /* Press state of each key */
+  unsigned long pandora_fn_status[ROW_STATUS_ARRAY_SIZE]; /* FN status of each key at time it was pressed; this is the easiest way of avoiding losing track of which keys are FN-modified */
+} common;
+int mouse_x=0;
+int mouse_y=0;
+
+/* !!!!!!!!!! support functions !!!!!!!!!! */
+static _kernel_oserror *i2c_write_value(unsigned char chip_register,
+                                 unsigned char value)
+{
+  _kernel_oserror *error_os;
+  unsigned char i2c_buffer[2];
+  unsigned int transfer[3];
+  
+  /* First set address */
+  i2c_buffer[0]=KEYPAD_BASE_ADDRESS + chip_register;
+  /* Afterwards data to write follows. */
+  i2c_buffer[1]=value;
+  transfer[0]=KEYPAD_IIC_ADDRESS;
+  transfer[1]=(int) i2c_buffer;
+  transfer[2]=2;
+  if ((error_os=_swix(OS_IICOp,_INR(0,1),transfer,1)) != NULL) {
+    return error_os;
+  }
+  return NULL;
+}
+
+static _kernel_oserror *i2c_read_data(unsigned char chip_register,
+                               unsigned char *buffer,
+                               int number_of_bytes)
+{
+  _kernel_oserror *error_os;
+  unsigned char i2c_buffer[1];
+  unsigned int transfer[6];
+  
+  /* First set address */
+  i2c_buffer[0]=KEYPAD_BASE_ADDRESS + chip_register;
+  transfer[0]=KEYPAD_IIC_ADDRESS;
+  transfer[1]=(int) i2c_buffer;
+  transfer[2]=1;
+  transfer[3]=KEYPAD_IIC_ADDRESS | 1;
+  transfer[4]=(int) buffer;
+  transfer[5]=number_of_bytes;
+  if ((error_os=_swix(OS_IICOp,_INR(0,1),transfer,2)) != NULL) {
+    return error_os;
+  }
+  return NULL;
+}
+
+static unsigned long get_key_mapping(unsigned long pressed_key,
+                              unsigned long actual_key_bank)
+{
+  /* Determine RISC OS key belonging to Pandora key */
+  return key_mapping[actual_key_bank][pressed_key>>3][pressed_key & 0x7];
+}
+
+static void release_keys(unsigned long i,unsigned long status_diff)
+{
+  unsigned long j, k, l;
+  while(status_diff)
+  {
+    __asm
+    {
+    CLZ j,status_diff;
+    }
+    j=31-j;
+    status_diff^=((unsigned long) 1<<j);
+    l = j+(i<<5);
+    k = get_key_mapping(l,(common.pandora_fn_status[i]>>j)&1);
+    if(k != KEYMAPPING_NOTHING)
+    {
+      if(!_swix(OS_CallAVector,_INR(0,1)|_IN(9),KeyV_KeyUp,k,KEYV))
+      {
+        /* Mark as successfully released */
+        common.pandora_key_status[i] &= ~(1<<j);
+      }
+    }
+  }
+}
+
+static void press_keys(unsigned long i,unsigned long status_diff)
+{
+  unsigned long j, k, l;
+  while(status_diff)
+  {
+    __asm
+    {
+    CLZ j,status_diff;
+    }
+    j=31-j;
+    status_diff^=((unsigned long) 1<<j);
+    l = j+(i<<5);
+    unsigned long key_bank = (common.special_key_status & (SPECIAL_KEY_FN | SPECIAL_KEY_FN_STICKY | SPECIAL_KEY_FN_LOCK))?1:0;
+    k = get_key_mapping(l,key_bank);
+    if(k != KEYMAPPING_NOTHING)
+    {
+      if(!_swix(OS_CallAVector,_INR(0,1)|_IN(9),KeyV_KeyDown,k,KEYV))
+      {
+        /* Mark as successfully pressed */
+        common.pandora_key_status[i] |= 1<<j;
+        /* And remember FN state */
+        common.pandora_fn_status[i] = (common.pandora_fn_status[i] & ~(1<<j)) | (key_bank<<j);
+        /* And clear any sticky FN state */
+        common.special_key_status = common.special_key_status & ~SPECIAL_KEY_FN_STICKY;
+      }
+    }
+  }
+}
+
+/* !!!!!!!!!! functions !!!!!!!!!! */
+int ticker_handler(_kernel_swi_regs *regs,
+                   void *pw)
+{
+  unsigned long i, j;
+  unsigned long actual_key_status[ROW_STATUS_ARRAY_SIZE], status_diff;
+  _kernel_oserror *error_os;
+  
+  (void) regs;
+  (void) pw;
+  
+  if ((!common.driver_enabled) || (common.ticker_handler_running))
+  {
+    return 1;
+  }
+  /* Protect against reentrancy */
+  common.ticker_handler_running=true;
+  common.handler_stopped=false;
+  /* Allow parallel activity */
+  _kernel_irqs_on();
+  /* Update nubs */
+  nubs_update();
+  /* Update GPIO keys */
+  gpiokey_update();
+  if ((error_os=i2c_read_data(keypad_regoffset_rowcontent[0], (unsigned char *) actual_key_status, MAX_ROWS)) == NULL)
+  {
+    /* Process keys in the following order:
+       1. Key releases
+       2. FN key transition
+       3. Key presses
+       This should help keep things sensible if multiple transitions occur at once
+    */
+    /* 1. Key releases */
+    for(i=0;i<ROW_STATUS_ARRAY_SIZE;i++)
+    {
+      status_diff = common.pandora_key_status[i] & ~actual_key_status[i];
+      if(status_diff)
+        release_keys(i,status_diff);
+    }
+    /* 2. FN key state */
+    i = common.special_key_status & SPECIAL_KEY_FN;
+    j = actual_key_status[PANDORA_KEY_FN>>5] & (1<<(PANDORA_KEY_FN & 31));
+    if(i && !j)
+    {
+      /* FN released */
+      common.special_key_status &= ~SPECIAL_KEY_FN;
+    }
+    else if(!i && j)
+    {
+      /* FN pressed */
+      if(common.special_key_status & SPECIAL_KEY_FN_STICKY)
+      {
+        /* Two FN presses in a row -> enable FN lock */
+        common.special_key_status = SPECIAL_KEY_FN | SPECIAL_KEY_FN_LOCK;
+      }
+      else if(common.special_key_status & SPECIAL_KEY_FN_LOCK)
+      {
+        /* FN pressed while FN lock in effect -> disable FN lock */
+        common.special_key_status = SPECIAL_KEY_FN;
+      }
+      else
+      {
+        /* Regular FN press -> set FN + sticky state */
+        common.special_key_status = SPECIAL_KEY_FN | SPECIAL_KEY_FN_STICKY;
+      }
+    }
+    /* 3. Key presses */
+    for(i=0;i<ROW_STATUS_ARRAY_SIZE;i++)
+    {
+      status_diff = actual_key_status[i] & ~common.pandora_key_status[i];
+      if(status_diff)
+        press_keys(i,status_diff);
+    }     
+  }
+  /* Restore old IRQ State (disabled) */
+  _kernel_irqs_off();
+  common.ticker_handler_running=false;
+  return 1;
+}
+
+int mouse_handler(_kernel_swi_regs *regs,
+                  void *pw)
+{
+  (void) pw;
+  
+  switch(regs->r[0]) {
+    case PointerReason_Request: {
+      if (regs->r[1] == POINTER_TYPE) {
+        /* Report movement */
+        regs->r[2]=mouse_x>>1;
+        regs->r[3]=mouse_y>>1;
+        /* Keep fractional part */
+        mouse_x&=0x1;
+        mouse_y&=0x1;
+        return 0;
+        }
+      }
+    break;
+    case PointerReason_Identify: {
+      /* RISC OS mouse driver information structure */
+      struct info_structur {
+      void *next_info_block;
+      unsigned long flags;
+      unsigned char device_type;
+      char device_name[30 + 1];
+      } *info;
+  
+      /* Information */
+      if ((info=malloc(sizeof(struct info_structur))) != NULL) {
+        info->next_info_block=(void *) regs->r[1];
+        info->flags=0;
+        info->device_type=POINTER_TYPE;
+        strcpy(info->device_name, common.device_name);
+        regs->r[1]=(int) info;
+        }
+      }
+    break;
+    case PointerReason_Selected: {
+      /* Enable/Disable. */
+      if (regs->r[1] == POINTER_TYPE) {
+        /* ??? */
+        }
+      else {
+        common.last_active_driver=regs->r[1];
+        }
+      }
+    break;
+    }
+  return 1;
+}
+
+int key_handler(_kernel_swi_regs *regs,
+                 void *pw)
+{
+  (void) pw;
+  
+  switch(regs->r[0]) {
+    case KeyV_EnableDrivers: {
+      common.driver_enabled=true;
+      /* TODO - clear key press states, or at the least re-press the ones we
+         know are held? (so FN state doesn't get confused) */
+      gpiokey_reset();
+      }
+    break;
+    case KeyV_KeyboardRemoved: {
+      /* Switch the OS back to using our keyboard */
+      _swix(OS_CallAVector,_INR(0,1)|_IN(9),KeyV_KeyboardPresent,KEYBOARD_TYPE,KEYV);
+      /* Claim vector? */
+      return 0;
+      }
+    break;
+    }
+  return 1;
+}
+
+_kernel_oserror *module_init(const char *cmd_tail,
+                             int podule_base,
+                             void *pw)
+{
+  int i;
+  _kernel_oserror *error_os;
+  int msgstruct[4];
+
+  (void) cmd_tail;
+  (void) podule_base;
+  
+  /* Find the HAL device to verify that we're running on a Pandora */
+  struct device *dev=NULL;
+  int pos=0;
+  do {
+    error_os = _swix(OS_Hardware, _INR(0,1) | _IN(8) | _OUTR(1,2), HALDeviceType_HID + HALDeviceHID_Keyboard,pos,OSHW_DeviceEnumerate,&pos,&dev);
+    if(error_os)
+      return error_os;
+    if(pos == -1)
+    {
+      static const internat_err hwdep = { ErrorNumber_HardwareDepends, "HWDep" };
+      
+      return _swix(MessageTrans_ErrorLookup, _INR(0,2), &hwdep, 0, 0);
+    }
+  } while(dev->id != HALDeviceID_Keyboard_Pandora);
+  
+  for (i=0; i < ROW_STATUS_ARRAY_SIZE; i++)  {
+    common.pandora_key_status[i]=0;
+    }
+  common.driver_enabled=false;
+  common.ticker_handler_running=false;
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_CTRL, KEYPAD_CTRL_SOFT_NRST | KEYPAD_CTRL_SOFTMOD_EN | KEYPAD_CTRL_TOE_EN | KEYPAD_CTRL_KBD_ON)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_EDR, KEYPAD_EDR_KP_F | KEYPAD_EDR_KP_R | KEYPAD_EDR_TO_R)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_LKPTV, 0x80)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_DEB, 20)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_TIMEOUTL, 100)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_TIMEOUTH, 0)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_SIH_CTRL, 6)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_IMR1, 15)) != NULL) {
+    return error_os;
+    }
+  if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_IMR2, 15)) != NULL) {
+    return error_os;
+    }
+  if((error_os=gpio_init()) != NULL) {
+    return error_os;
+    }
+  nubs_init();
+  gpiokey_init();
+
+  /* Translate the driver name for PointerV */
+  if((error_os = _swix(MessageTrans_OpenFile, _INR(0,2), msgstruct,
+                       "Resources:$.Resources.PandoraKey.Messages", 0)) != NULL) {
+    return error_os;
+    }
+  error_os = _swix(MessageTrans_Lookup, _INR(0,3), msgstruct,
+                   "KName", common.device_name, sizeof(common.device_name));
+  _swix(MessageTrans_CloseFile, _IN(0), msgstruct);
+  if(error_os != NULL) {
+    return error_os;
+    }
+  /* Examine KeyV */
+  if((error_os = _swix(OS_Claim, _INR(0,2), KEYV, key_handler_entry, pw)) != NULL) {
+    return error_os;
+    }
+  /* Examine PointerV */
+  if((error_os = _swix(OS_Claim, _INR(0,2), PointerV, mouse_handler_entry, pw)) != NULL) {
+    goto error1;
+    }
+  /* Examine TickerV */
+  if((error_os = _swix(OS_Claim, _INR(0,2), TickerV, ticker_handler_entry, pw)) != NULL) {
+    goto error2;
+    }
+  /* Notify OS */
+  if((error_os = _swix(OS_CallAVector, _INR(0,1) | _IN(9),
+                       KeyV_KeyboardPresent, KEYBOARD_TYPE, KEYV)) != NULL) {
+    goto error3;
+    }
+  /* Note currently active mouse driver.
+     Further changes are kept by the vector handler. */
+  if ((error_os = _swix(OS_Pointer, _IN(0) | _OUT(0),
+                        0, &common.last_active_driver)) != NULL) {
+    goto error3;
+    }
+  /* Tell RISC OS to enable the driver */
+  if ((error_os = _swix(OS_Pointer, _INR(0,1), 1, POINTER_TYPE)) != NULL) {
+    goto error3;
+    }
+  return NULL;
+  
+error3:
+  /* No longer examine TickerV */
+  _swix(OS_Release, _INR(0,2), TickerV, ticker_handler_entry, pw);
+error2:
+  /* No longer examine PointerV */
+  _swix(OS_Release, _INR(0,2), PointerV, mouse_handler_entry, pw);
+error1:
+  /* No longer examine KeyV */
+  _swix(OS_Release, _INR(0,2), KEYV, key_handler_entry, pw);
+  return error_os;
+}
+
+_kernel_oserror *module_final(int fatal,
+                              int podule,
+                              void *pw)
+{
+  (void) fatal;
+  (void) podule;
+
+  common.driver_enabled=false;
+
+  /* Release all keys */
+  nubs_reset();
+  gpiokey_shutdown();
+  for(unsigned long i=0;i<ROW_STATUS_ARRAY_SIZE;i++)
+    release_keys(i,common.pandora_key_status[i]);
+  /* Reenable the driver used before. */
+  _swix(OS_Pointer, _INR(0,1), 1, common.last_active_driver);
+  /* No longer examine TickerV */
+  _swix(OS_Release, _INR(0,2), TickerV, ticker_handler_entry, pw);
+  /* No longer examine PointerV */
+  _swix(OS_Release, _INR(0,2), PointerV, mouse_handler_entry, pw);
+  /* No longer examine KeyV */
+  _swix(OS_Release, _INR(0,2), KEYV, key_handler_entry, pw);
+  /* Don't return an error as this would stop the driver from finishing */
+  return NULL;
+}
+@
+
+
+1.7
+log
+@Internationalised
+Keyboard name now read from messages file at startup.
+Changed to use _swix instead of _kernel_swi.
+Reindented init/final functions to match other indent-of-2 style.
+
+Version 0.39. Tagged as 'PandoraKey-0_39'
+@
+text
+@d436 6
+@
+
+
+1.6
+log
+@Rewrite keyboard handling to use the new Pandora keyboard type
+Detail:
+  c/pandorakey, h/pandorakey:
+  - Keyboard handling rewritten and simplified in the process. Instead of pretending to be a PC keyboard we now identify ourselves as a Pandora keyboard, and leave InternationalKeyboard to deal with all the keyboard layout issues. The new code means that multiple keys can now be pressed at once, and modifiers like shift & ctrl generate key press/release events properly.
+  - Added support for the KeyV KeyboardRemoved reason code, to allow us to reinstate our keyboard type after all USB keyboards have been disconnected.
+  - Fixed mouse handling dropping the bottom bit of the internal X/Y coords instead of preserving it
+  c/gpiokey, h/gpiokey:
+  - Add support for the lid sensor 'key', which registers as pressed when the lid is closed.
+  - Changed the Pandora key to use the keycode of the left Windows key instead of Alt-Gr
+Admin:
+  Tested on Pandora
+  Requires IntKey-0_95 to be useful at runtime
+
+
+Version 0.38. Tagged as 'PandoraKey-0_38'
+@
+text
+@d51 1
+d56 1
+d114 8
+a121 7
+int last_active_driver;
+bool driver_enabled;
+bool ticker_handler_running;
+bool handler_stopped;
+unsigned long special_key_status;
+unsigned long pandora_key_status[ROW_STATUS_ARRAY_SIZE]; /* Press state of each key */
+unsigned long pandora_fn_status[ROW_STATUS_ARRAY_SIZE]; /* FN status of each key at time it was pressed; this is the easiest way of avoiding losing track of which keys are FN-modified */
+d312 13
+a324 12
+(void) pw;
+
+switch(regs->r[0]) {
+  case PointerReason_Request: {
+    if (regs->r[1] == POINTER_TYPE) {
+      /* Report movement */
+      regs->r[2]=mouse_x>>1;
+      regs->r[3]=mouse_y>>1;
+      /* Keep fractional part */
+      mouse_x&=0x1;
+      mouse_y&=0x1;
+      return 0;
+d326 18
+a343 18
+    }
+  break;
+  case PointerReason_Identify: {
+    /* RISC OS mouse driver information structure */
+    struct info_structur {
+    void *next_info_block;
+    unsigned long flags;
+    unsigned char device_type;
+    char device_name[30];
+    } *info;
+
+    /* Information */
+    if ((info=malloc(sizeof(struct info_structur))) != NULL) {
+      info->next_info_block=(void *) regs->r[1];
+      info->flags=0;
+      info->device_type=POINTER_TYPE;
+      strcpy(info->device_name, "Pandora Keys");
+      regs->r[1]=(int) info;
+d345 9
+a353 9
+    }
+  break;
+  case PointerReason_Selected: {
+    /* Enable/Disable. */
+    if (regs->r[1] == POINTER_TYPE) {
+      /* ??? */
+      }
+    else {
+      common.last_active_driver=regs->r[1];
+d355 1
+d357 1
+a357 3
+  break;
+  }
+return 1;
+d363 17
+a379 14
+(void) pw;
+
+switch(regs->r[0]) {
+  case KeyV_EnableDrivers: {
+    common.driver_enabled=true;
+    /* TODO - clear key press states, or at the least re-press the ones we know are held? (so FN state doesn't get confused) */
+    gpiokey_reset();
+    }
+  break;
+  case KeyV_KeyboardRemoved: {
+    /* Switch the OS back to using our keyboard */
+    _swix(OS_CallAVector,_INR(0,1)|_IN(9),KeyV_KeyboardPresent,KEYBOARD_TYPE,KEYV);
+    /* Claim vector? */
+    return 0;
+d381 1
+a381 3
+  break;
+  }
+return 1;
+d388 43
+a430 13
+int i;
+_kernel_swi_regs regs;
+_kernel_oserror *error_os;
+
+(void) cmd_tail;
+(void) podule_base;
+
+/* Find the HAL device to verify that we're running on a Pandora */
+struct device *dev=NULL;
+int pos=0;
+do {
+  error_os = _swix(OS_Hardware, _INR(0,1) | _IN(8) | _OUTR(1,2), HALDeviceType_HID + HALDeviceHID_Keyboard,pos,4,&pos,&dev);
+  if(error_os)
+d432 9
+a440 79
+  if(pos == -1)
+  {
+    return (_kernel_oserror*) "\0\0\0\0Pandora keyboard device not found";
+  }
+} while(dev->id != HALDeviceID_Keyboard_Pandora);
+
+for (i=0; i < ROW_STATUS_ARRAY_SIZE; i++)  {
+  common.pandora_key_status[i]=0;
+  }
+common.driver_enabled=false;
+common.ticker_handler_running=false;
+if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_CTRL, KEYPAD_CTRL_SOFT_NRST | KEYPAD_CTRL_SOFTMOD_EN | KEYPAD_CTRL_TOE_EN | KEYPAD_CTRL_KBD_ON)) != NULL) {
+  return error_os;
+  }
+if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_EDR, KEYPAD_EDR_KP_F | KEYPAD_EDR_KP_R | KEYPAD_EDR_TO_R)) != NULL) {
+  return error_os;
+  }
+if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_LKPTV, 0x80)) != NULL) {
+  return error_os;
+  }
+if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_DEB, 20)) != NULL) {
+  return error_os;
+  }
+if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_TIMEOUTL, 100)) != NULL) {
+  return error_os;
+  }
+if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_TIMEOUTH, 0)) != NULL) {
+  return error_os;
+  }
+if ((error_os=i2c_write_value(KEYPAD_REGOFFSET_SIH_CTRL, 6)) != NULL) {
+  return error_os;
+  }
+if((error_os=gpio_init()) != NULL) {
+  return error_os;
+  }
+nubs_init();
+gpiokey_init();
+/* Examine KeyV */
+regs.r[0]=KEYV;
+regs.r[1]=(int) key_handler_entry;
+regs.r[2]=(int) pw;
+if ((error_os=_kernel_swi(OS_Claim, &regs, &regs)) != NULL) {
+  return error_os;
+  }
+/* Examine PointerV */
+regs.r[0]=PointerV;
+regs.r[1]=(int) mouse_handler_entry;
+regs.r[2]=(int) pw;
+if ((error_os=_kernel_swi(OS_Claim, &regs, &regs)) != NULL) {
+  goto error1;
+  }
+/* Examine TickerV */
+regs.r[0]=TickerV;
+regs.r[1]=(int) ticker_handler_entry;
+regs.r[2]=(int) pw;
+if ((error_os=_kernel_swi(OS_Claim, &regs, &regs)) != NULL) {
+  goto error2;
+  }
+/* Notify OS */
+regs.r[0]=KeyV_KeyboardPresent;
+regs.r[1]=KEYBOARD_TYPE;
+regs.r[9]=KEYV;
+if ((error_os=_kernel_swi(OS_CallAVector, &regs, &regs)) != NULL) {
+  goto error3;
+  }
+/* Note actual mouse driver.
+   Further changes are kept by the vector handler. */
+regs.r[0]=0;
+if ((error_os=_kernel_swi(OS_Pointer, &regs, &regs)) != NULL) {
+  goto error3;
+  }
+common.last_active_driver=regs.r[0];
+/* Tell RISC OS to enable the driver */
+regs.r[0]=1;
+regs.r[1]=POINTER_TYPE;
+if ((error_os=_kernel_swi(OS_Pointer, &regs, &regs)) != NULL) {
+  goto error3;
+  }
+return NULL;
+d442 40
+d483 2
+a484 7
+/* No longer examine TickerV */
+regs.r[0]=TickerV;
+regs.r[1]=(int) ticker_handler_entry;
+regs.r[2]=(int) pw;
+/* Don't worry about errors */
+_kernel_swi(OS_Release, &regs, &regs);
+
+d486 2
+a487 7
+/* No longer examine PointerV */
+regs.r[0]=PointerV;
+regs.r[1]=(int) mouse_handler_entry;
+regs.r[2]=(int) pw;
+/* Don't worry about errors */
+_kernel_swi(OS_Release, &regs, &regs);
+
+d489 3
+a491 7
+/* No longer examine KeyV */
+regs.r[0]=KEYV;
+regs.r[1]=(int) key_handler_entry;
+regs.r[2]=(int) pw;
+/* Don't worry about errors */
+_kernel_swi(OS_Release, &regs, &regs);
+return error_os;
+d498 2
+a499 1
+_kernel_swi_regs regs;
+d501 1
+a501 2
+(void) fatal;
+(void) podule;
+d503 15
+a517 31
+common.driver_enabled=false;
+/* Release all keys */
+nubs_reset();
+gpiokey_shutdown();
+for(unsigned long i=0;i<ROW_STATUS_ARRAY_SIZE;i++)
+  release_keys(i,common.pandora_key_status[i]);
+/* Reenable the driver used before. */
+regs.r[0]=1;
+regs.r[1]=common.last_active_driver;
+/* No error handling because this would driver prevent
+   from finishing. */
+_kernel_swi(OS_Pointer, &regs, &regs);
+/* No longer examine TickerV */
+regs.r[0]=TickerV;
+regs.r[1]=(int) ticker_handler_entry;
+regs.r[2]=(int) pw;
+/* Don't worry about errors */
+_kernel_swi(OS_Release, &regs, &regs);
+/* No longer examine PointerV */
+regs.r[0]=PointerV;
+regs.r[1]=(int) mouse_handler_entry;
+regs.r[2]=(int) pw;
+/* Don't worry about errors */
+_kernel_swi(OS_Release, &regs, &regs);
+/* No longer examine KeyV */
+regs.r[0]=KEYV;
+regs.r[1]=(int) key_handler_entry;
+regs.r[2]=(int) pw;
+/* Don't worry about errors */
+_kernel_swi(OS_Release, &regs, &regs);
+return NULL;
+@
+
+
+1.5
+log
+@Fix pointer device name. Fix inverted Menu/double click action compared to Linux.
+Detail:
+  c/pandorakey - Pointer info device_type field is a byte, not a word. Fixes empty mouse name showing in mouse setup configure plugin.
+  c/nubs - Right nub up is now double click, and down is Menu, to match nub behaviour under Linux.
+Admin:
+  Tested on Pandora
+
+
+Version 0.37. Tagged as 'PandoraKey-0_37'
+@
+text
+@d68 2
+a69 3
+static const unsigned long key_mapping[4][MAX_ROWS][MAX_COLUMNS]={
+/* Take old English RiscPC documentation to decode. */
+/* No Shift, no FN */
+d72 23
+a94 3
+{KeyNo_Digit9, KeyNo_Digit8, KeyNo_LetterI, KeyNo_LetterJ, KeyNo_LetterN, KeyNo_LetterM},
+/* Row 1 */
+{KeyNo_Digit0, KeyNo_Digit7, KeyNo_LetterU, KeyNo_LetterH, KeyNo_LetterB, KeyNo_Space},
+d97 1
+a97 1
+{KeyNo_BackSpace, KeyNo_Digit6, KeyNo_LetterY, KeyNo_LetterG, KeyNo_LetterV, KEYMAPPING_NOTHING},
+d99 1
+a99 1
+{KeyNo_LetterO, KeyNo_Digit5, KeyNo_LetterT, KeyNo_LetterF, KeyNo_LetterC, KEYMAPPING_NOTHING},
+d101 7
+a107 70
+{KeyNo_LetterP,KeyNo_Digit4, KeyNo_LetterR, KeyNo_LetterD, KeyNo_LetterX, KEYMAPPING_NOTHING},
+/* Row 5 */
+{KeyNo_LetterK, KeyNo_Digit3, KeyNo_LetterE, KeyNo_LetterS, KeyNo_LetterZ, KEYMAPPING_NOTHING},
+/* Row 6 */
+{KeyNo_LetterL, KeyNo_Digit2, KeyNo_LetterW, KeyNo_LetterA, KeyNo_Dot, KEYMAPPING_NOTHING},
+/* Row 7 */
+/* ignore Shift. handled elsewhere */
+{KeyNo_Return, KeyNo_Digit1, KeyNo_LetterQ, KEYMAPPING_NOTHING, KeyNo_Comma, KEYMAPPING_NOTHING}
+},
+/* Shift, no FN */
+{
+/* Row 0 */
+{KeyNo_OpenSquare, KeyNo_NumPadStar, KeyNo_LetterI | SPECIAL_KEY_SHIFT, KeyNo_LetterJ | SPECIAL_KEY_SHIFT, KeyNo_LetterN | SPECIAL_KEY_SHIFT, KeyNo_LetterM | SPECIAL_KEY_SHIFT},
+/* Row 1 */
+{KeyNo_CloseSquare, KeyNo_Digit7 | SPECIAL_KEY_SHIFT, KeyNo_LetterU | SPECIAL_KEY_SHIFT, KeyNo_LetterH | SPECIAL_KEY_SHIFT, KeyNo_LetterB | SPECIAL_KEY_SHIFT, KeyNo_Space | SPECIAL_KEY_SHIFT},
+/* Row 2 */
+/* ignore FN. handled elsewhere */
+{KeyNo_Delete, KeyNo_Digit6 | SPECIAL_KEY_SHIFT, KeyNo_LetterY | SPECIAL_KEY_SHIFT, KeyNo_LetterG | SPECIAL_KEY_SHIFT, KeyNo_LetterV | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+/* Row 3 */
+{KeyNo_LetterO | SPECIAL_KEY_SHIFT, KeyNo_Digit5 | SPECIAL_KEY_SHIFT, KeyNo_LetterT | SPECIAL_KEY_SHIFT, KeyNo_LetterF | SPECIAL_KEY_SHIFT, KeyNo_LetterC | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+/* Row 4 */
+{KeyNo_LetterP | SPECIAL_KEY_SHIFT, KeyNo_BackSlash | SPECIAL_KEY_SHIFT, KeyNo_LetterR | SPECIAL_KEY_SHIFT, KeyNo_LetterD | SPECIAL_KEY_SHIFT, KeyNo_LetterX | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+/* Row 5 */
+{KeyNo_LetterK | SPECIAL_KEY_SHIFT, KeyNo_CloseSquare | SPECIAL_KEY_SHIFT, KeyNo_LetterE | SPECIAL_KEY_SHIFT, KeyNo_LetterS | SPECIAL_KEY_SHIFT, KeyNo_LetterZ | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+/* Row 6 */
+{KeyNo_LetterL | SPECIAL_KEY_SHIFT, KeyNo_OpenSquare | SPECIAL_KEY_SHIFT, KeyNo_LetterW | SPECIAL_KEY_SHIFT, KeyNo_LetterA | SPECIAL_KEY_SHIFT, KeyNo_Dot | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+/* Row 7 */
+/* ignore Shift. handled elsewhere */
+{KeyNo_Return | SPECIAL_KEY_SHIFT, KeyNo_LetterS | SPECIAL_KEY_SHIFT | SPECIAL_KEY_ALT_GR, KeyNo_LetterQ | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING, KeyNo_Comma | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING}
+},
+/* No Shift, FN */
+{
+/* Row 0 */
+{KeyNo_Function9, KeyNo_Function8, KEYMAPPING_NOTHING, KeyNo_LetterB | SPECIAL_KEY_ALT_GR, KeyNo_Digit4 | SPECIAL_KEY_SHIFT, KeyNo_Digit4 | SPECIAL_KEY_ALT_GR},
+/* Row 1 */
+{KeyNo_Function10, KeyNo_Function7, KEYMAPPING_NOTHING, KeyNo_BackTick, KeyNo_Pound | SPECIAL_KEY_SHIFT, KeyNo_Tab},
+/* Row 2 */
+/* ignore FN. handled elsewhere */
+{KeyNo_Insert, KeyNo_Function6, KeyNo_Minus | SPECIAL_KEY_SHIFT, KeyNo_Equals, KeyNo_NumPadHash, KEYMAPPING_NOTHING},
+/* Row 3 */
+{KeyNo_Function11, KeyNo_Function5, KeyNo_Digit1  | SPECIAL_KEY_SHIFT, KeyNo_Equals | SPECIAL_KEY_SHIFT, KeyNo_Pound, KEYMAPPING_NOTHING},
+/* Row 4 */
+{KeyNo_Function12, KeyNo_Function4, KeyNo_Digit0 | SPECIAL_KEY_SHIFT, KeyNo_Minus, KeyNo_Slash | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+/* Row 5 */
+{KeyNo_Digit3 | SPECIAL_KEY_SHIFT, KeyNo_Function3, KeyNo_Digit9 | SPECIAL_KEY_SHIFT, KeyNo_Digit2  | SPECIAL_KEY_SHIFT, KeyNo_Slash, KEYMAPPING_NOTHING},
+/* Row 6 */
+{KeyNo_LetterY | SPECIAL_KEY_SHIFT | SPECIAL_KEY_ALT_GR, KeyNo_Function2, KeyNo_Tick | SPECIAL_KEY_SHIFT, KeyNo_Tick, KeyNo_SemiColon | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+/* Row 7 */
+/* ignore Shift. handled elsewhere */
+{KEYMAPPING_NOTHING, KeyNo_Function1, KeyNo_Escape, KEYMAPPING_NOTHING, KeyNo_SemiColon, KEYMAPPING_NOTHING}
+},
+/* Shift, FN is CAPS LOCK. handled elsewhere */
+/* Special block FN ENTER modus */
+{
+/* Row 0 */
+{KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 1 */
+{KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 2 */
+{KeyNo_BackSpace, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 3 */
+{KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 4 */
+{KeyNo_Function12, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING},
+/* Row 5 */
+{KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KeyNo_Print, KEYMAPPING_NOTHING},
+/* Row 6 */
+{KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KeyNo_ScrollLock, KEYMAPPING_NOTHING},
+/* Row 7 */
+{KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING, KEYMAPPING_NOTHING}
+a115 2
+unsigned long key_pressed;
+unsigned long riscos_key_pressed;
+d117 2
+a118 2
+unsigned long pandora_special_key_status;
+unsigned long pandora_key_status[ROW_STATUS_ARRAY_SIZE];
+d127 13
+a139 13
+_kernel_oserror *error_os;
+unsigned char i2c_buffer[2];
+unsigned int transfer[3];
+
+/* First set address */
+i2c_buffer[0]=KEYPAD_BASE_ADDRESS + chip_register;
+/* Afterwards data to write follows. */
+i2c_buffer[1]=value;
+transfer[0]=KEYPAD_IIC_ADDRESS;
+transfer[1]=(int) i2c_buffer;
+transfer[2]=2;
+if ((error_os=_swix(OS_IICOp,_INR(0,1),transfer,1)) != NULL) {
+  return error_os;
+d141 1
+a141 1
+return NULL;
+d148 14
+a161 14
+_kernel_oserror *error_os;
+unsigned char i2c_buffer[1];
+unsigned int transfer[6];
+
+/* First set address */
+i2c_buffer[0]=KEYPAD_BASE_ADDRESS + chip_register;
+transfer[0]=KEYPAD_IIC_ADDRESS;
+transfer[1]=(int) i2c_buffer;
+transfer[2]=1;
+transfer[3]=KEYPAD_IIC_ADDRESS | 1;
+transfer[4]=(int) buffer;
+transfer[5]=number_of_bytes;
+if ((error_os=_swix(OS_IICOp,_INR(0,1),transfer,2)) != NULL) {
+  return error_os;
+d163 1
+a163 1
+return NULL;
+d166 2
+a167 3
+static _kernel_oserror *adapt_special_key_status(unsigned long *result_status,
+                                          unsigned long old_special_status,
+                                          unsigned long new_special_status)
+d169 3
+a171 3
+unsigned long status_diff;
+_kernel_swi_regs regs;
+_kernel_oserror *error_os;
+d173 20
+a192 14
+status_diff=old_special_status^new_special_status;
+if ((status_diff & SPECIAL_KEY_SHIFT) != 0) {
+  /* Determine release/pressing. */
+  if ((new_special_status & SPECIAL_KEY_SHIFT) != 0) {
+    regs.r[0]=KeyV_KeyDown;
+    }
+  else {
+    regs.r[0]=KeyV_KeyUp;
+    }
+  regs.r[1]=KeyNo_ShiftLeft;
+  regs.r[9]=KEYV;
+  if ((error_os=_kernel_swi(OS_CallAVector, &regs, &regs)) != NULL) {
+    /* Don't continue. try later */
+    return error_os;
+a194 49
+if ((status_diff & SPECIAL_KEY_CTRL) != 0) {
+  /* Determine release/pressing. */
+  if ((new_special_status & SPECIAL_KEY_CTRL) != 0) {
+    regs.r[0]=KeyV_KeyDown;
+    }
+  else {
+    regs.r[0]=KeyV_KeyUp;
+    }
+  regs.r[1]=KeyNo_CtrlLeft;
+  regs.r[9]=KEYV;
+  if ((error_os=_kernel_swi(OS_CallAVector, &regs, &regs)) != NULL) {
+    /* Don't continue. try later */
+    return error_os;
+    }
+  }
+if ((status_diff & SPECIAL_KEY_ALT_GR) != 0) {
+  /* Determine release/pressing. */
+  if ((new_special_status & SPECIAL_KEY_ALT_GR) != 0) {
+    regs.r[0]=KeyV_KeyDown;
+    }
+  else {
+    regs.r[0]=KeyV_KeyUp;
+    }
+  regs.r[1]=KeyNo_AltRight;
+  regs.r[9]=KEYV;
+  if ((error_os=_kernel_swi(OS_CallAVector, &regs, &regs)) != NULL) {
+    /* Don't continue. try later */
+    return error_os;
+    }
+  }
+if ((status_diff & SPECIAL_KEY_ALT) != 0) {
+  /* Determine release/pressing. */
+  if ((new_special_status & SPECIAL_KEY_ALT) != 0) {
+    regs.r[0]=KeyV_KeyDown;
+    }
+  else {
+    regs.r[0]=KeyV_KeyUp;
+    }
+  regs.r[1]=KeyNo_AltLeft;
+  regs.r[9]=KEYV;
+  if ((error_os=_kernel_swi(OS_CallAVector, &regs, &regs)) != NULL) {
+    /* Don't continue. try later */
+    return error_os;
+    }
+  }
+if (result_status) {
+  *result_status=new_special_status;
+  }
+return NULL;
+d197 1
+a197 2
+static unsigned long get_key_mapping(unsigned long pressed_key,
+                              unsigned long *actual_key_bank)
+d199 24
+a222 4
+
+if ((common.special_key_status & SPECIAL_KEY_ENTER_LOCK) != 0) {
+  /* Special Mode */
+  *actual_key_bank=3;
+a223 2
+/* Determine RISC OS key belonging to Pandora key */
+return key_mapping[*actual_key_bank][(pressed_key & 0x000000F0)>>4][pressed_key & 0x0000000F];
+d230 10
+a239 17
+int i, j;
+int pandora_key;
+unsigned long actual_key_status[ROW_STATUS_ARRAY_SIZE], status_diff;
+unsigned long required_special_key_status;
+unsigned long actual_mapping, actual_key_bank;
+unsigned long pressed_key;
+bool key_released;
+bool key_pressed;
+int special_key_count, key_count;
+_kernel_swi_regs internal_regs;
+_kernel_oserror *error_os;
+
+(void) regs;
+(void) pw;
+
+if ((!common.driver_enabled) || (common.ticker_handler_running)) {
+  return 1;
+d241 36
+a276 21
+/* Protect against reentrancy */
+common.ticker_handler_running=true;
+common.handler_stopped=false;
+/* Allow parallel activity */
+_kernel_irqs_on();
+/* Update nubs */
+nubs_update();
+/* Update GPIO keys */
+gpiokey_update();
+if ((error_os=i2c_read_data(keypad_regoffset_rowcontent[0], (unsigned char *) actual_key_status, MAX_ROWS)) == NULL) {
+  key_count=0;
+  special_key_count=0;
+  key_pressed=false;
+  key_released=false;
+  /* Note to dected certain changes */
+  required_special_key_status=common.pandora_special_key_status;
+  for (i=0; i < ROW_STATUS_ARRAY_SIZE; i++)  {
+    status_diff=actual_key_status[i]^common.pandora_key_status[i];
+    /* Repeat until last change has been determined. */
+    while (status_diff != 0) {
+      __asm
+d278 2
+a279 1
+      CLZ j,status_diff;
+d281 4
+a284 60
+      j=31-j;
+      /* "j" contains the required Bit. */
+      /* Clear difference inside state diff to recognize further changes. */
+      status_diff^=((unsigned long) 1<<j);
+      /* Not all Columns used at the Pandora. For being uncertain about the content of the
+         unused Bits changes on them must be ignored. However there changes must be reset. */
+      if ((j%DELIVERED_COLUMNS) < MAX_COLUMNS) {
+        /* Calculate according Pandora key code (ROW/COL) */
+        pandora_key=((i*4 + j/DELIVERED_COLUMNS)<<4) + j%DELIVERED_COLUMNS;
+        /* In the first go we are sorting between special keys and other ones to obtain
+           a fix state of the actually pressed pandora special keys FN and shift. */
+        switch(pandora_key) {
+          case PANDORA_KEY_FN: {
+            /* Only update the Pandora status but not the RISC OS status here. */
+            if ((actual_key_status[i] & ((unsigned long) 1<<j)) != 0) {
+              special_key_count++;
+              common.pandora_special_key_status|=SPECIAL_KEY_FN;
+              }
+            else {
+              common.pandora_special_key_status&=(~SPECIAL_KEY_FN);
+              }
+            }
+          break;
+          case PANDORA_KEY_SHIFT: {
+            /* Only update the Pandora status but not the RISC OS status here. */
+            if ((actual_key_status[i] & ((unsigned long) 1<<j)) != 0) {
+              special_key_count++;
+              common.pandora_special_key_status|=SPECIAL_KEY_SHIFT;
+              }
+            else {
+              common.pandora_special_key_status&=(~SPECIAL_KEY_SHIFT);
+              }
+            }
+          break;
+          case PANDORA_KEY_ENTER: {
+            /* Note status only at here don't evaluate */
+            if ((actual_key_status[i] & ((unsigned long) 1<<j)) != 0) {
+              common.pandora_special_key_status|=SPECIAL_KEY_ENTER;
+              }
+            else {
+              common.pandora_special_key_status&=(~SPECIAL_KEY_ENTER);
+              }
+            }
+          break;
+          default: {
+            /* Note key. */
+            if ((actual_key_status[i] & ((unsigned long) 1<<j)) != 0) {
+              key_pressed=true;
+              key_count++;
+              pressed_key=(unsigned long) pandora_key;
+              }
+            else {
+              /* Release only the actually pressed key. */
+              if (common.key_pressed == (unsigned long) pandora_key) {
+                key_released=true;
+                }
+              }
+            }
+          }
+        }
+d286 4
+a289 34
+    common.pandora_key_status[i]=actual_key_status[i];
+    }
+  /* Enter */
+  if (((required_special_key_status^common.pandora_special_key_status) & SPECIAL_KEY_ENTER) != 0) {
+    if ((common.pandora_special_key_status & SPECIAL_KEY_ENTER) != 0) {
+      /* Press */
+      if ((common.pandora_special_key_status & SPECIAL_KEY_FN) != 0) {
+        /* special key */
+        if ((common.special_key_status & SPECIAL_KEY_ENTER_LOCK) != 0) {
+          common.special_key_status&=(~SPECIAL_KEY_ENTER_LOCK);
+          }
+        else {
+          common.special_key_status|=SPECIAL_KEY_ENTER_LOCK;
+          }
+        }
+      else {
+        /* usual key */
+        key_pressed=true;
+        key_count++;
+        pressed_key=(unsigned long) PANDORA_KEY_ENTER;
+        }
+      }
+    else {
+      /* Release */
+      if ((common.pandora_special_key_status & SPECIAL_KEY_ENTER) != 0) {
+        /* special key */
+        /* No effect */
+        }
+      else {
+        /* usual key */
+        if (common.key_pressed == (unsigned long) PANDORA_KEY_ENTER) {
+          key_released=true;
+          }
+        }
+d292 12
+a303 115
+  /* Information about ENTER must be internally kept to detect switch. */
+  if (key_pressed) {
+    /* This is a dummy which will be replaced later by the real value.
+       However it is required as dummy for the mapping will detect and set mouse key mode. */
+    actual_key_bank=0;
+    actual_mapping=get_key_mapping(pressed_key, &actual_key_bank);
+    }
+  /* Handle regular key release or forced release at additional key press */
+  if ((key_released) ||
+      ((key_pressed) &&
+       (common.key_pressed != KEYMAPPING_NOTHING))) {
+    /* Release any actually pressed key. */
+    /* Entering of new keys now possible */
+    common.key_pressed=KEYMAPPING_NOTHING;
+    /* Tell RISC OS about key release */
+    internal_regs.r[0]=KeyV_KeyUp;
+    internal_regs.r[1]=(int) common.riscos_key_pressed;
+    internal_regs.r[9]=KEYV;
+    if ((common.handler_stopped) ||
+       ((error_os=_kernel_swi(OS_CallAVector, &internal_regs, &internal_regs)) != NULL)) {
+      /* Better luck next time */
+      /* Restore old IRQ State (disabled) */
+      _kernel_irqs_off();
+      common.ticker_handler_running=false;
+      return 1;
+      }
+    }
+  if ((common.key_pressed == KEYMAPPING_NOTHING) &&
+      ((special_key_count > 0) ||
+       (key_count > 0))) {
+    /* Determine bank for key mapping according to locally pressed Pandora keys. */
+    actual_key_bank=0;
+    if ((common.pandora_special_key_status & SPECIAL_KEY_SHIFT) != 0) {
+      actual_key_bank|=0x00000001;
+      }
+    if (((common.pandora_special_key_status & SPECIAL_KEY_FN) != 0) &&
+        /* Exclude FN Enter */
+       ((common.pandora_special_key_status & SPECIAL_KEY_ALT) == 0) &&
+       ((common.pandora_special_key_status & SPECIAL_KEY_CTRL) == 0) &&
+       ((common.pandora_special_key_status & SPECIAL_KEY_ENTER) == 0)) {
+      actual_key_bank|=0x00000002;
+      }
+    if ((special_key_count > 0) && (actual_key_bank > 2)) {
+      /* Shift and FN pressed parallel plays a special role. All other presses are ignored then. */
+      if ((common.special_key_status & SPECIAL_KEY_SHIFT_LOCK) != 0) {
+        internal_regs.r[0]=KeyV_KeyUp;
+        common.special_key_status&=(~SPECIAL_KEY_SHIFT_LOCK);
+        }
+      else {
+        internal_regs.r[0]=KeyV_KeyDown;
+        common.special_key_status|=SPECIAL_KEY_SHIFT_LOCK;
+        }
+      internal_regs.r[1]=KeyNo_CapsLock;
+      internal_regs.r[9]=KEYV;
+      if ((error_os=_kernel_swi(OS_CallAVector, &internal_regs, &internal_regs)) != NULL) {
+        /* Better luck next time */
+        /* Restore old IRQ State (disabled) */
+        _kernel_irqs_off();
+        common.ticker_handler_running=false;
+        return 1;
+        }
+      }
+    else if (key_count > 0) {
+      if ((common.special_key_status & SPECIAL_KEY_SHIFT_LOCK) != 0) {
+        /* Ensure that FN doesn't effect the bank or silly effects will happen. */
+        actual_key_bank&=(~0x00000002);
+        }
+      actual_mapping=get_key_mapping(pressed_key, &actual_key_bank);
+      if (actual_mapping != KEYMAPPING_NOTHING) {
+        /* Real Keys */
+        /* Again an exception: In FN ENTER mode we have to pass on SHIFT here (and only here) for there is no special bank. */
+        if ((common.special_key_status & SPECIAL_KEY_ENTER_LOCK) != 0) {
+          if ((common.pandora_special_key_status & SPECIAL_KEY_SHIFT) != 0) {
+            actual_mapping|=SPECIAL_KEY_SHIFT;
+            }
+          }
+        required_special_key_status=(actual_mapping & (SPECIAL_KEY_SHIFT | SPECIAL_KEY_ALT_GR)) |
+                                    (common.pandora_special_key_status & (SPECIAL_KEY_ALT | SPECIAL_KEY_CTRL)) |
+                                    (common.special_key_status & (SPECIAL_KEY_SHIFT_LOCK | SPECIAL_KEY_ENTER_LOCK));
+        /* Now it becomes a bit complex.
+           If caps lock is active but shift not pressed but required, we need to supress any shift requirements from the mapping to avoid driver confusion. */
+        if (((common.special_key_status & SPECIAL_KEY_SHIFT_LOCK) != 0) &&
+            (actual_key_bank == 0)) {
+          required_special_key_status&=(~SPECIAL_KEY_SHIFT);
+          }
+        if ((common.handler_stopped) ||
+            ((error_os=adapt_special_key_status(&common.special_key_status, common.special_key_status, required_special_key_status)) != NULL)) {
+          /* Better luck next time */
+          /* Restore old IRQ State (disabled) */
+          _kernel_irqs_off();
+          common.ticker_handler_running=false;
+          return 1;
+          }
+        common.riscos_key_pressed=actual_mapping & 0x000000FF;
+        internal_regs.r[0]=KeyV_KeyDown;
+        internal_regs.r[1]=(int) common.riscos_key_pressed;
+        internal_regs.r[9]=KEYV;
+        if ((common.handler_stopped) ||
+            ((error_os=_kernel_swi(OS_CallAVector, &internal_regs, &internal_regs)) != NULL)) {
+          /* Better luck next time */
+          /* Restore old IRQ State (disabled) */
+          _kernel_irqs_off();
+          common.ticker_handler_running=false;
+          return 1;
+          }
+        /* Lock until release and note key to detect this. */
+        common.key_pressed=pressed_key;
+        }
+      }
+    }
+  }
+/* Restore old IRQ State (disabled) */
+_kernel_irqs_off();
+common.ticker_handler_running=false;
+return 1;
+d318 2
+a319 2
+      mouse_x=0x1;
+      mouse_y=0x1;
+a362 10
+  case KeyV_NotifyLEDState: {
+    /* Pandora has no keyboard LED indicators
+       but synchronize internal status with RISC OS */
+   if ((common.driver_enabled) && (!common.ticker_handler_running)) {
+//    if (regs->r[1] == KeyNo_CapsLock) {
+//      common.special_key_status&=(~SPECIAL_KEY_SHIFT_LOCK);
+//      common.special_key_status|=SPECIAL_KEY_SHIFT_LOCK;
+      }
+    }
+  break;
+d365 1
+a365 5
+    /* Reset internal states */
+    /* Do not reset Pandora key states. */
+    common.special_key_status=0;
+    common.handler_stopped=true;
+    common.key_pressed=KEYMAPPING_NOTHING;
+d369 7
+a403 1
+common.pandora_special_key_status=0;
+a406 1
+common.special_key_status=0;
+a408 1
+common.key_pressed=KEYMAPPING_NOTHING;
+d514 1
+d517 2
+@
+
+
+1.4
+log
+@Fix tilde, back tick, forward tick. Strip out redundant FN U, FN I code.
+Detail:
+  c/pandorakey, h/pandorakey - Fixed mappings for tidle, back tick, and forward tick. Stripped out redundant FN U, FN I code (not needed now that we have ctrl + alt on the GPIO keys)
+Admin:
+  Tested on Pandora
+
+
+Version 0.36. Tagged as 'PandoraKey-0_36'
+@
+text
+@d582 1
+a582 1
+    unsigned long device_type;
+@
+
+
+1.3
+log
+@Add support for nubs + GPIO keys. Tidy up a few bits.
+Detail:
+  c/gpio, h/gpio - General GPIO handling code
+  c/gpiokey, h/gpiokey - Code for handling the GPIO-attached keys (gamepad buttons), to emulate some extra keyboard keys
+  c/nubs, h/nubs - Code for handling the analogue nubs, to emulate mouse input
+  c/pandorakey, h/pandorakey - Moved data arrays to C file to avoid multiply defined symbols when header is #included elsewhere. Changed to use exported definitions for key & vector numbers instead of local definitons. Removed from the keyboard matrix handling the bits which are now handled by the nubs & GPIO keys. Use OS_IICOp for IIC transfers to ensure register reads don't get interrupted by other transfers.
+  Makefile - Added new files
+Admin:
+  Tested on Pandora
+
+
+Version 0.35. Tagged as 'PandoraKey-0_35'
+@
+text
+@d103 1
+a103 1
+{KeyNo_LetterP | SPECIAL_KEY_SHIFT, KeyNo_SemiColon | SPECIAL_KEY_ALT_GR, KeyNo_LetterR | SPECIAL_KEY_SHIFT, KeyNo_LetterD | SPECIAL_KEY_SHIFT, KeyNo_LetterX | SPECIAL_KEY_SHIFT, KEYMAPPING_NOTHING},
+d115 1
+a115 1
+{KeyNo_Function9, KeyNo_Function8, KEYMAPPING_NOTHING, KeyNo_CloseSquare | SPECIAL_KEY_ALT_GR, KeyNo_Digit4 | SPECIAL_KEY_SHIFT, KeyNo_Digit4 | SPECIAL_KEY_ALT_GR},
+d117 1
+a117 1
+{KeyNo_Function10, KeyNo_Function7, KEYMAPPING_NOTHING, KeyNo_OpenSquare | SPECIAL_KEY_ALT_GR, KeyNo_Pound | SPECIAL_KEY_SHIFT, KeyNo_Tab},
+a340 1
+      j;
+a378 20
+          case PANDORA_KEY_U: {
+            /* Note status only at here don't evaluate */
+            if ((actual_key_status[i] & ((unsigned long) 1<<j)) != 0) {
+              common.pandora_special_key_status|=SPECIAL_KEY_U;
+              }
+            else {
+              common.pandora_special_key_status&=(~SPECIAL_KEY_U);
+              }
+            }
+          break;
+          case PANDORA_KEY_I: {
+            /* Note status only at here don't evaluate */
+            if ((actual_key_status[i] & ((unsigned long) 1<<j)) != 0) {
+              common.pandora_special_key_status|=SPECIAL_KEY_I;
+              }
+            else {
+              common.pandora_special_key_status&=(~SPECIAL_KEY_I);
+              }
+            }
+          break;
+a407 66
+  /* Now it becomes nice:
+     We have to mix in I and U presses/releases.
+     If CTRL/ALT active and I/U released this means CTRL/ALT have been released.
+     If CTRL/ALT not active and I/U released this means I/U have been released -> handle as a regular key.
+     If CTRL/ALT active and I/U pressed and FN is active this means CTRL/ALT have been pressed.
+     If CTRL/ALT not active and I/U pressed and FN is active this means I/U have been pressed -> handle as a regular key. */
+  /* U */
+  if (((required_special_key_status^common.pandora_special_key_status) & SPECIAL_KEY_U) != 0) {
+    if ((common.pandora_special_key_status & SPECIAL_KEY_U) != 0) {
+      /* Press */
+      if ((common.pandora_special_key_status & SPECIAL_KEY_FN) != 0) {
+        /* special key */
+        special_key_count++;
+        common.pandora_special_key_status|=SPECIAL_KEY_ALT;
+        }
+      else {
+        /* usual key */
+        key_pressed=true;
+        key_count++;
+        pressed_key=(unsigned long) PANDORA_KEY_U;
+        }
+      }
+    else {
+      /* Release */
+      if ((common.pandora_special_key_status & SPECIAL_KEY_ALT) != 0) {
+        /* special key */
+        common.pandora_special_key_status&=(~SPECIAL_KEY_ALT);
+        }
+      else {
+        /* usual key */
+        if (common.key_pressed == (unsigned long) PANDORA_KEY_U) {
+          key_released=true;
+          }
+        }
+      }
+    }
+  /* I */
+  if (((required_special_key_status^common.pandora_special_key_status) & SPECIAL_KEY_I) != 0) {
+    if ((common.pandora_special_key_status & SPECIAL_KEY_I) != 0) {
+      /* Press */
+      if ((common.pandora_special_key_status & SPECIAL_KEY_FN) != 0) {
+        /* special key */
+        special_key_count++;
+        common.pandora_special_key_status|=SPECIAL_KEY_CTRL;
+        }
+      else {
+        /* usual key */
+        key_pressed=true;
+        key_count++;
+        pressed_key=(unsigned long) PANDORA_KEY_I;
+        }
+      }
+    else {
+      /* Release */
+      if ((common.pandora_special_key_status & SPECIAL_KEY_CTRL) != 0) {
+        /* special key */
+        common.pandora_special_key_status&=(~SPECIAL_KEY_CTRL);
+        }
+      else {
+        /* usual key */
+        if (common.key_pressed == (unsigned long) PANDORA_KEY_I) {
+          key_released=true;
+          }
+        }
+      }
+    }
+d442 1
+a442 1
+  /* Information about U, I and ENTER must be internally kept to detect switch. */
+d478 1
+a478 1
+        /* Exclude FN U, FN I and FN Enter */
+@
+
+
+1.2
+log
+@Look for Pandora keyboard HAL device on initialisation
+Detail:
+  c/pandorakey - To allow the module to be included in the OMAP3 ROM, it now refuses to initialise if it can't find the keyboard HAL device that the HAL creates
+Admin:
+  Tested on Pandora, rev C2 BB, rev A2 BB-xM, rev C1 TouchBook
+
+
+Version 0.34. Tagged as 'PandoraKey-0_34'
+@
+text
+@d52 3
+d59 3
+d66 90
+a155 1
+struct {
+a159 3
+unsigned long mouse_direction;
+unsigned long mouse_movement;
+int mouse_move_start;
+a160 1
+unsigned long mouse_key_pressed;
+d166 2
+d170 1
+a170 1
+_kernel_oserror *i2c_write_value(unsigned char chip_register,
+a172 1
+_kernel_swi_regs regs;
+d175 1
+d181 4
+a184 4
+regs.r[0]=KEYPAD_IIC_ADDRESS;
+regs.r[1]=(int) i2c_buffer;
+regs.r[2]=2;
+if ((error_os=_kernel_swi(IIC_Control, &regs, &regs)) != NULL) {
+d190 1
+a190 1
+_kernel_oserror *i2c_read_data(unsigned char chip_register,
+a193 1
+_kernel_swi_regs regs;
+d196 1
+d200 7
+a206 10
+regs.r[0]=KEYPAD_IIC_ADDRESS;
+regs.r[1]=(int) i2c_buffer;
+regs.r[2]=1;
+if ((error_os=_kernel_swi(IIC_Control, &regs, &regs)) != NULL) {
+  return error_os;
+  }
+regs.r[0]=KEYPAD_IIC_ADDRESS | 1;
+regs.r[1]=(int) buffer;
+regs.r[2]=number_of_bytes;
+if ((error_os=_kernel_swi(IIC_Control, &regs, &regs)) != NULL) {
+d212 1
+a212 1
+_kernel_oserror *adapt_special_key_status(unsigned long *result_status,
+d224 1
+a224 1
+    regs.r[0]=2;
+d227 1
+a227 1
+    regs.r[0]=1;
+d229 2
+a230 2
+  regs.r[1]=RISCOS_KEYCODE_SHIFT_L;
+  regs.r[9]=VECTOR_KEYV;
+d239 1
+a239 1
+    regs.r[0]=2;
+d242 1
+a242 1
+    regs.r[0]=1;
+d244 2
+a245 2
+  regs.r[1]=RISCOS_KEYCODE_CTRL_L;
+  regs.r[9]=VECTOR_KEYV;
+d254 1
+a254 1
+    regs.r[0]=2;
+d257 1
+a257 1
+    regs.r[0]=1;
+d259 2
+a260 2
+  regs.r[1]=RISCOS_KEYCODE_ALT_R;
+  regs.r[9]=VECTOR_KEYV;
+d269 1
+a269 1
+    regs.r[0]=2;
+d272 1
+a272 1
+    regs.r[0]=1;
+d274 2
+a275 2
+  regs.r[1]=RISCOS_KEYCODE_ALT_L;
+  regs.r[9]=VECTOR_KEYV;
+d287 1
+a287 1
+unsigned long get_key_mapping(unsigned long pressed_key,
+a309 1
+bool mouse_key_released;
+d315 3
+d326 4
+a329 11
+/* Adjust mouse movements */
+if ((common.mouse_direction & MOUSE_ACTION) != 0) {
+  _kernel_swi(OS_ReadMonotonicTime, &internal_regs, &internal_regs);
+  if ((internal_regs.r[0] - common.mouse_move_start) < 100) {
+    common.mouse_movement+=0x00000200;
+    }
+  else {
+    /* Gas ist rechts ... */
+    common.mouse_movement+=0x00000600;
+    }
+  }
+a334 1
+  mouse_key_released=false;
+d341 6
+a346 10
+      /* Simple Bit check. Interval halving would nearly use the same number of cycles. */
+      j=0;
+      while (j < 32) {
+        if ((status_diff & ((unsigned long) 1<<j)) != 0) {
+          break;
+          }
+        else {
+          j++;
+          }
+        }
+a421 3
+              else if (common.mouse_key_pressed == (unsigned long) pandora_key) {
+                mouse_key_released=true;
+                }
+a461 3
+        else if (common.mouse_key_pressed == (unsigned long) PANDORA_KEY_U) {
+          mouse_key_released=true;
+          }
+a491 3
+        else if (common.mouse_key_pressed == (unsigned long) PANDORA_KEY_I) {
+          mouse_key_released=true;
+          }
+a525 3
+        else if (common.mouse_key_pressed == (unsigned long) PANDORA_KEY_ENTER) {
+          mouse_key_released=true;
+          }
+a529 5
+  /* Try to handle mouse movement keys separately */
+  if (mouse_key_released) {
+    common.mouse_direction=MOUSE_DIRECTION_NONE;
+    common.mouse_movement=0;
+    }
+a534 13
+    if (actual_mapping != KEYMAPPING_NOTHING) {
+      if ((actual_mapping & MOUSE_ACTION) != 0) {
+        /* Mouse emulation */
+        _kernel_swi(OS_ReadMonotonicTime, &internal_regs, &internal_regs);
+        common.mouse_move_start=internal_regs.r[0];
+        common.mouse_direction=actual_mapping;
+        /* Lock until release and note key to detect this. */
+        common.mouse_key_pressed=pressed_key;
+        /* No further key evaluation. */
+        key_pressed=false;
+        key_count=0;
+        }
+      }
+d544 1
+a544 1
+    internal_regs.r[0]=1;
+d546 1
+a546 1
+    internal_regs.r[9]=VECTOR_KEYV;
+d574 1
+a574 1
+        internal_regs.r[0]=1;
+d578 1
+a578 1
+        internal_regs.r[0]=2;
+d581 2
+a582 2
+      internal_regs.r[1]=RISCOS_KEYCODE_SHIFT_LOCK;
+      internal_regs.r[9]=VECTOR_KEYV;
+d623 1
+a623 1
+        internal_regs.r[0]=2;
+d625 1
+a625 1
+        internal_regs.r[9]=VECTOR_KEYV;
+d649 1
+d652 1
+a652 1
+  case 0: {
+d654 3
+a656 27
+      /* Report movements */
+      switch(common.mouse_direction & (MOUSE_DIRECTION_UP | MOUSE_DIRECTION_DOWN | MOUSE_DIRECTION_LEFT | MOUSE_DIRECTION_RIGHT)) {
+        case MOUSE_DIRECTION_UP: {
+          regs->r[2]=0;
+          regs->r[3]=(common.mouse_movement>>8);
+          }
+        break;
+        case MOUSE_DIRECTION_DOWN: {
+          regs->r[2]=0;
+          regs->r[3]=-(common.mouse_movement>>8);
+          }
+        break;
+        case MOUSE_DIRECTION_LEFT: {
+          regs->r[2]=-(common.mouse_movement>>8);
+          regs->r[3]=0;
+          }
+        break;
+        case MOUSE_DIRECTION_RIGHT: {
+          regs->r[2]=(common.mouse_movement>>8);
+          regs->r[3]=0;
+          }
+        break;
+        default: {
+          regs->r[2]=0;
+          regs->r[3]=0;
+          }
+        }
+d658 2
+a659 1
+      common.mouse_movement&=0x000000FF;
+d664 1
+a664 1
+  case 1: {
+d683 1
+a683 1
+  case 2: {
+d700 1
+d703 1
+a703 1
+  case 3: {
+d707 1
+a707 1
+//    if (regs->r[1] == RISCOS_KEYCODE_SHIFT_LOCK) {
+d713 1
+a713 1
+  case 4: {
+d720 1
+a720 1
+    common.mouse_key_pressed=KEYMAPPING_NOTHING;
+d735 3
+a758 3
+common.mouse_key_pressed=KEYMAPPING_NOTHING;
+common.mouse_direction=MOUSE_DIRECTION_NONE;
+common.mouse_movement=0;
+d780 5
+d786 1
+a786 1
+regs.r[0]=VECTOR_KEYV;
+d793 1
+a793 1
+regs.r[0]=VECTOR_POINTERV;
+d797 1
+a797 7
+  /* No longer examine KeyV */
+  regs.r[0]=VECTOR_KEYV;
+  regs.r[1]=(int) key_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  return error_os;
+d800 1
+a800 1
+regs.r[0]=VECTOR_TICKERV;
+d804 1
+a804 13
+  /* No longer examine PointerV */
+  regs.r[0]=VECTOR_POINTERV;
+  regs.r[1]=(int) mouse_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  /* No longer examine KeyV */
+  regs.r[0]=VECTOR_KEYV;
+  regs.r[1]=(int) key_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  return error_os;
+d807 1
+a807 1
+regs.r[0]=0;
+d809 1
+a809 1
+regs.r[9]=VECTOR_KEYV;
+d811 1
+a811 19
+  /* No longer examine TickerV */
+  regs.r[0]=VECTOR_TICKERV;
+  regs.r[1]=(int) ticker_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  /* No longer examine PointerV */
+  regs.r[0]=VECTOR_POINTERV;
+  regs.r[1]=(int) mouse_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  /* No longer examine KeyV */
+  regs.r[0]=VECTOR_KEYV;
+  regs.r[1]=(int) key_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  return error_os;
+d817 1
+a817 19
+  /* No longer examine TickerV */
+  regs.r[0]=VECTOR_TICKERV;
+  regs.r[1]=(int) ticker_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  /* No longer examine PointerV */
+  regs.r[0]=VECTOR_POINTERV;
+  regs.r[1]=(int) mouse_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  /* No longer examine KeyV */
+  regs.r[0]=VECTOR_KEYV;
+  regs.r[1]=(int) key_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  return error_os;
+d824 1
+a824 19
+  /* No longer examine TickerV */
+  regs.r[0]=VECTOR_TICKERV;
+  regs.r[1]=(int) ticker_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  /* No longer examine PointerV */
+  regs.r[0]=VECTOR_POINTERV;
+  regs.r[1]=(int) mouse_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  /* No longer examine KeyV */
+  regs.r[0]=VECTOR_KEYV;
+  regs.r[1]=(int) key_handler_entry;
+  regs.r[2]=(int) pw;
+  /* Don't worry about errors */
+  _kernel_swi(OS_Release, &regs, &regs);
+  return error_os;
+d827 25
+d860 3
+d864 2
+d873 1
+a873 1
+regs.r[0]=VECTOR_TICKERV;
+d879 1
+a879 1
+regs.r[0]=VECTOR_POINTERV;
+d885 1
+a885 1
+regs.r[0]=VECTOR_KEYV;
+@
+
+
+1.1
+log
+@Add Thomas Milius' PandoraKey module
+Detail:
+  Kindly donated by Thomas Milius, this module provides a keyboard & mouse driver for the builtin keyboard of the Pandora handheld.
+  This is version 0.32 of the module, with minor tweaks to allow it to be built by the ROOL build system.
+  At the moment the driver only supports the use of the Pandora's keyboard; gamepad and nub support is forthcoming.
+Admin:
+  Builds but untested
+
+
+Version 0.33. Tagged as 'PandoraKey-0_33'
+@
+text
+@d51 1
+d706 13
+@
+

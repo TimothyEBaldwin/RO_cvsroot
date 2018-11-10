@@ -1,0 +1,836 @@
+head	1.5;
+access;
+symbols
+	Omni-2_30:1.5
+	Omni-2_29:1.4
+	Omni-2_28:1.4
+	Omni-2_27:1.4
+	Omni-2_26:1.4
+	Omni-2_25:1.4
+	Omni-2_24:1.4
+	Omni-2_23:1.4
+	Omni-2_22:1.4
+	Omni-2_21:1.4
+	Omni-2_20:1.4
+	Omni-2_19:1.4
+	Omni-2_18:1.4
+	Omni-2_17:1.4
+	Omni-2_16:1.4
+	Omni-2_15:1.4
+	Omni-2_14:1.4
+	Omni-2_13:1.4
+	Omni-2_12:1.4
+	Omni-2_11:1.4
+	Omni-2_10:1.4
+	Omni-2_09:1.4
+	Omni-2_08:1.4
+	Omni-2_07:1.3
+	Omni-2_06:1.3
+	Omni-2_05:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.09.20.21.05.42;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	ljMsoSQjcEAv2TSA;
+
+1.4
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.03.23.17.44.11;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.07.19.24.17;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.02.19.41.34;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.02.19.41.34;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Various fixes
+Events.c: refactor ActiveMounts() to not return a pointer to a local buffer array; avoid potential NULL pointer issue on 'ir'.
+FileType.c: avoid undefined sprintf() when destination appears as one of the args
+List.c: defer dereferencing 'wr' until checked for NULL
+Print.c: don't leak 'tmp' on error
+Parse.c: defer dereferencing 'wr' until checked for NULL, tweak dprintf() to avoid potential NULL pointer read in debug output
+Found by cppcheck static analysis.
+
+Version 2.30. Tagged as 'Omni-2_30'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	Print.c - core application routines
+ *
+ * Project:	!Omni OmniClient(tm) project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	6 October 1994
+ * Last Edited:	3 January 1996
+ *
+ * Copyright 1994,1995,1996 by ANT Limited
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <Desk/Str.h>
+#include <Desk/Time.h>
+
+#include <DebugLib/DebugLib.h>
+
+#include "Client.h"
+#include "Filer.h"
+#include "Heap.h"
+#include "MakeError.h"
+#include "Print.h"
+
+/*  Create a new print job.
+ */
+extern print_record *PrintCreate(_kernel_swi_regs *r)
+{
+  client_record *cr = NULL;
+  print_record *pr = NULL;
+  Desk_os_error *err = NULL;
+
+  dprintf (("", "PrintCreate:create new print job\n"));
+  if ((r->r[0] <= 0) || (r->r[1] <= 0))
+  {
+    r->r[0] = (int) MakeError(err_NEEDNAMES);
+    return(NULL);
+  }
+  /* Look for client as fsname OR protocol name */
+  if ((cr = ClientFind(-1, NULL, -1, (char *) r->r[0])) == NULL)
+    cr = ClientFind(-1, (char *) r->r[0], -1, NULL);
+  if ((!cr) || (!flagSET(cr,flag_PRINT)))
+  {
+    r->r[0] = (int) MakeError(err_NOTPRINTING);
+    return(NULL);
+  }
+  /* Allocate memory for record */
+  pr = (print_record *) rma_alloc(sizeof(print_record));
+  if (pr == NULL)
+  {
+    r->r[0] = (int) MakeError(err_NOMEM_PRINT);
+    return(NULL);
+  }
+  Desk_LinkList_AddToTail(&print_anchor, &(pr->header));
+  /* Use rand() just in case user sends 2 print requests inside 1 cs ! */
+  pr->print_id = (Desk_Time_Monotonic() & 0x00ffffff) + ((rand() & 0xff) << 24);
+  pr->client_id = cr->client_id;
+  pr->status = 0;
+  pr->pjob_id = -1;
+  pr->time = Desk_Time_Monotonic();
+  pr->handle = -1;
+  pr->buf = NULL;
+  pr->buflen = 0;
+  pr->bufused = 0;
+  dprintf (("", "PrintCreate:new print jobs list length %d\n", Desk_LinkList_ListLength(&print_anchor)));
+  /* Start print job with protocol module */
+  dprintf (("", "PrintCreate:server = '%s'\n", r->r[1] ? (char *) r->r[1] : ""));
+  dprintf (("", "PrintCreate:printer = '%s'\n", r->r[2] ? (char *) r->r[2] : ""));
+  dprintf (("", "PrintCreate:user = '%s'\n", r->r[3] ? (char *) r->r[3] : ""));
+  dprintf (("", "PrintCreate:password = '%s'\n", r->r[4] ? (char *) r->r[4] : ""));
+  dprintf (("", "PrintCreate:options = '%s'\n", r->r[5] ? (char *) r->r[5] : ""));
+  err = ClientCreatePrintJob (cr->client_id,
+                              (char *) r->r[1],
+                              (char *) r->r[2],
+                              (char *) r->r[3],
+                              (char *) r->r[4],
+                              (char *) r->r[5],
+                              r->r[6],
+                              &pr->pjob_id);
+  dprintf (("", "PrintCreate:err %x pjob_id %x\n", (int) err, pr->pjob_id));
+  if ((err != NULL) || (pr->pjob_id == 0))
+  {
+    PrintClear(pr);
+    r->r[0] = (int) err;
+    return(NULL);
+  }
+  return(pr);
+}
+
+
+/*  Clear from memory a Print protocol entry.
+ */
+extern void PrintClear(print_record *pr)
+{
+  dprintf (("", "PrintClear:\n"));
+  if (pr == NULL) return;
+  Desk_LinkList_Unlink(&print_anchor, &(pr->header));
+  if (pr->buf) RMAFREE(pr->buf);
+  RMAFREE(pr);
+  dprintf (("", "PrintClear:new print jobs list length %d\n", Desk_LinkList_ListLength(&print_anchor)));
+}
+
+
+/*  Clear from memory a Print protocol entry.
+ */
+extern void PListClear(plist_record *pr)
+{
+  dprintf (("", "PListClear:\n"));
+  if (pr == NULL) return;
+  if (pr->printer) RMAFREE(pr->printer);
+  if (pr->server) RMAFREE(pr->server);
+  Desk_LinkList_Unlink(&plist_anchor, &(pr->header));
+  RMAFREE(pr);
+  dprintf (("", "PListClear:new print list length %d\n", Desk_LinkList_ListLength(&plist_anchor)));
+}
+
+
+/*  Find item in linked list from either print_id or expiry time.
+ */
+extern print_record *PrintFind(int print_id, int expire, int client_id, int handle)
+{
+  print_record *pr = (print_record *) print_anchor.next;
+  int searchtype = 0;
+
+  dprintf (("", "PrintFind:\n"));
+  if (expire != -1) searchtype = 1;
+  if (client_id != -1) searchtype = 2;
+  if (handle != -1) searchtype = 3;
+  while (pr != NULL)
+  {
+    dprintf (("", "PrintFind: %x\n", (int) pr));
+    switch (searchtype)
+    {
+      case 0: if (pr->print_id == print_id) return(pr);
+              break;
+      case 1: if ((pr->time + printer_TIMEOUT) >= expire) return(pr);
+              break;
+      case 2: if (pr->client_id == client_id) return(pr);
+              break;
+      case 3: if (pr->handle == handle) return(pr);
+              break;
+      default:
+        break;
+    }
+    pr = (print_record *) pr->header.next;
+  }
+  return(NULL);
+}
+
+
+/*  Find item in linked list from protocol/server/printer triplet.
+ */
+extern plist_record *PrinterFind(int client_id, char *server, char *printer)
+{
+  plist_record *pr = (plist_record *) plist_anchor.next;
+
+  dprintf (("", "PrinterFind:\n"));
+  while (pr != NULL)
+  {
+    dprintf (("", "PrinterFind: %x\n", (int) pr));
+    if ((client_id == pr->client_id) && (!Desk_stricmp(server, pr->server)) &&
+        (!Desk_stricmp(printer, pr->printer))) return(pr);
+    pr = (plist_record *) pr->header.next;
+  }
+  return(NULL);
+}
+
+
+/*  Build a menu list of currently registered Printing-aware protocols.
+ */
+extern _kernel_oserror *PrintListProtocols(_kernel_swi_regs *r)
+{
+  client_record *cr = (client_record *) client_anchor.next;
+  char buf[128];
+  char *menu = (char *) r->r[3];
+  int menulen = r->r[4];
+  bool fsname = (r->r[0] == 1);
+  bool first = true;
+
+  /* Initialise menu */
+  dprintf (("", "PrintListProtocols: fsname %s buf %x", fsname ? "true" : "false", (int) menu));
+  dprintf (("", " len %d\n", menulen));
+
+  /* Build list of Print names */
+  if (menulen < 0) menu = NULL;
+  menulen = 0;
+  if (menu) strcpy(menu, "");
+  while (cr != NULL)
+  {
+    char *name = (!fsname) ? cr->clientname : cr->fsname;
+
+    if ((flagSET(cr, flag_PRINT)) && (name))
+    {
+      sprintf(buf, "%s%s", (first) ? "" : ", ", name);
+      if (first) first = false;
+      if (menu) strcat(menu, buf);
+      menulen += strlen(buf);
+    }
+    cr = (client_record *) cr->header.next;
+  }
+  r->r[4] = (menulen > 0) ? menulen+1 : 0;
+  if (menu)
+  {
+    dprintf (("", "PrintListProtocols: '%s' %d\n", menu, menulen));
+  }
+  else
+  {
+    dprintf (("", "PrintListProtocols: %d\n", menulen));
+  }
+  return(NULL);
+}
+
+
+/*  Build a menu list of printers for given protocol.
+ */
+extern _kernel_oserror *PrintListPrinters(_kernel_swi_regs *r)
+{
+  char *menu = (char *) r->r[3];
+  char *server = (char *) r->r[2];
+  int menulen = r->r[4];
+  client_record *cr = ClientFind(-1, (char *) r->r[1], -1, NULL);
+  plist_record *pr = (plist_record *) plist_anchor.next;
+  bool all = (r->r[0] == 18);
+  char buf[128];
+  bool first = true;
+
+  /* Valid protocol name in R1 ? */
+  if (!cr) cr = ClientFind(-1, NULL, -1, (char *) r->r[1]);
+  if (!cr) return(MakeError(err_NOTREGISTERED));
+
+  /* Build list of Print names */
+  if (menulen < 0) menu = NULL;
+  menulen = 0;
+  if (menu) strcpy(menu, "");
+
+  /* Get list of printers */
+  while (pr)
+  {
+    if ((all) || ((server) && (pr->server) && (!Desk_stricmp(server, pr->server))))
+    {
+      sprintf(buf, "%s%s", (first) ? "" : ", ", pr->printer);
+      if (first) first = false;
+      if (menu) strcat(menu, buf);
+      menulen += strlen(buf);
+    }
+    pr = (plist_record *) pr->header.next;
+  }
+
+  r->r[4] = (menulen > 0) ? menulen+1 : 0;
+  if (menu)
+  {
+    dprintf (("", "PrintListPrinters: '%s' %d\n", menu, menulen));
+  }
+  else
+  {
+    dprintf (("", "PrintListPrinters: %d\n", menulen));
+  }
+  return(NULL);
+}
+
+
+/*  Build a menu list of servers for given protocol.
+ */
+extern _kernel_oserror *PrintListServers(_kernel_swi_regs *r)
+{
+  char *menu = (char *) r->r[3];
+  int menulen = r->r[4];
+  client_record *cr = ClientFind(-1, (char *) r->r[1], -1, NULL);
+  plist_record *pr = (plist_record *) plist_anchor.next;
+  char *tmp; 
+  int tmplen = 512;
+  char buf[128];
+  bool first = true;
+
+  /* Valid protocol name in R1 ? */
+  if (!cr) cr = ClientFind(-1, NULL, -1, (char *) r->r[1]);
+  if (!cr) return(MakeError(err_NOTREGISTERED));
+  tmp = heap_alloc(tmplen); 
+  if (!tmp) return(MakeError(err_NOMEM_BUFFER));
+  dprintf (("", "PrintListServers: %x\n", cr->client_id));
+
+  /* Build list of Print names */
+  if (menulen < 0) menu = NULL;
+  menulen = 0;
+  if (menu) strcpy(menu, "");
+  strcpy(tmp, "");
+
+  /* Get list of servers */
+  dprintf (("", "PrintListServers: menu %x menulen %d\n", (int) menu, menulen));
+  while (pr)
+  {
+    dprintf (("", "PrintListServers: tmp '%s' pr->server '%s'\n", tmp,
+      (pr->server) ? pr->server : "NULL"));
+    if ((pr->server) && (!strstr(tmp, pr->server)))
+    {
+      sprintf(buf, "%s%s", (first) ? "" : ", ", pr->server);
+      if (first) first = false;
+      menulen += strlen(buf);
+      if (menulen >= tmplen)
+      {
+        char *tmp2;
+        tmplen += 256;
+        tmp2 = heap_realloc(tmp, tmplen);
+        if (tmp2 == NULL)
+        {
+          heap_free(tmp);
+          return(MakeError(err_NOMEM_BUFFER));
+        }
+        else
+        {
+          tmp = tmp2;
+        }
+      }
+      strcat(tmp, buf);
+    }
+    pr = (plist_record *) pr->header.next;
+  }
+
+  if (menu) strcpy(menu, tmp);
+  heap_free(tmp);
+  r->r[4] = (menulen > 0) ? menulen+1 : 0;
+  if (menu)
+  {
+    dprintf (("", "PrintListServers: '%s' %d\n", menu, menulen));
+  }
+  else
+  {
+    dprintf (("", "PrintListServers: %d\n", menulen));
+  }
+  return(NULL);
+}
+
+
+/*  Return printer support flags for a named protocol.
+ */
+extern _kernel_oserror *PrintFlag(_kernel_swi_regs *r)
+{
+  int flags;
+  client_record *cr = ClientFind(-1, (char *) r->r[1], -1, NULL);
+
+  /* Valid protocol name in R1 ? */
+  if (!cr) cr = ClientFind(-1, NULL, -1, (char *) r->r[1]);
+  if (!cr) return(MakeError(err_NOTREGISTERED));
+  flags = (cr->flags & (flag_PRINT | flag_PRINTPW | flag_PRINTFILE)) / flag_PRINT;
+  r->r[0] = flags;
+  return(NULL);
+}
+
+
+/*  List printer jobs.
+ */
+extern print_record *PrintListJobs(print_record *pr, int **buf, int buflen)
+{
+  int *s = *buf;
+
+  dprintf (("", "PrintListJobs: %x %x\n", (int) pr, (int) s));
+  if (!pr) pr = (print_record *) print_anchor.next;
+  while ((pr != NULL) && (buflen >= 4))
+  {
+    dprintf (("", "PrintListJobs: %x\n", (int) pr));
+    *s = pr->print_id;
+    s++;
+    buflen -= 4;
+    pr = (print_record *) pr->header.next;
+  }
+  *buf = s;
+  return(pr);
+}
+
+@
+
+
+1.4
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@d294 1
+a294 1
+  char *tmp = heap_alloc(512);
+d302 1
+d330 1
+a330 1
+          free(tmp);
+@
+
+
+1.3
+log
+@  * Fixed bug which I introduced in previous version, where errors that
+    occurred when trying to connect to a mount would cause two errors to be
+    reported.
+Detail:
+  * When I went through blindly changing all _kernel_swi or Desk_SWI calls
+    to _swix, I failed to notice that one or two of the calls rely on the
+    output parameters being filled in even if an error occurs - _swix does not
+    do this.  I've now created a set of type safe C veneers for all calls to
+    client modules, which use _swix or _kernel_swi as necessary.  This has the
+    additional benefit of making the code more readable and getting rid of
+    quite a few uses of magic numbers.
+Admin:
+  * Compiled and tested on a Risc PC.
+
+Version 2.06. Tagged as 'Omni-2_06'
+@
+text
+@d324 1
+d326 10
+a335 2
+        tmp = heap_realloc(tmp, tmplen);
+        if (!tmp) return(MakeError(err_NOMEM_BUFFER));
+@
+
+
+1.2
+log
+@  Several major bugfixes and further tidying to make Omni fit into our
+  build environment better.
+Detail:
+  * Bug fix: ClientList function (Client.c) creates a textual menu desription
+    for a list of clients (Info and Mounts submenus).  The description was
+    generated on the stack and a pointer to it was returned.  The buffer is now
+    static.
+  * Bug fix: select or adjust clicks on the Omni icon just after it's loaded
+    would kill the task part of Omni.  FilerCreate function (List.c) always
+    calls FilerDelete, which would always attempt to close any existing filer
+    window.  However, on the first call, no window exists so it passes the Wimp
+    a 0 window handle.  This only appeared to happen on RISC OS 4, but I suspect
+    this is to do with RISC OS 4's stricter protection of zero page.  Current
+    fix is for FilerDelete to check if window handle is 0 before closing it;
+    this is not very elegant - would be nicer to only call FilerDelete when the
+    window was actually closed.
+  * Bug fix: writable icon handling overhauled completely.  Many of the buffers
+    which Omni would read the contents of writable icons into were too short
+    to hold the maximum amount of text allowed in the icon.  New Icon_GetText
+    call added (ExtLib.c) to allow Omni to work directly on indirected icon
+    buffers wherever possible, thus removing the whole issue.
+  * Stripped commented-out code from several places.
+  * Changed use of Desk_bool to bool in most places.  This is a bit grim, but
+    the way Desk_bool is implemented means you need to cast it in many places,
+    which is even more grim.
+  * Removed a few error assignements(!) because
+    a) they weren't even being checked
+    b) Desk's psuedo-exception system should now catch them
+  * Got rid of home-grown strcasecmp calls and used Desk's instead.
+  * Removed many local constants definitions and get them from system header
+    files instead.
+  * Removed Hdrs.h which would include *every* header file in *every* C file
+    in the interests of compilation times.  C files now only include what they
+    need.
+  * Reimplemented the fully recursive Menu_Dispose along the lines of the
+    non-recursive Desk_Menu_Dispose, which had changed since ANT's DeskLib
+    split-off.
+  * Altered quite a bit of code to prevent compiler warnings (mainly
+    "use of '=' in condition context" and "variable declared but not used").
+  * Uses 'proper' module finalisation instead of atexit in the interests of
+    consistency and symmetry.
+  * Added MemCheck support.
+  * Reimplemented rma_alloc and rma_free in C (side effect of MemCheck support).
+  * Altered assembler to use system header files instead of local ones.
+  * Omni previously used a seeming random mixture of _kernel_swi and Desk_SWI
+    SWI veneers.  All have now been changed to use _swix/_swi as appropriate.
+  * Converted to use srccommit.
+Admin:
+  Files removed:
+   c.Error
+   c.StrCaseCmp
+   h.Debug
+   h.Hdrs
+   h.ModuleWrap
+   h.OmniClient
+   h.StrCaseCmp
+   hdr.Macros
+   hdr.RegDefs
+   hdr.SwiNos
+
+  Files added:
+   Docs.DeskLibDiffs
+   Docs.EventHandling
+   h.Omni
+
+  * Compiled.
+  * All windows, menus checked to make sure they at least display.
+  * Played around with a new NFS and LanMan mounts.
+  * Basically, there shouldn't be any showstoppers, but the change from a very
+    old DeskLib to Desk is a large one.  I'd be surprised if there aren't a
+    few problems and this should definitely be thrashed a bit by people
+    willing to do so before anyone has any confidence in it.
+
+
+
+Version 2.05. Tagged as 'Omni-2_05'
+@
+text
+@d96 8
+a103 3
+  err = _swix (cr->client_id, _INR (0, 6) | _OUT (1),
+               10, r->r[1], r->r[2], r->r[3], r->r[4], r->r[5], r->r[6],
+               &pr->pjob_id);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d31 1
+d33 1
+d35 4
+a38 1
+#include <Desk/SWI.h>
+d41 7
+a47 1
+#include "Hdrs.h"
+d57 1
+a57 1
+  TRACE("PrintCreate:create new print job\n");
+d89 1
+a89 1
+  TRACE1("PrintCreate:new print jobs list length %d\n", Desk_LinkList_ListLength(&print_anchor));
+d91 9
+a99 8
+  TRACE1("PrintCreate:server = '%s'\n", r->r[1] ? (char *) r->r[1] : "");
+  TRACE1("PrintCreate:printer = '%s'\n", r->r[2] ? (char *) r->r[2] : "");
+  TRACE1("PrintCreate:user = '%s'\n", r->r[3] ? (char *) r->r[3] : "");
+  TRACE1("PrintCreate:password = '%s'\n", r->r[4] ? (char *) r->r[4] : "");
+  TRACE1("PrintCreate:options = '%s'\n", r->r[5] ? (char *) r->r[5] : "");
+  err = Desk_SWI(7,2, cr->client_id, 10,r->r[1],r->r[2],r->r[3],r->r[4],r->r[5],r->r[6],
+    NULL,&pr->pjob_id);
+  TRACE2("PrintCreate:err %x pjob_id %x\n", (int) err, pr->pjob_id);
+d114 1
+a114 1
+  TRACE("PrintClear:\n");
+d119 1
+a119 1
+  TRACE1("PrintClear:new print jobs list length %d\n", Desk_LinkList_ListLength(&print_anchor));
+d127 1
+a127 1
+  TRACE("PListClear:\n");
+d133 1
+a133 1
+  TRACE1("PListClear:new print list length %d\n", Desk_LinkList_ListLength(&plist_anchor));
+d144 1
+a144 1
+  TRACE("PrintFind:\n");
+d150 1
+a150 1
+    TRACE1("PrintFind: %x\n", (int) pr);
+d176 1
+a176 1
+  TRACE("PrinterFind:\n");
+d179 3
+a181 3
+    TRACE1("PrinterFind: %x\n", (int) pr);
+    if ((client_id == pr->client_id) && (!strcasecmp(server, pr->server)) &&
+        (!strcasecmp(printer, pr->printer))) return(pr);
+d196 2
+a197 2
+  Desk_bool fsname = (r->r[0] == 1);
+  Desk_bool first = Desk_TRUE;
+d200 2
+a201 2
+  TRACE2("PrintListProtocols: fsname %s buf %x", fsname ? "Desk_TRUE" : "Desk_FALSE", (int) menu);
+  TRACE1(" len %d\n", menulen);
+d214 1
+a214 1
+      if (first) first = Desk_FALSE;
+d223 1
+a223 1
+    TRACE2("PrintListProtocols: '%s' %d\n", menu, menulen);
+d227 1
+a227 1
+    TRACE1("PrintListProtocols: %d\n", menulen);
+d242 1
+a242 1
+  Desk_bool all = (r->r[0] == 18);
+d244 1
+a244 1
+  Desk_bool first = Desk_TRUE;
+d258 1
+a258 1
+    if ((all) || ((server) && (pr->server) && (!strcasecmp(server, pr->server))))
+d261 1
+a261 1
+      if (first) first = Desk_FALSE;
+d271 1
+a271 1
+    TRACE2("PrintListPrinters: '%s' %d\n", menu, menulen);
+d275 1
+a275 1
+    TRACE1("PrintListPrinters: %d\n", menulen);
+d292 1
+a292 1
+  Desk_bool first = Desk_TRUE;
+d298 1
+a298 1
+  TRACE1("PrintListServers: %x\n", cr->client_id);
+d307 1
+a307 1
+  TRACE2("PrintListServers: menu %x menulen %d\n", (int) menu, menulen);
+d310 2
+a311 2
+    TRACE2("PrintListServers: tmp '%s' pr->server '%s'\n", tmp,
+      (pr->server) ? pr->server : "NULL");
+d315 1
+a315 1
+      if (first) first = Desk_FALSE;
+d333 1
+a333 1
+    TRACE2("PrintListServers: '%s' %d\n", menu, menulen);
+d337 1
+a337 1
+    TRACE1("PrintListServers: %d\n", menulen);
+d365 1
+a365 1
+  TRACE2("PrintListJobs: %x %x\n", (int) pr, (int) s);
+d369 1
+a369 1
+    TRACE1("PrintListJobs: %x\n", (int) pr);
+@
+
+
+1.1.1.1
+log
+@  Initial import of Omni into CVS.
+
+Detail:
+  This is an import of the sources obtained from ANT some time ago, with
+  sufficient changes to allow it to build in our standard environment.  In
+  particular, this involved converting Omni to use Desk instead of DeskLib.
+  ANT's DeskLib was not 'off-the-shelf' - it was based on DeskLib 2.04 (very
+  old), with their own modifications.
+  
+  This means that there are quite severe bugs in the Omni code, which will
+  show up if you attempt to use this version, which were previously masked by
+  some of ANT's DeskLib alterations.  (Hopefully) most of these have already
+  been identified, fixed and will be checked-in soon.  I felt that a
+  minimal version that would simply build would be worthwhile, so that as
+  many changes as possible end up under CVS' control.
+
+Admin:
+  Compiled.
+  Untested.
+@
+text
+@@

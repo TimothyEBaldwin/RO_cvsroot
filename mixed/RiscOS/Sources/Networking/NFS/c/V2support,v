@@ -1,0 +1,778 @@
+head	4.4;
+access;
+symbols
+	NFS-3_27:4.4
+	NFS-3_26:4.4
+	NFS-3_25:4.4
+	NFS-3_24:4.3
+	NFS-3_23:4.3
+	NFS-3_22:4.2
+	NFS-3_21:4.2
+	NFS-3_20:4.2
+	NFS-3_19:4.2
+	sbrodie_NFS_dev_merge:4.2
+	NFS-3_18-4_22_2_4:4.2
+	NFS-3_18-4_22_2_3:4.2
+	NFS-3_18-4_22_2_2:4.2
+	NFS-3_18-4_22_2_1:4.2
+	sbrodie_NFS_dev:4.2.0.2
+	sbrodie_NFS_dev_bp:4.2
+	NFS-3_18:4.2
+	NFS-3_17:4.2
+	NFS-3_16:4.2
+	NFS-3_15:4.2
+	NFS-3_14:4.2
+	NFS-3_13:4.2
+	NFS-3_12:4.2
+	NFS-3_11:4.2
+	NFS-3_10:4.2
+	NFS-3_09:4.2
+	NFS-3_08:4.2
+	NFS-3_07:4.2
+	NFS-3_06:4.1
+	NFS-3_05:4.1
+	NFS-3_04:4.1
+	NFS-3_02:4.1
+	NFS-3_01:4.1
+	NFS-3_00:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.4
+date	2018.03.07.21.22.41;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+commitid	sKJZhgBEKf2WsztA;
+
+4.3
+date	2018.01.29.21.30.19;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	7TGUL0NEVVbjHOoA;
+
+4.2
+date	2000.03.15.14.16.11;	author sbrodie;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	99.05.14.12.42.08;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.4
+log
+@Store lxa files verbatim, without appendum
+Files saved with load & exec address (as opposed to a filetype and the top nybble of load set to 0xFFF) would be extended by 8 bytes in order to hide the true load/exec for later retrieval.
+While useful if only ever saving and retrieving from the RISC OS viewpoint, it would create apparently corrupt or overlong file if you wanted to do any analysis on the NFS server end. Given load/exec addresses are deprecated, change NFS to behave like LanManFS and just denote ",lxa" suffixed files with the appropriate icon in the Filer and a made up load/exec address.
+
+pathmunge.c/_GBPB.c/V2support.c/_Args.c/_File.c/PutBytesX.c/Static.c/Changeinfo.c: Switch out 8 byte appending code. Give the file a proper date stamp instead when viewed on Unix.
+_Open.c: Switch out the 8 byte appendum stuff, and use a common OS_Word 14 clock function.
+Statics.h/Modulewrap.c: Compute a substitute load/exec using the same algorithm as LanManFS (the Kernel's address rounded down to 1MB). Use cmhg finalise function instead of atexit().
+
+Also
+MakeFile: pass in predefine DEBUG for debug builds.
+cmhg/NFSHdr: remove *Histogram debug command except when debugging. Add finalise handler.
+Commands.c/Commands.h: remove *Histogram debug command except when debugging.
+Utils.c: delete unused long long support functions. Add a new time getting support function.
+Utils.h: new time getting support function.
+
+Tested with a handful of area saves using *Save, checking the file size when viewed at the server end was correct not 8 bytes longer.
+
+Version 3.25. Tagged as 'NFS-3_25'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+        NFS2 Emulation routines.
+*/
+
+/*
+
+This source file contains all the NFS2 compatibility support code.  It provides
+emulation functions for all the NFS3 procedure calls used by the NFS module.
+The emulation functions call the NFS2 versions of the NFS3 procedures for which they
+emulate.  eg. the signatures for nfs2_em_lookup_3 and nfsproc3_lookup_3 are identical,
+but nfs2_em_lookup_3 will use a NFS2 procedure call instead of an NFS3 procedure call.
+
+To support these functions, and number of structure conversion functions are required.
+These are all static (with the exception of the filehandle manipulation which lives in
+fh3.c with the other filehandle bits and pieces).  Where required, there are downcast_*
+functions which take an NFS3 structure and return an NFS2 structure.  Conversely, there
+are upcast_* functions which perform the reverse translation.  Since NFS2 structures
+cannot hold all the information, converting back and forth will lose information
+potentially.
+
+It is vitally important that the rest of the module's code pays attention to the
+discriminated unions in the NFS3 data structures, particular those such as the
+post_op_fh3, post_op_attr and pre_op_attr component types, since this unit will
+ensure that the "*_follows" boolean is set to false if the value isn't available,
+and only set it to true when the data is available.
+
+*/
+
+
+#include "nfsheaders.h"
+#include "TimeOut.h"
+
+/* These two live with the other filehandle manipulation calls */
+#define downcast_fh(fh2,fh3) (fh2cpy_from_fh3((fh2),(fh3)))
+#define upcast_fh(fh3,fh2) (fh3cpy_from_fhandle((fh3),(fh2)))
+
+/* The following is macroised for efficiency */
+#define upcast_status(addr_3, addr_2) (*(addr_3) = (nfsstat3) (*(addr_2)))
+
+static void upcast_nfstime(nfstime3 *out, const nfstime *in)
+{
+        out->seconds = in->seconds;
+        out->nseconds = in->useconds * 1000L;
+}
+
+static void upcast_ftype(ftype3 *out, const ftype *in)
+{
+        switch (*in) {
+                case NFBAD:
+                case NFFIFO:
+                        *out = NF3FIFO;
+                	break;
+                default:
+                        *out = (ftype3) *in;
+	                break;
+        }
+}
+
+void upcast_fattr(fattr3 *out, const fattr *in)
+{
+        upcast_ftype(&out->type, &in->type);
+        out->mode = in->mode & 0xFFFFL;
+        out->nlink = in->nlink;
+        out->uid = in->uid;
+        out->gid = in->gid;
+        ui64_create(&out->size, in->size);
+        out->used = out->size;
+        out->rdev.specdata1 = out->rdev.specdata2 = 0;
+        ui64_create(&out->fsid, in->fsid);
+        ui64_create(&out->fileid, in->fileid);
+        upcast_nfstime(&out->atime, &in->atime);
+        upcast_nfstime(&out->mtime, &in->mtime);
+        upcast_nfstime(&out->ctime, &in->ctime);
+}
+
+static void downcast_nfstime(nfstime *out, const nfstime3 *in)
+{
+        out->seconds = (u_int) in->seconds;
+        out->useconds = (u_int) in->nseconds / 1000;
+}
+
+static void downcast_sattr(sattr *out, const sattr3 *in)
+{
+        if (in->mode.set_it) {
+                out->mode = (u_int) in->mode.set_mode3_u.mode;
+        }
+        else {
+                out->mode = -1;
+        }
+
+        if (in->uid.set_it) {
+                out->uid = (u_int) in->uid.set_uid3_u.uid;
+        }
+        else {
+                out->uid = (u_int) -1;
+        }
+
+        if (in->gid.set_it) {
+                out->gid = (u_int) in->gid.set_gid3_u.gid;
+        }
+        else {
+                out->gid = (u_int) -1;
+        }
+
+        if (in->size.set_it) {
+                out->size = ui64_value_as_int(&in->size.set_size3_u.size);
+        }
+        else {
+                out->size = (u_int) -1;
+        }
+
+        if (in->mtime.set_it) {
+		downcast_nfstime(&out->mtime, &in->mtime.set_mtime_u.mtime);
+        }
+        else {
+                out->mtime.seconds = out->mtime.useconds = (u_int) -1;
+        }
+
+        if (in->atime.set_it) {
+		downcast_nfstime(&out->atime, &in->atime.set_atime_u.atime);
+        }
+        else {
+                out->atime.seconds = out->atime.useconds = (u_int) -1;
+        }
+}
+
+static void upcast_pre_op_attr(pre_op_attr *out)
+{
+        out->attributes_follow = FALSE;
+}
+
+static void upcast_post_op_attr(post_op_attr *out, const fattr *in)
+{
+        if (in == NULL) {
+                out->attributes_follow = FALSE;
+        }
+        else {
+                out->attributes_follow = TRUE;
+                upcast_fattr(&out->post_op_attr_u.attributes, in);
+        }
+}
+
+static void downcast_filename(filename *out, const filename3 *in)
+{
+        *out = *in;
+}
+
+/*
+static void upcast_filename3(filename3 *out, const filename *in)
+{
+        *out = *in;
+}
+*/
+
+static void upcast_nfspath3(nfspath3 *out, const nfspath *in)
+{
+        *out = *in;
+}
+
+static void upcast_post_op_fh3(post_op_fh3 *out, const nfs_fh *in)
+{
+        if (in == NULL) {
+                out->handle_follows = FALSE;
+        }
+        else {
+		out->handle_follows = TRUE;
+		upcast_fh(&out->post_op_fh3_u.handle, in);
+        }
+}
+
+static void downcast_diropargs(diropargs *out, const diropargs3 *in)
+{
+        downcast_fh(&out->dir, &in->dir);
+        downcast_filename(&out->name, &in->name);
+}
+
+static void upcast_special_size3_mult(size3 *out, u_int p1, u_int p2)
+{
+        ui64_multiply_uu(out, p1, p2);
+}
+
+
+/* Now come the emulation routines */
+
+GETATTR3res * nfs2_em_getattr_3(GETATTR3args *args, CLIENT *clnt)
+{
+        static nfs_fh arg2;
+        static GETATTR3res res;
+	attrstat *clnt_res;
+
+	downcast_fh(&arg2, &args->object);
+
+	if ((clnt_res = nfsproc_getattr_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+		upcast_fattr(&res.GETATTR3res_u.resok.obj_attributes,
+			&clnt_res->attrstat_u.attributes);
+	}
+
+	return (&res);
+}
+
+SETATTR3res * nfs2_em_setattr_3(SETATTR3args *args, CLIENT *clnt)
+{
+        static sattrargs arg2;
+        static SETATTR3res res;
+	attrstat *clnt_res;
+
+	downcast_fh(&arg2.file, &args->object);
+	downcast_sattr(&arg2.attributes, &args->new_attributes);
+
+	if ((clnt_res = nfsproc_setattr_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+		upcast_pre_op_attr(&res.SETATTR3res_u.resok.obj_wcc.before);
+	        upcast_post_op_attr(&res.SETATTR3res_u.resok.obj_wcc.after,
+			&clnt_res->attrstat_u.attributes);
+	}
+	else {
+		upcast_pre_op_attr(&res.SETATTR3res_u.resfail.obj_wcc.before);
+	        upcast_post_op_attr(&res.SETATTR3res_u.resfail.obj_wcc.after, NULL);
+	}
+
+	return (&res);
+}
+
+LOOKUP3res * nfs2_em_lookup_3(LOOKUP3args *args, CLIENT *clnt)
+{
+        static diropargs arg2;
+        static LOOKUP3res res;
+        diropres *clnt_res;
+
+        downcast_fh(&arg2.dir, &args->what.dir);
+        downcast_filename(&arg2.name, &args->what.name);
+
+	if ((clnt_res = nfsproc_lookup_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+	        upcast_fh(&res.LOOKUP3res_u.resok.object,
+	        	&clnt_res->diropres_u.diropres.file);
+	        upcast_post_op_attr(&res.LOOKUP3res_u.resok.obj_attributes,
+	        	&clnt_res->diropres_u.diropres.attributes);
+	        upcast_post_op_attr(&res.LOOKUP3res_u.resok.dir_attributes,
+	        	NULL);
+	}
+	else {
+	        upcast_post_op_attr(&res.LOOKUP3res_u.resfail.dir_attributes, NULL);
+	}
+
+        return (&res);
+}
+
+READLINK3res * nfs2_em_readlink_3(READLINK3args *args, CLIENT *clnt)
+{
+        static nfs_fh arg2;
+        static READLINK3res res;
+        readlinkres *clnt_res;
+
+        downcast_fh(&arg2, &args->symlink);
+	if ((clnt_res = nfsproc_readlink_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+	        upcast_nfspath3(&res.READLINK3res_u.resok.data, &clnt_res->readlinkres_u.data);
+	        upcast_post_op_attr(&res.READLINK3res_u.resok.symlink_attributes, NULL);
+	}
+	else {
+	        upcast_post_op_attr(&res.READLINK3res_u.resfail.symlink_attributes, NULL);
+	}
+
+	return (&res);
+}
+
+WRITE3res * nfs2_em_write_3(WRITE3args *args, CLIENT *clnt)
+{
+        static writeargs arg2;
+        static WRITE3res res;
+        attrstat *clnt_res;
+
+	downcast_fh(&arg2.file, &args->file);
+	arg2.beginoffset = ui64_value_as_int(&args->offset);
+	arg2.offset = ui64_value_as_int(&args->offset);
+	arg2.totalcount = (u_int) args->count;
+	arg2.data.data_len = args->data.data_len;
+	arg2.data.data_val = args->data.data_val;
+
+	if ((clnt_res = nfsproc_write_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+		upcast_pre_op_attr(&res.WRITE3res_u.resok.file_wcc.before);
+	        upcast_post_op_attr(&res.WRITE3res_u.resok.file_wcc.after,
+	        	&clnt_res->attrstat_u.attributes);
+	        res.WRITE3res_u.resok.count = args->count;
+	        res.WRITE3res_u.resok.committed = FILE_SYNC;
+	        (void) memset(res.WRITE3res_u.resok.verf, '\0', sizeof(writeverf3));
+	}
+	else {
+		upcast_pre_op_attr(&res.WRITE3res_u.resfail.file_wcc.before);
+	        upcast_post_op_attr(&res.WRITE3res_u.resfail.file_wcc.after, NULL);
+	}
+
+	return (&res);
+}
+
+#ifdef LXA_BY_APPENDUM
+WRITE3res *nfs2_em_write_with_appendum_3(WRITE3args_with_appendum *args, CLIENT *clnt)
+{
+        static writeargs_with_appendum arg2;
+        static WRITE3res res;
+        static attrstat clnt_res;
+
+	downcast_fh(&arg2.file, &args->file);
+	arg2.beginoffset = ui64_value_as_int(&args->offset);
+	arg2.offset = ui64_value_as_int(&args->offset);
+	arg2.totalcount = (u_int) args->count;
+	arg2.data.data_len = args->data.data_len;
+	arg2.data.data_val = args->data.data_val;
+
+        if (clnt_call(clnt, NFSPROC_WRITE, xdr_writeargs_with_appendum, &arg2,
+                xdr_attrstat, &clnt_res, TIMEOUT) != RPC_SUCCESS) {
+                return (NULL);
+        }
+
+	upcast_status(&res.status, &clnt_res.status);
+
+	if (res.status == NFS3_OK) {
+		upcast_pre_op_attr(&res.WRITE3res_u.resok.file_wcc.before);
+	        upcast_post_op_attr(&res.WRITE3res_u.resok.file_wcc.after,
+	        	&clnt_res.attrstat_u.attributes);
+	        res.WRITE3res_u.resok.count = args->count;
+	        res.WRITE3res_u.resok.committed = FILE_SYNC;
+	        (void) memset(res.WRITE3res_u.resok.verf, '\0', sizeof(writeverf3));
+	}
+	else {
+		upcast_pre_op_attr(&res.WRITE3res_u.resfail.file_wcc.before);
+	        upcast_post_op_attr(&res.WRITE3res_u.resfail.file_wcc.after, NULL);
+	}
+
+        return (&res);
+}
+#endif
+
+CREATE3res * nfs2_em_create_3(CREATE3args *args, CLIENT *clnt)
+{
+        static createargs arg2;
+        static CREATE3res res;
+        diropres *clnt_res;
+
+        downcast_diropargs(&arg2.where, &args->where);
+        if (args->how.mode == EXCLUSIVE) {
+                return (NULL);
+        }
+        downcast_sattr(&arg2.attributes, &args->how.createhow3_u.obj_attributes);
+
+	if ((clnt_res = nfsproc_create_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+	        upcast_post_op_fh3(&res.CREATE3res_u.resok.obj,
+	        	&clnt_res->diropres_u.diropres.file);
+	        upcast_post_op_attr(&res.CREATE3res_u.resok.obj_attributes,
+	        	&clnt_res->diropres_u.diropres.attributes);
+	        upcast_post_op_attr(&res.CREATE3res_u.resok.dir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.CREATE3res_u.resok.dir_wcc.before);
+	}
+	else {
+	        upcast_pre_op_attr(&res.CREATE3res_u.resfail.dir_wcc.before);
+	        upcast_post_op_attr(&res.CREATE3res_u.resfail.dir_wcc.after, NULL);
+	}
+
+        return (&res);
+}
+
+MKDIR3res * nfs2_em_mkdir_3(MKDIR3args *args, CLIENT *clnt)
+{
+        static createargs arg2;
+        static MKDIR3res res;
+        diropres *clnt_res;
+
+        downcast_diropargs(&arg2.where, &args->where);
+        downcast_sattr(&arg2.attributes, &args->attributes);
+
+	if ((clnt_res = nfsproc_mkdir_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+	        upcast_post_op_fh3(&res.MKDIR3res_u.resok.obj,
+	        	&clnt_res->diropres_u.diropres.file);
+	        upcast_post_op_attr(&res.MKDIR3res_u.resok.obj_attributes,
+	        	&clnt_res->diropres_u.diropres.attributes);
+	        upcast_post_op_attr(&res.MKDIR3res_u.resok.dir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.MKDIR3res_u.resok.dir_wcc.before);
+	}
+	else {
+	        upcast_pre_op_attr(&res.MKDIR3res_u.resfail.dir_wcc.before);
+	        upcast_post_op_attr(&res.MKDIR3res_u.resfail.dir_wcc.after, NULL);
+	}
+
+        return (&res);
+}
+
+REMOVE3res * nfs2_em_remove_3(REMOVE3args *args, CLIENT *clnt)
+{
+        static diropargs arg2;
+        static REMOVE3res res;
+        nfsstat *clnt_res;
+
+	downcast_diropargs(&arg2, &args->object);
+	if ((clnt_res = nfsproc_remove_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, clnt_res);
+
+	if (res.status == NFS3_OK) {
+	        upcast_post_op_attr(&res.REMOVE3res_u.resok.dir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.REMOVE3res_u.resok.dir_wcc.before);
+	}
+	else {
+	        upcast_post_op_attr(&res.REMOVE3res_u.resfail.dir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.REMOVE3res_u.resfail.dir_wcc.before);
+	}
+
+        return (&res);
+}
+
+RMDIR3res * nfs2_em_rmdir_3(RMDIR3args *args, CLIENT *clnt)
+{
+        static diropargs arg2;
+        static RMDIR3res res;
+        nfsstat *clnt_res;
+
+	downcast_diropargs(&arg2, &args->object);
+	if ((clnt_res = nfsproc_rmdir_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, clnt_res);
+
+	if (res.status == NFS3_OK) {
+	        upcast_post_op_attr(&res.RMDIR3res_u.resok.dir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.RMDIR3res_u.resok.dir_wcc.before);
+	}
+	else {
+	        upcast_post_op_attr(&res.RMDIR3res_u.resfail.dir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.RMDIR3res_u.resfail.dir_wcc.before);
+	}
+
+        return (&res);
+}
+
+RENAME3res * nfs2_em_rename_3(RENAME3args *args, CLIENT *clnt)
+{
+        static renameargs arg2;
+        static RENAME3res res;
+        nfsstat *clnt_res;
+
+	downcast_diropargs(&arg2.from, &args->from);
+	downcast_diropargs(&arg2.to, &args->to);
+
+	if ((clnt_res = nfsproc_rename_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, clnt_res);
+
+	if (res.status == NFS3_OK) {
+	        upcast_post_op_attr(&res.RENAME3res_u.resok.fromdir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.RENAME3res_u.resok.fromdir_wcc.before);
+	        upcast_post_op_attr(&res.RENAME3res_u.resok.todir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.RENAME3res_u.resok.todir_wcc.before);
+	}
+	else {
+	        upcast_post_op_attr(&res.RENAME3res_u.resfail.fromdir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.RENAME3res_u.resfail.fromdir_wcc.before);
+	        upcast_post_op_attr(&res.RENAME3res_u.resfail.todir_wcc.after, NULL);
+	        upcast_pre_op_attr(&res.RENAME3res_u.resfail.todir_wcc.before);
+	}
+
+        return (&res);
+}
+
+FSSTAT3res * nfs2_em_fsstat_3(FSSTAT3args *args, CLIENT *clnt)
+{
+	static nfs_fh arg2;
+        static FSSTAT3res res;
+        statfsres *clnt_res;
+
+        downcast_fh(&arg2, &args->fsroot);
+	if ((clnt_res = nfsproc_statfs_2(&arg2, clnt)) == NULL) {
+		return (NULL);
+	}
+
+	upcast_status(&res.status, &clnt_res->status);
+
+	if (res.status == NFS3_OK) {
+	        statfsokres *const stat = &clnt_res->statfsres_u.reply;
+	        FSSTAT3resok *const dest = &res.FSSTAT3res_u.resok;
+	        upcast_post_op_attr(&dest->obj_attributes, NULL);
+	        upcast_special_size3_mult(&dest->tbytes, stat->tsize, stat->bsize);
+	        upcast_special_size3_mult(&dest->fbytes, stat->bfree, stat->bsize);
+	        upcast_special_size3_mult(&dest->abytes, stat->bavail, stat->bsize);
+	        ui64_create(&dest->tfiles, 0);
+	        ui64_create(&dest->ffiles, 0);
+	        ui64_create(&dest->afiles, 0);
+	        dest->invarsec = 0;
+	}
+	else {
+	        upcast_post_op_attr(&res.FSSTAT3res_u.resfail.obj_attributes, NULL);
+	}
+
+        return (&res);
+}
+
+/*
+READDIR3res * nfs2_em_readdir_3(READDIR3args *args, CLIENT *clnt)
+{
+}
+*/
+
+/* Slightly different - NFS module bypasses top-layer for efficiency here by
+ * calling clnt_call directly.  We preserve that method here.
+ */
+READ3res *nfs2_em_read_3_direct(READ3args *args, CLIENT *clnt, READ3res *dres)
+{
+        static readargs arg2;
+	static readres clnt_res;
+
+	downcast_fh(&arg2.file, &args->file);
+	arg2.offset = ui64_value_as_int(&args->offset);
+	arg2.count = arg2.totalcount = (u_int) args->count;
+
+	/* This is the optimisation - supply the destination memory directly */
+	clnt_res.readres_u.reply.data.data_val = dres->READ3res_u.resok.data.data_val;
+
+	if (clnt_call(clnt, NFSPROC_READ, xdr_readargs, &arg2,
+	        xdr_readres, &clnt_res, TIMEOUT ) != RPC_SUCCESS) {
+	        return NULL;
+	}
+
+	upcast_status(&dres->status, &clnt_res.status);
+	if (dres->status == NFS3_OK) {
+	        upcast_post_op_attr(&dres->READ3res_u.resok.file_attributes,
+	        	&clnt_res.readres_u.reply.attributes);
+	        dres->READ3res_u.resok.count =
+	        dres->READ3res_u.resok.data.data_len =
+	        	clnt_res.readres_u.reply.data.data_len;
+	        dres->READ3res_u.resok.eof = FALSE;
+	        dres->READ3res_u.resok.data.data_val =
+			clnt_res.readres_u.reply.data.data_val;
+	}
+	else {
+	        upcast_post_op_attr(&dres->READ3res_u.resfail.file_attributes, NULL);
+	}
+
+	return dres;
+}
+@
+
+
+4.3
+log
+@Export our own SWIs as a header
+Use the shared makefiles to export Interface/NFS.h and Hdr:NFS.
+Remove local copy NFS.h which confuses the dependency checking, now called nfsheaders.h instead.
+Delete unused UID/GID pair.
+Tested on a mount from FreeBSD 11.1-RELEASE-p4.
+
+Version 3.23. Tagged as 'NFS-3_23'
+@
+text
+@d338 1
+d374 1
+@
+
+
+4.2
+log
+@  Fixed potential use of uninitialised pointer.
+Detail:
+  If the LOOKUP remote procedure chose not to supply the optional
+    object attributes in its result, the attribute pointer would
+    remain uninitialised and be treated as safe to use.  This can
+    no longer occur.
+  All but the unused static rcsid variable compile warnings removed.
+Admin:
+  Requires AsmUtils 0.06 or later.
+  Requires Library 0.39 or later (for rpcgen 0.03 or later)
+  Built and tested on Risc PC.
+
+Version 3.07. Tagged as 'NFS-3_07'
+@
+text
+@d44 1
+a44 1
+#include "NFS.h"
+@
+
+
+4.1
+log
+@  Now supports NFS version 3.
+Detail:
+  All client-server calls now use the superior NFS3 protocol.
+  This particularly benefits directory enumeration and *NFSInfo
+    is now reporting 80%+ cache hit rates which is a significant
+    improvement (over 5% better - some hosts report 85%+)
+  Hashing algorithms improved to increase cache hits (the cache
+    algorithm doesn't use parts of names after a comma, so that
+    the hash value for !Run is the same as the hash value for
+    !Run,feb - which helps the cache hit rate a lot).   Directory
+    browsing on the desktop appears noticably faster too.
+  The module now has the original protocol (.x) files defining
+    the RPC protocols being used (NFS, mount, pcnfs, rquota)
+    and uses them to generate header files, XDR implementations,
+    and client stubs automatically, instead of having hand
+    written versions.
+  NFS workspace comes from a dynamic area where possible.
+Admin:
+  Supporting documentation:
+    Acorn NFS Software Functional Specification (1215,250/FS)
+    RFC1014, RFC1057, RFC1094, RFC1813
+  Tested in several desktop machines for everyday use against
+    both NFS2 and NFS3 servers.
+  Requires rpcgen 0.01 or later
+    (CVS source: Tools/Sources/rpcgen  tag: rpcgen-0_01 or later)
+    (CVS binary: RiscOS/Library  tag: Library-0_19 or later)
+  Requires TCPIPLibs 5.13 or later
+    (CVS: RiscOS/Sources/Lib/TCPIPLibs  tag: TCPIPLibs-5_13)
+
+Version 3.00. Tagged as 'NFS-3_00'
+@
+text
+@d120 1
+a120 1
+                out->size = ui64_value(&in->size.set_size3_u.size);
+d310 2
+a311 2
+	arg2.beginoffset = ui64_value(&args->offset);
+	arg2.offset = ui64_value(&args->offset);
+d345 2
+a346 2
+	arg2.beginoffset = ui64_value(&args->offset);
+	arg2.offset = ui64_value(&args->offset);
+d567 1
+a567 1
+	arg2.offset = ui64_value(&args->offset);
+@
+

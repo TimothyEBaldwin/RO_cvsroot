@@ -1,0 +1,354 @@
+head	1.7;
+access;
+symbols
+	Unicode-0_63:1.7
+	Unicode-0_62:1.6
+	Unicode-0_61:1.6
+	Unicode-0_60:1.6
+	Unicode-0_59:1.6
+	Unicode-0_58:1.6
+	Unicode-0_57:1.6
+	Unicode-0_56:1.6
+	Unicode-0_55:1.6
+	Unicode-0_54:1.6
+	RO_5_07:1.6
+	Unicode-0_53:1.6
+	Unicode-0_52:1.5
+	Unicode-0_51:1.5
+	Unicode-0_50:1.5
+	Unicode-0_49:1.5
+	Unicode-0_48:1.5
+	Unicode-0_47:1.5
+	Unicode-0_46:1.5
+	Unicode-0_45:1.5
+	dellis_autobuild_BaseSW:1.4
+	sbrodie_sedwards_16Mar2000:1.4
+	Unicode-0_44:1.4
+	dcotton_autobuild_BaseSW:1.5
+	Unicode-0_43:1.4
+	Unicode-0_42:1.4
+	Unicode-0_41:1.4
+	Unicode-0_40:1.4
+	Unicode-0_39:1.4
+	Unicode-0_38:1.4
+	Unicode-0_37:1.4
+	Unicode-0_36:1.4
+	Unicode-0_35:1.4
+	Unicode-0_34:1.3
+	Unicode-0_33:1.2;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2018.07.24.21.10.12;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	R5G4WIuNMPsFVqLA;
+
+1.6
+date	2004.07.01.18.07.48;	author bavison;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2000.10.05.14.46.35;	author jberanek;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.03.12.15.53.15;	author kbracey;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.03.11.17.01.25;	author kbracey;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.02.24.13.33.48;	author smiddle;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.02.24.12.04.22;	author smiddle;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@Fix potential NULL pointer dereference, and buffer overruns
+enc_utf16.c: move the arg check on putf16 being NULL up before it's used
+riscos.c: strncat() includes a terminator, so don't terminate, and pass one less on the limit
+unix.c: same again for strncat(), and don't assume strncpy() includes a terminator
+Found by cppcheck static analysis.
+
+Version 0.63. Tagged as 'Unicode-0_63'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* > riscos.c (layers/riscos/encodingmap.c in branched tree) */
+
+/**************************************************************************/
+/*                                                                        */
+/* Copyright [1997-2000] Pace Micro Technology PLC.  All rights reserved. */
+/*                                                                        */
+/* The copyright in this material is owned by Pace Micro Technology PLC   */
+/* ("Pace").  This material is regarded as a highly confidential trade    */
+/* secret of Pace.  It may not be reproduced, used, sold or in any        */
+/* other way exploited or transferred to any third party without the      */
+/* prior written permission of Pace.                                      */
+/**************************************************************************/
+
+#ifdef LAYERS
+#include "layers.h"
+#include "layers_dbg.h"
+#endif
+
+#include "kernel.h"
+#include "swis.h"
+
+#include <string.h>
+#include <stdio.h>
+
+#include "encpriv.h"
+
+int encoding__load_map_file(const char *leaf, UCS2 **ptable, int *pn_entries, int *palloc)
+{
+    int ftype = 0, flen, fh, filesys;
+    void *inthandle;
+    char fname[256];
+    _kernel_oserror *e;
+
+    void *table;
+    int n_entries;
+    int alloc;
+
+    strcpy(fname, "Unicode:Encodings.");
+    strncat(fname, leaf, sizeof(fname)-1);
+
+    /* Check it's a file, and get it's length */
+    _swix(OS_File, _INR(0,1)|_OUT(0)|_OUT(4), 23, fname, &ftype, &flen);
+
+    UNIDBG(("encoding__load_map_file: '%s' type %d len %d\n", fname, ftype, flen));
+
+    if ((ftype & 1) == 0)
+        return 0;
+
+    /* Open the file for input */
+    e = _swix(OS_Find, _INR(0,1)|_OUT(0), 0x4F, fname, &fh);
+    if (e)
+        return 0;
+
+    table = NULL;
+    n_entries = 0;
+    alloc = 0;
+
+    /* Obtain the filing system number and internal handle */
+    e = _swix(OS_FSControl, _INR(0,1)|_OUTR(1,2), 21, fh, &inthandle, &filesys);
+    if (!e)
+    {
+	/* If it's ResourceFS, return a direct pointer */
+	if ((filesys & 0xFF) == 46)
+	{
+	    table = (UCS2 *)inthandle;
+	    n_entries = (((const int *)table)[-1] - 4)/2;
+	}
+	else
+	{
+	    /* Otherwise, load it */
+	    table = encoding__alloc(flen);
+	    if (table)
+	    {
+		alloc = 1;
+		n_entries = flen/2;
+
+		e = _swix(OS_GBPB, _INR(0,3), 4, fh, table, flen);
+		if (e)
+		{
+		    encoding__free(table);
+		    table = NULL;
+		}
+	    }
+	}
+    }
+    /* Close the file */
+    _swix(OS_Find, _INR(0,1), 0, fh);
+
+    *ptable = table;
+    *pn_entries = n_entries;
+    *palloc = alloc;
+
+    return table != NULL;
+}
+
+int encoding_current_alphabet(void)
+{
+    int a = 0;
+
+    _swix(OS_Byte, _INR(0,1)|_OUT(1), 71, 127, &a);
+
+    return a;
+}
+
+const UCS4 *encoding_alphabet_ucs_table(int a)
+{
+    const UCS4 *table = NULL;
+    int ret;
+
+    _swix(OS_ServiceCall, _INR(1,3)|_OUT(1)|_OUT(4), 0x43, 8, a, &ret, &table);
+
+    /* Check it was claimed */
+    if (ret != 0) table = NULL;
+
+    return table;
+}
+
+/* eof riscos.c */
+@
+
+
+1.6
+log
+@Merged in a one-line change from Kevin's hard disc.
+Retagged as 'Unicode-0_53'
+@
+text
+@d53 1
+a53 2
+    strncat(fname, leaf, sizeof(fname));
+    fname[sizeof(fname)-1] = 0;
+@
+
+
+1.5
+log
+@  Copyright message changes + changes from branch + Unified
+   branched/non-branched builds
+Detail:
+  Copyright messages changed from E-14 to Pace throughout, filename
+   placed at top of file throughout, instead of in just some files.
+
+  Merged branch's fixes into our code base, plus made it possible to
+   get nice debug output in branched tree, and vfprintf() to stderr in
+   RISC OS tree.  Exactly same source used in branched tree now (apart
+   from OS specific files riscos.c and unix.c moving into layers
+   directory structure).
+
+Admin:
+  Built for branched, both Unix and RISC OS.
+  Built in RISC OS tree, and compiled into TextConv.
+
+
+Version 0.45. Tagged as 'Unicode-0_45'
+@
+text
+@d111 1
+a111 1
+int encoding_current_alphabet()
+@
+
+
+1.4
+log
+@Updated ISO 2022 handling to write ISO 2022-KR and ISO 2022-CN. Fixed various
+bugs.
+x-Current encoding didn't work if International 1.50 wasn't loaded.
+Adjusted various ISO 2022 escape sequence tables to change prioritisation.
+ISO 2022 writer won't shift character set until required.
+
+Version 0.35. Tagged as 'Unicode-0_35'
+@
+text
+@d15 17
+a31 10
+/* > riscos.c */
+/************************************************************************/
+/*                  Copyright 1997-1999 Element 14 Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Element 14 Ltd.  It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Element 14 Ltd.  All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+d59 1
+a59 1
+    fdebugf(stderr, "encoding__load_map_file: '%s' type %d len %d\n", fname, ftype, flen);
+@
+
+
+1.3
+log
+@Implemented SCSU and UTF-7.
+Added encoding_set_flags().
+Proper handling of byte order marks in UTF-16 and UCS-4.
+Fixed UTF-16 surrogate writing.
+Adjusted various MIME charset identifiers.
+Incorporated latest Unicode Character Database (2.1.8).
+Added "current system alphabet" encoding.
+Created "TextConv" command line character set conversion utility.
+
+Version 0.34. Tagged as 'Unicode-0_34'
+@
+text
+@d116 1
+d118 4
+a121 1
+    _swix(OS_ServiceCall, _INR(1,3)|_OUT(4), 0x43, 8, a, &table);
+@
+
+
+1.2
+log
+@Added copyright messages to all source files and unified the
+header #define's.
+
+Version 0.33. Not tagged
+@
+text
+@d65 1
+a65 1
+    
+d102 18
+@
+
+
+1.1
+log
+@Created new file riscos.c for RISC OS specific functions. Rest of
+library should remain portable. Moved function to load a map file
+into that new file. Added #defines for directory separator and
+wild card characters and updated the various file names.
+
+Version 0.33. Tagged as 'Unicode-0_33'
+@
+text
+@d15 10
+a24 5
+/* > riscos.c
+
+ *
+
+ */
+@
+

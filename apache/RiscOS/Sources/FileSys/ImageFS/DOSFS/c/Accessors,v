@@ -1,0 +1,142 @@
+head	4.1;
+access;
+symbols
+	DOSFS-1_14:4.1
+	DOSFS-1_13:4.1
+	DOSFS-1_12:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.1
+date	2018.02.19.00.06.05;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ic65jLota7NRUorA;
+
+
+desc
+@@
+
+
+4.1
+log
+@Reject overly-large discs, and other invalid things
+Detail:
+  c/Accessors, h/Accessors, Makefile - Added some simple 'image accessor' routines to abstract over accessing the underlying disc/image file. These accept 64bit disc addresses and will check to make sure any size limits imposed by the lower-level API are adhered to (512MB limit for FileCore_DiscOp, or extent of image file for OS_GBPB)
+  h/MsgTrans, Resources/Germany/Messages, Resources/UK/Messages - Add a couple of new error messages
+  h/Helpers - Add a couple of macros to simplify reading 16/32bit values that are split into multiple bytes in struct definitions. Change writeWORD & loadWORD to accept void* instead of char* so they can be used with other types like 'byte'
+  h/DOSshape - Add '0' suffix to some struct members so they can be used with new READ_0123 macro
+  h/ADFSshape - Make sure put_doublestep is safe to use with bools
+  c/DOSdirs - Remove pointless malloc of small temporary array
+  c/DOSclusters - Use new READ_ macros in max_sector()
+  c/DOSFS - Use new READ_ macros so code is less painful to read. Use new image accessor system to get rid of some boilerplate for reading from the disc (+ extra error checks). Change 32bit values to 64bit where it looks like it's necessary, and use bools in place of a couple of 0/1 ints. Reject any discs which are too big for the 32bit fields in the ADFS disc record.
+  c/OpsFunc - Update DOSFS_image_open in ways similar to the code in c/DOSFS, making use of READ_, image accessor, 64bit values, and adding extra error checks.
+Admin:
+  Tested with assorted large & small image files & SD cards on a BB-xM, and some DOS/Atari floppy discs on a RiscPC
+  FAT partitions larger than 4GB (or which extend past the 4GB FileSwitch limit) are now rejected, as are image files which have been truncated
+  A future improvement could be to lift the disc/partition identification code out of c/DOSFS and c/OpsFunc and unify it, since both files contain fairly similar code
+  German messages are in need of translation
+
+
+Version 1.12. Tagged as 'DOSFS-1_12'
+@
+text
+@/* Copyright 2018 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "Accessors.h"
+#include "MsgTrans.h"
+
+#include "Interface/HighFSI.h"
+#include "swis.h"
+#include "DebugLib/DebugLib.h"
+
+static _kernel_oserror *readwrite_file(uint64_t addr,uint32_t len,void *buf,int flags,struct image_accessor *ctx)
+{
+  image_accessor_file *a = (image_accessor_file *) ctx;
+  uint64_t end = addr + len;
+  if (end > (uint64_t) a->size)
+  {
+    return global_error(err_outofrange);
+  }
+  return _swix(OS_GBPB,_INR(0,4),((flags & ACC_WRITE)?OSGBPB_WriteAtGiven:OSGBPB_ReadFromGiven),a->fshand,buf,len,(uint32_t)addr);
+}
+
+image_accessor_file new_image_accessor_file(int fshand)
+{
+  image_accessor_file a;
+  a.a.readwrite = readwrite_file;
+  a.fshand = fshand;
+  a.size = 0; /* Treat as 0 bytes if error from SWI below */
+  _kernel_oserror *e = _swix(OS_Args,_INR(0,1)|_OUT(2),OSArgs_ReadEXT,fshand,&a.size);
+  if (e)
+  {
+    dprintf(("","extent error: %08x %s\n",e->errnum,e->errmess));
+  }
+  else
+  {
+    dprintf(("","image extent: %x\n",a.size));
+  }
+  return a;
+}
+
+static _kernel_oserror *readwrite_disc(uint64_t addr,uint32_t len,void *buf,int flags,struct image_accessor *ctx)
+{
+  image_accessor_disc *a = (image_accessor_disc *) ctx;
+  _kernel_swi_regs urset;
+  FS_discop64      opblock;
+
+  urset.r[3] = (int) buf;
+  urset.r[4] = len;
+  urset.r[6] = a->sector_cache_handle;
+  urset.r[8] = a->filecore_pw;
+  int op = (flags & ACC_WRITE) ? 2 : ((flags & ACC_USE_CACHE) ? 9 : 1);
+  op |= (4 << 4); /* Ignore escape */
+
+  if (discopswi==FileCore_DiscOp)
+  {
+    uint64_t end = addr + len;
+    if (end > 512<<20)
+    {
+      return global_error(err_outofrange);
+    }
+    urset.r[1] = (op | (((int)(a->dr) >> 2) << 8)) ;
+    urset.r[2] = (a->dr->dr_rootSIN & 0xE0000000) + ((int)addr);      /* disc address */
+  }
+  else
+  {
+    opblock.drivenumber   = (a->dr->dr_rootSIN & 0xE0000000) >> 29;
+    opblock.byteaddresslo = (word) addr;
+    opblock.byteaddresshi = (word) (addr >> 32);
+    urset.r[1] = op;
+    urset.r[2] = (int)&opblock;
+    urset.r[5] = (int)a->dr;
+  }
+  _kernel_oserror *e = _kernel_swi(discopswi,&urset,&urset);
+  /* Update cache handle */
+  a->sector_cache_handle = urset.r[6];
+  return e;
+}
+
+image_accessor_disc new_image_accessor_disc(ADFS_drecord *dr,int sector_cache_handle,int filecore_pw)
+{
+  image_accessor_disc a;
+  a.a.readwrite = readwrite_disc;
+  a.dr = dr;
+  a.sector_cache_handle = sector_cache_handle;
+  a.filecore_pw = filecore_pw;
+  return a;
+}
+@

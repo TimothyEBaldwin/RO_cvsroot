@@ -1,0 +1,241 @@
+head	1.1;
+branch	1.1.1;
+access;
+symbols
+	Boot-0_09:1.1.1.2
+	Boot-0_08:1.1.1.2
+	Boot-0_07:1.1.1.2
+	Boot-0_06:1.1.1.2
+	Boot-0_05:1.1.1.2
+	Boot-0_04:1.1.1.2
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.2
+	Ursula_RiscPC:1.1.1.2.0.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.2
+	UrsulaBuild_FinalSoftload:1.1.1.2
+	rthornb_UrsulaBuild-12Aug1998:1.1.1.2
+	aglover_UrsulaBuild-05Aug1998:1.1.1.2
+	bavison_BootSetup-0_03:1.1.1.2
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.2
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.2
+	bavison_BootSetup-0_02:1.1.1.2
+	bavison_BootSetup-0_01:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	98.06.23.11.31.25;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.06.23.11.31.25;	author bavison;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	98.07.02.12.44.31;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+
+1.1
+log
+@Initial revision
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	WimpM.c ***********************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	!Boot configuration plug-in
+This file:	Wimp message code
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+22/06/1998	BJGA	Created
+
+\**************************************************************************/
+
+/* Toolbox */
+#include "event.h"
+#include "wimplib.h"
+/* Common */
+#include "misc.h"
+/* local headers */
+#include "Main.h"
+#include "WimpM.h"
+
+static int static_Quit (WimpMessage *message, void *handle);
+static int static_PreQuit (WimpMessage *message, void *handle);
+static int static_PlugInQuitContinue (WimpMessage *message, void *handle);
+static int static_TaskCloseDown (WimpMessage *message, void *handle);
+static int static_OpenConfigWindow (WimpMessage *message, void *handle);
+
+int WimpM_Messages [7] =      { Wimp_MDataOpen,
+				Wimp_MPreQuit,
+    		       	      	Wimp_MPlugInQuit,
+    		       	      	Wimp_MPlugInQuitContinue,
+    		       	      	Wimp_MTaskCloseDown,
+				Wimp_MOpenConfigWindow,
+				0 };
+
+void WimpM_Register (void)
+{
+  throw (event_register_message_handler (Wimp_MQuit, static_Quit, NULL));
+  throw (event_register_message_handler (Wimp_MPreQuit, static_PreQuit, NULL));
+  throw (event_register_message_handler (Wimp_MPlugInQuitContinue, static_PlugInQuitContinue, NULL));
+  throw (event_register_message_handler (Wimp_MTaskCloseDown, static_TaskCloseDown, NULL));
+  throw (event_register_message_handler (Wimp_MOpenConfigWindow, static_OpenConfigWindow, NULL));
+}
+
+/******	static_Quit() *****************************************************\
+
+Purpose:	Handles Message_Quit
+
+\**************************************************************************/
+
+static int static_Quit (WimpMessage *message, void *handle)
+{
+  WimpMessage buffer;
+  plugin *list [4] = { &BootApps, &BootBoot, &BootRun, &BootMerge };
+  int p;
+  
+  /* Quit everything unconditionally */
+  buffer.hdr.size = 20;
+  buffer.hdr.your_ref = 0;
+  buffer.hdr.action_code = Wimp_MQuit;
+  
+  for (p = 0; p < 4; p++)
+  {
+    if (list[p]->alive)
+    {
+      throw (wimp_send_message (17, &buffer, list[p]->task_handle, 0, NULL));
+    }
+  }
+  
+  Quit = TRUE;
+  
+  return 1;
+}
+
+/******	static_PreQuit() **************************************************\
+
+Purpose:	Handles Message_PreQuit
+
+\**************************************************************************/
+
+static int static_PreQuit (WimpMessage *message, void *handle)
+{
+  if ((message -> hdr.size > 20) && (message -> data.words[0] & 1))
+  {
+    /* We're being quit as a single task from the Task Manager */
+    /* (We mustn't intercept general desktop closedown here - then it's each plug-in for itself) */
+    
+    message -> hdr.your_ref = message -> hdr.my_ref;
+    throw (wimp_send_message (19, message, message -> hdr.sender, 0, NULL));
+      /* claim message, we'll be quitting ourselves if we want to without
+       * prompting by a later Message_Quit  */
+    
+    QuitMeToo = TRUE;
+    Main_StartQuit (0); /* Plug-ins should complain if there's any outstanding work */
+  }
+  return 1;
+}
+
+/******	static_PlugInQuitContinue() ***************************************\
+
+Purpose:	Handles Message_PlugInQuitContinue (sent by FontMerge)
+
+\**************************************************************************/
+
+static int static_PlugInQuitContinue (WimpMessage *message, void *handle)
+{
+  if (message->data.words [0] == PlugInSystem_Boot)
+  {
+    Main_StartQuit (-1); /* Keep the flags word (and QuitMeToo) from the last time */
+  }
+  return 1;
+}
+
+/******	static_TaskCloseDown() ********************************************\
+
+Purpose:	Handles Message_TaskCloseDown
+
+\**************************************************************************/
+
+static int static_TaskCloseDown (WimpMessage *message, void *handle)
+{
+  plugin *list [4] = { &BootApps, &BootBoot, &BootRun, &BootMerge };
+  int p;
+  
+  /* Has one of our plug-ins quit? */
+  for (p = 0; p < 4; p++)
+  {
+    if (list[p]->alive == TRUE && message->hdr.sender == list[p]->task_handle)
+    {
+      list[p]->alive = FALSE;
+    }
+  }
+  
+  return 1;
+}
+
+/******	static_OpenConfigWindow() ******************************************\
+
+Purpose:	Handles Message_OpenConfigWindow
+
+\**************************************************************************/
+
+static int static_OpenConfigWindow (WimpMessage *message, void *handle)
+{
+  misc_openwindow (Window_Obj, FALSE);
+  return 1;
+}
+@
+
+
+1.1.1.1
+log
+@
+Initial import of Configure plug-in '!BootSetup' to CVS.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Fixed event ordering problems that became apparent when click-type window tools
+were re-enabled in the Wimp. This involves a subtle alteration to the plug-in
+quit protocol.
+@
+text
+@d116 1
+a116 1
+Purpose:	Handles Message_PlugInQuitContinue
+@

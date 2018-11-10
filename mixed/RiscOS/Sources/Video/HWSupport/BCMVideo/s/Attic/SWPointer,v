@@ -1,0 +1,499 @@
+head	1.5;
+access;
+symbols
+	BCMVideo-0_30:1.4
+	BCMVideo-0_29:1.4
+	BCMVideo-0_28:1.4
+	BCMVideo-0_27:1.4
+	BCMVideo-0_26:1.4
+	BCMVideo-0_25:1.4
+	BCMVideo-0_24:1.4
+	BCMVideo-0_23:1.4
+	BCMVideo-0_22:1.4
+	BCMVideo-0_21:1.4
+	BCMVideo-0_20:1.4
+	BCMVideo-0_19:1.4
+	BCMVideo-0_18:1.4
+	BCMVideo-0_17:1.4
+	BCMVideo-0_16:1.4
+	BCMVideo-0_15:1.4
+	BCMVideo-0_14:1.4
+	BCMVideo-0_13:1.3
+	BCMVideo-0_12:1.3
+	BCMVideo-0_11:1.3
+	BCMVideo-0_10:1.3
+	BCMVideo-0_09:1.2
+	BCMVideo-0_08:1.2
+	BCMVideo-0_07:1.2
+	BCMVideo-0_06:1.2
+	BCMVideo-0_05:1.2
+	BCMVideo-0_04:1.1
+	BCMVideo-0_03:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2015.07.10.20.33.44;	author jlee;	state dead;
+branches;
+next	1.4;
+commitid	gEvIKFBh5s2gpMsy;
+
+1.4
+date	2013.12.15.22.21.41;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	bwYuPhPuWChfohhx;
+
+1.3
+date	2012.11.25.22.29.59;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	KA5Rb3NW1StkONtw;
+
+1.2
+date	2012.09.07.01.05.06;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	sA7cjtQbUOm0fxjw;
+
+1.1
+date	2012.09.02.20.13.33;	author jlee;	state Exp;
+branches;
+next	;
+commitid	Eobp7iVtciTWKZiw;
+
+
+desc
+@@
+
+
+1.5
+log
+@Remove manual software pointer support. Fix hardware pointer vanishing at X >= 2048 by falling back to kernel software pointer.
+Detail:
+  s/BCMVideo, s/SWPointer, s/GraphicsV - Remove manual software pointer code. Update GraphicsV code to deal with indicating when kernel software pointer is/isn't needed.
+  s/HWPointer - Turn off hardware pointer and return with GraphicsV_UpdatePointer unclaimed if the pointer GPU X coord is >= 2048
+Admin:
+  Tested on Raspberry Pi
+  Fixes pointer vanishing at X >= 2048
+
+
+Version 0.31. Tagged as 'BCMVideo-0_31'
+@
+text
+@; Copyright 2012 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+
+SWP_Update  ROUT
+        Push    "r0"
+        ; bail if pointer updates blocked
+        LDR     r0, SWPAddr
+        CMP     r0, #1
+        BEQ     %FT99
+        ; remove cursor from previous position, if any
+        BLHI    SWP_remove
+        ; Plot in new position, if any
+        LDR     r0, [sp]
+        TST     r0, #1
+        BLNE    SWP_plot
+99
+        Pull    "r0,pc"
+
+SWP_remove      ROUT
+        ; Remove cursor from addr r0
+        Entry   "r0-r5"
+        LDR     r1, SWPHeight
+        CMP     r1, #0
+        BEQ     SWP_remove_exit
+        ADR     r2, SWPUnder
+        LDR     r3, mbpitch
+        LDR     r4, mbbpp
+        CMP     r4, #16
+        SUB     r3, r3, r4, LSL #2
+        MOV     r4, #0
+        STR     r4, SWPAddr
+        BLT     SWP_remove_8bpp
+        BEQ     SWP_remove_16bpp
+        ; 32bpp
+        Push    "r6-r11"
+10
+        LDMIA   r2!, {r4-r11} ; 8 pixels
+        STMIA   r0!, {r4-r11}
+        LDMIA   r2!, {r4-r11} ; 16 pixels
+        STMIA   r0!, {r4-r11}
+        LDMIA   r2!, {r4-r11} ; 24 pixels
+        STMIA   r0!, {r4-r11}
+        LDMIA   r2!, {r4-r11} ; 32 pixels
+        STMIA   r0!, {r4-r11}
+        SUBS    r1, r1, #1
+        ADD     r0, r0, r3
+        BNE     %BT10
+        Pull    "r6-r11"
+SWP_remove_exit
+        STR     r1, SWPAddr
+        EXIT
+
+SWP_remove_8bpp ROUT
+10
+        MOV     r4, #32
+20
+        LDRB    r5, [r2], #1
+        SUBS    r4, r4, #1
+        STRB    r5, [r0], #1
+        BNE     %BT20
+        SUBS    r1, r1, #1
+        ADD     r0, r0, r3
+        BNE     %BT10
+        B       SWP_remove_exit
+
+SWP_remove_16bpp ROUT
+10
+        MOV     r4, #32
+20
+        LDRH    r5, [r2], #2
+        SUBS    r4, r4, #1
+        STRH    r5, [r0], #2
+        BNE     %BT20
+        SUBS    r1, r1, #1
+        ADD     r0, r0, r3
+        BNE     %BT10
+        B       SWP_remove_exit
+
+SWP_plot ROUT
+        ; Plot cursor shape R3 at R1,R2
+        ; Assume 32 pixel width
+        Entry   "r0-r9"
+        MOV     r0, #0
+        STR     r0, SWPAddr
+        ; Work out log addr of screen
+        LDR     r0, mbbase
+        LDR     r4, VC_Base
+        SUB     r0, r0, r4
+        LDR     r4, VC_Log
+        ADD     r0, r0, r4
+        LDR     r4, mbyoff
+        LDR     r5, mbpitch
+        MLA     r0, r4, r5, r0
+        LDRB    r6, [r3, #1] ; Get height
+        CMP     r6, #0
+        BEQ     SWP_plot_exit ; Nothing to plot!
+        CMP     r6, #32
+        MOVGT   r6, #32 ; paranoia
+        STR     r6, SWPHeight
+        LDR     r8, mbxres
+        LDR     r9, mbyres
+        CMP     r1, r8
+        CMPLT   r2, r9
+        BGE     SWP_plot_exit ; off bottom/right
+        ; we don't do any clipping, so clamp position to lie on screen
+        SUB     r8, r8, #32
+        SUB     r9, r9, r6
+        CMP     r1, r8
+        MOVGT   r1, r8
+        CMP     r2, r9
+        MOVGT   r2, r9
+        ADDS    r8, r1, #32
+        ADDGES  r9, r2, r6
+        BLE     SWP_plot_exit ; off top/left
+        MOV     r5, #1 ; Block updates just in case we abort
+        STR     r5, SWPAddr
+        CMP     r1, #0
+        MOVLT   r1, #0
+        CMP     r2, #0
+        MOVLT   r2, #0
+        LDR     r5, mbbpp
+        LDR     r4, mbpitch
+        MLA     r0, r2, r4, r0
+        CMP     r5, #16
+        ADR     r7, CurPalette
+        ADR     r8, SWPUnder
+        LDR     r3, [r3, #4]
+        SUB     r4, r4, r5, LSL #2
+        BLT     SWP_plot_8bpp
+        BEQ     SWP_plot_16bpp
+        ; 32bpp
+        ADD     r0, r0, r1, LSL #2
+        Push    "r0"
+        ; r0 = screen address
+        ; r3 = shape
+        ; r4 = screen pitch, minus 32 pixels
+        ; r6 = cursor height
+        ; r7 = cursor palette
+        ; r8 = SWPUnder
+10
+        LDR     r1, =&88888888        
+        LDRB    r2, [r3], #1
+20
+        LDR     r5, [r0], #4
+        STR     r5, [r8], #4
+        ANDS    r9, r2, #3
+        LDRNE   r9, [r7, r9, LSL #2]
+        MOVNE   r9, r9, LSR #8
+        STRNE   r9, [r0, #-4]
+        MOV     r2, r2, LSR #2
+        MOVS    r1, r1, LSR #1
+        LDRHIB  r2, [r3], #1
+        BNE     %BT20
+        ADD     r0, r0, r4
+        SUBS    r6, r6, #1
+        BNE     %BT10
+        Pull    "r0"
+        STR     r0, SWPAddr
+SWP_plot_exit
+        EXIT
+
+SWP_plot_8bpp   ROUT
+        ADD     r0, r0, r1
+        Push    "r0"
+10
+        LDR     r1, =&88888888
+        LDRB    r2, [r3], #1
+20
+        LDRB    r5, [r0], #1
+        STRB    r5, [r8], #1
+        ANDS    r9, r2, #3
+        EORNE   r5, r5, #255 ; TODO - Something better!
+        STRNEB  r5, [r0, #-1]
+        MOV     r2, r2, LSR #2
+        MOVS    r1, r1, LSR #1
+        LDRHIB  r2, [r3], #1
+        BNE     %BT20
+        ADD     r0, r0, r4
+        SUBS    r6, r6, #1
+        BNE     %BT10
+        Pull    "r0"
+        STR     r0, SWPAddr
+        EXIT        
+
+SWP_plot_16bpp  ROUT
+        ADD     r0, r0, r1, LSL #1
+        Push    "r0"
+10
+        LDR     r1, =&88888888        
+        LDRB    r2, [r3], #1
+20
+        LDRH    r5, [r0], #2
+        STRH    r5, [r8], #2
+        ANDS    r9, r2, #3
+        BEQ     %FT30
+        LDR     r9, [r7, r9, LSL #2]
+        AND     r5, r9, #&f8000000
+        AND     lr, r9, #&00fc0000
+        AND     r9, r9, #&0000f800
+        ORR     r5, lr, r5, LSR #14
+        ORR     r5, r9, r5, LSR #13
+        STRH    r5, [r0, #-2]
+30
+        MOV     r2, r2, LSR #2
+        MOVS    r1, r1, LSR #1
+        LDRHIB  r2, [r3], #1
+        BNE     %BT20
+        ADD     r0, r0, r4
+        SUBS    r6, r6, #1
+        BNE     %BT10
+        Pull    "r0"
+        STR     r0, SWPAddr
+        EXIT
+
+        END
+@
+
+
+1.4
+log
+@Update to use new GraphicsV registration process. Add 64K colour mode support.
+Detail:
+  s/BCMVideo - Remove unnecessary 'modedefbuf' in workspace. Use new GraphicsV driver registration process. Remove local defintion of VIDC list structure, use Hdr:VIDCList instead. Improve mode vetting to check list type, pixel format, and ExtraBytes control list entry.
+  s/GraphicsV - Only respond to our driver number. Implement StartupMode call (previously in HAL). Implement PixelFormats call so that we can advertise support for 64K colour modes.
+  s/SWPointer - Update 16bpp software pointer handling to assume 64K instead of 32K mode
+Admin:
+  Tested in BCM2835 ROM
+  Requires HdrSrc-2_38 and Kernel-5_35-4_79_2_203
+
+
+Version 0.14. Tagged as 'BCMVideo-0_14'
+@
+text
+@@
+
+
+1.3
+log
+@Add support for multiple screen banks. Improve mailbox handling to allow IRQs to be enabled while waiting for response.
+Detail:
+  s/BCMVideo:
+  - Reworked mailbox handling to allow IRQs to be enabled while waiting for a response. If an attempt is made to send another message while still waiting for the first, the code will detect that a message is currently outstanding and will wait for the first to complete before claiming use of the shared message buffer. This has had a big impact on our IRQ latency, as it looks like the GPU waits until the end of each frame until processing framebuffer mailbox messages.
+  - Added support for multiple screen banks. The GPU allows us to allocate a framebuffer which is larger than the area which is displayed on screen, and specify the X,Y offset of the displayed area. However because it works in texel coordinates instead of byte offsets, it means we're limited to vertical scrolling only, unlike the (potentially partial) horizontal scrolling support on other platforms. Several constraints are used to decide how many screen banks to try and allocate.
+  - Added a BCMVideo$ScreenBanksEnabled system variable. If set to '0' it will disable screen banks on the next mode change. Any other value (including unset) enables them. This is a (potentially temporary) compatability option for use with old games; the fact that switching screen bank requires the driver to wait until the next VSync (while waiting for the GPU response) means that having screen banks enabled may have a significant framerate impact
+  s/GraphicsV:
+  - Screen bank support.
+  - Allow GraphicsV_Render debug output to be turned off seperately of main debug switch.
+  s/SWPointer:
+  - Modified to work properly with screen banks.
+Admin:
+  Tested on Raspberry Pi
+  Fixes flickering HUD in Star Fighter 3000
+  Mailbox handling changes fix keyboard dying in Zool, however slow operation of screen bank switching means that you'll want screen banks disabled to be able to run at full frame rate.
+
+
+Version 0.10. Tagged as 'BCMVideo-0_10'
+@
+text
+@d210 1
+a210 1
+        AND     lr, r9, #&00f80000
+d212 2
+a213 3
+        ORR     r5, r5, lr, LSL #3
+        ORR     r5, r5, r9, LSL #8+3-5
+        MOV     r5, r5, LSR #17
+@
+
+
+1.2
+log
+@Add hardware pointer support
+Detail:
+  s/HWPointer, s/BCMVideo, s/GraphicsV - Added hardware pointer support, using VCHIQ to talk to the VC-side dispmanx service. Software pointer will automatically disable itself once the hardware pointer is activated by VCHIQ being loaded.
+  s/SWPointer, s/BCMVideo - Renamed software pointer routines & variables to have 'SWP' prefix to more easily differentiate them from the 'HWP' hardware pointer routines/variables
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+
+
+Version 0.05. Tagged as 'BCMVideo-0_05'
+@
+text
+@d103 3
+d112 2
+a113 2
+        LDR     r8, mbxvres
+        LDR     r9, mbyvres
+@
+
+
+1.1
+log
+@First working version of video driver
+Detail:
+  This version of the driver supports 8bpp & 32bpp screen modes, and uses a software mouse pointer.
+  Startup mode is forced to 1080p, 32bpp (via code in the HAL). After that, RISC OS is free to do as it pleases.
+  Makefile, s/BCMVideo - Added Castle licence text
+  Resources/RPIMon - Simple MDF that gets loaded on startup. Contains simple 1080p & 720p mode definitions, plus copies of definitions for numbered modes from AKF50 MDF (to ensure RISC OS doesn't freak out due to not having any fallback modes available)
+  s/BCMVideo - Main bulk of video driver
+  s/Debug - Debug routines
+  s/GraphicsV - GraphicsV handler
+  s/SWPointer - Basic software mouse pointer implementation
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Still a few rough edges to iron out, but code seems stable enough
+
+
+Version 0.03. Tagged as 'BCMVideo-0_03'
+@
+text
+@d16 1
+a16 2
+GV_UpdatePointer  ROUT
+        MOV     r4, #0
+d19 1
+a19 1
+        LDR     r0, CurAddr
+d23 1
+a23 1
+        BLHI    cur_remove
+d27 1
+a27 1
+        BLNE    cur_plot
+d31 1
+a31 1
+cur_remove      ROUT
+d34 1
+a34 1
+        LDR     r1, CurHeight
+d36 2
+a37 2
+        BEQ     cur_remove_exit
+        ADR     r2, CurUnder
+d43 3
+a45 3
+        STR     r4, CurAddr
+        BLT     cur_remove_8bpp
+        BEQ     cur_remove_16bpp
+d61 2
+a62 2
+cur_remove_exit
+        STR     r1, CurAddr
+d65 1
+a65 1
+cur_remove_8bpp ROUT
+d76 1
+a76 1
+        B       cur_remove_exit
+d78 1
+a78 1
+cur_remove_16bpp ROUT
+d89 1
+a89 1
+        B       cur_remove_exit
+d91 1
+a91 1
+cur_plot ROUT
+d96 1
+a96 1
+        STR     r0, CurAddr
+d105 1
+a105 1
+        BEQ     cur_plot_exit ; Nothing to plot!
+d108 1
+a108 1
+        STR     r6, CurHeight
+d113 1
+a113 1
+        BGE     cur_plot_exit ; off bottom/right
+d123 1
+a123 1
+        BLE     cur_plot_exit ; off top/left
+d125 1
+a125 1
+        STR     r5, CurAddr
+d135 1
+a135 1
+        ADR     r8, CurUnder
+d138 2
+a139 2
+        BLT     cur_plot_8bpp
+        BEQ     cur_plot_16bpp
+d148 1
+a148 1
+        ; r8 = CurUnder
+d167 2
+a168 2
+        STR     r0, CurAddr
+cur_plot_exit
+d171 1
+a171 1
+cur_plot_8bpp   ROUT
+d191 1
+a191 1
+        STR     r0, CurAddr
+d194 1
+a194 1
+cur_plot_16bpp  ROUT
+d222 1
+a222 1
+        STR     r0, CurAddr
+@
+

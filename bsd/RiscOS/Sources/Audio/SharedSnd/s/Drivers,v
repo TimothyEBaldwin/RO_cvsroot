@@ -1,0 +1,1348 @@
+head	1.10;
+access;
+symbols
+	SharedSnd-1_20:1.10
+	SharedSnd-1_19:1.10
+	SharedSnd-1_18:1.9
+	SharedSnd-1_17:1.7
+	SharedSnd-1_16:1.7
+	SharedSnd-1_15:1.7
+	SharedSnd-1_14:1.6
+	SharedSnd-1_13:1.5
+	SharedSnd-1_12:1.4
+	SharedSnd-1_11:1.4
+	SharedSnd-1_10:1.3
+	SharedSnd-1_09:1.3
+	SharedSnd-1_08:1.3
+	SharedSnd-1_07:1.3
+	ESP_SharedSnd-1_06_merge:1.2.2.1
+	SharedSnd-1_06:1.3
+	ESP_SharedSnd-1_06:1.2.0.2
+	ESP_SharedSnd-1_06_bp:1.2
+	SharedSnd-1_05:1.2
+	SharedSnd-1_04:1.2
+	SharedSnd-1_03:1.2
+	SharedSnd-1_02:1.2
+	SharedSnd-1_01:1.2
+	SharedSnd-1_00:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.10
+date	2016.06.18.16.46.47;	author jlee;	state Exp;
+branches;
+next	1.9;
+commitid	GZPyEQx8oxuR5Yaz;
+
+1.9
+date	2016.06.18.16.39.01;	author jlee;	state Exp;
+branches;
+next	1.8;
+commitid	ODW0ixlFy50c3Yaz;
+
+1.8
+date	2016.06.18.16.19.19;	author jlee;	state Exp;
+branches;
+next	1.7;
+commitid	L0sIVnG3vL4sWXaz;
+
+1.7
+date	2013.09.07.09.58.38;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	DDb7J4xWmm0Dsu4x;
+
+1.6
+date	2013.09.07.09.48.58;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	xd8cpTeM2vojpu4x;
+
+1.5
+date	2013.09.04.07.14.41;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	2RDI391I6q1nE54x;
+
+1.4
+date	2012.05.13.12.13.47;	author bavison;	state Exp;
+branches;
+next	1.3;
+commitid	ikRUfBzwYcXxHy4w;
+
+1.3
+date	2011.08.15.23.10.48;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.06.28.20.21.55;	author bavison;	state Exp;
+branches
+	1.2.2.1;
+next	1.1;
+
+1.1
+date	2001.06.28.18.11.57;	author bavison;	state Exp;
+branches;
+next	;
+
+1.2.2.1
+date	2011.08.15.14.11.19;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.10
+log
+@Use PSR manipulation macros. Macroise driver calling. Simplify error checks.
+Detail:
+  s/Drivers - Macroise driver calling to reduce amount of duplicate code. Also avoid NOP if storing PC stores PC+8 and not PC+12.
+  s/Handler - Use PSR manipulation macros for switching modes and controlling IRQs. Remove redundant IRQ disabling around atomic store of one word in doHandlerCallBack.
+  s/Module - Use PSR manipulation macros for switching modes
+  s/SWIS - Simplify range checking on handler and driver numbers; treat as unsigned numbers instead of signed.
+  s/Vars - Remove local definitions of IRQ flags & SVC mode
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 1.19. Tagged as 'SharedSnd-1_19'
+@
+text
+@; Copyright (c) 1995, Expressive Software Projects
+; All rights reserved.
+; 
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met:
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of Expressive Software Projects nor the names of its
+;       contributors may be used to endorse or promote products derived from
+;       this software without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+; ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+; WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+; DISCLAIMED. IN NO EVENT SHALL EXPRESSIVE SOFTWARE PROJECTS BE LIABLE FOR ANY
+; DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+; (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+; ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+; (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+; SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+; 
+; The driver will typically be the 16 bit DMA handler with all parameters
+; set as required, or the log driver for 8 bit support.
+; If it is the 8 bit driver then there is some conversion required to set the
+; parameters correctly.
+; This is indicated by passing a call address in the driver block which would
+; otherwise be 0.
+;
+
+ ; -------------------------------- Driver routines ---------------------------
+
+        MACRO
+        CallDriver $drivertbl, $entry, $extraregs
+        LCLS    regs
+      [ "$extraregs"=""
+regs    SETS    "ws"
+      |
+regs    SETS    "$extraregs,ws"
+      ]
+        Push    "$regs"                             ; Stack ws and any other regs
+        LDR     ws, [$drivertbl, #driver_Parameter] ; Called with ws = parameter
+        Push    "pc"                                ; Put return address on the stack
+        MOV     pc, $entry                          ; And call driver install entry
+      [ NoARMv4
+        MOV     r0, r0
+      ]
+        Pull    "$regs"                             ; Retrieve ws
+        MEND
+
+installDefaultDriver ROUT
+        ;  The default driver will either be (in order of preference)
+        ;      Sound_LinearHandler
+        ;   or Sound_ChannelHandler
+
+        ;  This routine looks to see what is available and installs
+        ;  the appropriate driver.
+
+        Entry
+
+        Debug   gn,"installDefaultDriver: entered"
+
+ [ doDMI :LAND: ( :LNOT: forceLog)
+
+        ; See if the DMI is loaded and if so install SharedSound into it's linear handler
+        MOV     R0,#0
+        ADR     R1,%FT10
+        SWI     XOS_SWINumberFromString
+        BVS     installDefaultDriver_NoDMI
+
+        MOV     R0,#3
+        STR     R0,[R12,#work_currentDriver]
+
+        BL      installDMIDriver
+
+        EXIT
+
+10
+        DCB     "PowerWAVE_LinearHandler", 0 ; Name of a SWI from the module
+        ALIGN
+
+installDefaultDriver_NoDMI
+
+ ]
+        ; First see if Sound_LinearHandler exists
+
+        ; This relies on the fact that the old SoundDMA module will respond to all
+        ; SWI's outside its range with a 0
+        ; but the 16 bit SoundDMA will respond with a 1 if 16 bit is on
+
+        MOV     r0,#0
+
+ [ :LNOT: forceLog
+
+        SWI     XSound_Mode   ;  Check configured for 16 Bit support
+        MOVVS   r0,#0         ;  if not supported, explicitly say it's log
+ ]
+
+        Debug   gn,"Sound mode =", r0
+
+        CMP     r0,#0          ; r0 = 1 If 16 bit support is on
+
+        MOVEQ   r1,#1  ; Log
+        MOVNE   r1,#2  ; Linear
+
+        STR     r1,[ws,#work_currentDriver]
+
+ [ doLog
+        BNE     installDefaultDriverNotLog      ; 32 bit change
+        BL      installLogDriver
+        EXIT
+ ]
+
+installDefaultDriverNotLog
+        BL      installLinearDriver
+
+        EXIT
+
+ ; -----------
+
+installDriver   ROUT
+        ; Install driver
+        ;  r0 = Pointer to driver table, or 0 if it's not really valid
+        ;  r1 = parameter to pass driver in ws when called
+        ;  r2 = flags
+        ;  r3 ->Driver name
+        Entry   "r0-r6"
+
+        BL      releaseDriver                   ; release the currently active driver
+
+        ADD     r6,ws,#work_driverTable         ; Get pointer to driver table
+
+        STR     r0,[r6,#driver_Address]         ; Table address
+        STR     r1,[r6,#driver_Parameter]       ; Driver ws parameter
+        STR     r2,[r6,#driver_Flags]
+
+        ADD     r4,r6,#driver_Name
+        ADD     r5,r4,#?driver_Name - 1         ; Buffer end (inclusive)
+10
+        LDRB    r14,[r3],#1
+        CMP     r14,#31                         ; Control terminate
+        CMPHI   r5,r4                           ; Check buffer end
+        MOVLS   r14,#0                          
+        STRB    r14,[r4],#1
+        BHI     %BT10
+
+        MVN     r0,#0                           ; Initialise driver vol to LR = &FFFFFFFF
+        STR     r0,[r6,#driver_Volume]
+
+        BL      driverInitialise                ; Initialise this driver
+
+        LDR     r0,[r6,#driver_Volume]
+        MOV     r1,r6                           ; Driver table
+        BL      driverVolume                    ; Initialise driver volume
+
+        EXIT
+
+ ; -----------
+
+driverInitialise ROUT
+        ; Initialise a new driver
+        ;  r0 = driver table slot
+        ;  Return with r0 = 0 if failed
+
+        Entry   "r1-r11,ws"
+
+        ADD     r6,ws,#work_driverTable         ; driver Table slot
+
+        LDR     r0,[r6,#driver_Address]
+        LDR     r2,[r0,#driverEntry_Install]    ; r2 = Call address
+
+        BL      clearCallBackBuffer
+
+        ADRL    r0,fill                         ; Main fill call address
+
+        LDR     r1,[ws,#work_privateWord]       ; r1 = parameter
+        CallDriver r6, r2                       ; Call r2 on driver r6
+
+        CMP     r0,#0                           ; = 0 if install failed
+
+        MOVNE   r0,#0
+        BLNE    newSampleRate                   ; Get rate and set up sample period &
+                                                ; fractions
+
+        BL      startSound                   ; Make sure that sound is active
+
+        EXIT
+
+        ; ------------
+
+driverCheck     ROUT
+        ; Call initialise to make sure that the current driver is still active
+
+        Entry   "r0-r11,ws"
+
+        ADD     r6,ws,#work_driverTable         ; driver Table slot
+        LDR     r0,[r6,#driver_Address]
+
+        CMP     r0,#0                           ; Is there a driver installed?
+        BEQ     driverCheckExit
+
+        LDR     r2,[r0,#driverEntry_Install]    ; r2 = Call address
+
+        ADRL    r0,fill                         ; r0 = Handler address
+        LDR     r1,[ws,#work_privateWord]       ; r1 = parameter
+        CallDriver r6, r2                       ; Call r2 on driver r6
+
+        MOV     r0,#0
+        STR     r0,[ws,#work_SoundPause]        ; Clear the pause flag
+
+driverCheckExit
+        CLRV
+        EXIT
+
+
+        ;-------------
+
+releaseDriver   ROUT
+        Entry   "r0-r11,ws"
+
+        BL      stopSound
+
+        ADD     r0,ws,#work_driverTable         ; driver Table slot
+        LDR     r1,[r0,#driver_Address]
+
+        CMP     r1,#0
+        BEQ     releaseDriverExit
+
+        LDR     r1,[r1,#driverEntry_Remove]
+        CallDriver r0, r1                       ; Call r1 on driver r0, no other parameters 
+
+; forget the driver we're using
+        ADD     r0,ws,#work_driverTable         ; driver Table slot
+        MOV     r1,#0
+        STR     r1,[r0,#driver_Address]
+
+releaseDriverExit
+        EXIT
+
+        ; ----------------
+
+driverSampleRate ROUT
+        ; Call driver sample rate entry
+        ; On entry:
+        ;  r0 = 0 to read
+        ;     > 0 for sample frequency required
+        ; On exit:
+        ;  r0 = current frequency
+        Entry
+
+        ; Get or set current frequency
+        ADD     r1,ws,#work_driverTable         ; driver Table slot
+        LDR     r2,[r1,#driver_Address]
+
+        CMP     r2,#0                           ; Return 0 for failed
+        MOVEQ   r0,#0
+        BEQ     driverSampleRateExit
+
+        LDR     r2,[r1,#driver_Address]
+        LDR     r2,[r2,#driverEntry_SampleRate]
+        CallDriver r1, r2                       ; Call r2 on driver r1, no other parameters
+
+        ; r0 = current frequency
+
+driverSampleRateExit
+        EXIT
+
+
+ ; ----------
+
+driverVolume    ROUT
+        ; Set the new volume for a driver
+        ; On entry:
+        ;   r0 = new LR volume
+        ;   r1 = driver table
+        ; On exit:
+        ;   r0 = volume scaling required by handler to achieve this volume
+        ;   So if driver cannot scale volume then r0 = entry value and handler
+        ;   will have to do all the work
+        ;   If driver can scale then typically it will return &FFFFFFFF to
+        ;   tell handler not to scale volume at all
+        Entry   "r1-r11,ws"
+
+        ; Get or set current volume
+        ADD     r1,ws,#work_driverTable    ; driver Table slot
+        LDR     r2,[r1,#driver_Address]
+
+        CMP     r2,#0
+        BEQ     driverVolumeExit
+
+        LDR     r2,[r2,#driverEntry_Volume]     ; There may not be an entry
+        CMP     r2,#0
+        STR     r0,[r1,#driver_Volume]          ; Store it
+        BEQ     driverVolumeStore               ; Return with r0 as set
+
+        CallDriver r1, r2, "r1"                 ; Call r2 on driver r1, no other parameters
+
+driverVolumeStore
+
+
+        Debug   gn,"Store scaled driver volume: ", r0
+
+        ;  r0 = actual volume
+
+        STR     r0,[r1,#driver_VolumeScaled]    ; The volume to use when scaling handlers
+
+driverVolumeExit
+        EXIT
+
+
+        ; -----------
+
+driverMixer     ROUT
+        ; Call driver's mixer entry
+        ; On entry:
+        ;    r0 = Function code,  0 = read,  1 = set
+        ;    r1 = mixer number
+        ;    r2 = value if to set
+        ;    r3 = driver pointer
+        ; On exit:
+        ;    r1 = number of mixers
+        ;    r2 = current value
+        ;    r3 = mixer name
+
+        Entry   "r4-r11,ws"
+
+        CMP     r3,#0
+        BEQ     driverMixerExit
+
+        LDR     r4,[r3,#driver_Address]
+        LDR     r4,[r4,#driverEntry_Mixer]      ; There may not be an entry
+        CMP     r4,#0
+        BEQ     driverMixerExit                 ; No mixer entry
+
+        CallDriver r3, r4                       ; Call r4 on driver r3, no other parameters
+
+driverMixerExit
+        EXIT
+
+        END
+@
+
+
+1.9
+log
+@Use Entry/EXIT, Push/Pull macros
+Detail:
+  s/* - Code updated to use Entry/EXIT and Push/Pull macros where possible instead of manual STM/LDM. Also add ROUTs for safety (although most routines use named local labels rather than numbered ones). A few obvious cases also fixed to reduce number of regs pushed onto stack.
+  A few other changes and fixes of note:
+  s/Log - Trim empty, unused installLogDriver routine when doLog is {FALSE}
+  s/Module - Add a veneer to swiHandler to deal with 26bit and 26/32bit neutral cases; avoids the need for individual SWI handlers to preserve NZC
+  s/SWIs:
+  - Remove 26/32bit neutral SWI exit code, now handled by veneers. CLRV on most SWI exits to replace the implicit CLRV from CMP pc,pc.
+  - swiHandlerVolume and swiDriverMixer were popping the wrong regs from the stack for most error cases; now fixed via the switch to Entry/EXIT
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 1.18. Tagged as 'SharedSnd-1_18'
+@
+text
+@d36 18
+d180 1
+a180 6
+        Push    "ws"                            ; Stack ws
+        LDR     ws,[r6,#driver_Parameter]       ; Called with ws = parameter
+        Push    "pc"                            ; Put return address on the stack
+        MOV     pc,r2                           ; And call driver install entry
+        MOV     r0,r0
+        Pull    "ws"                            ; Retrieve ws
+d209 1
+a209 6
+        Push    "ws"                            ; Stack ws
+        LDR     ws,[r6,#driver_Parameter]       ; Called with ws = parameter
+        Push    "pc"                            ; Put return address on the stack
+        MOV     pc,r2                           ; And call driver install entry
+        MOV     r0,r0
+        Pull    "ws"                            ; Retrieve ws
+d233 1
+a233 6
+        Push    "ws"                            ; Stack ws
+        LDR     ws,[r0,#driver_Parameter]       ; Get driver's ws
+        Push    "pc"                            ; Stack return address
+        MOV     pc,r1                           ; Call driver, no other parameters
+        MOV     r0,r0
+        Pull    "ws"                            ; Retrieve ws
+d264 1
+a264 6
+        Push    "ws"                            ; Stack ws
+        LDR     ws,[r1,#driver_Parameter]       ; Get driver's ws
+        Push    "pc"                            ; Stack return address
+        MOV     pc,r2                           ; Call driver, no other parameters
+        MOV     r0,r0
+        Pull    "ws"                            ; Retrieve ws
+d299 1
+a299 6
+        Push    "r1,ws"                         ; Stack ws
+        LDR     ws,[r1,#driver_Parameter]      ; Get driver's ws
+        Push    "pc"                            ; Stack return address
+        MOV     pc,r2                            ; Call driver, no other parameters
+        MOV     r0,r0
+        Pull    "r1,ws"                          ; Retrieve ws
+d338 1
+a338 6
+        Push    "ws"                            ; Stack ws
+        LDR     ws,[r1,#driver_Parameter]       ; Get driver's ws
+        Push    "pc"                            ; Stack return address
+        MOV     pc,r4                           ; Call driver, no other parameters
+        MOV     r0,r0
+        Pull    "ws"                            ; Retrieve ws
+@
+
+
+1.8
+log
+@Expand tabs
+Detail:
+  s/* - Expand all tabs, to avoid space/tab use inconsistencies within some files and to match general ROOL code formatting
+Admin:
+  Binary unchanged
+
+
+Version 1.17. Not tagged
+@
+text
+@d36 1
+a36 1
+installDefaultDriver
+d44 1
+a44 1
+        Push    "lr"
+d61 1
+a61 1
+        Pull    "PC"
+d96 1
+a96 1
+        Pull    "pc"
+d102 1
+a102 1
+        Pull    "pc"
+d106 1
+a106 1
+installDriver
+d112 1
+a112 1
+        Push    "r0-r6,lr"
+d141 1
+a141 1
+        Pull    "r0-r6,pc"
+d145 1
+a145 1
+driverInitialise
+d150 1
+a150 1
+        Push    "r1-r11,ws,lr"
+d177 1
+a177 1
+        Pull    "r1-r11,ws,pc"
+d181 1
+a181 1
+driverCheck
+d184 1
+a184 1
+        Push    "r0-r11,ws,lr"
+d207 2
+a208 3
+        CMP     PC,PC                   ; Clears V flag and checks processor mode
+        Pull    "r0-r11,ws,pc", EQ      ; 32 bit exit
+        Pull    "r0-r11,ws,pc",, ^      ; 26 bit exit
+d213 2
+a214 2
+releaseDriver
+        Push    "r0-r11,ws,lr"
+d238 1
+a238 1
+        Pull    "r0-r11,ws,pc"
+d242 1
+a242 1
+driverSampleRate
+d249 1
+a249 1
+        Push    "lr"
+d271 1
+a271 3
+
+
+        Pull    "pc"
+d276 1
+a276 1
+driverVolume
+d287 1
+a287 1
+        Push    "r1-r11,ws,lr"
+d318 1
+a318 1
+        Pull    "r1-r11,ws,pc"
+d323 1
+a323 1
+driverMixer
+d335 1
+a335 1
+        Push    "r4-r11,ws,lr"
+d353 1
+a353 1
+        Pull    "r4-r11,ws,pc"
+@
+
+
+1.7
+log
+@Internationalised
+Errors are now looked up via MessageTrans.
+The driver names (registered via InstallDriver or to SoundDriver_Install) are now also looked up.
+Note, the SharedSound_DriverInfo SWI used to return r2 as the pointer to a pointer to the name, the documentation seems vague as to what the intent was, but it seems more likely that a pointer to the name was what was intended. The name string is buffered (because it needs looking up for internationalisation anyway).
+
+Tested briefly, inspecting the workspace for name lookups and sending a fake Service_SoundDriver service call. Two errors deliberatly triggered to check error text.
+
+Version 1.15. Tagged as 'SharedSnd-1_15'
+@
+text
+@d37 3
+a39 3
+	;  The default driver will either be (in order of preference)
+ 	;      Sound_LinearHandler
+ 	;   or Sound_ChannelHandler
+d41 2
+a42 2
+ 	;  This routine looks to see what is available and installs
+ 	;  the appropriate driver.
+d50 5
+a54 5
+	; See if the DMI is loaded and if so install SharedSound into it's linear handler
+	MOV	R0,#0
+	ADR	R1,%FT10
+	SWI	XOS_SWINumberFromString
+	BVS	installDefaultDriver_NoDMI
+d56 2
+a57 2
+	MOV	R0,#3
+	STR	R0,[R12,#work_currentDriver]
+d59 1
+a59 1
+	BL	installDMIDriver
+d64 2
+a65 2
+	DCB     "PowerWAVE_LinearHandler", 0 ; Name of a SWI from the module
+	ALIGN
+d70 1
+a70 1
+	; First see if Sound_LinearHandler exists
+d72 3
+a74 3
+	; This relies on the fact that the old SoundDMA module will respond to all
+	; SWI's outside its range with a 0
+	; but the 16 bit SoundDMA will respond with a 1 if 16 bit is on
+d76 1
+a76 1
+	MOV	r0,#0
+d80 2
+a81 2
+	SWI	XSound_Mode   ;  Check configured for 16 Bit support
+	MOVVS   r0,#0         ;  if not supported, explicitly say it's log
+d86 1
+a86 1
+	CMP	r0,#0          ; r0 = 1 If 16 bit support is on
+d88 2
+a89 2
+	MOVEQ	r1,#1  ; Log
+	MOVNE	r1,#2  ; Linear
+d91 1
+a91 1
+	STR	r1,[ws,#work_currentDriver]
+d94 3
+a96 3
+	BNE	installDefaultDriverNotLog	; 32 bit change
+	BL	installLogDriver
+	Pull    "pc"
+d100 1
+a100 1
+	BL	installLinearDriver
+d107 5
+a111 5
+	; Install driver
+	;  r0 = Pointer to driver table, or 0 if it's not really valid
+	;  r1 = parameter to pass driver in ws when called
+	;  r2 = flags
+	;  r3 ->Driver name
+d114 1
+a114 1
+	BL	releaseDriver			; release the currently active driver
+d116 1
+a116 1
+	ADD	r6,ws,#work_driverTable		; Get pointer to driver table
+d118 3
+a120 3
+	STR	r0,[r6,#driver_Address]		; Table address
+	STR	r1,[r6,#driver_Parameter]	; Driver ws parameter
+	STR	r2,[r6,#driver_Flags]
+d122 2
+a123 2
+	ADD     r4,r6,#driver_Name
+	ADD	r5,r4,#?driver_Name - 1		; Buffer end (inclusive)
+d125 15
+a139 15
+	LDRB	r14,[r3],#1
+	CMP	r14,#31				; Control terminate
+	CMPHI	r5,r4				; Check buffer end
+	MOVLS	r14,#0				
+	STRB	r14,[r4],#1
+	BHI	%BT10
+
+	MVN	r0,#0				; Initialise driver vol to LR = &FFFFFFFF
+	STR	r0,[r6,#driver_Volume]
+
+	BL	driverInitialise		; Initialise this driver
+
+	LDR	r0,[r6,#driver_Volume]
+	MOV	r1,r6				; Driver table
+	BL	driverVolume			; Initialise driver volume
+d146 3
+a148 3
+	; Initialise a new driver
+	;  r0 = driver table slot
+	;  Return with r0 = 0 if failed
+d152 1
+a152 1
+	ADD	r6,ws,#work_driverTable		; driver Table slot
+d154 2
+a155 2
+	LDR	r0,[r6,#driver_Address]
+	LDR	r2,[r0,#driverEntry_Install]	; r2 = Call address
+d157 1
+a157 1
+	BL	clearCallBackBuffer
+d159 1
+a159 1
+	ADRL	r0,fill				; Main fill call address
+d161 7
+a167 7
+	LDR	r1,[ws,#work_privateWord]	; r1 = parameter
+	Push    "ws"    			; Stack ws
+	LDR	ws,[r6,#driver_Parameter]	; Called with ws = parameter
+	Push    "pc"    			; Put return address on the stack
+	MOV	pc,r2				; And call driver install entry
+	MOV	r0,r0
+	Pull    "ws"    			; Retrieve ws
+d169 1
+a169 1
+	CMP	r0,#0				; = 0 if install failed
+d171 3
+a173 3
+	MOVNE	r0,#0
+	BLNE	newSampleRate			; Get rate and set up sample period &
+						; fractions
+d175 1
+a175 1
+	BL	startSound                   ; Make sure that sound is active
+d179 1
+a179 1
+	; ------------
+d182 1
+a182 1
+	; Call initialise to make sure that the current driver is still active
+d186 2
+a187 2
+	ADD	r6,ws,#work_driverTable		; driver Table slot
+	LDR	r0,[r6,#driver_Address]
+d189 2
+a190 2
+	CMP	r0,#0				; Is there a driver installed?
+	BEQ	driverCheckExit
+d192 1
+a192 1
+	LDR	r2,[r0,#driverEntry_Install]	; r2 = Call address
+d194 8
+a201 8
+	ADRL	r0,fill				; r0 = Handler address
+	LDR	r1,[ws,#work_privateWord]	; r1 = parameter
+	Push    "ws"    			; Stack ws
+	LDR	ws,[r6,#driver_Parameter]	; Called with ws = parameter
+	Push    "pc"    			; Put return address on the stack
+	MOV	pc,r2				; And call driver install entry
+	MOV	r0,r0
+	Pull    "ws"    			; Retrieve ws
+d203 2
+a204 2
+	MOV	r0,#0
+	STR	r0,[ws,#work_SoundPause]	; Clear the pause flag
+d207 3
+a209 3
+	CMP	PC,PC			; Clears V flag and checks processor mode
+	Pull    "r0-r11,ws,pc", EQ      ; 32 bit exit
+	Pull    "r0-r11,ws,pc",, ^      ; 26 bit exit
+d212 1
+a212 1
+	;-------------
+d217 1
+a217 1
+	BL	stopSound
+d219 2
+a220 2
+	ADD	r0,ws,#work_driverTable		; driver Table slot
+	LDR	r1,[r0,#driver_Address]
+d222 2
+a223 2
+	CMP	r1,#0
+	BEQ	releaseDriverExit
+d225 7
+a231 7
+	LDR	r1,[r1,#driverEntry_Remove]
+	Push    "ws"    			; Stack ws
+	LDR	ws,[r0,#driver_Parameter]	; Get driver's ws
+	Push    "pc"    			; Stack return address
+	MOV	pc,r1				; Call driver, no other parameters
+	MOV	r0,r0
+	Pull    "ws"    			; Retrieve ws
+d234 3
+a236 3
+	ADD	r0,ws,#work_driverTable		; driver Table slot
+	MOV     r1,#0
+	STR	r1,[r0,#driver_Address]
+d241 1
+a241 1
+	; ----------------
+d244 24
+a267 24
+	; Call driver sample rate entry
+	; On entry:
+	;  r0 = 0 to read
+	;     > 0 for sample frequency required
+	; On exit:
+	;  r0 = current frequency
+	Push    "lr"
+
+	; Get or set current frequency
+	ADD	r1,ws,#work_driverTable		; driver Table slot
+	LDR	r2,[r1,#driver_Address]
+
+	CMP	r2,#0				; Return 0 for failed
+	MOVEQ	r0,#0
+	BEQ	driverSampleRateExit
+
+	LDR	r2,[r1,#driver_Address]
+	LDR	r2,[r2,#driverEntry_SampleRate]
+	Push    "ws"    			; Stack ws
+	LDR	ws,[r1,#driver_Parameter]	; Get driver's ws
+	Push    "pc"    			; Stack return address
+	MOV	pc,r2				; Call driver, no other parameters
+	MOV	r0,r0
+	Pull    "ws"    			; Retrieve ws
+d269 1
+a269 1
+	; r0 = current frequency
+d280 10
+a289 10
+	; Set the new volume for a driver
+	; On entry:
+	;   r0 = new LR volume
+	;   r1 = driver table
+	; On exit:
+	;   r0 = volume scaling required by handler to achieve this volume
+	;   So if driver cannot scale volume then r0 = entry value and handler
+	;   will have to do all the work
+	;   If driver can scale then typically it will return &FFFFFFFF to
+	;   tell handler not to scale volume at all
+d292 11
+a302 11
+	; Get or set current volume
+	ADD	r1,ws,#work_driverTable    ; driver Table slot
+	LDR	r2,[r1,#driver_Address]
+
+	CMP	r2,#0
+	BEQ	driverVolumeExit
+
+	LDR	r2,[r2,#driverEntry_Volume]     ; There may not be an entry
+	CMP	r2,#0
+	STR	r0,[r1,#driver_Volume]          ; Store it
+	BEQ	driverVolumeStore               ; Return with r0 as set
+d305 4
+a308 4
+	LDR	ws,[r1,#driver_Parameter]      ; Get driver's ws
+	Push    "pc"                            ; Stack return address
+	MOV	pc,r2                            ; Call driver, no other parameters
+	MOV	r0,r0
+d316 1
+a316 1
+	;  r0 = actual volume
+d318 1
+a318 1
+	STR	r0,[r1,#driver_VolumeScaled]    ; The volume to use when scaling handlers
+d324 1
+a324 1
+	; -----------
+d327 10
+a336 10
+	; Call driver's mixer entry
+	; On entry:
+	;    r0 = Function code,  0 = read,  1 = set
+	;    r1 = mixer number
+	;    r2 = value if to set
+	;    r3 = driver pointer
+	; On exit:
+	;    r1 = number of mixers
+	;    r2 = current value
+	;    r3 = mixer name
+d340 2
+a341 2
+	CMP	r3,#0
+	BEQ	driverMixerExit
+d343 11
+a353 11
+	LDR	r4,[r3,#driver_Address]
+	LDR	r4,[r4,#driverEntry_Mixer]	; There may not be an entry
+	CMP	r4,#0
+	BEQ	driverMixerExit			; No mixer entry
+
+        Push    "ws"    			; Stack ws
+	LDR	ws,[r1,#driver_Parameter]	; Get driver's ws
+	Push    "pc"    			; Stack return address
+	MOV	pc,r4				; Call driver, no other parameters
+	MOV	r0,r0
+	Pull    "ws"    			; Retrieve ws
+d358 1
+a358 1
+	END
+@
+
+
+1.6
+log
+@Signed pointer comparison fix
+In SWI InstallDriver reason codes > 2 are interpreted to mean a pointer to an install driver block, but this used a signed comparison so registering blocks in the top half of memory would fail.
+SWIS.s:
+ Comparison changed to process 0/1/2 and > 2 correctly
+SoundDrv.s & Handler.s:
+ Eliminated ADR range function by just using ADRL
+Module.s:
+ Zero length command table replaced by a 0 in the command entry of the module header
+Memory.s:
+ Signed loop exit changed for unsigned one (not relevant since the workspace is < 2G)
+Drivers.s:
+ SWI name moved inside doDMI switch
+
+Version 1.14. Tagged as 'SharedSnd-1_14'
+@
+text
+@d111 1
+a111 1
+	;  r3 = Driver name
+d121 10
+a130 1
+	STR	r3,[r6,#driver_Name]
+@
+
+
+1.5
+log
+@Changed to use NdrDebug instead of local debug functions
+Changed GET of filenames to use <name>.<extension> form.
+Built, but not tested.
+
+Version 1.13. Tagged as 'SharedSnd-1_13'
+@
+text
+@a35 7
+ [ doDMI
+PowerWAVEString
+	= "PowerWAVE_LinearHandler"
+	DCB 0
+	ALIGN
+ ]
+
+d52 1
+a52 1
+	ADR	R1,PowerWAVEString
+d63 4
+d84 1
+a84 1
+        Debug   gn,"Sound mode = ", r0
+d150 1
+a150 2
+	BL	getFillR0
+	;ADR	r0,fill   \ Main fill call address
+d185 1
+a185 2
+	BL	getFillR0
+	;ADR	r0,fill				; r0 = Handler address
+@
+
+
+1.4
+log
+@  No longer uses non-X SWIs in module code
+Detail:
+  A few of these were careless typos, others were already X SWIs but the
+  symbol names didn't reflect the fact, and in other cases there was no code
+  path to deal with error cases. All now fixed. Also fixed all the assembly
+  time warnings (at least for 32-bit ROM builds).
+Admin:
+  No longer prevents the Raspberry Pi ROM init from completing.
+
+Version 1.11. Tagged as 'SharedSnd-1_11'
+@
+text
+@d53 1
+a53 6
+ [ debug
+	SWI	XOS_WriteS
+	= "installDefaultDriver: entered",0
+	ALIGN
+	SWI     XOS_NewLine
+ ]
+d87 1
+a87 7
+ [ debug
+	SWI	XOS_WriteS
+	= "Sound mode = ",0
+	ALIGN
+	MOV	r10,r0
+	BL	printR10
+ ]
+a136 14
+; RJW: Following routine unused?
+; even if it was used, surely it should load r0-r6,lr? Check.
+;installDriverError
+;
+;	LDMIA	sp!,{r0-r5,lr}
+;	ADR	r0,installDriverErrMesg
+;	ORRS	pc,lr,#Overflow_Flag
+;installDriverErrMesg
+;
+;	DCD	errn_CannotInstallDriver
+;	= "Cannot install driver"
+;	DCB	0
+;	ALIGN
+
+d310 1
+a310 7
+ [ debug
+	SWI	XOS_WriteS
+	= "Store scaled driver volume: ",0
+	ALIGN
+	MOV	r10,r0
+	BL	printR10
+ ]
+@
+
+
+1.3
+log
+@  Selective merge of ESP's version 1.06 (14 May 2002) of SharedSound.
+Detail:
+  Changelog not provided by ESP. I have made an additional change to use
+  the value of SoundSystemNIL from Hdr:Sound to test if SoundChannels is not
+  installed - this constant changed in RISC OS 5 for 32-bitting reasons.
+Admin:
+  Builds, and briefly tested. Coincidentally, this is also our version 1.06.
+
+Version 1.06. Tagged as 'SharedSnd-1_06'
+@
+text
+@d51 1
+a51 1
+	STMDB	sp!,{lr}
+d73 1
+a73 1
+	LDMIA	R13!,{PC}
+d88 1
+a88 1
+	SWI	Sound_Mode    ;  Check configured for 16 Bit support
+d110 1
+a110 1
+	LDMIA	sp!,{pc}
+d116 1
+a116 1
+	LDMIA	sp!,{pc}
+d126 1
+a126 1
+	STMDB	sp!,{r0-r6,lr}
+d146 1
+a146 1
+	LDMIA	sp!,{r0-r6,pc}
+d169 1
+a169 1
+	STMDB	sp!,{r1-r11,ws,lr}
+d182 1
+a182 1
+	STMDB	sp!,{ws}			; Stack ws
+d184 1
+a184 1
+	STMDB	sp!,{pc}			; Put return address on the stack
+d187 1
+a187 1
+	LDMIA	sp!,{ws}			; Retrieve ws
+d197 1
+a197 1
+	LDMIA	sp!,{r1-r11,ws,pc}
+d204 1
+a204 1
+	STMDB	sp!,{r0-r11,ws,lr}
+d217 1
+a217 1
+	STMDB	sp!,{ws}			; Stack ws
+d219 1
+a219 1
+	STMDB	sp!,{pc}			; Put return address on the stack
+d222 1
+a222 1
+	LDMIA	sp!,{ws}			; Retrieve ws
+d229 2
+a230 2
+	LDMEQIA	sp!,{r0-r11,ws,pc}	; 32 bit exit
+	LDMIA	sp!,{r0-r11,ws,pc}^	; 26 bit exit
+d236 1
+a236 1
+	STMDB	sp!,{r0-r11,ws,lr}
+d247 1
+a247 1
+	STMDB	sp!,{ws}			; Stack ws
+d249 1
+a249 1
+	STMDB	sp!,{pc}			; Stack return address
+d252 1
+a252 1
+	LDMIA	sp!,{ws}			; Retrieve ws
+d260 1
+a260 1
+	LDMIA	sp!,{r0-r11,ws,pc}
+d271 1
+a271 1
+	STMDB	sp!,{lr}
+d283 1
+a283 1
+	STMDB	sp!,{ws}			; Stack ws
+d285 1
+a285 1
+	STMDB	sp!,{pc}			; Stack return address
+d288 1
+a288 1
+	LDMIA	sp!,{ws}			; Retrieve ws
+d295 1
+a295 1
+	LDMIA	sp!,{pc}
+d311 1
+a311 1
+	STMDB	sp!,{r1-r11,ws,lr}
+d325 1
+a325 1
+	STMDB	sp!,{r1,ws}                       ; Stack ws
+d327 1
+a327 1
+	STMDB	sp!,{pc}                        ; Stack return address
+d330 1
+a330 1
+	LDMIA	sp!,{r1,ws}                       ; Retrieve ws
+d348 1
+a348 1
+	LDMIA	sp!,{r1-r11,ws,pc}
+d365 1
+a365 1
+	STMDB	sp!,{r4-r11,ws,lr}
+d375 1
+a375 1
+	STMDB	sp!,{ws}			; Stack ws
+d377 1
+a377 1
+	STMDB	sp!,{pc}			; Stack return address
+d380 1
+a380 1
+	LDMIA	sp!,{ws}			; Retrieve ws
+d383 1
+a383 1
+	LDMIA	sp!,{r4-r11,ws,pc}
+@
+
+
+1.2
+log
+@  Module scrutinised for problems, and many found and fixed.
+Detail:
+  * Module flags word and header entry reinstated.
+  * Many exits from SWIs had lost their 32-bit compatibility.
+  * Unconditional TEQP made conditional, and an MSR replaced with an MRS.
+  * A few unnecessary mode checks and alternate returns simplified because
+    transient callbacks and 8-bit fill code have never needed to preserve
+    processor flags.
+  * Driver mixer calling bug fixed again.
+  * Spelling and grammatical errors in comments and error messages re-fixed.
+  * Other insignificant stuff.
+Admin:
+  Still untested, but worth trying in a 32-bit build now.
+
+Version 1.01. Tagged as 'SharedSnd-1_01'
+@
+text
+@a33 3
+	GBLL	debug
+debug	SETL {FALSE}
+
+d53 7
+d89 1
+d97 1
+a97 1
+	BL	printr10
+d122 1
+a122 1
+	;  r0 = Pointer to driver table
+d157 1
+a157 1
+;	DCD	&1E6
+d254 5
+d340 1
+a340 1
+	BL	printr10
+@
+
+
+1.2.2.1
+log
+@Import of latest sources from ESP.
+This represents ESP's version 1.06 (14 May 2002). The files are exactly as
+received, but they are not expected to build as they are against the public
+headers.
+@
+text
+@d34 3
+a55 7
+ [ debug
+	SWI	XOS_WriteS
+	= "installDefaultDriver: entered",0
+	ALIGN
+	SWI     XOS_NewLine
+ ]
+
+a84 1
+	MOVVS   r0,#0         ;  if not supported, explicitly say it's log
+d92 1
+a92 1
+	BL	printR10
+d117 1
+a117 1
+	;  r0 = Pointer to driver table, or 0 if it's not really valid
+d152 1
+a152 1
+;	DCD	errn_CannotInstallDriver
+a248 5
+; forget the driver we're using
+	ADD	r0,ws,#work_driverTable		; driver Table slot
+	MOV     r1,#0
+	STR	r1,[r0,#driver_Address]
+
+d330 1
+a330 1
+	BL	printR10
+@
+
+
+1.1
+log
+@  Import of version 1.00 of SharedSound from WSS - this is a merge of
+  RISC OS Ltd, ESP and Pace sources. I've added the Makefile, Mk* and
+  VersionNum files.
+
+Detail (courtesy of WSS):
+  * Incorporates fixes made to 0.58c to fix the callbacks on sound
+    rate changes.
+
+  * Incorporates RISC OS Ltd changes to response to
+    TaskManager_Acknowledgements service.
+
+  * Includes 8 bit Log and PowerWave drivers.
+
+  * Now built with Objasm, not BASIC assembler.
+
+  * SharedSound_HandlerInfo SWI fixed to conform to spec. Also
+    extended to accept r0 = 0 on entry, in which case r0 = number of
+    first registered handler (or 0 for none) on exit; R1-R5 corrupted.
+
+    Therefore the following code enumerates handlers:
+
+    REM Get first handler number.
+    SYS "SharedSound_HandlerInfo",0 TO next% ; flags%
+    REM While no errors, and not finished
+    WHILE (next% <> 0) AND ((flags% AND 1) = 0)
+     SYS"SharedSound_HandlerInfo",next% TO next%,a%,b%,c%,d%,e%
+    ENDWHILE
+
+  * Sends Service_Sound (&54) with reason code 6 (SharedSound Starting)
+    on (callback after) initialisation.
+
+  * Sends Service_Sound (&54) with reason code 7 (SharedSound Dying)
+    on finalisation.
+
+  * Some small optimisations
+
+  * Version bumped to 1.00 (to allow RISC OS Ltd space to make changes
+    to their versions).
+
+  * Table of helpful fill code routines now passed to handlers in R8.
+
+  * SharedSound reinitialises correctly on lower layers reinitialising.
+
+  * More care taken to remove outstanding callbacks on finalise.
+
+  * Dual 26/32 bit version.
+
+Admin:
+  * Not tested by us.
+
+  * 8-bit sound system code is known not to be ROM safe. However, it is
+    currently switched out (see the doLog option in s.Gets).
+
+  * This version *will not work* on a 32-bit system. There are at least two
+    issues with it that I've spotted with a quick glance through the code -
+    the lack of the module flags word, and an unconditional TEQP instruction.
+    This version has been checked in nevertheless as a record of what WSS
+    delivered to us.
+
+Version 1.00. Tagged as 'SharedSnd-1_00'
+@
+text
+@d76 2
+a77 2
+	; This rely's on the fact that the old SoundDMA module will respond to all
+	; SWI's outside it's range with a 0
+d361 1
+a361 1
+	LDR	r4,[r4,#driverEntry_Volume]	; There may not be an entry
+@
+

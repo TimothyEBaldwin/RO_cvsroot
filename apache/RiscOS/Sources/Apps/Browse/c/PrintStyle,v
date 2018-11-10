@@ -1,0 +1,1587 @@
+head	1.9;
+access;
+symbols
+	Browse-2_16:1.9
+	Browse-2_15:1.9
+	Browse-2_14:1.9
+	Browse-2_13:1.9
+	Browse-2_12:1.9
+	Browse-2_11:1.9
+	Browse-2_10:1.9
+	Browse-2_09:1.9
+	ahodgkin_208_i4_2:1.9
+	ahodgkin_208_i4:1.7
+	ahodgkin_208_i3:1.7
+	ahodgkin_208_i2:1.7
+	ahodgkin_208_i1:1.6
+	ahodgkin_207release:1.6
+	ahodgkin_206release:1.6
+	ahodgkin_205release:1.6
+	ahodgkin_204release:1.6
+	ahodgkin_202release:1.6
+	ahodgkin_201release:1.6
+	ahodgkin_200release:1.6
+	ahodgkin_133beta:1.6
+	ahodgkin_132beta:1.6
+	ahodgkin_131beta:1.6
+	ahodgkin_130beta:1.6
+	ahodgkin_129:1.6
+	ahodgkin_128beta:1.5
+	ahodgkin_128alpha:1.5
+	ahodgkin_127beta2:1.5
+	ahodgkin_127beta:1.5
+	ahodgkin_126beta:1.5
+	ahodgkin_AW97patch:1.5
+	ahodgkin_AW97:1.4;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2000.11.14.08.45.07;	author ahodgkin;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	2000.05.31.15.58.43;	author ahodgkin;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2000.02.25.17.08.53;	author ahodgkin;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	97.12.12.11.17.58;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	97.10.18.16.42.27;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	97.09.24.11.14.19;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.09.22.07.43.20;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.09.12.17.19.28;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.08.28.16.08.04;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    PrintStyle.c                                      */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Change print style options with the PrintStyle    */
+/*          dialogue box.                                     */
+/*                                                            */
+/*          This source is fairly closely tied to Print.h, as */
+/*          the Print Style dialogue is typically opened from */
+/*          the Print dialogue.                               */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 24-Aug-1997 (ADH): Created.                       */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include <tboxlibs/toolbox.h>
+#include <tboxlibs/printdbox.h>
+#include <tboxlibs/window.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "Browser.h"
+#include "ChoiceDefs.h"
+#include "Menus.h"
+#include "Printing.h"
+
+#include "PrintStyle.h"
+
+/* Local structures and supporting definitions */
+
+#define Background_Show_Type_None   0
+#define Background_Show_Type_Tables 1
+#define Background_Show_Type_All    2
+
+/* Holds info on the Print Style dialogue's contents; small enough */
+/* to hold as a static, as the code to dynamically allocate it     */
+/* would occupy more room than the structure itself.               */
+
+typedef struct printstyle_contents
+{
+  unsigned int underline_links      :1;
+  unsigned int use_source_cols      :1;
+  unsigned int show_foreground      :1;
+  unsigned int show_background      :1;
+
+  unsigned int background_show_type :2; /* 0 = none, 1 = in tables, 2 = all */
+  unsigned int black_no_background  :1;
+  unsigned int always_use_black     :1;
+
+} printstyle_contents;
+
+/* Local statics */
+
+static printstyle_contents contents;         /* Remember the old dialogue contents so the Cancel button can work, and */
+                                             /* other functions can inquire about the state of the contents without   */
+                                             /* needing this end to start calling toolbox routines to find out.       */
+
+static ObjectId            window_id    = 0; /* Remember the ID in case it needs closing 'out of the blue'. */
+static ObjectId            ancestor_id  = 0; /* Remember then ancestor ID in case the ancestor closes. */
+
+static int                 defaults_set = 0;
+
+/* Static function prototypes */
+
+static _kernel_oserror * printstyle_read_contents    (ObjectId dialogue, printstyle_contents * contents);
+static _kernel_oserror * printstyle_set_contents     (ObjectId dialogue, printstyle_contents * contents);
+
+static int               printstyle_cancel           (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int               printstyle_option_group_one (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+/**************************************************************/
+/* printstyle_read_contents()                                 */
+/*                                                            */
+/* Reads the contents of the Print Style dialogue into a      */
+/* printstyle_contents struct.                                */
+/*                                                            */
+/* Parameters: Object ID of the dialogue;                     */
+/*                                                            */
+/*             Pointer to the structure to write to.          */
+/**************************************************************/
+
+static _kernel_oserror * printstyle_read_contents(ObjectId dialogue, printstyle_contents * contents)
+{
+  int state;
+
+  /* Read the four basic display options */
+
+  RetError(optionbutton_get_state(0, dialogue, PSUnderlineLinks,       &state)); contents->underline_links = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSUseDocumentColours,   &state)); contents->use_source_cols = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSShowForegroundImages, &state)); contents->show_foreground = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSShowBackgroundImages, &state)); contents->show_background = !!state;
+
+  /* Read the background show type */
+
+  RetError(radiobutton_get_state(0, dialogue, PSAllBackgrounds, NULL, &state));
+
+  switch (state)
+  {
+    default:
+    case PSNoBackgrounds:  contents->background_show_type = Background_Show_Type_None;
+    break;
+
+    case PSTablesOnly:     contents->background_show_type = Background_Show_Type_Tables;
+    break;
+
+    case PSAllBackgrounds: contents->background_show_type = Background_Show_Type_All;
+    break;
+  }
+
+  /* Finally, read the 'print text in black' options */
+
+  RetError(optionbutton_get_state(0, dialogue, PSBlackIfNoBackground,  &state));
+  contents->black_no_background = !!state;
+
+  RetError(optionbutton_get_state(0, dialogue, PSAlwaysUseBlack, &state));
+  contents->always_use_black = !!state;
+
+
+  return NULL;
+}
+
+/**************************************************************/
+/* printstyle_set_contents()                                  */
+/*                                                            */
+/* Sets the contents of the Print Style dialogue from a       */
+/* printstyle_contents structure.                             */
+/*                                                            */
+/* Parameters: Object ID of the dialogue;                     */
+/*                                                            */
+/*             Pointer to the structure to read from.         */
+/**************************************************************/
+
+static _kernel_oserror * printstyle_set_contents(ObjectId dialogue, printstyle_contents * contents)
+{
+  /* Set the four basic display options */
+
+  RetError(optionbutton_set_state(0, dialogue, PSUnderlineLinks,       contents->underline_links));
+  RetError(optionbutton_set_state(0, dialogue, PSUseDocumentColours,   contents->use_source_cols));
+  RetError(optionbutton_set_state(0, dialogue, PSShowForegroundImages, contents->show_foreground));
+  RetError(optionbutton_set_state(0, dialogue, PSShowBackgroundImages, contents->show_background));
+
+  /* Ensure the browser (if any) is up to date with this */
+
+  printstyle_option_group_one(0, NULL, NULL, NULL);
+
+  /* Set the background show type */
+
+  switch (contents->background_show_type)
+  {
+    default:
+    case Background_Show_Type_None:   RetError(radiobutton_set_state(0, dialogue, PSNoBackgrounds, 1));
+    break;
+
+    case Background_Show_Type_Tables: RetError(radiobutton_set_state(0, dialogue, PSTablesOnly, 1));
+    break;
+
+    case Background_Show_Type_All:    RetError(radiobutton_set_state(0, dialogue, PSAllBackgrounds, 1));
+  }
+
+  /* Finally, set the 'print text in black' options */
+
+  RetError(optionbutton_set_state(0, dialogue, PSBlackIfNoBackground, contents->black_no_background));
+
+  return optionbutton_set_state(0, dialogue, PSAlwaysUseBlack, contents->always_use_black);
+}
+
+/**************************************************************/
+/* printstyle_set_defaults()                                  */
+/*                                                            */
+/* Fills in the local printstyle_contents structure with the  */
+/* default values to put in a Print Style dialogue, if they   */
+/* have not already been filled in.                           */
+/*                                                            */
+/* If the dialogue is open, the contents are updated.         */
+/*                                                            */
+/* Returns:    1 if the structure was filled in, else 0.      */
+/**************************************************************/
+
+int printstyle_set_defaults(void)
+{
+  if (!defaults_set)
+  {
+    /* Read the defaults */
+
+    if      (choices.print_back == Choices_PrintBack_None)   contents.background_show_type = Background_Show_Type_None;
+    else if (choices.print_back == Choices_PrintBack_Always) contents.background_show_type = Background_Show_Type_All;
+    else                                                     contents.background_show_type = Background_Show_Type_Tables;
+
+    if      (choices.print_black == Choices_PrintBlack_All)  contents.always_use_black = 1, contents.black_no_background = 0;
+    if      (choices.print_black == Choices_PrintBlack_None) contents.always_use_black = 0, contents.black_no_background = 0;
+    if      (choices.print_black == Choices_PrintBlack_BG)   contents.always_use_black = 0, contents.black_no_background = 1;
+
+    defaults_set = 1;
+
+    if (window_id) printstyle_set_contents(window_id, &contents);
+
+    return 1;
+  }
+
+  return 0;
+}
+
+/**************************************************************/
+/* printstyle_to_be_shown()                                   */
+/*                                                            */
+/* Called when the EPSToBeShown event is generated, typically */
+/* when the Print Style dialogue is about to be shown.        */
+/* Registers event handlers for the dialogue, reads and sets  */
+/* options in it, etc.                                        */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event hander,     */
+/* though only the self_id and ancestor_id fields of the ID   */
+/* block are of interest.                                     */
+/**************************************************************/
+
+int printstyle_to_be_shown(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  browser_data * ancestor = NULL;
+
+  /* If the stored dialogue ID is non-zero on entry, the dialogue */
+  /* was reopened without closing - so get rid of the various     */
+  /* event handlers before we reregister them.                    */
+
+  if (window_id) printstyle_close(0, 0);
+
+  /* Right, record the ID as given in the ID block */
+
+  window_id = idb->self_id;
+
+  /* Sigh. Blimmin' Toolbox. The Setup button in the Print */
+  /* dialogue, when used to open Print Style, does not     */
+  /* transmit the ancestor ID information - aargh!         */
+  /*                                                       */
+  /* This appears to be because the underlying window ID   */
+  /* is given as this object's parent, rather than the     */
+  /* print dialogue, and it doesn't have an ancestor (bug, */
+  /* I'd say). Maybe because it's an alternative window,   */
+  /* rather than a standard print dialogue? In any case,   */
+  /* we must assume that the setup window did come from    */
+  /* the print dialogue (and not, say, the choices) if     */
+  /* there's no ancestor window, and ask the print         */
+  /* routines what window it was for.                      */
+
+  ancestor_id = idb->ancestor_id;
+
+  if (ancestor_id)
+  {
+    ChkError(toolbox_get_ancestor(0, ancestor_id, &ancestor_id, NULL));
+  }
+  else
+  {
+    print_return_dialogue_info(NULL, NULL, &ancestor_id, &ancestor);
+  }
+
+  /* Attach event handlers - OK and Cancel functions */
+
+  ChkError(event_register_toolbox_handler(idb->self_id, EPSOK,     printstyle_ok,     NULL));
+  ChkError(event_register_toolbox_handler(idb->self_id, EPSCancel, printstyle_cancel, NULL));
+
+  /* If defaults have never been set before, set them now */
+
+  printstyle_set_defaults();
+
+  /* Set up the basic display options to match the ancestor browser, */
+  /* if there is one. Do this before registering handlers for the    */
+  /* basic display options.                                          */
+
+  if (ancestor)
+  {
+    contents.underline_links = ancestor->underline_links;
+    contents.use_source_cols = ancestor->use_source_cols;
+    contents.show_foreground = ancestor->show_foreground;
+    contents.show_background = ancestor->show_background;
+
+    ChkError(printstyle_set_contents(idb->self_id, &contents));
+  }
+
+  /* Changing basic display type options (so that the browser window */
+  /* can be updated to reflect the new settings)                     */
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EPSOG1,
+                                          printstyle_option_group_one,
+                                          NULL));
+
+  /* Finished */
+
+  return 1;
+}
+
+/**************************************************************/
+/* printstyle_ok()                                            */
+/*                                                            */
+/* Handles clicks on the 'OK' (or 'Use', etc.) button in the  */
+/* Print Style dialogue.                                      */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler     */
+/* (though none are actually used).                           */
+/**************************************************************/
+
+int printstyle_ok(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  if (!window_id) return 0;
+
+  /* As with the Print dialogue, because this routine takes no */
+  /* direct action, other functions are called independently   */
+  /* and must act on the 'contents' printstyle_contents struct */
+  /* - we can't use a local one here to allow Adjust-clicks.   */
+
+  ChkError(printstyle_read_contents(window_id, &contents));
+  ChkError(printstyle_close(0, 0));
+
+  /* No other actual direct action to take; that's done by the Print dialogue */
+
+  return 1;
+}
+
+/**************************************************************/
+/* printstyle_cancel()                                        */
+/*                                                            */
+/* Handles clicks on the 'Cancel' button in the Print Style   */
+/* dialogue.                                                  */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int printstyle_cancel(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  WimpGetPointerInfoBlock info;
+
+  /* Restore the old contents */
+
+  ChkError(printstyle_set_contents(window_id, &contents));
+
+  /* If Select was pressed, the dialogue should close. */
+  /* (No button => Escape was pressed).                */
+
+  ChkError(wimp_get_pointer_info(&info));
+
+  if ((info.button_state & Wimp_MouseButtonSelect) || !info.button_state)
+  {
+    ChkError(printstyle_close(0, 0));
+  }
+
+  return 1;
+}
+
+/**************************************************************/
+/* printstyle_close()                                         */
+/*                                                            */
+/* If the Print Style dialogue is opened, this will close it, */
+/* deregistering any associated event handlers.               */
+/*                                                            */
+/* Parameters: An object ID, or 0. If not zero, the ID must   */
+/*             match the ancestor recorded when the dialogue  */
+/*             was opened or no action is taken;              */
+/*                                                            */
+/*             0 to close the dialogue, 1 to do everything    */
+/*             except that.                                   */
+/**************************************************************/
+
+_kernel_oserror * printstyle_close(ObjectId ancestor, int do_not_close)
+{
+  _kernel_oserror * e = NULL;
+
+  if (ancestor && ancestor != ancestor_id) return NULL;
+
+  if (window_id)
+  {
+    /* Deregister associated event handlers */
+
+    e = event_deregister_toolbox_handlers_for_object(window_id);
+    if (e) goto printstyle_close_exit;
+
+    /* Restore the old contents */
+
+    e = printstyle_set_contents(window_id, &contents);
+    if (e) goto printstyle_close_exit;
+
+    /* Close the dialogue */
+
+    if (!do_not_close)
+    {
+      /* Restore input focus to the Print dialogue, */
+      /* if the Print Style dialogue still has it.  */
+
+      utils_restore_caret(window_id);
+
+      /* Now hide the Print Style dialogue */
+
+      e = toolbox_hide_object(0, window_id);
+    }
+  }
+
+printstyle_close_exit:
+
+  window_id = ancestor_id = 0;
+  return e;
+}
+
+/**************************************************************/
+/* printstyle_option_group_one()                              */
+/*                                                            */
+/* Handles clicks on the group of four option buttons         */
+/* controlling basic page display.                            */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler     */
+/* (though none are used!).                                   */
+/**************************************************************/
+
+static int printstyle_option_group_one(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  browser_data * b;
+  int            ul, dc, sf, sb;
+
+  /* What browser is the Print dialogue for, if any? */
+
+  print_return_dialogue_info(NULL, NULL, NULL, &b);
+
+  if (b)
+  {
+    /* Read the option states */
+
+    ChkError(optionbutton_get_state(0, window_id, PSUnderlineLinks,       &ul));
+    ChkError(optionbutton_get_state(0, window_id, PSUseDocumentColours,   &dc));
+    ChkError(optionbutton_get_state(0, window_id, PSShowForegroundImages, &sf));
+    ChkError(optionbutton_get_state(0, window_id, PSShowBackgroundImages, &sb));
+
+    /* Update the browser to reflect the changes */
+
+    ChkError(browser_set_look(b, window_id, ul, dc, sf, sb));
+  }
+
+  return 1;
+}
+
+/**************************************************************/
+/* printstyle_set_look()                                      */
+/*                                                            */
+/* If the Print Style dialogue is open for the given browser, */
+/* update option group one with the values specified.         */
+/*                                                            */
+/* If the object changing the look is not the Print Style     */
+/* window itself, the changes are stored inside the local     */
+/* printstyle_contents struct; Cancel will thus not restore   */
+/* them. This is because it is assumed that if another object */
+/* sets the look (e.g. via. the browser_set_look function),   */
+/* this is meant to be a change controlled by that object,    */
+/* and it shouldn't be cancelled if the Print or Print Style  */
+/* dialogues go.                                              */
+/*                                                            */
+/* Parameters: Object ID of the object that is changing the   */
+/*             look of the browser, e.g. a menu or even the   */
+/*             Print Style dialogue itself, or 0 to have the  */
+/*             same effect as the Print Style dialogue object */
+/*             ID (see comments above);                       */
+/*                                                            */
+/*             Object ID of the browser that the Print Style  */
+/*             dialogue should be open for;                   */
+/*                                                            */
+/*             1 to underline links, 0 not to, -1 to not      */
+/*             change this state;                             */
+/*                                                            */
+/*             1 to use document colours, 0 to use defaults,  */
+/*             -1 to not change this state;                   */
+/*                                                            */
+/*             1 to show images, 0 not to (any pending image  */
+/*             fetches are started up again if 1 is given),   */
+/*             or -1 to not change this state;                */
+/*                                                            */
+/*             1 to display plain backgrounds, 0 to allow     */
+/*             background images (and here too, any pending   */
+/*             image fetches for background images are        */
+/*             restarted if 0 is given), or -1 to not change  */
+/*             this state.                                    */
+/**************************************************************/
+
+_kernel_oserror * printstyle_set_look(ObjectId source, ObjectId browser, int underline_links,
+                                      int use_source_cols, int show_foreground, int show_background)
+{
+  int state;
+
+  if (ancestor_id == browser)
+  {
+    /* Not much to say here - just go through each option in turn */
+
+    if (underline_links >= 0)
+    {
+      /* Get the option state */
+
+      RetError(optionbutton_get_state(0, window_id, PSUnderlineLinks, &state));
+
+      /* If the requested state is different, set the new state */
+
+      if (state != underline_links) RetError(optionbutton_set_state(0, window_id, PSUnderlineLinks, underline_links));
+
+      /* If we've been given a source ID and it isn't the Print Style   */
+      /* dialogue itself, set the new value so Cancel won't destroy it. */
+
+      if (source && source != window_id) contents.underline_links = underline_links;
+    }
+
+    if (use_source_cols >= 0)
+    {
+      RetError(optionbutton_get_state(0, window_id, PSUseDocumentColours, &state));
+
+      if (state != use_source_cols) RetError(optionbutton_set_state(0, window_id, PSUseDocumentColours, use_source_cols));
+
+      if (source && source != window_id) contents.use_source_cols = use_source_cols;
+    }
+
+    if (show_foreground >= 0)
+    {
+      RetError(optionbutton_get_state(0, window_id, PSShowForegroundImages, &state));
+
+      if (state != show_foreground) RetError(optionbutton_set_state(0, window_id, PSShowForegroundImages, show_foreground));
+
+      if (source && source != window_id) contents.show_foreground = show_foreground;
+    }
+
+    if (show_background >= 0)
+    {
+      RetError(optionbutton_get_state(0, window_id, PSShowBackgroundImages, &state));
+
+      if (state == show_background) RetError(optionbutton_set_state(0, window_id, PSShowBackgroundImages, show_background));
+
+      if (source && source != window_id) contents.show_background = show_background;
+    }
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* printstyle_show_none()                                     */
+/*                                                            */
+/* Ask if no backgrounds should be plotted.                   */
+/*                                                            */
+/* Returns:    1 if the Print Style dialogue specified no     */
+/*             backgrounds, else 0.                           */
+/**************************************************************/
+
+int printstyle_show_none(void)
+{
+  return (contents.background_show_type == Background_Show_Type_None);
+}
+
+/**************************************************************/
+/* printstyle_show_in_tables_only()                           */
+/*                                                            */
+/* Ask if backgrounds should be plotted in tables only.       */
+/*                                                            */
+/* Returns:    1 if the Print Style dialogue specified        */
+/*             backgrounds in tables only, else 0.            */
+/**************************************************************/
+
+int printstyle_show_in_tables_only(void)
+{
+  return (contents.background_show_type == Background_Show_Type_Tables);
+}
+
+/**************************************************************/
+/* printstyle_show_all()                                      */
+/*                                                            */
+/* Ask if all backgrounds should be plotted.                  */
+/*                                                            */
+/* Returns:    1 if the Print Style dialogue specified all    */
+/*             backgrounds, else 0.                           */
+/**************************************************************/
+
+int printstyle_show_all(void)
+{
+  return (contents.background_show_type == Background_Show_Type_All);
+}
+
+/**************************************************************/
+/* printstyle_black_no_background()                           */
+/*                                                            */
+/* Ask if all body text should be plotted in black.           */
+/*                                                            */
+/* Returns:    1 if the Print Style dialogue specified black  */
+/*             body text else 0.                              */
+/**************************************************************/
+
+int printstyle_black_no_background(void)
+{
+  return contents.black_no_background;
+
+  return 0;
+}
+
+/**************************************************************/
+/* printstyle_always_use_black()                              */
+/*                                                            */
+/* Ask if all table text should be plotted in black.          */
+/*                                                            */
+/* Returns:    1 if the Print Style dialogue specified black  */
+/*             table text, else 0.                            */
+/**************************************************************/
+
+int printstyle_always_use_black(void)
+{
+  return contents.always_use_black;
+
+  return 0;
+}
+
+/**************************************************************/
+/* printstyle_return_dialogue_info()                          */
+/*                                                            */
+/* Returns information on the Print Style dialogue, and its   */
+/* ancestor.                                                  */
+/*                                                            */
+/* Parameters: Pointer to an ObjectId, in which the ID of the */
+/*             dialogue is placed;                            */
+/*                                                            */
+/*             Pointer to an ObjectId, in which the ID of the */
+/*             ancestor window is placed.                     */
+/*                                                            */
+/* Returns:    See parameters list, and note that the         */
+/*             returned values will be 0, and 0 if the Print  */
+/*             Style dialogue is closed.                      */
+/*                                                            */
+/* Assumes:    Either pointer may be NULL.                    */
+/**************************************************************/
+
+void printstyle_return_dialogue_info(ObjectId * window, ObjectId * ancestor)
+{
+  if (window)   *window   = window_id;
+  if (ancestor) *ancestor = ancestor_id;
+}
+@
+
+
+1.8
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a46 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.7
+log
+@Misecllaneous tweaks and fixes. Major addition is full header and footer
+support in the printing system - see the Phoenix Choices file for more
+information.
+
+Only the Phoenix resources are up to date currently.
+@
+text
+@d15 17
+a31 15
+/***************************************************/
+/* File   : PrintStyle.c                           */
+/*                                                 */
+/* Purpose: Change print style options with the    */
+/*          PrintStyle dialogue.                   */
+/*                                                 */
+/*          This source is fairly closely tied to  */
+/*          Print.c, as the Print Style dialogue   */
+/*          is typically opened from the Print     */
+/*          dialogue.                              */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 24-Aug-97: Created.                    */
+/***************************************************/
+d36 2
+a37 1
+#include "swis.h"
+d39 12
+a50 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a51 5
+#include "toolbox.h"
+#include "printdbox.h"
+#include "window.h"
+
+#include "svcprint.h"
+d104 10
+a113 11
+/*************************************************/
+/* printstyle_read_contents()                    */
+/*                                               */
+/* Reads the contents of the Print Style         */
+/* dialogue into a printstyle_contents struct.   */
+/*                                               */
+/* Parameters: Object ID of the dialogue;        */
+/*                                               */
+/*             Pointer to the structure to write */
+/*             to.                               */
+/*************************************************/
+d155 10
+a164 11
+/*************************************************/
+/* printstyle_set_contents()                     */
+/*                                               */
+/* Sets the contents of the Print Style dialogue */
+/* from a printstyle_contents structure.         */
+/*                                               */
+/* Parameters: Object ID of the dialogue;        */
+/*                                               */
+/*             Pointer to the structure to read  */
+/*             from.                             */
+/*************************************************/
+d200 11
+a210 14
+/*************************************************/
+/* printstyle_set_defaults()                     */
+/*                                               */
+/* Fills in the local printstyle_contents        */
+/* structure with the default values to put in   */
+/* a Print Style dialogue, if they have not      */
+/* already been filled in.                       */
+/*                                               */
+/* If the dialogue is open, the contents are     */
+/* updated.                                      */
+/*                                               */
+/* Returns:    1 if the structure was filled in, */
+/*             else 0.                           */
+/*************************************************/
+d236 12
+a247 14
+/*************************************************/
+/* printstyle_to_be_shown()                      */
+/*                                               */
+/* Called when the EPSToBeShown event is         */
+/* generated, typically when the Print Style     */
+/* dialogue is about to be shown. Registers      */
+/* event handlers for the dialogue, reads and    */
+/* sets options in it, etc.                      */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event hander, though only the self_id and     */
+/* ancestor_id fields of the ID block are of     */
+/* interest.                                     */
+/*************************************************/
+d324 9
+a332 10
+/*************************************************/
+/* printstyle_ok()                               */
+/*                                               */
+/* Handles clicks on the 'OK' (or 'Use', etc.)   */
+/* button in the Print Style dialogue.           */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler (though none are actually       */
+/* used).                                        */
+/*************************************************/
+d351 8
+a358 9
+/*************************************************/
+/* printstyle_cancel()                           */
+/*                                               */
+/* Handles clicks on the 'Cancel' button in the  */
+/* Print Style dialogue.                         */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d381 13
+a393 15
+/*************************************************/
+/* printstyle_close()                            */
+/*                                               */
+/* If the Print Style dialogue is opened, this   */
+/* will close it, deregistering any associated   */
+/* event handlers.                               */
+/*                                               */
+/* Parameters: An object ID, or 0. If not zero,  */
+/*             the ID must match the ancestor    */
+/*             recorded when the dialogue was    */
+/*             opened or no action is taken;     */
+/*                                               */
+/*             0 to close the dialogue, 1 to do  */
+/*             everything except that.           */
+/*************************************************/
+d434 9
+a442 9
+/*************************************************/
+/* printstyle_option_group_one()                 */
+/*                                               */
+/* Handles clicks on the group of four option    */
+/* buttons controlling basic page display.       */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler (though none are used!).        */
+/*************************************************/
+d470 40
+a509 49
+/*************************************************/
+/* printstyle_set_look()                         */
+/*                                               */
+/* If the Print Style dialogue is open for the   */
+/* given browser, update option group one with   */
+/* the values specified.                         */
+/*                                               */
+/* If the object changing the look is not the    */
+/* Print Style window itself, the changes are    */
+/* stored inside the local printstyle_contents   */
+/* struct; Cancel will thus not restore them.    */
+/* This is because it is assumed that if another */
+/* object sets the look (e.g. via. the           */
+/* browser_set_look function), this is meant to  */
+/* be a change controlled by that object, and it */
+/* shouldn't be cancelled if the Print or Print  */
+/* Style dialogues go.                           */
+/*                                               */
+/* Parameters: Object ID of the object that is   */
+/*             changing the look of the browser, */
+/*             e.g. a menu or even the Print     */
+/*             Style dialogue itself, or 0 to    */
+/*             have the same effect as the Print */
+/*             Style dialogue object ID (see     */
+/*             comments above);                  */
+/*                                               */
+/*             Object ID of the browser that the */
+/*             Print Style dialogue should be    */
+/*             open for;                         */
+/*                                               */
+/*             1 to underline links, 0 not to,   */
+/*             -1 to not change this state;      */
+/*                                               */
+/*             1 to use document colours, 0 to   */
+/*             use defaults, -1 to not change    */
+/*             this state;                       */
+/*                                               */
+/*             1 to show images, 0 not to (any   */
+/*             pending image fetches are started */
+/*             up again if 1 is given), or -1 to */
+/*             not change this state;            */
+/*                                               */
+/*             1 to display plain backgrounds, 0 */
+/*             to allow background images (and   */
+/*             here too, any pending image       */
+/*             fetches for background images are */
+/*             restarted if 0 is given), or -1   */
+/*             to not change this state.         */
+/*************************************************/
+d567 8
+a574 9
+/*************************************************/
+/* printstyle_show_none()                        */
+/*                                               */
+/* Ask if no backgrounds should be plotted.      */
+/*                                               */
+/* Returns:    1 if the Print Style dialogue     */
+/*             specified no backgrounds, else    */
+/*             0.                                */
+/*************************************************/
+d581 8
+a588 10
+/*************************************************/
+/* printstyle_show_in_tables_only()              */
+/*                                               */
+/* Ask if backgrounds should be plotted in       */
+/* tables only.                                  */
+/*                                               */
+/* Returns:    1 if the Print Style dialogue     */
+/*             specified backgrounds in tables   */
+/*             only, else 0.                     */
+/*************************************************/
+d595 8
+a602 9
+/*************************************************/
+/* printstyle_show_all()                         */
+/*                                               */
+/* Ask if all backgrounds should be plotted.     */
+/*                                               */
+/* Returns:    1 if the Print Style dialogue     */
+/*             specified all backgrounds, else   */
+/*             0.                                */
+/*************************************************/
+d609 8
+a616 9
+/*************************************************/
+/* printstyle_black_no_background()              */
+/*                                               */
+/* Ask if all body text should be plotted in     */
+/* black.                                        */
+/*                                               */
+/* Returns:    1 if the Print Style dialogue     */
+/*             specified black body text else 0. */
+/*************************************************/
+d625 8
+a632 10
+/*************************************************/
+/* printstyle_always_use_black()                 */
+/*                                               */
+/* Ask if all table text should be plotted in    */
+/* black.                                        */
+/*                                               */
+/* Returns:    1 if the Print Style dialogue     */
+/*             specified black table text, else  */
+/*             0.                                */
+/*************************************************/
+d641 18
+a658 20
+/*************************************************/
+/* printstyle_return_dialogue_info()             */
+/*                                               */
+/* Returns information on the Print Style        */
+/* dialogue, and its ancestor.                   */
+/*                                               */
+/* Parameters: Pointer to an ObjectId, in which  */
+/*             the ID of the dialogue is placed; */
+/*                                               */
+/*             Pointer to an ObjectId, in which  */
+/*             the ID of the ancestor window is  */
+/*             placed.                           */
+/*                                               */
+/* Returns:    See parameters list, and note     */
+/*             that the returned values will be  */
+/*             0, and 0 if the Print Style       */
+/*             dialogue is closed.               */
+/*                                               */
+/* Assumes:    Either pointer may be NULL.       */
+/*************************************************/
+@
+
+
+1.6
+log
+@There are a few known significant problems with this code but it's being
+checked in so the Choices can be worked on. Note that Res files etc. are
+not up to date across all builds. Progress is as follows...
+
+Bug report prompted me to do this - now ignore <p> tags straight after
+<li> tags, so '<ul><li><p>Some text' works as the author (or automatic
+generator, more commonly) intended.
+
+A <p> tag before a table will be acted upon now (it was ignored before).
+Something like <li><p><table...> will give a line break and paragraph
+space after the <li> despite the changes mentioned above, as in other browsers.
+Both browsers differ from Navigator, where the table appears alongside
+the <li> tag.
+
+Multiple BR tags work as in MSIE / Navigator (they don't collapse to
+zero height anymore).
+
+For the above, line height (and so, <br><br> or <p> spacing) is now
+calculated inside reformat_text_line_height, and is used with either
+a token to get the text height at a given size (e.g. for general line
+spacing or multiple BR tags) or NULL for normal size text (e.g. for
+P spacing, though this value is in practice later scaled by 7/8ths in
+reformat_check_height). Note this behaviour is exhibited by MSIE 4;
+v3 gave two BRs the same spacing as one P (i.e. not font size
+dependent).
+
+Save dialogues can have an option button or couple of radios to
+switch between various formats (e.g. URI or URL, sprite or original
+format). See 'Docs.Notes' for more. The back-end to this is now
+implemented (i.e. at the moment, save as URI or URL, save as original
+image format). Note that when saving background images, a leafname
+based on the original fetch URL is now offered rather than a generic
+'Background'.
+
+Internal URL scheme changed to be all lower case, so relativisation
+through URL_Fetcher still makes sense... :-/
+
+Holding down 'shift' when clicking on stop reverses the interpretation
+of the Controls file 'StopWebServe' entry.
+
+Fixed row / column count for exporting tables as text; fixed a few
+bits and pieces of internal URL scheme stuff which got broken when
+HTMLLib started using URL_Fetcher's relativisation.
+@
+text
+@d49 1
+d214 1
+a214 1
+    /* Read the defaults from the Choices file */
+d216 7
+a222 7
+    if      (!strcmp(lookup_choice("PrintBack:tables", 0, 0),"none"))  contents.background_show_type = Background_Show_Type_None;
+    else if (!strcmp(lookup_choice("PrintBack:tables", 0, 0),"all"))   contents.background_show_type = Background_Show_Type_All;
+    else                                                               contents.background_show_type = Background_Show_Type_Tables;
+
+    if      (!strcmp(lookup_choice("PrintBlack:bg", 0, 0), "always"))  contents.always_use_black = 1, contents.black_no_background = 0;
+    else if (!strcmp(lookup_choice("PrintBlack:bg", 0, 0), "never"))   contents.always_use_black = 0, contents.black_no_background = 0;
+    else                                                               contents.always_use_black = 0, contents.black_no_background = 1;
+@
+
+
+1.5
+log
+@Sorted out Res files, including fixing position of 'bytes' label in one
+of the Choices dialogues (I'd missed it out of a selection when everything
+else got moved down a bit). Unfaded Enc_Chinese menu entries, made sure
+text labels were wide enough for system font, changed 'Apply' on Choices
+dialogue to 'Set', and added ^K to hotlist keyboard shortcut lists.
+Print Setup (i.e. Print dialogue) buttons all set to 'local', so the
+stupid Toolbox doesn't close the dialogue and lose the caret before I
+can see if it was in there to start with...
+
+256 colour hotlist sprites taken back to standard 16 colour versions,
+since there's a significant speed penalty on slower machines. The
+testbed browser still has the 256 colour versions so the designs aren't
+completely lost.
+
+Changed access settings to exported builds to wr/r - lr/r was really getting
+on my nerves whenever I wanted to try something temporary out.
+
+View source, save source and print handlers would all try to work if
+there was no source to act on - despite the fact that toolbar buttons
+would be greyed out form them. This is fixed.
+
+The Navigate menu has components greyed to match the toolbar state,
+when opened. It isn't kept up to date dynamically, though this shouldn't
+really be a problem (reopen the submenu...). As part of this, finally
+sorted out conditions for the Stop button to be greyed, or the
+GoTo/Go/Stop tristate to be at 'Stop' versus 'GoTo'.
+
+Deferred reformatting is now disabled for external image fetches.
+
+Browser-local client pull flag removed; hitting the Stop button simply
+cancels any null handlers working for it. That way, client pull switches
+back on in passing at the next fetch (it was never really switched off).
+So to stop client pull, hit the stop button at any point.
+
+Done CELLPADDING attribute; cellpadding field in reformat_cell (Global.h)
+is redundant since the table token is accessible from there, and so it has
+been removed. CELLSPACING support also added.
+@
+text
+@d110 1
+a110 2
+  _kernel_oserror * e;
+  int               state;
+a161 2
+  _kernel_oserror * e;
+
+d526 1
+a526 2
+  _kernel_oserror * e;
+  int               state;
+@
+
+
+1.4
+log
+@Tidied up Hotlist source a bit more, mostly so PSI can use the automatic
+StrongHelp generator on it. Revealed a spurious toolbox_hide_object call
+that would always fault and never do anything, and a few heinous uses
+of show_error which have all been removed.
+
+When dragging hotlist items, directories will now be highlighted whenever
+the item would be added to them, rather than just over the sprite. In
+practice this only changes if the item is open and has contents...
+
+Drag box selections had broken in the hotlist; fixed (uninitialised
+variable in hotlist_select_box). Adjust-drags now close the window on
+completion. Minor problem with Shift+Drag (copy) reversing order of items
+sorted out. Added hotlist_add_html_file and implemented loading of HTML.
+DO NOT add broken HTML files, this has not been coded for and URLs of the
+form http:///this/that (no host name) will hang the machine (bug in the
+cookie code of the HTTP module up to at least version 0.39).
+
+Made SELECT list items only as wide as the widest entry actually appears
+(using fm_get_string_width), rather than as wide as the widest character
+BBox in the font multiplied by the string length of the longest entry.
+
+Updated !Run[D] files to require HTTP 0.39, FTP 0.12 and File 0.23.
+@
+text
+@d421 11
+a431 1
+    if (!do_not_close) e = toolbox_hide_object(0, window_id);
+@
+
+
+1.3
+log
+@Now working on source merged with Kevin Bracey's internationalisation
+support. UNIFONT is undefined in the Make File for now. All Res and
+Choices files updated appropriately.
+
+Having sorted out the old Choices and Messages to form Choices, Controls
+and Messages, this build has had the same cleaning up done internally.
+This includes greater consistency in naming schemes and the removal of
+the inconsitent choices items - e.g. Choices file entries saying 'delay
+images' and 'plain backgrounds' where internally all the flags say 'show
+images' and 'show backgrounds'. ChoiceDefs.h and CtrlDefs.h added to
+clarify the meaning of some fields, though usage of these is not 100%
+in the source (there are cases where parameters are passed through to
+functions as ints, and those functions still check these against hard
+coded values rather than the #define stuff).
+
+Fetcher status return bits (connected, sent request, etc.) now reflected
+in status bar. Progress during fetchs to files are reported by %, where
+the size of the object is known. Exceeding 100% drops back to a byte
+counter, in case the estimated size was wrong. The progress counter
+may be updated after specific delays, rather than 'as often as possible',
+to reduce flicker (as requested by D.Brown some time ago).
+
+I've done a small rewrite of the fetch prioritisation scheme in FetchPage.c;
+how well this performs in general use across different processor speeds
+remains to be tested, but certainly it has some advantages. For each small
+fetch window before the rewrite, a 4cs tight loop was entered - this gave a
+noticable and substantial drain to the Desktop performance if more than one
+was opened. Now, several can be up at once with little hit. The actual file
+fetch is on half the priority it was before, with all others taken back
+just a bit - e.g. from 20cs per poll to 15cs per poll for flat out
+reformatting. You don't seem to lose much time on the format in practice,
+and the Desktop feels quite a bit lighter at the same time. There's the
+potential for smoother frameset loading in this scheme, too.
+
+When Shift+Clicking on a link meant you still fetched inside the main
+browser window, several fetches could occur in a frameset - one per frame.
+However, now that you can only do this by clicking on a link that leads to
+non-displayable data - or by turning off the small fetch windows by
+setting UseSmall to 'no' in Choices - a bug where fetchpage_preprocessed
+would stop such fetches as new ones were started was revealed.
+The API to frames_abort_fetching has now been extended to include a
+'stop file spooling too' flag, allowing a fix to be made by having
+fetchpage_preprocess's calls not set this (and it doesn't check the
+savelink flag is unset before proceeding, since frames_abort_fetching
+does that implicitly now).
+
+Had left the RAM transfer buffer at 16 bytes (from testing) accidentally...
+Oops. Upped it to 4K. In addition, when loading data by RAM transfer,
+the browser didn't notice if a RAMFetch bounced during the transfer. It
+would be treated as a 'first' RAMFetch bounce, basically, and try to go to
+file transfer - oops. Fixed.
+@
+text
+@d460 1
+a460 1
+    ChkError(browser_set_look(b, window_id, ul, dc, sf, !sb));
+@
+
+
+1.2
+log
+@As warned in the last log, pretty much all event codes and component IDs
+have now changed along with many of the names, to provide a consistent
+name and numberspace for events and components. This also minimises
+number clashes (e.g. as was, the Save File origin when opened from a
+Hotlist menu with an already-used component ID). To get full details on
+this, please carefully read through TBEvents.h.
+
+Res files, Sprites files and Messages files have been updated again both
+due to the above, and routine additions (e.g. message support for a few
+Hotlist bits and pieces). !Run[D] files updated for FTP 0.11 and
+HTTP 0.36.
+
+In the Makefile, the Customer objects list was missing Save - must have
+moved something when I should've copied it, when adding in SaveFile or
+SaveObject in all probability. Now fixed. Couple of other bits and bobs
+fixed in the build environment (e.g. stuff saying !Argo instead of
+!Customer). Oh, and I've altered the MakeFile copy options again to the
+best compromise I can come up with. Newer is turned on for everything
+except !Run[D] and !RunImage, since both of those change between debug
+builds - otherwise if you'd built debug and non-debug versions, it was
+not possible to switch between them - one version would have the newer
+timestamp and thus never get overwritten.
+
+The default hotlist has had a few items added - that'll be about the end
+of it, I think; there's more than enough stuff in there now.
+
+Saving of the hotlist from the document menu and of URI files,
+directories and selections from the hotlist menu tree is now implemented
+- this new save system rocks... Oh, and you can save all images and
+backgrounds as sprites.
+
+Saving of items with Shift+Click to other applications directly now
+works, and is robust. Unique Scrap filenames are used, with data load
+bounces (e.g. if some pra - er, person quits the app they're sending
+to) working correctly - that is, give an error, keep the file, rename
+it to something safe, and open the directory it lies in. As opposed
+to normal app-to-app bounces, where the scrap file is deleted (see
+PRM 3-254). This means you can now look at README files in FTP
+sites, say, without using a disc intermediate. Or you can send pictures
+straight to ChangeFSI, fetch HTML links into editors, and so-on, and
+so-on - it's all very funky. Known problems include the ambiguous
+'invalid component ID' instead of 'file open' for *normal* (straight to
+disc) shift+click saves, and I think I'll introduce a unique name
+guarantee of some sort to stop 'file open' in the first place. Odd
+that the really tricky part (app-to-app) should be least likely to
+suffer from this!
+@
+text
+@d67 1
+a67 1
+  unsigned int use_document_cols    :1;
+d72 1
+a72 1
+  unsigned int black_no_backgd      :1;
+d115 4
+a118 4
+  RetError(optionbutton_get_state(0, dialogue, PSUnderlineLinks,       &state)); contents->underline_links   = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSUseDocumentColours,   &state)); contents->use_document_cols = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSShowForegroundImages, &state)); contents->show_foreground   = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSShowBackgroundImages, &state)); contents->show_background   = !!state;
+d140 1
+a140 1
+  contents->black_no_backgd = !!state;
+d168 1
+a168 1
+  RetError(optionbutton_set_state(0, dialogue, PSUseDocumentColours,   contents->use_document_cols));
+d192 1
+a192 1
+  RetError(optionbutton_set_state(0, dialogue, PSBlackIfNoBackground, contents->black_no_backgd));
+d222 3
+a224 3
+    if      (!strcmp(lookup_choice("PrintBlack:bg", 0, 0), "always"))  contents.always_use_black = 1, contents.black_no_backgd = 0;
+    else if (!strcmp(lookup_choice("PrintBlack:bg", 0, 0), "never"))   contents.always_use_black = 0, contents.black_no_backgd = 0;
+    else                                                               contents.always_use_black = 0, contents.black_no_backgd = 1;
+d305 4
+a308 4
+    contents.underline_links   = ancestor->underlinelks;
+    contents.use_document_cols = ancestor->sourcecolours;
+    contents.show_foreground   = ancestor->displayimages;
+    contents.show_background   = !ancestor->plainback;
+d516 2
+a517 2
+_kernel_oserror * printstyle_set_look(ObjectId source, ObjectId browser, int underlinelks,
+                                      int sourcecolours, int displayimages, int plainback)
+d526 1
+a526 1
+    if (underlinelks >= 0)
+d534 1
+a534 1
+      if (state != underlinelks) RetError(optionbutton_set_state(0, window_id, PSUnderlineLinks, underlinelks));
+d539 1
+a539 1
+      if (source && source != window_id) contents.underline_links = underlinelks;
+d542 1
+a542 1
+    if (sourcecolours >= 0)
+d546 1
+a546 1
+      if (state != sourcecolours) RetError(optionbutton_set_state(0, window_id, PSUseDocumentColours, sourcecolours));
+d548 1
+a548 1
+      if (source && source != window_id) contents.use_document_cols = sourcecolours;
+d551 1
+a551 1
+    if (displayimages >= 0)
+d555 1
+a555 1
+      if (state != displayimages) RetError(optionbutton_set_state(0, window_id, PSShowForegroundImages, displayimages));
+d557 1
+a557 1
+      if (source && source != window_id) contents.show_foreground = displayimages;
+d560 1
+a560 4
+    /* Remember, plainback = 1 means *don't* show backgrounds, but */
+    /* PSShowBackgroundImages being 'on' means *do* show them.     */
+
+    if (plainback >= 0)
+d564 1
+a564 1
+      if (state == plainback) RetError(optionbutton_set_state(0, window_id, PSShowBackgroundImages, !plainback));
+d566 1
+a566 1
+      if (source && source != window_id) contents.show_background = !plainback;
+d620 1
+a620 1
+/* printstyle_black_no_backgd()                  */
+d629 1
+a629 1
+int printstyle_black_no_backgd(void)
+d631 1
+a631 1
+  return contents.black_no_backgd;
+@
+
+
+1.1
+log
+@Very long log entry alert - but hey, beats 'Bug fixed' (sorry, Richard) ;-)
+
+Open URL implementation more or less complete, though may undergo UI
+revision at a later date to allow named frames to be targetted. Hope to use
+the ideas in this code as the foundation for other general dialogues.
+
+In token stream dump for TRACE builds, table head items were not indented
+as far as they should have been - this is fixed; and manual toolbar redraw
+routines have been removed. They never worked, were commented out, and
+would never be used in that form anyway.
+
+DragBox source added, but it isn't at all complete and won't work - this is
+an 'in spare time' thing. We need custom drag boxes constrained to windows
+for the hotlist, and unconstrained for frame border resizing... Hey ho.
+
+Ancestor window extents match visible areas if there are frames (no more
+scrolling framesets...!). Frame resizing works whilst new documents fetch
+without pulling the extent down now. However, frame horizontal extents
+never shrink until a reload which is nasty, and this is all due for a
+rewrite. Frames border redrawing routine moved out of Redraw.c and into
+Frames.c. Bug regarding the mouse rectangle and frame border widths
+(rectangle was too large, so you could squash the edges) for edge-drag
+frame resizes fixed.
+
+Window width change reformat tolerance fixed; you could creep the window
+width down or up forever without any reformat, and centred objects would
+move but not be redrawn (thereby giving rise to subsequent redraw errors).
+
+Filetype on objects saved through Shift+Click correct. Save Source dialogue
+recognises if that source is plain text, rather than assuming HTML. A
+browser that fetches a file remembers the old store size it had before the
+save, so even though the data is now ditched, it reports the same amount of
+data fetched afterwards (looked awful when this could, for example,
+suddenly say '0' after a file save). Progress indicator is now fully aware
+of one or many file saves inside a frameset and reports the number of
+saves, a colon, and the cumulative saved data count, instead of reporting
+the sum total of fetched data in all frames, including non-file save stuff
+(note that for just 1 save, '1:' is not shown as a special case for the
+most common condition). A bug related to this, where you could in fact only
+do one fetch per frame*set*, has been corrected (only one fetch allowed per
+frame still, this is unlikely to ever change).
+
+Hotlist support added (D.Brown's source), with various bits of integration
+and modification still in progress there. Note additions to the Messages
+files. On the subject of Messages, the whole mucky business about what
+goes in Messages or Choices (and a few bugs where lookup_choice was used
+instead of lookup_token or vice versa) has been sorted out. Messages
+contains, more or less, just that. Choices contains user configurable
+stuff which generally can't mess things up too badly. A new file, Controls,
+is a Messages file holding the non-user configurable choices, which can
+generally make things go badly wrong if misused. A lot of these are tied
+to the Res file. StrongED users can get these to automatically fold out
+the various sections (EMail me for details). Sorry, but at the time of
+writing, Zap doesn't do folding... =8*P
+
+Two bugs with images. Asking for images to be shown in browser B when
+browser A uses the same ones and was loaded first didn't work correctly,
+and now does (a bit weird - browser A does the fetch and browser B does the
+display...). Second one occurred when the background image was also used on
+the page as a foreground image. This has been fixed by flagging background
+images in the image_info structure, and checking this before cross
+referencing. This bit also allowed the image_restart_fetches API to be
+extended, so that just background or foreground images may be fetched if
+they weren't already and the user asked the browser to show them. Before,
+the whole lot had to be fetched together (so turning on 'display
+backgrounds' will now kick off an image fetch if required, you don't
+need to reload the page anymore).
+
+Makefile copy options tweaked to be 'newer' (so if you're testing with some
+temporary Choices file or something, it won't write over it at the end of
+every export), and REMOTE_HOTLIST flag added for Customer builds - means
+the Hotlist.c functions aren't needed; the old, hotlist-by-file method is
+used. Added support for Customer build (see later), though there were very
+few additions needed in practice.
+
+Table printing fixed - in many ways it wasn't broken, it was image printing
+causing the oddities ever since the global image pool was introduced (this
+is, again, fixed). The 'reformat to fit page' option didn't work as coded
+any more; tables store cell addresses in the HStreams, so you can't then do
+a background reformat in a different browser. Hence, it now has to reformat
+to the page width, print, then put the page back again, all in the actual
+displayed browser. This doesn't feel as slow in use as it perhaps should,
+considering what is going on... Note that a line of a defined fraction (see
+Print.h) of page height will now split over page boundaries, so tall images
+or tall tables don't cause problems now (aside from the obvious problem of
+having the line split over a page at all!). There was a bug in the routine
+to print from a given start point until 'n' pages had been filled, in that
+it always filled 'n + 1' - now fixed. Finally, as part of the printing
+tweaks, a new dialogue exists - PrintStyle - with a similarly named source
+file added to deal with it.
+
+Global history auto save / load done, but only to the Choices file path -
+the whole browser is still strictly single user at present, with all the
+extra work for a multiuser Customer environment yet to be done. This has
+shown up a global history corruption problem which I haven't fixed yet.
+
+Rationalising TBEvents.h - things are migrating out of it, and into more
+appropriate sources (e.g. definitions relating to the Open URL dialogue are
+going into OpenURL.h, etc.). Event codes were at one stage deliberately
+diverged in numberspace from the component IDs of typical gadgets raising
+the events, to avoid anyone getting confused and thinking the IDs and event
+codes must match. However, this is in fact unlikely and it is much easier
+to remember the fewer numbers that result from tying the two together where
+possible. This has resulted in changes to event codes raised in the
+following objects of all Res files: Authorise, Find, OpenURL, and
+PrintStyle.
+
+And finally - !Run[D] files for all variants updated to require the latest
+toolbox and fetcher modules. All Res files updated for hotlists etc. and
+sprites files updated appropriately. All Messages, Choices and Controls
+files brought in sync., and an Customer build has been added (based on the
+Desktop build binary with different resources).
+
+That's all for now...
+@
+text
+@d115 4
+a118 4
+  RetError(optionbutton_get_state(0, dialogue, PSUnderlineLinks,  &state)); contents->underline_links   = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSUseDocumentCols, &state)); contents->use_document_cols = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSShowForeground,  &state)); contents->show_foreground   = !!state;
+  RetError(optionbutton_get_state(0, dialogue, PSShowBackground,  &state)); contents->show_background   = !!state;
+d139 1
+a139 1
+  RetError(optionbutton_get_state(0, dialogue, PSBlackNoBackgd,  &state));
+d167 4
+a170 4
+  RetError(optionbutton_set_state(0, dialogue, PSUnderlineLinks,  contents->underline_links));
+  RetError(optionbutton_set_state(0, dialogue, PSUseDocumentCols, contents->use_document_cols));
+  RetError(optionbutton_set_state(0, dialogue, PSShowForeground,  contents->show_foreground));
+  RetError(optionbutton_set_state(0, dialogue, PSShowBackground,  contents->show_background));
+d192 1
+a192 1
+  RetError(optionbutton_set_state(0, dialogue, PSBlackNoBackgd, contents->black_no_backgd));
+d239 1
+a239 1
+/* Called when the EOpenPrintStyle event is      */
+d453 4
+a456 4
+    ChkError(optionbutton_get_state(0, window_id, PSUnderlineLinks,  &ul));
+    ChkError(optionbutton_get_state(0, window_id, PSUseDocumentCols, &dc));
+    ChkError(optionbutton_get_state(0, window_id, PSShowForeground,  &sf));
+    ChkError(optionbutton_get_state(0, window_id, PSShowBackground,  &sb));
+d544 1
+a544 1
+      RetError(optionbutton_get_state(0, window_id, PSUseDocumentCols, &state));
+d546 1
+a546 1
+      if (state != sourcecolours) RetError(optionbutton_set_state(0, window_id, PSUseDocumentCols, sourcecolours));
+d553 1
+a553 1
+      RetError(optionbutton_get_state(0, window_id, PSShowForeground, &state));
+d555 1
+a555 1
+      if (state != displayimages) RetError(optionbutton_set_state(0, window_id, PSShowForeground, displayimages));
+d561 1
+a561 1
+    /* PSShowBackground being 'on' means *do* show them.           */
+d565 1
+a565 1
+      RetError(optionbutton_get_state(0, window_id, PSShowBackground, &state));
+d567 1
+a567 1
+      if (state == plainback) RetError(optionbutton_set_state(0, window_id, PSShowBackground, !plainback));
+@

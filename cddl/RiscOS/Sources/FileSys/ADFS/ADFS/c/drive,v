@@ -1,0 +1,323 @@
+head	1.4;
+access;
+symbols
+	ADFS-4_05:1.4
+	ADFS-4_04:1.3
+	ADFS-4_03:1.3
+	ADFS-4_02:1.2
+	ADFS-4_01:1.2
+	ADFS-4_00:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2018.06.26.21.24.31;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	DtgmoTWq5VDnUPHA;
+
+1.3
+date	2017.06.16.10.35.45;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	YoyvaRs0f2K8nAVz;
+
+1.2
+date	2016.03.13.22.45.42;	author bavison;	state Exp;
+branches;
+next	1.1;
+commitid	HhuejfKPg1AhcxYy;
+
+1.1
+date	2016.03.13.22.26.14;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	7OqGiOHUJ5Dl4xYy;
+
+1.1.1.1
+date	2016.03.13.22.26.14;	author bavison;	state Exp;
+branches;
+next	;
+commitid	7OqGiOHUJ5Dl4xYy;
+
+
+desc
+@@
+
+
+1.4
+log
+@Fix use of sizeof
+sizeof(dr) -> sizeof(*dr).
+Found by cppcheck static analysis.
+
+Version 4.05. Tagged as 'ADFS-4_05'
+@
+text
+@/*
+ * CDDL HEADER START
+ *
+ * The contents of this file are subject to the terms of the
+ * Common Development and Distribution License (the "Licence").
+ * You may not use this file except in compliance with the Licence.
+ *
+ * You can obtain a copy of the licence at
+ * cddl/RiscOS/Sources/FileSys/ADFS/ADFS/LICENCE.
+ * See the Licence for the specific language governing permissions
+ * and limitations under the Licence.
+ *
+ * When distributing Covered Code, include this CDDL HEADER in each
+ * file and include the Licence file. If applicable, add the
+ * following below this CDDL HEADER, with the fields enclosed by
+ * brackets "[]" replaced with your own identifying information:
+ * Portions Copyright [yyyy] [name of copyright owner]
+ *
+ * CDDL HEADER END
+ */
+/*
+ * Copyright 2015 Ben Avison.  All rights reserved.
+ * Use is subject to license terms.
+ */
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "Global/CMOS.h"
+#include "Global/OsBytes.h"
+#include "Interface/ADFS.h"
+
+#include "drive.h"
+#include "globals.h"
+#include "swi.h"
+
+void drive_attached(uint32_t cpid, uint32_t deviceid, bool packet_device)
+{
+  dprintf("%sdevice attached: %u:%u -> ", packet_device ? "packet " : "", cpid, deviceid);
+  _kernel_oserror *e;
+  drive_t *dr = malloc(sizeof *dr);
+  if (dr == NULL)
+    return;
+
+  memset(dr, 0, sizeof *dr);
+  dr->drive = -1u;
+  dr->packet_device = packet_device;
+  dr->cpid = cpid;
+  dr->deviceid = deviceid;
+
+  uint32_t status, remain;
+  ataop_param_lba28_t params = {
+      .device = DEVICE_MAGIC,
+      .command = packet_device ? ATACOMMAND_IDENTIFY_PACKET_DEVICE : ATACOMMAND_IDENTIFY_DEVICE
+  };
+  e = swi_ide_user_op(ADFSIDEUserOp_NoDRDY |
+                      (deviceid << ADFSIDEUserOp_DeviceIDShift) |
+                      (cpid << ADFSIDEUserOp_CPIDShift) |
+                      ADFSIDEUserOp_TransRead,
+                      (uint8_t *) &params,
+                      (uint8_t *) dr->identify_info,
+                      sizeof dr->identify_info,
+                      0, &status, &remain);
+  if (e != NULL || status != 0)
+  {
+    dprintf("%s\n", e->errmess);
+    free(dr);
+    return;
+  }
+
+  spinrw_write_lock(&g_drive_lock);
+
+  if (!packet_device)
+  {
+    uint32_t i;
+    for (i = NUM_FLOPPIES; i < NUM_FLOPPIES + NUM_WINNIES; i++)
+    {
+      /* Find a spare drive slot */
+      if (g_drive[i] == NULL)
+        break;
+    }
+    if (i < NUM_FLOPPIES + NUM_WINNIES)
+    {
+      /* Interpret sector size */
+      if ((dr->identify_info[OFFSET_PHY_LOG_SSZ] &
+          (PHY_LOG_SSZ_MBZ | PHY_LOG_SSZ_MBO | PHY_LOG_SSZ_SIZE_NOT_512)) ==
+                            (PHY_LOG_SSZ_MBO | PHY_LOG_SSZ_SIZE_NOT_512))
+      {
+        uint32_t bit;
+        dr->sector_size = (dr->identify_info[OFFSET_SSZ_LO] |
+                          (dr->identify_info[OFFSET_SSZ_HI] << 16)) << 1;
+        __asm {
+          CLZ bit, dr->sector_size
+        }
+        dr->log2_sector_size = 31 - bit;
+      }
+      else
+      {
+        dr->sector_size = 1u << 9; 
+        dr->log2_sector_size = 9;
+      }
+      dr->block_buffer = malloc(dr->sector_size);
+      if (dr->block_buffer == NULL)
+      {
+        dprintf("fail to malloc block buffer\n");
+        free(dr);
+        spinrw_write_unlock(&g_drive_lock);
+        return;
+      }
+
+      /* No more errors possible, so put this drive in the global drive list */
+      g_drive[i] = dr;
+      dr->drive = i - NUM_FLOPPIES + 4;
+      uint32_t standby_timer = 0;
+      _swix(OS_Byte, _INR(0,1)|_OUT(2), OsByte_ReadCMOS, ADFSSpinDownCMOS, &standby_timer);
+      if (standby_timer)
+      {
+        ataop_param_lba28_t params = {
+            .device = DEVICE_MAGIC,
+            .sector_count = (uint8_t) standby_timer,
+            .command = ATACOMMAND_IDLE
+        };
+        /* Set the value in the drive, this could fail if the drive doesn't support
+         * power management. If it does, a default value of 0 remains. */
+        e = swi_ide_user_op(ADFSIDEUserOp_NoDRDY |
+                            (dr->cpid << ADFSIDEUserOp_CPIDShift) | (dr->deviceid << ADFSIDEUserOp_DeviceIDShift) |
+                            ADFSIDEUserOp_TransNone,
+                            (uint8_t *) &params,
+                            NULL, 0, 0, /* No data, default timeout */
+                            &status, &remain);
+        if (!e && (status == 0))
+        {
+          dr->standby_timer = (uint8_t) standby_timer;
+        }
+      }
+    }
+
+    /* Interpret identify blocks. Fortunately, sector count values are little-endian */
+    dr->lba48 = (dr->identify_info[OFFSET_COMMAND_SET] &
+                 (COMMAND_SET_MBZ | COMMAND_SET_MBO | COMMAND_SET_LBA48)) ==
+                                   (COMMAND_SET_MBO | COMMAND_SET_LBA48);
+    if (dr->lba48)
+      dr->capacity = dr->sector_size * *(uint64_t *)&dr->identify_info[OFFSET_MAX_LBA48];
+    else
+      dr->capacity = dr->sector_size * (uint64_t) *(uint32_t *)&dr->identify_info[OFFSET_MAX_LBA];
+    dprintf("assigned to drive %u\n", dr->drive);
+  }
+  else
+    dprintf("not assigned a drive\n");
+
+  if (g_drive_list_tail)
+    g_drive_list_tail->next = dr;
+  else
+    g_drive_list_head = dr;
+  g_drive_list_tail = dr;
+
+  spinrw_write_unlock(&g_drive_lock);
+}
+
+void drive_detached(uint32_t cpid, uint32_t deviceid, bool packet_device)
+{
+  IGNORE(packet_device);
+  spinrw_write_lock(&g_drive_lock);
+
+  drive_t *dr, *prev;
+  for (prev = NULL, dr = g_drive_list_head; dr != NULL; prev = dr, dr = dr->next)
+  {
+    if (dr->cpid == cpid && dr->deviceid == deviceid)
+      break;
+  }
+  if (dr != NULL)
+  {
+    if (prev == NULL)
+      g_drive_list_head = dr->next;
+    else
+      prev->next = dr->next;
+    if (dr->drive != -1u)
+      g_drive[dr->drive - 4 + NUM_FLOPPIES] = NULL;
+    free(dr->block_buffer);
+    free(dr);
+  }
+
+  spinrw_write_unlock(&g_drive_lock);
+}
+@
+
+
+1.3
+log
+@Run time detect the sector size
+Read the sector size from ATA Identify, and keep it in the drive structure. This allows a mix of sector sizes to be used across discs.
+Search & replace LOG2_SECTOR_SIZE and SECTOR_SIZE with the value read from the drive.
+
+Tested on Titanium with an assortment of manufacturer drives, capacities, and sector sizes.
+
+Version 4.03. Tagged as 'ADFS-4_03'
+@
+text
+@d45 1
+a45 1
+  memset(dr, 0, sizeof dr);
+@
+
+
+1.2
+log
+@  LBA28 support
+Detail:
+  LBA28 is still useful for some small capacity Micro SATA SSDs in particular.
+  Also a bugfix to reading the drive capacity (the only effect would have
+  been that we didn't correctly fault DiscOps beyond the end of the media).
+Admin:
+  Tested on IGEPv5
+
+Version 4.01. Tagged as 'ADFS-4_01'
+@
+text
+@d84 19
+a102 1
+      dr->block_buffer = malloc(SECTOR_SIZE);
+d110 2
+d143 1
+a143 1
+      dr->capacity = SECTOR_SIZE * *(uint64_t *)&dr->identify_info[OFFSET_MAX_LBA48];
+d145 1
+a145 1
+      dr->capacity = SECTOR_SIZE * (uint64_t) *(uint32_t *)&dr->identify_info[OFFSET_MAX_LBA];
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d61 1
+a61 1
+                      dr->identify_info,
+d117 9
+a125 2
+    /* Assume 48-bit LBA support for now. Fortunately, value is little-endian */
+    dr->capacity = SECTOR_SIZE * *(uint64_t *)&dr->identify_info[OFFSET_MAX_LBA48];
+@
+
+
+1.1.1.1
+log
+@  Initial import of ADFS 4
+Detail:
+  Version 4 of ADFS is a complete rewrite, but backward compatible with
+  previous versions of ADFS. The hardware driver components have been
+  extracted out into separate modules, along the lines of the
+  SCSIFS/SCSIDriver and SDFS/SDIODriver interfaces. Initially, the only
+  supported driver backend is for AHCI SATA controllers, but it is anticipated
+  that PATA controller support and maybe even floppy drive support may be
+  added at a later date to cater for legacy hardware. Background transfers are
+  only partially implemented at present.
+Admin:
+  This version is what appeared in initial Titanium ROM releases.
+
+Tagged as 'ADFS-4_00'
+@
+text
+@@

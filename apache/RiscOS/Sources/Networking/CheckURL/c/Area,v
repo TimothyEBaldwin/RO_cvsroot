@@ -1,0 +1,915 @@
+head	1.8;
+access;
+symbols
+	CheckURL-0_17:1.8
+	CheckURL-0_16:1.8
+	CheckURL-0_15:1.8
+	CheckURL-0_14:1.8
+	CheckURL-0_13:1.8
+	CheckURL-0_12:1.7
+	CheckURL-0_11:1.6
+	CheckURL-0_10:1.6
+	CheckURL-0_09:1.6
+	CheckURL-0_08:1.6
+	CheckURL-0_07:1.5
+	CheckURL-0_06:1.5
+	CheckURL-0_05:1.4
+	CheckURL-0_04:1.3
+	CheckURL-0_03:1.2
+	CheckURL-0_02:1.2
+	CheckURL-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2002.02.15.14.34.45;	author sbrodie;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2002.01.11.16.15.37;	author sbrodie;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2001.06.26.10.51.57;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2000.04.05.16.05.45;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.03.28.11.33.28;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.03.28.10.06.57;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.17.17.19.25;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.16.15.04.54;	author ahodgkin;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.16.15.04.54;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@  Fixed the previous patch - Area_Magic not AREA_MAGIC and areas not area
+Admin:
+   Built on RISC OS - and it builds now.
+
+
+Version 0.13. Tagged as 'CheckURL-0_13'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* Area   : Area.c                                            */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Area management.                                  */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 08-Mar-2000 (ADH): Created.                       */
+/**************************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#include <swis.h>
+
+#ifdef TRACE2
+  #define TRACE
+#endif
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+#include "CheckURL.h"
+#include "File.h"
+#include "Generic.h"
+#include "Module.h"
+#include "Utils.h"
+
+#include "Area.h"
+
+/* Local variables */
+
+static area         * areas   = NULL; /* Base of area array                             */
+static int            empty   = -1;   /* -1 = array full, else lowest index unused item */
+static int            top     = -1;   /* -1 = empty, else highest available valid index */
+static unsigned int   counter = 0;    /* Area ID restart counter, COUNTER_LIMIT max     */
+
+#define COUNTER_LIMIT 255
+
+/* Local functions */
+
+static int  area_extend (void);
+static void area_shrink (int index);
+
+#ifdef TRACE
+  static void area_dump (void);
+#endif
+
+/**************************************************************/
+/* area_read_area_id().                                       */
+/*                                                            */
+/* Implement CheckURL_ReadAreaID. See the Check URL           */
+/* specification, 2501,846/FS, for more.                      */
+/**************************************************************/
+
+_kernel_oserror * area_read_area_id(_kernel_swi_regs * r)
+{
+  dprintf(("", "area_read_area_id: Called\n"));
+
+  if ((r->r[0] & CU_ReadAreaID_OnEntry_GivenAreaID) != 0)
+  {
+    area * found;
+
+    /* Area ID to name */
+
+    found = area_resolve(r->r[1]);
+    if (found == NULL) return make_error(cu_ERROR_AREA_NOT_KNOWN, 0);
+
+    /* Got one */
+
+    r->r[0] = 0;
+    r->r[1] = (int) found->name;
+  }
+  else
+  {
+    area * found;
+    int    foundi;
+
+    /* Name to area ID */
+
+    found = area_find((const char *) r->r[1], &foundi);
+    if (found == NULL) return make_error(cu_ERROR_AREA_NOT_KNOWN, 0);
+
+    /* Got one */
+
+    r->r[0] = 0;
+    r->r[1] = (unsigned int) (foundi | ((found->counter) << 24));
+  }
+
+  dprintf(("", "area_read_area_id: Successful\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* area_add_area()                                            */
+/*                                                            */
+/* Implement CheckURL_AddArea. See the Check URL              */
+/* specification, 2501,846/FS, for more.                      */
+/**************************************************************/
+
+_kernel_oserror * area_add_area(_kernel_swi_regs * r)
+{
+  area            * found;
+  _kernel_oserror * e = NULL;
+
+  dprintf(("", "area_add_area: Called\n"));
+
+  if ((r->r[0] & CU_AddArea_OnEntry_GivenAreaID) != 0)
+  {
+    /* Area ID to name */
+
+    found = area_resolve(r->r[1]);
+    if (found == NULL) return make_error(cu_ERROR_AREA_NOT_KNOWN, 0);
+  }
+  else
+  {
+    /* Name to area ID */
+
+    if (r->r[1] == 0) return make_error(cu_ERROR_AREA_NOT_KNOWN, 0);
+
+    found = area_find((const char *) r->r[1], NULL);
+
+    if (found == NULL)
+    {
+      /* Create a new area with this name */
+
+      found = area_add((const char *) r->r[1]);
+    }
+
+    if (found == NULL) return make_error(cu_ERROR_MEMORY_EXHAUSTED, 0);
+
+    /* Return the area ID in R1 */
+
+    r->r[1] = (((int) (((char *) found) - ((char *) areas))) / sizeof(area)) | (found->counter << 24);
+  }
+
+  if (r->r[2] != 0)
+  {
+    e = file_read_configuration(&found->head,
+                                (char *) r->r[2],
+                                (r->r[0] & CU_AddArea_OnEntry_GivenFilename) != 0 ? true : false);
+  }
+
+  #ifdef TRACE
+    area_dump();
+  #endif
+
+  return e;
+}
+
+/**************************************************************/
+/* area_delete_area()                                         */
+/*                                                            */
+/* Implement CheckURL_DeleteArea. See the Check URL           */
+/* specification, 2501,846/FS, for more.                      */
+/**************************************************************/
+
+_kernel_oserror * area_delete_area(_kernel_swi_regs * r)
+{
+  dprintf(("", "area_delete_area: Called\n"));
+
+  if ((r->r[0] & CU_DeleteArea_OnEntry_DeleteAll) != 0)
+  {
+    /* Delete all areas */
+
+    area_delete_all();
+
+    dprintf(("", "area_delete_area: All areas deleted, top = %d, empty = %d\n", top, empty));
+  }
+  else
+  {
+    area * found;
+    int    foundi;
+
+    if ((r->r[0] & CU_DeleteArea_OnEntry_GivenAreaID) != 0)
+    {
+      /* Area ID given */
+
+      found = area_resolve(r->r[1]);
+
+      if (found == NULL) return make_error(cu_ERROR_AREA_NOT_KNOWN, 0);
+      else foundi = r->r[1] & 0xffffff;
+    }
+    else
+    {
+      /* Name to area ID */
+
+      found = area_find((const char *) r->r[1], &foundi);
+      if (found == NULL) return make_error(cu_ERROR_AREA_NOT_KNOWN, 0);
+    }
+
+    area_shrink(foundi);
+
+    dprintf(("", "area_delete_area: Area %d deleted, top = %d, empty = %d\n", foundi, top, empty));
+  }
+
+  #ifdef TRACE
+    area_dump();
+  #endif
+
+  return NULL;
+}
+
+/**************************************************************/
+/* area_extend()                                              */
+/*                                                            */
+/* Add a new area to the areas array, either by extending it  */
+/* or by reclaiming a currently unused slot.                  */
+/*                                                            */
+/* Returns:    Index of the new item or -1 if memory          */
+/*             allocation failed. May move the "empty" static */
+/*             (see top of this file) to a higher index.      */
+/**************************************************************/
+
+static int area_extend(void)
+{
+  dprintf(("", "area_extend: Called\n"));
+
+  if (empty != -1)
+  {
+    area * ret  = &areas[empty];
+    int    reti = empty;
+
+    /* We can reuse an old area. Increment its counter and set */
+    /* the magic word.                                         */
+
+    ret->counter++;
+    ret->magic = Area_Magic;
+
+    if (ret->counter > COUNTER_LIMIT) ret->counter = 1;
+
+    dprintf(("", "area_extend: Reusing area %d, counter now %d\n", reti, ret->counter));
+
+    /* Search for the next free item. Note that the top item is */
+    /* never free by definition - if freed, the array shrinks.  */
+
+    while (empty < top && areas[empty].magic == Area_Magic) empty++;
+
+    /* Nothing found? */
+
+    if (empty >= top) empty = -1;
+
+    dprintf(("", "area_extend: 'empty' forwarded to %d\n", empty));
+
+    /* Return the reclaimed item */
+
+    return reti;
+  }
+  else
+  {
+    int    items = top + 2;
+    area * new;
+    area * ret;
+
+    /* Extend the array */
+
+    dprintf(("", "area_extend: Increasing array size to %d\n", items));
+
+    new = module_realloc(areas, sizeof(area) * items);
+    if (new == NULL) return -1;
+
+    areas = new;
+
+    /* If the array was empty, ensure we increment our starting counter */
+
+    if (top < 0)
+    {
+      counter++;
+      if (counter > COUNTER_LIMIT) counter = 1;
+    }
+
+    top++;
+    ret = &areas[top];
+
+    /* Initialise the new item */
+
+    memset(ret, 0, sizeof(area));
+
+    ret->magic   = Area_Magic;
+    ret->counter = counter;
+
+    /* Return the new item */
+
+    return top;
+  }
+}
+
+/**************************************************************/
+/* area_shrink()                                              */
+/*                                                            */
+/* Remove an area from active use, shrinking the area array   */
+/* if the item is at the top.                                 */
+/*                                                            */
+/* Parameters: Index of the array item to remove. May move    */
+/*             the "empty" static and will alter "top" (see   */
+/*             top of this file).                             */
+/**************************************************************/
+
+static void area_shrink(int index)
+{
+  dprintf(("", "area_shrink: Remove index %d (top = %d, empty = %d)\n", index, top, empty));
+
+  if (index < 0 || index > top) return;
+
+  /* If we have a counter higher than the current starting value, */
+  /* record the high water mark.                                  */
+
+  if (areas[index].counter > counter) counter = areas[index].counter;
+
+  /* Whatever happens, ensure the given item is freed up properly */
+
+  areas[index].magic = 0;
+  file_free_configuration(areas[index].head);
+  areas[index].head  = NULL;
+  free(areas[index].name);
+  areas[index].name  = NULL;
+
+  if (index == top)
+  {
+    int items;
+
+    dprintf(("", "area_shrink: Killing top item, scanning back for next used\n"));
+
+    while (--index >= 0 && areas[index].magic != Area_Magic)
+    {
+      if (index == empty) empty = -1;
+    }
+
+    if (index >= 0 && areas[index].magic == Area_Magic) index++;
+    else index = 0;
+
+    dprintf(("", "area_shrink: Now cropping to index %d\n",index));
+
+    top   = index - 1;
+    items = index;
+
+    if (items <= 0)
+    {
+      free(areas);
+      areas = NULL;
+
+      dprintf(("", "area_shrink: Collapsed all items, array empty; top = %d, empty = %d\n", top, empty));
+    }
+    else
+    {
+      area * new;
+
+      new = module_realloc(areas, sizeof(area) * items);
+
+      if (new == NULL)
+      {
+        dprintf(("", "area_shrink: Yikes, module_realloc to shrink just failed; bailing\n"));
+        return;
+      }
+
+      areas = new;
+
+      dprintf(("", "area_shrink: Shrunk to %d item(s), top = %d, empty = %d\n", items, top, empty));
+    }
+  }
+  else
+  {
+    /* This isn't the top item - repoint "empty" */
+
+    if (index < empty || empty == -1) empty = index;
+
+    dprintf(("", "area_shrink: Item not at top, empty = %d\n",empty));
+  }
+
+  return;
+}
+
+/**************************************************************/
+/* area_add()                                                 */
+/*                                                            */
+/* Add a new area with the given area name.                   */
+/*                                                            */
+/* Parameters: Area name to use.                              */
+/*                                                            */
+/* Returns:    Pointer to the new area struct or NULL if      */
+/*             memory allocation failed.                      */
+/**************************************************************/
+
+area * area_add(const char * name)
+{
+  int newi;
+
+  dprintf(("", "area_add: Add '%s'\n", name ? name : "<NULL>"));
+
+  if (name == NULL || *name == '\0') return NULL;
+
+  newi = area_extend();
+  if (newi < 0) return NULL;
+
+  areas[newi].name = Strdup(name);
+
+  if (areas[newi].name == NULL)
+  {
+    area_shrink(newi);
+    return NULL;
+  }
+
+  dprintf(("", "area_add: Add successful at index %d\n",newi));
+
+  return &areas[newi];
+}
+
+/**************************************************************/
+/* area_delete_all()                                          */
+/*                                                            */
+/* Delete all areas.                                          */
+/**************************************************************/
+
+void area_delete_all(void)
+{
+  dprintf(("", "area_delete_all: Called\n"));
+
+  while (top != -1) area_shrink(top); /* Must go through area_shrink to deal with 'counter' correctly */
+
+  dprintf(("", "area_delete_all: Successful\n"));
+
+  return;
+}
+
+/**************************************************************/
+/* area_find()                                                */
+/*                                                            */
+/* Given an area name, return a pointer to the relevant area  */
+/* struct or NULL if the area name is not found.              */
+/*                                                            */
+/* Parameters: An area name;                                  */
+/*                                                            */
+/*             Pointer to an int, updated with the array      */
+/*             index of the returned area struct.             */
+/*                                                            */
+/* Returns:    Pointer to the referenced area struct or NULL  */
+/*             if the ID is invalid.                          */
+/*                                                            */
+/* Assumes:    The int pointer may be NULL.                   */
+/**************************************************************/
+
+area * area_find(const char * name, int * reti)
+{
+  int index = 0;
+
+  dprintf(("", "area_find: Called for '%s'\n", name ? name : "<NULL>"));
+
+  if (name == NULL) return NULL;
+
+  while (index <= top)
+  {
+    if (areas[index].magic == Area_Magic && !strcmp(areas[index].name, name))
+    {
+      dprintf(("", "area_find: Found at index %d\n",index));
+
+      if (reti != NULL) *reti = index;
+      return &areas[index];
+    }
+
+    index++;
+  }
+
+  dprintf(("", "area_find: No match\n"));
+
+  return NULL;
+}
+
+/**************************************************************/
+/* area_resolve()                                             */
+/*                                                            */
+/* Given an area ID, return a pointer to the relevant area    */
+/* struct or NULL if the ID is invalid.                       */
+/*                                                            */
+/* Parameters: An area ID.                                    */
+/*                                                            */
+/* Returns:    Pointer to the referenced area struct or NULL  */
+/*             if the ID is invalid.                          */
+/**************************************************************/
+
+area * area_resolve(unsigned int id)
+{
+  unsigned char counter;
+  unsigned int  index;
+
+  index   = (id & 0xffffff);
+  counter = (id & 0xff000000) >> 24;
+
+  dprintf(("", "area_resolve: Called for ID &%08X (index %u, counter %u)\n", id, index, counter));
+
+  if (index > top)
+  {
+    dprintf(("", "area_resolve: Index out of range (max is %d)\n", top));
+    return NULL;
+  }
+
+  if (areas[index].magic != Area_Magic)
+  {
+    dprintf(("", "area_resolve: Area magic not set, item is out of use\n"));
+    return NULL;
+  }
+
+  if (areas[index].counter != counter)
+  {
+    dprintf(("", "area_resolve: Counters don't match (%u vs %u), ID is stale\n", areas[index].counter, counter));
+    return NULL;
+  }
+
+  dprintf(("", "area_resolve: ID is valid, returning %p for index %d\n", &areas[index], index));
+
+  return &areas[index];
+}
+
+#ifdef TRACE
+
+  /**************************************************************/
+  /* area_dump()                                                */
+  /*                                                            */
+  /* List all areas to the debug device.                        */
+  /**************************************************************/
+
+  static void area_dump(void)
+  {
+    if (top < 0)
+    {
+      dprintf(("","\nNo areas are in use.\n\n"));
+    }
+    else
+    {
+      int      i;
+      config * c;
+
+      dprintf(("", "\n"));
+      dprintf(("", "==============================================================================\n"));
+      dprintf(("", "ID        Use  Name/Fragment                   Parameter                      \n"));
+      dprintf(("", "==============================================================================\n"));
+      dprintf(("", "\n"));
+
+      for (i = 0; i <= top; i++)
+      {
+        dprintf(("", "%08X  %s  %-31.31s %-31.31s\n",
+                     (unsigned int) i | (areas[i].counter << 24),
+                     areas[i].magic == Area_Magic ? "yes"         : "no ",
+                     areas[i].magic == Area_Magic ? areas[i].name : "-",
+                     "-"));
+
+        if ((c = areas[i].head) != NULL) dprintf(("", "\n"));
+
+        while (c != NULL)
+        {
+          dprintf(("", "               %-31.31s %-31.31s\n", c->fragment, c->parameter));
+          c = c->next;
+        }
+
+        if (areas[i].head != NULL && i != top) dprintf(("", "\n"));
+      }
+
+      dprintf(("", "\n"));
+      dprintf(("", "==============================================================================\n"));
+      dprintf(("", "\n"));
+    }
+  }
+
+#endif
+
+/**************************************************************/
+/* area_list()                                                */
+/*                                                            */
+/* List all areas to the console (e.g. for *CheckURLAreas)    */
+/**************************************************************/
+
+_kernel_oserror * area_list(void)
+{
+  _kernel_oserror * e;
+  const char      * buf = NULL;
+  size_t            len;
+
+  if (top < 0)
+  {
+    e = read_message("CUE", &buf, &len); /* Let MessageTrans give a buffer */
+    if (e != NULL) return e;
+
+    printf("%.*s\n", len, buf); /* Length limited as string in 'buf' is not NUL terminated */
+  }
+  else
+  {
+    config * c;
+    int      i;
+
+    e = read_message("CUA", &buf, &len);
+    if (e != NULL) return e;
+
+    printf("%.*s\n", len, buf);
+    printf("==============================================================================\n");
+    printf("\n");
+
+    for (i = 0; i <= top; i++)
+    {
+      printf("%08X   %s   %-31.31s %-31.31s\n",
+                   (unsigned int) i | (areas[i].counter << 24),
+                   areas[i].magic == Area_Magic ? "1"           : "0",
+                   areas[i].magic == Area_Magic ? areas[i].name : "-",
+                   "-");
+
+      if ((c = areas[i].head) != NULL) printf("\n");
+
+      while (c != NULL)
+      {
+        printf("               %-31.31s %-31.31s\n", c->fragment, c->parameter);
+        c = c->next;
+      }
+
+      if (areas[i].head != NULL && i != top) printf("\n");
+    }
+  }
+
+  return NULL;
+}
+@
+
+
+1.7
+log
+@  area_find fix to avoid looking down duff string pointers
+Detail:
+  area_find was forgetting to check the AREA_MAGIC flag before looking
+    down the area name pointer.  RISC OS seems to have got away with it
+    so far - Linux didn't.  Here's the fix for the RISC OS version.
+Admin:
+  Not tested, not even built - but it stops the Linux port crashing.
+
+
+Version 0.12. Tagged as 'CheckURL-0_12'
+@
+text
+@d472 1
+a472 1
+    if (area[index].magic == AREA_MAGIC && !strcmp(areas[index].name, name))
+@
+
+
+1.6
+log
+@  New * command, tidying up.
+Detail:
+  *CheckURLAreas added; lists defined areas. Allocation pending. Tidied
+  up module init code based on RTSP MB; removes need for module_kill
+  finalisation code by using an atexit handler instead. Corrected typo
+  in preamble text printed out by test program.
+Admin:
+  All tests still pass. Star command output is as expected for various
+  area definitions or no areas at all. CMHG 5.30 or later required
+  (enforced by Module.c).
+
+Version 0.08. Tagged as 'CheckURL-0_08'
+@
+text
+@d472 1
+a472 1
+    if (!strcmp(areas[index].name, name))
+@
+
+
+1.5
+log
+@  Couple of bug fixes.
+Detail:
+  Makefile wasn't exporting resources properly in ROM builds; hangover
+  from VideoControl origins. Area IDs could easily be reused by accident
+  if the area array shrunk to zero as (obviously) this lost all the area
+  counters, so a high water mark value is used as a starting counter for
+  all new areas.
+Admin:
+  Tested the area code, not tested the ROM export.
+
+Version 0.06. Tagged as 'CheckURL-0_06'
+@
+text
+@d45 1
+d279 1
+a279 1
+    new = realloc(areas, sizeof(area) * items);
+d368 1
+a368 1
+      new = realloc(areas, sizeof(area) * items);
+d372 1
+a372 1
+        dprintf(("", "area_shrink: Yikes, realloc to shrink just failed; bailing\n"));
+d436 1
+a436 1
+  dprintf(("", "area_delete_all: Called"));
+d584 54
+@
+
+
+1.4
+log
+@  ROM build bug fix, API extension.
+Detail:
+  ROM builds can't open the central config file on initialisation usually,
+  so when can they do it? Video Control faced a similar problem but had a
+  specific point in a SWI where it could transparently try again. Check
+  URL really needs to do this whenever a SWI is called, so in ROM builds
+  a flag is set if the config file load fails during initialisation. When
+  any SWI is next called it'll quietly try again, clearing the retry flag
+  in passing. This attempt may fail silently. If it works, the behaviour
+  of the SWI will appear to be exactly as if the config file was loaded at
+  initialisation time. The only penalty is the overhead of accessing the
+  flag value on each SWI call in ROM builds.
+  SWI CheckURL_AddArea has been extended to return the area ID of a new
+  area in R1 on exit.
+Admin:
+  Ensured that the API extension works and added a simple check in the
+  test harness. Tested the config file reload in a RAM build before
+  wrapping the code in #ifdef ROM and ensuring that ROM, RAM and trace
+  variants all build.
+
+Version 0.05. Tagged as 'CheckURL-0_05'
+@
+text
+@d51 6
+a56 3
+static area * areas = NULL; /* Base of area array                             */
+static int    empty = -1;   /* -1 = array full, else lowest index unused item */
+static int    top   = -1;   /* -1 = empty, else highest available valid index */
+d249 2
+d283 8
+d299 1
+a299 1
+    ret->counter = 1;
+d324 5
+d437 1
+a437 1
+  while (top != -1) area_shrink(top);
+@
+
+
+1.3
+log
+@  Bug fix in URL matching, two character error in source file header comments
+  corrected.
+Detail:
+  Paths with colons in had those colons interpreted as port separators; the
+  URL_Fetcher module only escapes chars 0-32 and 127 and I'd been relying on
+  it doing other characters too. Whilst I was at it, I made the legacy
+  support for a comma separated list of the match strings a compile-time
+  option and compiled it out as CheckURL never uses this. In addition, every
+  source file had a cut-and-paste propagated two character error in the
+  source file header comments, which has been corrected.
+Admin:
+  Confirmed that ROM, RAM and debug builds compile. Tested various port
+  and path combinations and modified test suite slightly to ensure that
+  whilst ports work, colons in paths will work too.
+
+Version 0.04. Tagged as 'CheckURL-0_04'
+@
+text
+@d147 4
+@
+
+
+1.2
+log
+@Test harness added, with a few minor bug fixes arising from the test
+results. URL_Fetcher handling improved.
+
+Version 0.02. Tagged as 'CheckURL-0_02'
+@
+text
+@d22 1
+a22 1
+/* Author : A.D.Hodgkinson.                                   */
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d135 2
+d191 1
+a191 1
+      foundi = r->r[1] & 0xffffff;
+d193 2
+a194 1
+      if (foundi < 0 || foundi > top) return make_error(cu_ERROR_AREA_NOT_KNOWN, 0);
+d309 1
+d312 2
+a313 1
+  areas[index].magic = 0;
+@
+
+
+1.1.1.1
+log
+@  First complete version of Check URL.
+Detail:
+  Check URL allows applications to match URLs against URL fragments to
+  perform domain, port and/or path specific activities. This could be
+  used in a browser to block advert loading, in Video Control to select
+  a protocol module, or in JavaScript to enable or disable the Pace VOD
+  extensions, for example. See 2501,846 for details.
+Admin:
+  This has only been lightly tested, but I believe it's functionally
+  complete according to issue 1 of the specification.
+@
+text
+@@

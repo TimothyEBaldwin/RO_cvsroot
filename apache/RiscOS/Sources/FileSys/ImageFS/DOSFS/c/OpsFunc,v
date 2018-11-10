@@ -1,0 +1,2716 @@
+head	4.13;
+access;
+symbols
+	DOSFS-1_14:4.13
+	DOSFS-1_13:4.12
+	DOSFS-1_12:4.12
+	DOSFS-1_11:4.11
+	DOSFS-1_10:4.10
+	DOSFS-1_09:4.9
+	DOSFS-1_08:4.8
+	DOSFS-1_07:4.8
+	DOSFS-1_06:4.7
+	DOSFS-1_05:4.6
+	DOSFS-1_04:4.6
+	DOSFS-1_03:4.5
+	DOSFS-1_02:4.5
+	DOSFS-1_01:4.4
+	DOSFS-1_00:4.4
+	DOSFS-0_99:4.3
+	DOSFS-0_98:4.2
+	DOSFS-0_97:4.1
+	DOSFS-0_96:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.13
+date	2018.07.24.21.13.49;	author rsprowson;	state Exp;
+branches;
+next	4.12;
+commitid	l0lt3WfBYpnUWqLA;
+
+4.12
+date	2018.02.19.00.06.06;	author jlee;	state Exp;
+branches;
+next	4.11;
+commitid	ic65jLota7NRUorA;
+
+4.11
+date	2017.12.17.09.29.25;	author rsprowson;	state Exp;
+branches;
+next	4.10;
+commitid	38CSk47LemUE5ejA;
+
+4.10
+date	2017.11.21.21.34.08;	author rsprowson;	state Exp;
+branches;
+next	4.9;
+commitid	jPD29OqViOM7WWfA;
+
+4.9
+date	2016.03.18.21.44.19;	author rsprowson;	state Exp;
+branches;
+next	4.8;
+commitid	tMFs57eIOarfHaZy;
+
+4.8
+date	2014.06.25.20.13.35;	author rsprowson;	state Exp;
+branches;
+next	4.7;
+commitid	E7yWETwfWvNEvWFx;
+
+4.7
+date	2014.06.25.19.37.21;	author rsprowson;	state Exp;
+branches;
+next	4.6;
+commitid	gFu51vOmpefejWFx;
+
+4.6
+date	2014.05.31.17.18.22;	author rsprowson;	state Exp;
+branches;
+next	4.5;
+commitid	9C7sPVBMelsWkICx;
+
+4.5
+date	2013.10.15.18.54.46;	author bavison;	state Exp;
+branches;
+next	4.4;
+commitid	Glj6c18RNe8Pcq9x;
+
+4.4
+date	2013.01.13.18.55.02;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+commitid	3lYJMhP8ONWX25Aw;
+
+4.3
+date	2013.01.13.18.52.34;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	oq0uLRDtA5Y625Aw;
+
+4.2
+date	2013.01.13.18.49.43;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+commitid	fjzSOoRRnhA815Aw;
+
+4.1
+date	2012.12.07.14.20.17;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	jnwtWy3St1iqIivw;
+
+
+desc
+@@
+
+
+4.13
+log
+@Fix pointer compare confusion
+OpsFunc.c: don't compare fname with a null string, when a NULL pointer was intended
+Found by cppcheck static analysis.
+
+Version 1.14. Tagged as 'DOSFS-1_14'
+@
+text
+@/* Copyright 2012 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*> c.OpsFunc <*/
+/*-------------------------------------------------------------------------*/
+/* DOSFS image FS 'Func'                        Copyright (c) 1990 JGSmith */
+/*-------------------------------------------------------------------------*/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include "kernel.h"
+#include "swis.h"
+#include "Interface/HighFSI.h"
+#include "Interface/FileCore.h"
+#include "DebugLib/DebugLib.h"
+
+#include "DOSFS.h"
+#include "TIMEconv.h"
+#include "Helpers.h"
+#include "Ops.h"
+#include "MsgTrans.h"
+#include "DOSclusters.h"
+#include "DOSnaming.h"
+#include "DOSshape.h"
+#include "DOSdirs.h"
+#include "Accessors.h"
+
+/*!
+ * \param  oldname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  newname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  ihand Image handle
+ * \return -1 if rename failed
+ */
+int DOSFS_rename(char *oldname,char *newname,DOSdisc *ihand)
+{
+  DIR_info     *cdir ;         /* directory where the original leafname resides */
+  DIR_info     *ndir ;         /* directory where the new leafname resides */
+  char         *DOSname ;      /* full DOS pathname */
+  char         *leafname ;     /* pointer to the leafname of "DOSname" */
+  DOS_direntry *dentry ;       /* directory entry structure pointer */
+  DOS_direntry *found ;        /* directory entry structure pointer */
+  int           loop ;         /* general index counter */
+  int           not_sfn;       /* flag not a valid short name */
+  uintptr_t     cdirp;                      /* address of the original dir entries */
+  int           numreq, diroffset;          /* number of dir entries needed for the long filename */
+  DOS_direntry *lfn[(MaxString + 12) / 13]; /* enough dir entries for the longest long filename */
+  char         *longfileholder;             /* for long name */
+  char          shortname[14];              /* for short name equivalent */
+  DIR_info     *dummy;                      /* parent pointer (not used) */
+ 
+  dprintf(("","\n\nDOSFS_rename: \"%s\" --> \"%s\"\n",oldname,newname));
+ 
+  /* convert "oldname" to DOS path format */
+  if ((DOSname = (char *)malloc(MaxString)) == NULL)
+  {
+    return_errorT(int, err_heapexhausted, tok_heapexhausted, 0, 0) ;
+  }
+  if ((int)convertRISCOStoLFN(oldname, DOSname) < 0)
+  {
+    free(DOSname);
+    return -1;
+  }
+  /* resolve the path (ie. load the directory the file is in) */
+  if (resolvePATH(DOSname,&cdir,&leafname,ihand) < 0)
+  {
+    free(DOSname) ;
+    return (-1) ; /* error already defined */
+  }
+ 
+  dprintf(("","DOSFS_rename: original leafname = \"%s\"\n",leafname));
+
+  /* search the directory for the original entry */
+  loop = 0 ;
+  if ((dentry = findDIRentry(leafname,cdir,cdir->dir_size,&loop)) == NULL)
+  {
+    free(DOSname) ;
+    return_errorT(int, err_objectnotfound, tok_objectnotfound, oldname, 0) ;
+  }
+  found = dentry ; /* pointer to "oldname" in directory */
+ 
+  /* check that no wildcard characters exist in the original leafname */
+  if (checknotwildcarded(leafname, DOSwcmult, DOSwcsing) != 0)
+  {
+    free(DOSname) ;
+    return_error1(int, err_wildcardedname, oldname) ;
+  }
+ 
+  /* If the object to be renamed is a directory then we must ensure that there is
+   * no copy of it in the cache so that DOSFS doesn't think that it still exists.
+   */
+  if (found->FILE_attribute & FILE_subdir)
+  {
+    /* Reconstruct the full pathname of the directory being renamed. */
+    dprintf(("","DOSFS_rename: removing \"%s\" from the directory cache\n",leafname));
+    free_dir_cache(restorePATH(DOSname,leafname), ihand);
+  }
+  else
+  {
+    /* Its a file, so check if it's open. */
+    if (find_open_file(oldname, found, ihand) >= 0)
+    {
+      free(DOSname);
+      return_error1(int, err_fileopen, oldname);
+    }
+  }
+ 
+  if ((int)convertRISCOStoLFN(newname, DOSname) < 0)
+  {
+    free(DOSname);
+    return -1;
+  }
+ 
+  set_dir_flags(cdir, dir_LOCKED);
+ 
+  /* resolve the path (ie. load the directory the file is in) */
+  if (resolvePATH(DOSname,&ndir,&leafname,ihand) < 0)
+  {
+    unset_dir_flags(cdir, dir_LOCKED);
+    free(DOSname) ;
+    return (-1) ; /* error already defined */
+  }
+  unset_dir_flags(cdir, dir_LOCKED);
+ 
+  dprintf(("","DOSFS_rename: new leafname = \"%s\"\n",leafname));
+  if (checknotwildcarded(leafname, DOSwcmult, DOSwcsing) != 0)
+  {
+    free(DOSname) ;
+    return_error1(int, err_wildcardedname, newname) ;
+  }
+ 
+  /* check to see if we already have a file with the destination name */
+  loop = 0 ;
+  if ((dentry = findDIRentry(leafname,ndir,ndir->dir_size,&loop)) != NULL)
+  {
+    /* new name already exists in the destination directory */
+    free(DOSname) ;
+    return_error0(int, err_alreadyexists) ;
+  }
+ 
+  /* Obtain the correct amount of empty directory entries */
+  numreq = (strlen(leafname) / 13) + 2;
+  dprintf(("","DOSFS_rename: numreq = %d\n",numreq));
+ 
+  if (get_dir_entry_array(lfn, ihand, numreq, &ndir, &dummy, &found) < 0)
+  {
+    free(DOSname) ;
+    return -1;
+  }
+ 
+  /* Create 8.3 filename from leafname */
+  not_sfn = shorten_lfn(leafname, shortname, ndir);
+  dentry = not_sfn ? lfn[numreq-1] : lfn[0];
+  
+  dprintf(("","DOSFS_rename: long filename = '%s'\n",leafname));
+  dprintf(("","DOSFS_rename: short filename = '%s'",shortname));
+  dprintf(("","DOSFS_rename: into dentry = %p\n",dentry));
+ 
+  if (not_sfn) MakeLFNEntries(lfn,numreq,leafname,shortname);
+  sprintf((char *)&dentry->FILE_status, "%-8.8s%-3s", shortname, &shortname[8]);
+
+  /* copy spare bytes (either JGS info or DRDOS5.0 info) */
+  for (loop = 0; (loop < spare1); loop++)
+  {
+    dentry->FILE_reserved[loop] = found->FILE_reserved[loop] ;
+  }
+  /* copy file description */
+  dentry->FILE_attribute =  found->FILE_attribute;
+  dentry->FILE_time = found->FILE_time ;
+  dentry->FILE_timeHI = found->FILE_timeHI ;
+  dentry->FILE_date = found->FILE_date ;
+  dentry->FILE_dateHI = found->FILE_dateHI ;
+  dentry->FILE_cluster = found->FILE_cluster ;
+  dentry->FILE_clusterHI = found->FILE_clusterHI ;
+  dentry->FILE_size = found->FILE_size ;
+  set_dir_flags(ndir, dir_MODIFIED) ; /* new directory updated */
+ 
+  longfileholder = malloc(strlen(leafname) + 1);
+  if (longfileholder == NULL)
+  {
+    free(DOSname) ;
+    return_errorT(int, err_heapexhausted, tok_heapexhausted, 0, 0);
+  }
+  strcpy(longfileholder, leafname);
+  diroffset = ((int)((int)(dentry) - (DI_Base(ndir))) / sizeof(DOS_direntry));
+  (ndir)->lfnp[diroffset] = longfileholder;
+ 
+  dprintf(("","DOSFS_rename: index = %d, pointer = %p, actual = %p\n",diroffset,cdir->lfnp[diroffset], longfileholder));
+ 
+  cdirp = (uintptr_t)DI_Base(cdir);
+  dprintf(("","DOSFS_rename: cdirp = %x, found = %x\n",cdirp,(int)found));
+  /* ditch original lfnp if there */
+  loop = ((int)((int)(found)-(DI_Base(cdir))) / sizeof(DOS_direntry));
+  if (cdir->lfnp[loop])
+  { 
+    free(cdir->lfnp[loop]);
+    cdir->lfnp[loop] = NULL;
+  }
+  
+  found->FILE_status = FILE_deleted;
+  found--;
+  while (((uintptr_t)found >= cdirp) && (found->FILE_attribute == FILE_win95))
+  {
+    dprintf(("","DOSFS_rename: cdirp = %x, nfound = %x\n",(int)cdirp,(int)found));
+    found->FILE_status = FILE_deleted;
+    found--;
+  }
+ 
+  set_dir_flags(cdir, dir_MODIFIED) ; /* directory updated */
+  free(DOSname) ;
+ 
+  if ((ensure_directory(cdir) != 0) || (ensure_directory(ndir) != 0))
+  {
+    flush_dir_cache(ihand);
+    return(-1) ; /* error already defined */
+  }
+ 
+  return (0) ;
+}
+
+/*!
+ * \param  fname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  dest Memory address for result
+ * \param  num Number of entries requested
+ * \param  off Offset into directory to continue from
+ * \param  blen Size of buffer at 'dest'
+ * \param  ihand Image handle
+ * \return -1 if read failed
+ */
+FS_dir_block *DOSFS_read_dir(char *fname, void *dest, word num, word off, word blen, DOSdisc *ihand)
+{
+  dprintf(("","\n\nDOSFS_read_dir: \"%s\" (dest = &%08X) %d %d %d\n",fname == NULL ? "NULLptr" : fname,dest,num,off,blen));
+
+  return (read_dir(0, fname, dest, num, off, blen, ihand)) ;
+}
+
+/*!
+ * \param  fname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  dest Memory address for result
+ * \param  num Number of entries requested
+ * \param  off Offset into directory to continue from
+ * \param  blen Size of buffer at 'dest'
+ * \param  ihand Image handle
+ * \return -1 if read failed
+ */
+FS_dir_block *DOSFS_read_dir_info(char *fname, void *dest, word num, word off, word blen, DOSdisc *ihand)
+{
+  dprintf(("","\n\nDOSFS_read_dir_info: \"%s\" (dest = &%08X) %d %d %d\n",fname == NULL ? "NULLptr" : fname,dest,num,off,blen));
+
+  return (read_dir(-1, fname, dest, num, off, blen, ihand)) ;
+}
+
+/*!
+ * \param  fshand FileSwitch image handle
+ * \param  buffsize Buffer size hint, or 0 if not known
+ * \return Image FS handle
+ */
+DOSdisc *DOSFS_image_open(word fshand, word buffsize)
+{
+  DOS_bootsector   *dboot = NULL ;   /* cached disc boot block */
+  byte             *pentry ;         /* wini partition description pointer */
+  uint64_t          winioffset = 0 ; /* partition start within wini images */
+  DOSdisc          *ddisc = NULL ;   /* cached disc description */
+  byte              numFATs ;        /* number of FATs in the image */
+  word              FATsize ;        /* size of FAT in bytes */
+  word              FATentries ;     /* number of entries in FAT */
+  word              numRESVD ;       /* number of reserved (unused) sectors */
+  word              ROOTsize ;       /* size of ROOT directory in sectors */
+  int               loop ;           /* general counter */
+  uint64_t          discaddress = 0x00000000 ;
+  int               totsec = 0, datasec = 0;  /* Split of sectors */
+  int               CountOfClusters = 0;      /* Expressed as clusters */
+  int               RootDirSectors;
+  _kernel_oserror  *rerror ;                  /* for standard RISC OS error structures */
+#ifdef NO_FAT32
+  static const _kernel_oserror noFAT32support = { 0, "FAT32 support absent"};
+#endif
+  image_accessor_file a = new_image_accessor_file(fshand);
+  word partsize = a.size/DOSsecsize; /* partition size (sectors) */
+ 
+  dprintf(("","\n\nDOSFS_image_open: fshand = &%08X, buffsize = &%08X\n",fshand,buffsize));
+  /* We can assume that FileSwitch has only called us with files of the correct
+   * type (ie. we need perform no 12bit filetype identification on the passed
+   * FileSwitch handle).
+   */
+ 
+  /* Construct an internal file handle structure that contains the FileSwitch
+   * handle, plus any other useful information. We will return the pointer to
+   * this structure as the image handle.
+   *
+   * We need to distinguish between DOS and Atari floppies and DOS winchesters
+   * (Winchesters use the "disc_winioffset" word, for floppies this needs to
+   * be initialised to 0x00000000).
+   */
+ 
+  /* CACHE the "disc" information */
+  if ((dboot = (DOS_bootsector *)malloc(sizeof(DOS_bootsector))) == NULL)
+  {
+    dprintf(("","DOSFS_image_open: unable to allocate memory for BOOT sector\n"));
+    return_errorT(DOSdisc *, err_heapexhausted, tok_heapexhausted, 0, 0) ;
+  }
+ 
+  dprintf(("","DOSFS_image_open: dboot = &%08X\n",(int)dboot));
+ 
+  /* At the moment there is no simple way of differentaiting between winchester
+   * partitions and those of floppy images. MS-DOS manages by the explicit
+   * drive hardware differences. We are accessing the disc images via the same
+   * file interface.
+   * The following code performs a few simple checks to differentiate between
+   * the image types.
+   */
+ 
+  /* read the BOOT BLOCK from the image */
+  /* This code RELIES on (DOS_BOOT_sector == DOS_PARTITION_sector) */
+  discaddress = (DOS_BOOT_sector - 1) * DOSsecsize ;
+  if ((rerror = image_readwrite(discaddress, /* offset within FileSwitch file */
+                                DOSsecsize, /* fixed in MS-DOS */
+                                dboot, /* destination address */
+                                ACC_READ, /* read operation */
+                                &a.a)) != NULL)
+  {
+    free(dboot) ;
+    return_errorX(DOSdisc *, rerror) ;    /* error already defined */
+  }
+ 
+  /* If this doesn't look like a BOOT block then try a partition. */
+#ifdef NONFLOPPIES
+  if (sector_size(dboot) != DOSsecsize)
+#else
+  if (sector_size(dboot) != DOSsecsize || dboot->BOOT_num_fats != 2)
+#endif
+  {
+    DOS_partition    *DOSpart = NULL ; /* winchester partition information */
+    dprintf(("","DOSFS_image_open: not a BOOT block, could be a partition.\n"));
+    DOSpart = (DOS_partition *)dboot ;
+  
+    /* Look for the partition with the "boot_ind" set to "bootable" */
+    pentry = (byte *)&(DOSpart->p0_boot_ind) ;
+    for (loop=0; (loop < 4); loop++)
+    {
+      if (pentry[0] == bootable) break ;
+      pentry += sizeof(partition_entry) ;
+    }
+    dprintf(("","DOSFS_image_open: partition %d may be bootable.\n",loop));
+  
+    if (loop == 4)
+    {
+      /* No bootable partition found - try to validify one of the partitions as
+       * non-bootable, otherwise this can't be a valid DOS partition.
+       */
+      dprintf(("","DOSFS_image_open: not a bootable partition.\n"));
+      pentry = (byte *)&(DOSpart->p0_boot_ind);
+      for (loop = 0; loop < 4; loop++)
+      {
+#ifdef OLD_PARTITION_TEST
+        if (pentry[4] == partition_DOS || pentry[4] == partition_DR || pentry[4] == partition_NCR)
+#else
+        if (pentry[2] != 0) /* If start sector != 0 then we have found a possible partition table entry. */
+#endif
+        {
+          break;
+        }
+        pentry += sizeof(partition_entry);
+      }
+    }
+ 
+    if (loop != 4)
+    {
+      dprintf(("","DOSFS_image_open: partition type %d\n",pentry[4]));
+   
+      /* The following sector number, should be equivalent to that used to
+       * construct the "disc_winioffset" variable.
+       * DOS BOOT sector = WiniSector(pentry[3],pentry[1],pentry[2])
+       */
+      winioffset = ((uint64_t)loadWORD(pentry+8) * DOSsecsize);
+      dprintf(("","DOSFS_image_open: winioffset = &%016" PRIX64 "\n",winioffset));
+   
+      /* Our system can now cope with winchester partitions with more than 0xFFFF
+       * sectors
+       */
+      partsize = loadWORD(pentry+12);
+   
+      discaddress = ((DOS_BOOT_sector - 1) * DOSsecsize) + winioffset ;
+      if ((rerror = image_readwrite(discaddress,
+                                    DOSsecsize,
+                                    dboot,
+                                    ACC_READ,
+                                    &a.a)) != NULL)
+      {
+        free(dboot) ;
+        return_errorX(DOSdisc *, rerror) ;
+      }
+   
+      /* I am not sure if all MS-DOS BOOT BLOCKs contain a similar signature to
+       * that provided in winchester PARTITION BLOCKs. MS-DOS 3.31 seems to do
+       * so, and this may form another validation check on the destination BOOT
+       * BLOCK. **** research into this ****
+       */
+   
+#ifdef NONFLOPPIES
+      if (sector_size(dboot) != DOSsecsize)
+#else
+      if ((sector_size(dboot) != DOSsecsize) || (dboot->BOOT_num_fats != 2) || (max_sector(dboot) != partsize))
+#endif
+      {
+        dprintf(("","DOSFS_image_open: invalid partition BOOT block\n"));
+        free(dboot) ;
+        return_error0(DOSdisc *,err_notDOSimage) ;
+      }
+    }
+    else
+    {
+      dprintf(("","DOSFS_image_open: image is not a DOS partition (could be 320K or 160K format)\n"));
+      /* Could still be a DOS 320K or 160K format as they do not need a valid boot block,
+       * fake the info in the boot block (if it's not one of these then catch it later). */
+      dboot->BOOT_secsize = 0x00;
+      dboot->BOOT_secsizeHI = 0x02;
+      dboot->BOOT_reserved = 0x01;
+      dboot->BOOT_reservedHI = 0x00;
+      dboot->BOOT_num_fats = 0x02;
+      dboot->BOOT_magic = 0x00;
+      dboot->BOOT_FAT_size = 0x01;
+      dboot->BOOT_FAT_sizeHI = 0x00;
+      dboot->BOOT_secstrack = 0x08;
+      dboot->BOOT_secstrackHI = 0x00;
+      dboot->hidden0 = 0x00;
+      dboot->hidden1 = 0x00;
+      partsize = a.size/DOSsecsize;
+    }
+  }
+ 
+  /* number of File Allocation Tables */
+  numFATs = dboot->BOOT_num_fats ;
+
+  /* number of reserved (unusable) sectors */
+  numRESVD = READ_LOHI(dboot->BOOT_reserved);
+ 
+  dprintf(("","DOSFS_image_open: DOSsecsize = %x\n",DOSsecsize));
+  dprintf(("","DOSFS_image_open: numFATs    = %d\n",numFATs));
+  dprintf(("","DOSFS_image_open: numRESVD   = %d\n",numRESVD));
+ 
+  dprintf(("","DOSFS_image_open: sectors per cluster = %x\n",dboot->BOOT_secalloc));
+  dprintf(("","DOSFS_image_open: sector size = %d\n",READ_LOHI(dboot->BOOT_secsize)));
+  dprintf(("","DOSFS_image_open: cluster size = %d\n",dboot->BOOT_secalloc * READ_LOHI(dboot->BOOT_secsize)));
+ 
+  RootDirSectors = READ_LOHI(dboot->BOOT_root_dir) * sizeof(DOS_direntry); /* Bytes */
+  RootDirSectors = (RootDirSectors + (DOSsecsize - 1)) / DOSsecsize; /* Sectors */
+  dprintf(("","DOSFS_image_open: RootDirSectors = %d\n",RootDirSectors));
+
+  if (READ_LOHI(dboot->BOOT_FAT_size) != 0)
+  {
+    FATsize = READ_LOHI(dboot->BOOT_FAT_size);
+  }
+  else
+  {
+    /* It's FAT32 */
+    FATsize = READ_0123(dboot->BOOT_extra.fat32.FAT_sz);
+  }
+  if( READ_LOHI(dboot->BOOT_max_sect) != 0)
+  {
+    /* Limited 16 bit size */
+    totsec = READ_LOHI(dboot->BOOT_max_sect);
+  }
+  else
+  {
+    totsec = READ_0123(dboot->big_sect);
+  }
+  datasec = totsec - (READ_LOHI(dboot->BOOT_reserved) + (numFATs * FATsize) + RootDirSectors);
+  dprintf(("","DOSFS_image_open: FATsize = %x\n",FATsize));
+  dprintf(("","DOSFS_image_open: totsec = %x\n",totsec));
+  /* In the case where it's a 320K/160K floppy, we won't know secalloc until we
+   * deduce it from the FAT, which we don't read until later. However,
+   * CountOfClusters is only used for distinguishing FAT12/Fat16/FAT32, and for
+   * these purposes, assuming 1 sector per cluster will be fine */
+  CountOfClusters = dboot->BOOT_secalloc > 0 ? datasec / dboot->BOOT_secalloc : datasec;
+  dprintf(("","DOSFS_image_open: CountOfClusters = %x\n",CountOfClusters));
+
+  /* Sanity check some values */
+  if (winioffset + (((uint64_t) totsec) * DOSsecsize) > a.size)
+  {
+    dprintf(("","DOSFS_image_open: filesystem exceeds extent of image file\n"));
+    free(dboot);
+    return_error0(DOSdisc *, err_notDOSimage);
+  }
+  if (totsec > partsize)
+  {
+    dprintf(("","DOSFS_image_open: filesystem larger than partition\n"));
+    free(dboot);
+    return_error0(DOSdisc *, err_notDOSimage);
+  }
+  if ((FATsize > ((1<<30) / DOSsecsize)) /* Arbitrary 1GB max FAT size (to avoid overflow in malloc calculation below) */
+   || (winioffset > UINT32_MAX)) /* We use 32bit winioffset */
+  {
+    dprintf(("","DOSFS_image_open: disc too big\n"));
+    free(dboot) ;
+    return_error0(DOSdisc *, err_disctoobig) ;
+  }
+ 
+  /* allocate a DOS disc description structure large enough to hold a FAT
+   * copy. Note: the disc description structure already includes a single "FAT"
+   * sector.
+   */
+  if ((ddisc = (DOSdisc *)malloc(sizeof(DOSdisc) + ((FATsize*DOSsecsize) - sizeof(fFAT_sector)))) == NULL)
+  {
+    dprintf(("","DOSFS_image_open: unable to allocate memory for disc description\n"));
+    free(dboot) ;
+    return_errorT(DOSdisc *, err_heapexhausted, tok_heapexhausted, 0, 0) ;
+  }
+  dprintf(("","DOSFS_image_open: ddisc = &%08X\n",(int)ddisc));
+  
+  if(RootDirSectors != 0)
+  {
+    if (CountOfClusters < 4085)
+    {
+      dprintf(("","DOSFS_image_open: Volume is FAT12\n"));
+      ddisc->disc_FATentry = 12;
+    }
+    else
+    {
+      if (CountOfClusters < 65525)
+      {
+        dprintf(("","DOSFS_image_open: Volume is FAT16\n"));
+        ddisc->disc_FATentry = 16;
+      }
+      else
+      {
+        dprintf(("","DOSFS_image_open: Volume is FAT32\n"));
+        ddisc->disc_FATentry = 32;
+#ifdef NO_FAT32
+        free(dboot);
+        free(ddisc);
+        return_errorX(DOSdisc *, &noFAT32support);    /* error for diagnostics */
+#endif
+      }
+    }
+  }
+  else
+  {
+    dprintf(("","DOSFS_image_open: Volume is FAT32\n"));
+    ddisc->disc_FATentry = 32;
+#ifdef NO_FAT32
+    free(dboot);
+    free(ddisc);
+    return_errorX(DOSdisc *, &noFAT32support);    /* error for diagnostics */
+#endif
+  }
+
+  if (ddisc->disc_FATentry == 32)
+  {
+    ddisc->disc_RootCluster = READ_0123(dboot->BOOT_extra.fat32.RootClus);
+  }
+  else
+  {
+    ddisc->disc_RootCluster  = 0;
+  }
+  dprintf(("","DOSFS_image_open: No. of root entries = %x F32 cl:%x\n",
+              READ_LOHI(dboot->BOOT_root_dir),ddisc->disc_RootCluster));
+ 
+  /* remember the FileSwitch handle */
+  ddisc->disc_fhand = fshand ;           /* FileSwitch handle of image file */
+  ddisc->disc_winioffset = (word) winioffset ;  /* offset into image */
+ 
+  ddisc->disc_FATsecs = FATsize ;            /* remember how many sectors the FAT is */
+  ddisc->disc_FATsize = FATsize * DOSsecsize;/* remember how big the FAT is */
+  ddisc->disc_secsize = DOSsecsize;
+  ddisc->disc_RESVDsec = numRESVD;
+ 
+  /* Copy the boot block into the disc description. */
+  ddisc->disc_boot = *dboot ;           /* copy the disc boot sector */
+ 
+  /* release the copy we originally allocated */
+  free(dboot) ;
+
+  /* but keep the pointer around for short-hand work */
+  dboot = &(ddisc->disc_boot) ;
+ 
+  ddisc->disc_FATentries = 0; /* Stop DOS_FAT_RW attempting to count the free clusters. */
+ 
+  if (DOS_FAT_RW(Rdata, ddisc) < 0)
+  {
+    dprintf(("","DOSFS_image_open: unable to load DOS FAT sector(s)\n"));
+    free(ddisc) ;
+    /* error message should already be defined */
+    return_error0(DOSdisc *, err_fatloadfailed);
+  }
+ 
+  /* If the magic ID in the boot block is 0x00 then this is a 320K or 160K format
+   * which needs some info to be filled in depending on the first byte of the FAT.
+   */
+  if (dboot->BOOT_magic == 0x00)
+  {
+    dboot->BOOT_magic = *((char *)&(ddisc->disc_FAT));
+    if (dboot->BOOT_magic == 0xFE)
+    {
+      dboot->BOOT_secalloc = 0x01;
+      dboot->BOOT_root_dir = 0x40;
+      dboot->BOOT_root_dirHI = 0x00;
+      dboot->BOOT_max_sect = 0x40;
+      dboot->BOOT_max_sectHI = 0x01;
+      dboot->BOOT_heads = 0x01;
+      dboot->BOOT_headsHI = 0x00;
+    }
+    else
+    {
+      if (dboot->BOOT_magic == 0xFF)
+      {
+        dboot->BOOT_secalloc = 0x02;
+        dboot->BOOT_root_dir = 0x70;
+        dboot->BOOT_root_dirHI = 0x00;
+        dboot->BOOT_max_sect = 0x80;
+        dboot->BOOT_max_sectHI = 0x02;
+        dboot->BOOT_heads = 0x02;
+        dboot->BOOT_headsHI = 0x00;
+      }
+      else
+      {
+        dprintf(("","DOSFS_image_open: not a valid DOS image\n"));
+        free(ddisc);
+        return_error0(DOSdisc *, err_notDOSimage);
+      }
+    }
+  }
+
+  /* size of the ROOT directory in sectors */
+  ROOTsize = ((READ_LOHI(dboot->BOOT_root_dir) * sizeof(DOS_direntry))+(DOSsecsize-1)) / DOSsecsize ;
+  ddisc->disc_ROOTsize = ROOTsize ;      /* in sectors */
+  dprintf(("","DOSFS_image_open: ROOTsize   = &%08X\n",ROOTsize));
+ 
+  /* place remaining information into the disc description record */
+  dprintf(("","DOSFS_image_open: numFATs = %x, FATsize = %x, DOSsecsize = %x, ROOTsize = %x\n",numFATs,FATsize,DOSsecsize,ROOTsize));
+  ddisc->disc_startsec =  numRESVD + (numFATs * FATsize) + ROOTsize +1; /* ensure '1 based' sector count (as used later!) */
+  dprintf(("","DOSFS_image_open: Data Start Sector (2nd cluster) = %x\n",ddisc->disc_startsec));
+ 
+  dprintf(("","DOSFS_image_open: disc_ROOTsize = %d\n",ROOTsize));
+  dprintf(("","DOSFS_image_open: disc_startsec = %d\n",ddisc->disc_startsec));
+ 
+ 
+  dprintf(("","DOSFS_image_open: Size of fat entry = %d\n",ddisc->disc_FATentry));
+  /* calculate the number of available cluster entries */
+  /* clarification needed here:
+   * max_sector() returns the total number of sectors on the disc
+   * disc_startsec is the 1-based index of the first sector on the disc used for file storage.
+   * Thus the number of sectors available for file storage is (total sectors - (startsec-1))
+   */
+  FATentries = (max_sector(dboot) - (ddisc->disc_startsec-1)) / dboot->BOOT_secalloc ;
+  dprintf(("","DOSFS_image_open: FATentries = %x (%d)\n",FATentries,FATentries));
+ 
+  ddisc->disc_FATentries = FATentries ; /* number of cluster entries */
+ 
+  /* DOS_FAT_RW will not have filled in the disc_freeclusters field so we must do that here. */
+  ddisc->disc_freeclusters = countfreeclusters(ddisc);
+ 
+  /* We have successfully loaded all the information we need */
+  ddisc->disc_flags = disc_UPDATEID ; /* next update should generate new disc ID */
+ 
+  dprintf(("","DOSFS_image_open: ddisc = &%08X\n",(int)ddisc));
+ 
+  dprintf(("","DOSFS_image_open: disc_FAT = %x\n",(int)&ddisc->disc_FAT));
+ 
+  UNUSED(buffsize) ; /* for the moment */
+  return(ddisc) ;
+}
+
+/*!
+ * \param  Image FS handle
+ * \return -1 if an error occurred in closing
+ */
+int DOSFS_image_close(DOSdisc *ihand)
+{
+  dprintf(("","\n\nDOSFS_image_close: ihand = &%08X\n",(word)ihand));
+ 
+  /* All files opened onto this image should have been closed. This call
+   * should just ensure any buffered data and then release the resources
+   * attached to the image.
+   */
+ 
+  /* Flush the directory cache. */
+  flush_dir_cache(ihand);
+ 
+  /* If we just cache the FAT copies (and do not write-back during normal
+   * operation) then we should write all the FAT copies to the image at
+   * this point. At the moment we always ensure the FAT copies.
+   */
+  ensure_FATs(ihand);
+ 
+  free(ihand) ;
+
+  return (0) ;
+}
+
+/*!
+ * \param  fname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  buffer Memory address for result
+ * \param  blen Size of buffer
+ * \param  ihand Image handle
+ * \return -1 if defect list read failed
+ */
+int DOSFS_defect_list(char *fname, word *buffer, word blen, DOSdisc *ihand)
+{
+  int             limit ;                         /* end of list */
+  int             index;
+ 
+  dprintf(("","DOSFS_defect_list: buffer &%08X (blen &%08X) ihand &%08X\n",buffer,blen,(int)ihand));
+ 
+  /* Fill the supplied buffer with the byte offsets of the defects
+   * within the image, terminated with a defect list terminator word.
+   * It is an error for the specified filename to not be a ROOT object,
+   * though DOSFS currently ignores this.
+   *
+   * We should search the FAT for CLUSTER_bad values that are NOT part
+   * of a file chain. The offset we return is true byte offset within
+   * the image, ie. we count previous bad CLUSTERs as data.
+   */
+ 
+  /* Scan the FAT returning information about BAD CLUSTERs */
+  limit = (blen / sizeof(int)) - 1 ;
+ 
+  index = CLUSTER_first(ihand);
+  do
+  {
+    int  secs;
+    word addr;
+    int  cluster = findCLUSTERtype(ihand, &index, CLUSTER_bad(ihand));
+
+    if (cluster < 0)
+    {
+      break;
+    }
+    secs = secsalloc(ihand);
+    addr = ((cluster - CLUSTER_first(ihand)) * secs + ihand->disc_startsec - 1) * DOSsecsize + ihand->disc_winioffset;
+    if ((limit -= secs) < 0)
+    {
+      secs += limit;
+    }
+    while (secs--)
+    {
+      *buffer = addr;
+      buffer++;
+      dprintf(("","DOSFS_defect_list: found &%08X\n", addr));
+      addr += DOSsecsize;
+    }
+    index++;
+  } while (limit > 0);
+ 
+  /* We left enough room (in the calculation above) for the terminator */
+  /* NOTE: At the moment we do not generate an error if there are more
+   *       BAD CLUSTERs than will fit into the passed buffer.
+   */
+  *buffer = DefectList_End ; /* terminate the list */
+  UNUSED(fname) ;
+  return (0) ;
+}
+
+/*!
+ * \param  fname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  offset Byte offset to map out as defective
+ * \param  ihand Image handle
+ * \return -1 if defect list add failed
+ */
+int DOSFS_add_defect(char *fname, word offset, DOSdisc *ihand)
+{
+  int CLUSTER ;
+  int nextCLUSTER ;
+ 
+  dprintf(("","DOSFS_add_defect: \"%s\" &%08X\n",fname,offset));
+ 
+  /* It is an error for the specified filename to not be a ROOT object
+   * an error should be returned if the defect cannot be mapped out.
+   *
+   * if the CLUSTER is part of a file chain then we cannot map it out
+   * if it is CLUSTER_bad then it is already mapped out
+   * if it is >= CLUSTER_resvd then we cannot map it out
+   *
+   * it can only be mapped out if it is CLUSTER_unused
+   *
+   * All we do to map the CLUSTER out is update the FAT. The FAT will then
+   * be un-usable by DOS filing systems.
+   */
+ 
+  /* Convert byte "offset" to CLUSTER address */
+  CLUSTER = ((offset - ihand->disc_winioffset) / DOSsecsize - ihand->disc_startsec + 1) /
+            secsalloc(ihand) + CLUSTER_first(ihand);
+ 
+  /* Load the FAT entry at the given CLUSTER */
+  nextCLUSTER = getnextCLUSTER(CLUSTER,ihand) ;
+  if (nextCLUSTER < CLUSTER_first(ihand)) /* JRS 9/3/92 ensure within FAT */
+  {
+    return_error0(int, err_clusterchain) ;
+  }
+
+  /* If it is CLUSTER_bad then it is already mapped out */
+  if (nextCLUSTER != CLUSTER_bad(ihand))
+  {
+    /* Otherwise check if the CLUSTER is being used */
+    if (nextCLUSTER == CLUSTER_unused(ihand))
+    {
+      writenextCLUSTER(CLUSTER,CLUSTER_bad(ihand),ihand) ;
+      if (ensure_FATs(ihand) < 0)
+      {
+        return((int)-1) ; /* error already defined */
+      }
+      (ihand->disc_freeclusters)--;
+    }
+    else
+    {
+      return_error0(int, err_clusterinuse) ;
+    }
+  }
+  UNUSED(fname);
+  return (0) ;
+}
+
+/*!
+ * \param  fname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  ihand Image handle
+ * \return Boot option
+ */
+word DOSFS_read_boot_option(char *fname, DOSdisc *ihand)
+{
+  /* The *OPT 4 boot option is fixed, since there's nowhere to store it on a DOS disc, but it's
+   * far more useful for that fixed value to be 2, so we can run a modern boot sequence from it
+   */
+  dprintf(("","DOSFS_read_boot_option: \"%s\" always returning 2\n",fname));
+  UNUSED(fname) ;
+  UNUSED(ihand) ;
+  return (2) ;
+}
+
+/*!
+ * \param  fname NULL terminated ASCII pathname, relative to ROOT of image
+ * \param  newoption Option to set
+ * \param  ihand Image handle
+ * \return Error
+ */
+int DOSFS_write_boot_option(char *fname, word newoption, DOSdisc *ihand)
+{
+  dprintf(("","DOSFS_write_boot_option: \"%s\" &%02X\n",fname,newoption));
+  UNUSED(fname) ;
+  UNUSED(newoption) ;
+  UNUSED(ihand) ;
+  return_error0(int, err_nobootoption) ;
+}
+
+/*!
+ * \param  buffer Memory address for result
+ * \param  blen Size of buffer
+ * \param  ihand Image handle
+ * \return -1 if used space map read failed
+ */
+int DOSFS_used_space_map(char *buffer, word blen, DOSdisc *ihand)
+{
+  int          loop;
+  fFAT_sector *dFAT = &(ihand->disc_FAT);
+  word         dval;
+  word         mask;
+  int         *bufp = (int *)((int)buffer & 0xFFFFFFFC);    /* Points to aligned buffer word. */
+  int          offset = ((int)buffer & 0x3) << 3;           /* Initial offset into aligned buffer word. */
+  int          secalloc = secsalloc(ihand);
+ 
+  dprintf(("","DOSFS_used_space_map: buffer &%08X (blen &%08X) ihand &%08X\n",(word)buffer,blen,(word)ihand));
+ 
+  /* Set all bits and the zero those which correspond to unused sectors.
+   * This ensures that things like the FATs and the root directory are copied.
+   */
+  for (loop = 0; loop < blen; loop++)
+  {
+    *buffer++ = 0xFF;
+  }
+  /* buffer now points to the first byte past the end. */
+ 
+  /* Create a mask with as many bits set as there are sectors in a cluster. */
+  mask = (1 << secalloc) - 1;
+ 
+  /* Point to the word which contains the 1st bit corresponding to the 1st cluster. */
+  offset += ihand->disc_startsec - 1; /* JRS 22/4/92 added -1 since startsec is 1-based, though 0-based is expected for buffer */
+  bufp += offset >> 5;
+  offset &= 0x1F;
+ 
+  /* Set bits word by word. */
+  dval = *bufp;
+  for (loop = CLUSTER_first(ihand); loop < ihand->disc_FATentries; loop++)
+  {
+    word bitaddress = (ihand->disc_FATentry * loop) ;
+    word byteaddress = ((bitaddress >> 3) + (word)dFAT) ;
+    word shift = (bitaddress & 0x00000007) ;
+    word datavalue = loadWORD((char *)byteaddress) ;
+    int  cluster = (int)((datavalue >> shift) & FAT_entry_mask(ihand)) ;
+
+    if (cluster == CLUSTER_unused(ihand))
+    {
+      dval &= ~(mask << offset);
+    }
+    offset += secalloc;
+    if (offset >= 32)
+    {
+      /* Write out that word */
+      *bufp++ = dval;
+      dval = *bufp;
+      offset &= 0x1F;
+      if (cluster == CLUSTER_unused(ihand))
+      {
+        dval &= ~(mask >> (secalloc - offset));
+      }
+    }
+ 
+    /* Make sure we don't write past the end of the buffer. */
+    if (((uintptr_t)bufp + (offset >> 3)) >= (uintptr_t)buffer) break;
+  }
+  /* Any partial dval */
+  *bufp = dval;
+ 
+  return(0) ;
+}
+
+/*!
+ * \param  ihand Image handle
+ * \return Space available in bytes
+ */
+FS_free_space *DOSFS_read_free_space(DOSdisc *ihand)
+{
+  word            unitsize ;                      /* CLUSTER size */
+  DOS_bootsector *DOSboot = &(ihand->disc_boot) ; /* short-hand */
+ 
+  dprintf(("","DOSFS_read_free_space: ihand = &%08X\n",(word)ihand));
+ 
+  /* Return the free space information for the given image. */
+  unitsize = cluster_size(DOSboot) ;
+ 
+  fspace.freespace = ihand->disc_freeclusters;
+  fspace.freespace *= unitsize ;
+  fspace.largestobject = fspace.freespace ;
+  fspace.discsize = max_sector(DOSboot) * DOSsecsize ;
+ 
+  dprintf(("","DOSFS_read_free_space: returning %d\n", fspace.freespace));
+  return (&fspace) ;
+}
+
+/*!
+ * \param  newname Disc title
+ * \param  ihand Image handle
+ * \return -1 if failed to set
+ */
+int DOSFS_namedisc(char *newname,DOSdisc *ihand)
+{
+  int           numFATs = ihand->disc_boot.BOOT_num_fats ;
+  int           FATsize = ihand->disc_FATsize ;
+  int           ROOTsize = (ihand->disc_ROOTsize * DOSsecsize) ;
+  DOS_direntry *rootdir = NULL ;
+  DIR_info     *dirstruct;
+ 
+  dprintf(("","DOSFS_namedisc: \"%s\" (ihand = &%08X)\n",((newname == NULL)?"<NULL>":newname),(int)ihand));
+ 
+  /* Name the referenced image "newname". Under MS-DOS this involves updating
+   * the volume entry in the ROOT directory (or creating a new one).
+   */
+ 
+  {
+    int           index ;
+    DOS_direntry *dentry ;
+    char         *namebuff = NULL ;
+    time5byte     nameTIME ;
+    int           rootsec = ((((numFATs * FATsize) + DOSsecsize) / DOSsecsize) + 1) ;
+ 
+    /* Load the ROOT directory */
+    if ((int)(dirstruct = loadDIR("", ihand)) < 0)
+    {
+      return -1;
+    }
+    rootdir = (DOS_direntry*)DI_Base(dirstruct) ;
+ 
+    /* check ROOTsize (could be wrong for FAT32) */
+    if (ROOTsize == 0)
+    {
+      ROOTsize = dirstruct->dir_size ;
+      rootsec  = dirstruct->dir_sector ;
+    }
+ 
+    /* Search for a volume entry */
+    index = 0 ;
+    if ((dentry = findDIRtype((byte)FILE_win95, (byte)FILE_volume, rootdir, ROOTsize, &index)) == NULL)
+    {
+      /* No existing one, look for a free slot */
+      dentry = findemptyDIRentry(rootdir, ROOTsize) ;
+    }
+    if (dentry == NULL)
+    {
+      /* There are no free slots in the ROOT directory */
+      return_error0(int, err_dirfull) ;
+    }
+ 
+    /* zero the directory entry before placing our information */
+    memset(dentry, 0, sizeof(DOS_direntry));
+
+    /* write the given discname into the "dentry" */
+    namebuff = (char *)&(dentry->FILE_status) ;
+    for (index = 0; (index < (namsize + extsize)); index++)
+    {
+      /* copy upto the first space or NULL character */
+      if (*newname && (*newname != ' '))
+      {
+        *namebuff++ = *newname++ ;
+      }
+      else
+      {
+        break ; /* the for loop */
+      }
+    }
+
+    /* pad upto the limit with spaces */
+    for (; (index < (namsize + extsize)); index++)
+    {
+      *namebuff++ = ' ' ;
+    }
+
+    /* mark the directory entry as a "volume" */
+    dentry->FILE_attribute = (FILE_volume | FILE_archive) ;
+    get_RISCOS_TIME(&nameTIME) ;
+    put_FILE_time(dentry->FILE_time,dentry->FILE_timeHI,RISCOStoTIME(&nameTIME)) ;
+    put_FILE_date(dentry->FILE_date,dentry->FILE_dateHI,RISCOStoDATE(&nameTIME)) ;
+    put_FILE_cluster(dentry,0x00000000,ihand) ;
+    dentry->FILE_size = 0x00000000 ; /* labels have no size */
+ 
+    /* Save the (modified) ROOT directory */
+    if (DOS_image_RW(Wdata,rootsec,0,(byte *)rootdir,ROOTsize,ihand) < 0)
+    {
+      free_dir_cache("", ihand);
+      return((int)-1) ; /* error already defined */
+    }
+  }
+ 
+  return(0) ;
+}
+
+/*!
+ * \param  type Reason for stamp
+ * \param  ihand Image handle
+ * \return -1 if failed to stamp
+ */
+int DOSFS_stampimage(int type, DOSdisc *ihand)
+{
+  dprintf(("","DOSFS_stampimage: type %d (ihand = &%08X)\n",type,(int)ihand));
+
+  /* This call should either update the image's unique identification number
+   * (ie. the value returned in the DiscID field of the disc record on an
+   * IdentifyDisc call) immediately or as part of the next image update.
+   * This is then used by FileCore to keep track of discs when it performs
+   * IdentifyDisc calls. When the identity has been updated we should perform
+   * an "OS_Args 8" (OSArgs_ImageStampIs) to inform FileCore of the new ID.
+   *     OS_Args
+   *             r0 = 8
+   *             r1 = image file handle
+   *             r2 = new image identity
+   */
+  if (type == FSControl_StampImage_NextUpdate)
+  {
+    ihand->disc_flags = disc_UPDATEID | disc_CHANGED ;
+  }
+  if (type == FSControl_StampImage_Now)
+  {
+    return (update_imageID(ihand)) ;
+  }
+  
+  return(0) ;
+}
+
+/*!
+ * \param  offset Byte offset to return information for
+ * \param  buffer Buffer for result
+ * \param  blen Size of buffer
+ * \param  ihand Image handle
+ * \return -1 if failed to set
+ */
+int DOSFS_objectatoffset(int offset, char *buffer, int blen, DOSdisc *ihand)
+{
+  int allocsize = (secsalloc(ihand) * DOSsecsize) ; /* size of a CLUSTER */
+  int offCLUSTER ;  /* CLUSTER in which the given offset lies */
+  int nextCLUSTER ; /* CLUSTER referenced by offset CLUSTER (offCLUSTER) */
+  int state ;
+ 
+  dprintf(("","DOSFS_objectatoffset: offset &%08X, buffer &%08X (len &%08X) (ihand = &%08X)\n",offset,(int)buffer,blen,(int)ihand));
+ 
+  /* Return the type of the object found at the given image offset. If the
+   * object has a suitable path, then it should be returned in passed
+   * buffer (with a leading directory seperator "." character).
+   *
+   * type 0 - offset is free, defect or beyond the end of the image
+   *      1 - offset is allocated but not a file/directory (eg. FAT)
+   *      2 - offset is in single object
+   *      3 - offset is in multiple objects
+   *
+   * Return codes 2 and 3 should place the object name into the buffer.
+   */
+ 
+  /* For DOS discs we can easily spot the system areas of the image, and
+   * areas that have NOT yet been allocated. However, to find the name of
+   * an object we will have to scan every directory until we find an
+   * object whose chain contains the CLUSTER at the given offset.
+   */
+ 
+  /* CLUSTER align (downwards) the passed offset */
+  offCLUSTER = (offset / allocsize) ;
+  dprintf(("","DOSFS_objectatoffset: offCLUSTER = &%03X\n",offCLUSTER));
+ 
+  if (CLUSTERtoSECTOR(offCLUSTER,ihand) < ihand->disc_startsec)
+  {
+    dprintf(("","DOSFS_objectatoffset: CLUSTER in system area (returning 1)\n"));
+    return (1) ; /* CLUSTER is in the system area */
+  }
+ 
+  nextCLUSTER = getnextCLUSTER(offCLUSTER,ihand) ;
+  if (nextCLUSTER < CLUSTER_first(ihand))  /* JRS 9/3/92 ensure within FAT */
+  {
+    return_error0(int, err_clusterchain) ;
+  }
+
+  if ((nextCLUSTER == CLUSTER_unused(ihand)) || (nextCLUSTER == CLUSTER_bad(ihand)))
+  {
+    dprintf(("","DOSFS_objectatoffset: CLUSTER in free or bad (returning 0)\n"));
+    return (0) ; /* CLUSTER is free or bad */
+  }
+ 
+  /* Under DOSFS a CLUSTER can only be used by one object. Therefore we never
+   * return reason code 3 (offset used by multiple objects). If we reach here
+   * we must place the object name into the passed buffer and return reason
+   * code 2.
+   */
+  /* We need to scan from the root directory all file (and directory) chains,
+   * until we find a file which contains a reference to "offCLUSTER".
+   */
+  *buffer = '\0';    /* Start from root directory. */
+  if ((state = findCLUSTER(offCLUSTER, buffer, blen, ihand)) == 0)
+  {
+    dprintf(("","DOSFS_objectatoffset: CLUSTER could not be found in a chain\n"));
+    return(0) ; /* We could NOT find the CLUSTER in any chain */
+  }
+  if (state < 0)
+  {
+    return(-1) ; /* error already defined */
+  }
+
+  /* The above "findCLUSTER" call will have filled the buffer suitably */
+  return(2) ; /* CLUSTER is in use */
+}
+@
+
+
+4.12
+log
+@Reject overly-large discs, and other invalid things
+Detail:
+  c/Accessors, h/Accessors, Makefile - Added some simple 'image accessor' routines to abstract over accessing the underlying disc/image file. These accept 64bit disc addresses and will check to make sure any size limits imposed by the lower-level API are adhered to (512MB limit for FileCore_DiscOp, or extent of image file for OS_GBPB)
+  h/MsgTrans, Resources/Germany/Messages, Resources/UK/Messages - Add a couple of new error messages
+  h/Helpers - Add a couple of macros to simplify reading 16/32bit values that are split into multiple bytes in struct definitions. Change writeWORD & loadWORD to accept void* instead of char* so they can be used with other types like 'byte'
+  h/DOSshape - Add '0' suffix to some struct members so they can be used with new READ_0123 macro
+  h/ADFSshape - Make sure put_doublestep is safe to use with bools
+  c/DOSdirs - Remove pointless malloc of small temporary array
+  c/DOSclusters - Use new READ_ macros in max_sector()
+  c/DOSFS - Use new READ_ macros so code is less painful to read. Use new image accessor system to get rid of some boilerplate for reading from the disc (+ extra error checks). Change 32bit values to 64bit where it looks like it's necessary, and use bools in place of a couple of 0/1 ints. Reject any discs which are too big for the 32bit fields in the ADFS disc record.
+  c/OpsFunc - Update DOSFS_image_open in ways similar to the code in c/DOSFS, making use of READ_, image accessor, 64bit values, and adding extra error checks.
+Admin:
+  Tested with assorted large & small image files & SD cards on a BB-xM, and some DOS/Atari floppy discs on a RiscPC
+  FAT partitions larger than 4GB (or which extend past the 4GB FileSwitch limit) are now rejected, as are image files which have been truncated
+  A future improvement could be to lift the disc/partition identification code out of c/DOSFS and c/OpsFunc and unify it, since both files contain fairly similar code
+  German messages are in need of translation
+
+
+Version 1.12. Tagged as 'DOSFS-1_12'
+@
+text
+@d245 1
+a245 1
+  dprintf(("","\n\nDOSFS_read_dir: \"%s\" (dest = &%08X) %d %d %d\n",((fname == "") ? "NULLptr" : fname),dest,num,off,blen));
+d261 1
+a261 1
+  dprintf(("","\n\nDOSFS_read_dir_info: \"%s\" (dest = &%08X) %d %d %d\n",((fname == "") ? "NULLptr" : fname),dest,num,off,blen));
+@
+
+
+4.11
+log
+@No longer offer PCMCIA SRAM card as a format option
+Untangle the PCMCIATRUE misnomer - what it really meant was "offer PCMCIA card as an option for *Format AND allow non floppy geometries".
+Nothing has shipped with PCCardFS since October 1994, so stop offering it as a possible *Format.
+However, we do rely on the non floppy geometries for things like SD cards and USB sticks, so retain that with a new switch (permanently enabled) called NONFLOPPIES.
+
+Tested with a Pi SD card and a 4GB USB stick.
+
+Version 1.11. Tagged as 'DOSFS-1_11'
+@
+text
+@d24 1
+d40 1
+a273 1
+  DOS_partition    *DOSpart = NULL ; /* winchester partition information */
+d275 1
+a275 2
+  word              winioffset = 0 ; /* partition start within wini images */
+  word              winisize = 0 ;   /* winchester media size */
+d283 1
+a283 1
+  word              discaddress = 0x00000000 ;
+a286 1
+  _kernel_swi_regs  reglist ;                 /* for SWI calls */
+d291 2
+d329 5
+a333 8
+  reglist.r[0] = OSGBPB_ReadFromGiven ;   /* read operation */
+  reglist.r[1] = fshand ;        /* FileSwitch handle */
+  reglist.r[2] = (word)dboot ;   /* destination address */
+  reglist.r[3] = DOSsecsize ;    /* fixed in MS-DOS */
+  reglist.r[4] = discaddress ;   /* offset within FileSwitch file */
+  reglist.r[5] = NULL ;
+  reglist.r[6] = NULL ;
+  if ((rerror = _kernel_swi(OS_GBPB,&reglist,&reglist)) != NULL)
+d346 1
+d388 2
+a389 2
+      winioffset = ((pentry[8] | (pentry[9] << 8) | (pentry[10] << 16) | (pentry[11] << 24)) * DOSsecsize) ;
+      dprintf(("","DOSFS_image_open: winioffset = &%08X\n",winioffset));
+d394 1
+a394 8
+      winisize = (pentry[12] | (pentry[13] << 8) | (pentry[14] << 16) | (pentry[15] << 24)) ;
+   
+      /* We could add the following check: (winisize <= "size of FileSwitch file")
+       * to further check the validity of the partition information. If the
+       * calculated offset is outside the image file then the following BOOT
+       * BLOCK load will fail and give the user a "funny" error message, rather
+       * than a specific DOSFS one.
+       */
+d397 5
+a401 8
+      reglist.r[0] = OSGBPB_ReadFromGiven ;
+      reglist.r[1] = fshand ;
+      reglist.r[2] = (word)dboot ;
+      reglist.r[3] = DOSsecsize ;
+      reglist.r[4] = discaddress ;
+      reglist.r[5] = NULL ;
+      reglist.r[6] = NULL ;
+      if ((rerror = _kernel_swi(OS_GBPB,&reglist,&reglist)) != NULL)
+d416 1
+a416 1
+      if ((sector_size(dboot) != DOSsecsize) || (dboot->BOOT_num_fats != 2) || (max_sector(dboot) != winisize))
+d439 1
+a439 1
+      dboot->hidden = 0x00;
+d441 1
+d449 1
+a449 1
+  numRESVD = (dboot->BOOT_reserved | (dboot->BOOT_reservedHI << 8)) ;
+d456 2
+a457 2
+  dprintf(("","DOSFS_image_open: sector size = %d\n",((dboot->BOOT_secsize)|(dboot->BOOT_secsizeHI<<8))));
+  dprintf(("","DOSFS_image_open: cluster size = %d\n",dboot->BOOT_secalloc * ((dboot->BOOT_secsize)|(dboot->BOOT_secsizeHI<<8))));
+d459 1
+a459 1
+  RootDirSectors = (dboot->BOOT_root_dir | (dboot->BOOT_root_dirHI << 8)) * sizeof(DOS_direntry); /* Bytes */
+d463 1
+a463 1
+  if ((dboot->BOOT_FAT_size | (dboot->BOOT_FAT_sizeHI<<8)) != 0)
+d465 1
+a465 1
+    FATsize = (dboot->BOOT_FAT_size|(dboot->BOOT_FAT_sizeHI<<8));
+d470 1
+a470 2
+    FATsize = (dboot->BOOT_extra.fat32.FAT_sz0 | (dboot->BOOT_extra.fat32.FAT_sz1<<8) |
+               (dboot->BOOT_extra.fat32.FAT_sz2<<16) | (dboot->BOOT_extra.fat32.FAT_sz3<<24));
+d472 1
+a472 1
+  if( (dboot->BOOT_max_sect | (dboot->BOOT_max_sectHI<<8)) != 0)
+d475 1
+a475 1
+    totsec = dboot->BOOT_max_sect | (dboot->BOOT_max_sectHI<<8);
+d479 1
+a479 1
+    totsec = dboot->big_sect | (dboot->big_sect1<<8) | (dboot->big_sect2<<16) | (dboot->big_sect3<<24);
+d481 1
+a481 1
+  datasec = totsec - ((dboot->BOOT_reserved | (dboot->BOOT_reservedHI<<8)) + (numFATs * FATsize) + RootDirSectors);
+d490 21
+d563 1
+a563 2
+    ddisc->disc_RootCluster = (dboot->BOOT_extra.fat32.RootClus0 | (dboot->BOOT_extra.fat32.RootClus1<<8) |
+                              (dboot->BOOT_extra.fat32.RootClus2<<16) | (dboot->BOOT_extra.fat32.RootClus3<<24));
+d570 1
+a570 1
+              (dboot->BOOT_root_dir | (dboot->BOOT_root_dirHI << 8)),ddisc->disc_RootCluster));
+d574 1
+a574 1
+  ddisc->disc_winioffset = winioffset ;  /* offset into image */
+d638 1
+a638 1
+  ROOTsize = (((dboot->BOOT_root_dir | (dboot->BOOT_root_dirHI << 8)) * sizeof(DOS_direntry))+(DOSsecsize-1)) / DOSsecsize ;
+@
+
+
+4.10
+log
+@Allow mounting discs with 1 letter names, and 2x buffer overrun fixes
+DOSFS would prefer to use the disc title from the volume name entry in the root directory, even if this reduced to 1 letter, which would then lead to "Disc drive not known" errors. Since the disc couldn't be mounted it couldn't be renamed either, requiring a trip to a PC to do so.
+Now, if the cleaned up name is < 2 characters long, ignore it and use the one based on the volumeid, and if that doesn't exist, use the default one ("Untitled") from the Messages file.
+In OpsFunc.c used memset() in place of a byte set loop.
+
+Ref https://www.riscosopen.org/forum/forums/4/topics/9503
+DOSFS.c, line 621: remove the excess NULL so the sprintf fits into the 10 byte buffer, not 11.
+DOSFS.c, line 1556: restore the original intent for *CopyBoot in light of the structure/union reorg DOSshape.h revision 4.7 in DOSFS-0_79. Previously the boot code was copied in its entirity as an opaque blob, but the loop was left unchanged, overrunning the sector buffer.
+
+A useful example of the extent of the boot code is given in
+  http://thestarman.pcministry.com/asm/mbr/DOS50FDB.htm
+which shows the code uses up every last byte of the sector.
+
+Tested with a disc called "R", which can now be mounted. A floppy with no name and no volume id, and one with no name and a volume id.
+
+Version 1.10. Tagged as 'DOSFS-1_10'
+@
+text
+@d342 1
+a342 1
+#ifdef PCMCIATRUE
+d424 1
+a424 2
+#ifdef PCMCIATRUE
+      /*if ((sector_size(dboot) != DOSsecsize) || (max_sector(dboot) != winisize))*/
+@
+
+
+4.9
+log
+@Fix a few potential memory leaks
+Some of the long filenames handling added in DOSFS-0_79 (DOSFSops.c revision 4.10) introduced extra points to return in the face of error, but didn't free memory allocated earlier in the function.
+Add missing free()'s.
+From a tip off from Dominic Plunkett in http://www.riscosopen.org/forum/forums/4/topics/3990#posts-51013
+
+Version 1.09. Tagged as 'DOSFS-1_09'
+@
+text
+@d997 2
+a998 5
+    for (index = 0; (index < sizeof(DOS_direntry)); index++)
+    {
+      ((char *)dentry)[index] = '\0' ;
+    }
+ 
+a1000 1
+    /* copy upto the first space or NULL character */
+d1003 1
+@
+
+
+4.8
+log
+@Change last couple of uses of trace macros to use DebugLib
+This town ain't big enough for the two of us.
+
+Version 1.07. Tagged as 'DOSFS-1_07'
+@
+text
+@d158 1
+d192 1
+@
+
+
+4.7
+log
+@Revise filename shortening rules
+The rules DOSFS used to create the short name version of a long filename were quite wide of the recommendations from Microsoft. This causes problems in particular with bootloaders that are a little more simplistic and use the short name form, only to find "BOOTCODE.BIN" has been replaced by "BOOTCO~1.BIN" by DOSFS.
+Also, the long filename entried created for new long filenames left the reserved fields unset. Some of these seem to have special meanings to Windows which faults them ("extended attribute handle invalid") when running chkdsk.
+
+DOSnaming.c: replaced the shorten_lfn function, sprinkled in a few token consts, set the reserved fields in long file names to 0
+DOSclusters.c/OpsFunc.c/OpsFile.c: remove shorttemp[14] no longer needed, simplify sprintf/memcpy/memcpy into a single sprintf
+DOSFS.h: familiar MIN/MAX maxros added
+
+Tested in isolation in harness "test/shorten" and comparing floppy discs generated with "test/shortgen" from Windows and DOSFS.
+Fixes ticket #313.
+
+Version 1.06. Tagged as 'DOSFS-1_06'
+@
+text
+@a38 1
+#include "debug.h"
+a165 1
+  dprintf(("","DOSFS_rename: short temporary filename = '%s'\n",shorttemp));
+@
+
+
+4.6
+log
+@Use a few defines, correct error text
+Magic E5 and 0F's swapped for preexisting defines.
+Name too long error (when truncate CMOS is off) erroneously said 8 characters was the name limit despite the loop counter check being 255 characters.
+Not tagged.
+@
+text
+@a61 1
+  char          shorttemp[14];              /* for short name equivalent */
+d162 2
+a163 1
+  not_sfn = shorten_lfn(leafname, shortname, shorttemp, ndir);
+d166 3
+a168 5
+  dprintf(("","DOSFS_rename: long filename = %s\n",leafname));
+  dprintf(("","DOSFS_rename: short tempory filename = %s\n",shorttemp));
+  dprintf(("","DOSFS_rename: short filename = \'%c%c%c%c%c%c%c%c\' ext=\'%c%c%c\'\n",
+              shortname[0],shortname[1],shortname[2],shortname[3],shortname[4],shortname[5],shortname[6],shortname[7],
+              shortname[8],shortname[9],shortname[10]));
+d172 2
+a173 4
+ 
+  sprintf((char *)&(dentry->FILE_status),"           ") ;
+  memcpy((char *)&(dentry->FILE_status),&shortname[0],8);
+  memcpy((char *)&(dentry->FILE_extension),&shortname[8],3);
+@
+
+
+4.5
+log
+@  Fix divide-by-zero bug
+Detail:
+  Somewhere in the process of adding FAT16/FAT32 support, a bug was
+  was introduced where an attempt was made to calculate the number of
+  sectors in a cluster before the cluster size (in bytes) had been
+  determined. This affected invalid (e.g. blank) image files, as well as
+  old 160K/320K DOS floppies that aren't supposed to contain a valid boot
+  block.
+Admin:
+  Issue raised by the Raspberry Pi NOOBS team when they failed to set up
+  the DOS partition where FileCore was expecting it to be.
+
+Version 1.02. Tagged as 'DOSFS-1_02'
+@
+text
+@d215 1
+a215 1
+  found->FILE_status = 0xE5;
+d220 1
+a220 1
+    found->FILE_status = 0xE5;
+@
+
+
+4.4
+log
+@Allow RAM builds with messages in, fix for saving to images > 2G
+RAM build include messages.
+Removed atexit() handler, in favour of finalisation-code option in CMHG file.
+Changed cluster rounding in saveFILE() to deal with extents > 2G.
+
+Version 1.00. Tagged as 'DOSFS-1_00'
+@
+text
+@d500 5
+a504 1
+  CountOfClusters = datasec / dboot->BOOT_secalloc;
+@
+
+
+4.3
+log
+@Add some comments (!) and reindent FileSwitch interface
+OpsGetPut
+  DOSFS_put_bytes no longer passes an unnecessary dummy argument.
+  Reindented.
+  Doxygen comments added to FileSwitch layer.
+OpsFind
+  Suggested buffer to FileSwitch is now 1x512 sector (rather than 256).
+  Note - nothing seems to use the cluster buffering code in DOSFS,
+indeed nothing ever malloc()s a buffer.
+  Check at line 237 of OpFind would never be true since FILE_subdir is
+not 1, fixed.
+  Return an error if the handle to close is invalid.
+  Reindented.
+  Doxygen comments added to FileSwitch layer.
+OpsFile
+  Reindented.
+  Doxygen comments added to FileSwitch layer.
+OpsFunc
+  A failure to find a slot to set the disc title now reports "Dir full"
+not "Disc full"
+  Reindented.
+  Doxygen comments added to FileSwitch layer.
+
+Version 0.99. Tagged as 'DOSFS-0_99'
+@
+text
+@d470 2
+a471 2
+  dprintf(("","DOSFS_image_open: cluster size = %x\n",dboot->BOOT_secalloc));
+  dprintf(("","DOSFS_image_open: Sector size = %d\n",((dboot->BOOT_secsize)|(dboot->BOOT_secsizeHI<<8))));
+@
+
+
+4.2
+log
+@Rationalise some defines
+Many magic numbers changed to exported defines.
+Eliminated unused "BOOTblock.h" (was just nesting 1 include file).
+Moved non ASCII definitions out of "ASCII.h" then found the remainder weren't used => eliminated.
+
+Version 0.98. Tagged as 'DOSFS-0_98'
+@
+text
+@d23 1
+d27 1
+d41 7
+a47 1
+word DOSFS_rename(char *oldname,char *newname,DOSdisc *ihand)
+d49 33
+a81 45
+ DIR_info     *cdir ;     /* directory where the original leafname resides */
+ DIR_info     *ndir ;     /* directory where the new leafname resides */
+ char         *DOSname ;  /* full DOS pathname */
+ char         *leafname ; /* pointer to the leafname of "DOSname" */
+ DOS_direntry *dentry ;   /* directory entry structure pointer */
+ DOS_direntry *found ;    /* directory entry structure pointer */
+ int           loop ;     /* general index counter */
+ int           not_sfn;   /* flag not a valid short name */
+
+ /* in:
+  *     oldname : NULL terminated ASCII pathname, relative to ROOT of image
+  *     newname : NULL terminated ASCII pathname, relative to ROOT of image
+  *     ihand   : filesystem image handle
+  *
+  * The rename should fail only if the objects are on different image files
+  * (Which should not happen with this system).
+  */
+
+ dprintf(("","\n\nDOSFS_rename: \"%s\" --> \"%s\"\n",oldname,newname));
+
+ /* convert "oldname" to DOS path format */
+ if ((DOSname = (char *)malloc(MaxString)) == NULL)
+  return_errorT(int,err_heapexhausted,tok_heapexhausted,0,0) ;
+ if ((int)convertRISCOStoLFN(oldname, DOSname) < 0) {
+  free(DOSname);
+  return (word)-1;
+ }
+ /* resolve the path (ie. load the directory the file is in) */
+ if (resolvePATH(DOSname,&cdir,&leafname,ihand) < 0)
+  {
+   free(DOSname) ;
+   return(-1) ; /* error already defined */
+  }
+
+ dprintf(("","DOSFS_rename: original leafname = \"%s\"\n",leafname));
+ char oldleafname[256];
+ strcpy(oldleafname,leafname);
+ dprintf(("","DOSFS_rename: saved leafname = \"%s\"\n",oldleafname));
+
+ /* search the directory for the original entry */
+ loop = 0 ;
+ if ((dentry = findDIRentry(leafname,cdir,cdir->dir_size,&loop)) == NULL)
+  {
+   free(DOSname) ;
+   return_errorT(word,err_objectnotfound,tok_objectnotfound,oldname,0) ;
+d83 2
+a84 1
+ found = dentry ; /* pointer to "oldname" in directory */
+d86 11
+a96 3
+
+ /* check that no wildcard characters exist in the original leafname */
+ if (checknotwildcarded(leafname, DOSwcmult, DOSwcsing) != 0)
+d98 2
+a99 2
+   free(DOSname) ;
+   return_error1(word,err_wildcardedname,oldname) ;
+d101 1
+a101 1
+
+d105 20
+a124 9
+ if (found->FILE_attribute & FILE_subdir) {
+   /* Reconstruct the full pathname of the directory being renamed. */
+   dprintf(("","DOSFS_rename: removing \"%s\" from the directory cache\n",leafname));
+   free_dir_cache(restorePATH(DOSname,leafname), ihand);
+ } else {
+  /* Its a file, so check if it's open. */
+  if (find_open_file(oldname, found, ihand) >= 0) {
+   free(DOSname);
+   return_error1(int, err_fileopen, oldname);
+d126 33
+a158 11
+ }
+
+ if ((int)convertRISCOStoLFN(newname, DOSname) < 0) {
+  free(DOSname);
+  return (word)-1;
+ }
+
+ set_dir_flags(cdir, dir_LOCKED);
+
+ /* resolve the path (ie. load the directory the file is in) */
+ if (resolvePATH(DOSname,&ndir,&leafname,ihand) < 0)
+d160 1
+a160 3
+   unset_dir_flags(cdir, dir_LOCKED);
+   free(DOSname) ;
+   return(-1) ; /* error already defined */
+d162 18
+a179 4
+ unset_dir_flags(cdir, dir_LOCKED);
+
+ dprintf(("","DOSFS_rename: new leafname = \"%s\"\n",leafname));
+ if (checknotwildcarded(leafname, DOSwcmult, DOSwcsing) != 0)
+d181 1
+a181 2
+   free(DOSname) ;
+   return_error1(word,err_wildcardedname,newname) ;
+d183 13
+a195 4
+
+ /* check to see if we already have a file with the destination name */
+ loop = 0 ;
+ if ((dentry = findDIRentry(leafname,ndir,ndir->dir_size,&loop)) != NULL)
+d197 1
+a197 3
+   /* new name already exists in the destination directory */
+   free(DOSname) ;
+   return_error0(word,err_alreadyexists) ;
+d199 5
+a203 17
+
+
+//Obtain the correct amount of empty directory entries
+  int numreq = (strlen(leafname)/13) + 2;
+  DOS_direntry * lfn[20];
+  DIR_info     *pdir = NULL ;       /* parent directory (not required) */
+
+  dprintf(("","renameOBJECT: numreq = %d\n",numreq));
+
+ if(get_dir_entry_array(lfn, ihand, numreq, &ndir, &pdir,&found)
+ <0) return -1;
+
+  char shorttemp[14];
+  char shortname[14];
+
+  not_sfn=shorten_lfn(leafname,shortname,shorttemp,ndir);
+  dentry = not_sfn?lfn[numreq-1]:lfn[0];
+d205 2
+a206 36
+  dprintf(("","renameOBJECT: long filename = %s\n",leafname));
+  dprintf(("","renameOBJECT: short tempory filename = %s\n",shorttemp));
+  dprintf(("","renameOBJECT: short filename = \'%c%c%c%c%c%c%c%c\' ext=\'%c%c%c\'\n",shortname[0],shortname[1],shortname[2],shortname[3],shortname[4],shortname[5],shortname[6],shortname[7],shortname[8],shortname[9],shortname[10]));
+  dprintf(("","renameOBJECT: into dentry = %p\n",dentry));
+
+ if(not_sfn)MakeLFNEntries(lfn,numreq,leafname,shortname);
+
+
+ sprintf((char *)&(dentry->FILE_status),"           ") ;
+ memcpy((char *)&(dentry->FILE_status),&shortname[0],8);
+ memcpy((char *)&(dentry->FILE_extension),&shortname[8],3);
+ /* copy spare bytes (either JGS info or DRDOS5.0 info) */
+ for (loop = 0; (loop < spare1); loop++)
+      dentry->FILE_reserved[loop] = found->FILE_reserved[loop] ;
+ /* copy file description */
+ dentry->FILE_attribute =  found->FILE_attribute;
+ dentry->FILE_time = found->FILE_time ;
+ dentry->FILE_timeHI = found->FILE_timeHI ;
+ dentry->FILE_date = found->FILE_date ;
+ dentry->FILE_dateHI = found->FILE_dateHI ;
+ dentry->FILE_cluster = found->FILE_cluster ;
+ dentry->FILE_clusterHI = found->FILE_clusterHI ;
+ dentry->FILE_size = found->FILE_size ;
+ set_dir_flags(ndir, dir_MODIFIED) ; /* new directory updated */
+
+ char * longfileholder = malloc(strlen(leafname)+1);
+ if (longfileholder == NULL)
+  return_errorT(int,err_heapexhausted, tok_heapexhausted, 0, 0);
+ strcpy(longfileholder,leafname);
+ int diroffset = ((int)((int)(dentry)-(DI_Base(ndir))) / sizeof(DOS_direntry));
+ (ndir)->lfnp[diroffset] = longfileholder;
+
+ dprintf(("","**************************************HERE: index = %d, pointer = %p, actual = %p\n",diroffset,cdir->lfnp[diroffset], longfileholder));
+
+  int cdirp = (int)DI_Base(cdir);
+  dprintf(("","renameOBJECT: cdirp = %x, found = %x\n",(int)cdirp,(int)found));
+d208 2
+a209 2
+  loop= ((int)((int)(found)-(DI_Base(cdir))) / sizeof(DOS_direntry));
+  if(cdir->lfnp[loop])
+d212 1
+a212 1
+    cdir->lfnp[loop]=NULL;
+d217 11
+a227 1
+  while( ((int)found >= cdirp) && (found->FILE_attribute == 0xF) )
+d229 64
+a292 80
+  dprintf(("","renameOBJECT: cdirp = %x, nfound = %x\n",(int)cdirp,(int)found));
+   found->FILE_status = 0xE5;
+   found--;
+  }
+
+ set_dir_flags(cdir, dir_MODIFIED) ; /* directory updated */
+ free(DOSname) ;
+
+ if ((ensure_directory(cdir)!= 0) || (ensure_directory(ndir)!= 0))
+  {
+   flush_dir_cache(ihand);
+   return(-1) ; /* error already defined */
+  }
+
+ /* out:
+  *     return  : rename status
+  */
+ return(0) ;
+}
+
+FS_dir_block *DOSFS_read_dir(char *fname,word dest,word num,word off,word blen,DOSdisc *ihand)
+{
+ /* in:
+  *     fname : NULL terminated ASCII pathname, relative to ROOT of image
+  *     dest  : destination memory address for data
+  *     num   : number of objects to read
+  *     off   : offset into directory
+  *     blen  : "dest" buffer length
+  *     ihand : filesystem image handle
+  */
+
+dprintf(("","\n\nDOSFS_read_dir: \"%s\" (dest = &%08X) %d %d %d\n",((fname == "") ? "NULLptr" : fname),dest,num,off,blen));
+
+ /* out:
+  *     dblock.objects_read = number of records read
+  *     dblock.next_offset  = offset of next item to be read (-1 if end)
+  */
+ return(read_dir(0,fname,dest,num,off,blen,ihand)) ;
+}
+
+FS_dir_block *DOSFS_read_dir_info(char *fname,word dest,word num,word off,word blen,DOSdisc *ihand)
+{
+ /* in:
+  *     fname : NULL terminated ASCII pathname, relative to ROOT of image
+  *     dest  : destination memory address for data
+  *     num   : number of objects to read
+  *     off   : offset into directory
+  *     blen  : "dest" buffer length
+  *     ihand : filesystem image handle
+  */
+ dprintf(("","\n\nDOSFS_read_dir_info: \"%s\" (dest = &%08X) %d %d %d\n",((fname == "") ? "NULLptr" : fname),dest,num,off,blen));
+
+ /* out:
+  *     dblock.objects_read = number of records read
+  *     dblock.next_offset  = offset of next item to be read (-1 if end)
+  */
+ return(read_dir(-1,fname,dest,num,off,blen,ihand)) ;
+}
+
+DOSdisc *DOSFS_image_open(word fshand,word buffsize)
+{
+ /* in:
+  *     fshand   : FileSwitch handle for new image file
+  *     buffsize : buffer size (0 = not known)
+  */
+ DOS_bootsector   *dboot = NULL ;   /* cached disc boot block */
+ DOS_partition    *DOSpart = NULL ; /* winchester partition information */
+ byte             *pentry ;         /* wini partition description pointer */
+ word              winioffset = 0 ; /* partition start within wini images */
+ word              winisize = 0 ;   /* winchester media size */
+ DOSdisc          *ddisc = NULL ;   /* cached disc description */
+ byte              numFATs ;        /* number of FATs in the image */
+ word              FATsize ;        /* size of FAT in bytes */
+ word              FATentries ;     /* number of entries in FAT */
+ word              numRESVD ;       /* number of reserved (unused) sectors */
+ word              ROOTsize ;       /* size of ROOT directory in sectors */
+ int               loop ;           /* general counter */
+ word              discaddress = 0x00000000 ;
+ _kernel_swi_regs  reglist ;        /* for SWI calls */
+ _kernel_oserror  *rerror ;         /* for standard RISC OS error structures */
+d294 1
+a294 1
+ static const _kernel_oserror noFAT32support = { 0, "FAT32 support absent"};
+d296 44
+a339 44
+
+ dprintf(("","\n\nDOSFS_image_open: fshand = &%08X, buffsize = &%08X\n",fshand,buffsize));
+ /* We can assume that FileSwitch has only called us with files of the correct
+  * type (ie. we need perform no 12bit filetype identification on the passed
+  * FileSwitch handle).
+  */
+
+ /* Construct an internal file handle structure that contains the FileSwitch
+  * handle, plus any other useful information. We will return the pointer to
+  * this structure as the image handle.
+  *
+  * We need to distinguish between DOS and Atari floppies and DOS winchesters
+  * (Winchesters use the "disc_winioffset" word, for floppies this needs to
+  * be initialised to 0x00000000).
+  */
+
+ /* CACHE the "disc" information */
+ if ((dboot = (DOS_bootsector *)malloc(sizeof(DOS_bootsector))) == NULL)
+  {
+   dprintf(("","DOSFS_image_open: unable to allocate memory for BOOT sector\n"));
+   return_errorT(DOSdisc *,err_heapexhausted,tok_heapexhausted,0,0) ;
+  }
+
+ dprintf(("","DOSFS_image_open: dboot = &%08X\n",(int)dboot));
+
+ /* At the moment there is no simple way of differentaiting between winchester
+  * partitions and those of floppy images. MS-DOS manages by the explicit
+  * drive hardware differences. We are accessing the disc images via the same
+  * file interface.
+  * The following code performs a few simple checks to differentiate between
+  * the image types.
+  */
+
+ /* read the BOOT BLOCK from the image */
+ /* This code RELIES on (DOS_BOOT_sector == DOS_PARTITION_sector) */
+ discaddress = (DOS_BOOT_sector - 1) * DOSsecsize ;
+ reglist.r[0] = OSGBPB_ReadFromGiven ;   /* read operation */
+ reglist.r[1] = fshand ;        /* FileSwitch handle */
+ reglist.r[2] = (word)dboot ;   /* destination address */
+ reglist.r[3] = DOSsecsize ;    /* fixed in MS-DOS */
+ reglist.r[4] = discaddress ;   /* offset within FileSwitch file */
+ reglist.r[5] = NULL ;
+ reglist.r[6] = NULL ;
+ if ((rerror = _kernel_swi(OS_GBPB,&reglist,&reglist)) != NULL)
+d341 2
+a342 2
+   free(dboot) ;
+   return_errorX(DOSdisc *,rerror) ;    /* error already defined */
+d344 2
+a345 2
+
+ /* If this doesn't look like a BOOT block then try a partition. */
+d347 1
+a347 1
+ if (sector_size(dboot) != DOSsecsize) {
+d349 1
+a349 1
+ if (sector_size(dboot) != DOSsecsize || dboot->BOOT_num_fats != 2) {
+d351 22
+a372 19
+  dprintf(("","DOSFS_image_open: not a BOOT block, could be a partition.\n"));
+  DOSpart = (DOS_partition *)dboot ;
+
+  /* Look for the partition with the "boot_ind" set to "bootable" */
+  pentry = (byte *)&(DOSpart->p0_boot_ind) ;
+  for (loop=0; (loop < 4); loop++) {
+   if (pentry[0] == bootable)
+    break ;
+   pentry += sizeof(partition_entry) ;
+  }
+  dprintf(("","DOSFS_image_open: partition %d may be bootable.\n",loop));
+
+  if (loop == 4) {
+   /* No bootable partition found - try to validify one of the partitions as
+    * non-bootable, otherwise this can't be a valid DOS partition.
+    */
+   dprintf(("","DOSFS_image_open: not a bootable partition.\n"));
+   pentry = (byte *)&(DOSpart->p0_boot_ind);
+   for (loop = 0; loop < 4; loop++) {
+d374 1
+a374 2
+    if (pentry[4] == partition_DOS || pentry[4] == partition_DR || pentry[4] == partition_NCR)
+     break;
+d376 1
+a376 2
+    if (pentry[2] != 0) /* If start sector != 0 then we have found a possible partition table entry. */
+     break;
+d378 50
+a427 46
+    pentry += sizeof(partition_entry);
+   }
+  }
+
+  if (loop != 4) {
+   dprintf(("","DOSFS_image_open: partition type %d\n",pentry[4]));
+
+   /* The following sector number, should be equivalent to that used to
+    * construct the "disc_winioffset" variable.
+    * DOS BOOT sector = WiniSector(pentry[3],pentry[1],pentry[2])
+    */
+   winioffset = ((pentry[8] | (pentry[9] << 8) | (pentry[10] << 16) | (pentry[11] << 24)) * DOSsecsize) ;
+   dprintf(("","DOSFS_image_open: winioffset = &%08X\n",winioffset));
+
+   /* Our system can now cope with winchester partitions with more than 0xFFFF
+    * sectors
+    */
+   winisize = (pentry[12] | (pentry[13] << 8) | (pentry[14] << 16) | (pentry[15] << 24)) ;
+
+   /* We could add the following check: (winisize <= "size of FileSwitch file")
+    * to further check the validity of the partition information. If the
+    * calculated offset is outside the image file then the following BOOT
+    * BLOCK load will fail and give the user a "funny" error message, rather
+    * than a specific DOSFS one.
+    */
+
+   discaddress = ((DOS_BOOT_sector - 1) * DOSsecsize) + winioffset ;
+   reglist.r[0] = OSGBPB_ReadFromGiven ;
+   reglist.r[1] = fshand ;
+   reglist.r[2] = (word)dboot ;
+   reglist.r[3] = DOSsecsize ;
+   reglist.r[4] = discaddress ;
+   reglist.r[5] = NULL ;
+   reglist.r[6] = NULL ;
+   if ((rerror = _kernel_swi(OS_GBPB,&reglist,&reglist)) != NULL)
+    {
+     free(dboot) ;
+     return_errorX(DOSdisc *,rerror) ;
+    }
+
+   /* I am not sure if all MS-DOS BOOT BLOCKs contain a similar signature to
+    * that provided in winchester PARTITION BLOCKs. MS-DOS 3.31 seems to do
+    * so, and this may form another validation check on the destination BOOT
+    * BLOCK. **** research into this ****
+    */
+
+d429 2
+a430 2
+   /*if ((sector_size(dboot) != DOSsecsize) || (max_sector(dboot) != winisize))*/
+   if (sector_size(dboot) != DOSsecsize)
+d432 1
+a432 1
+   if ((sector_size(dboot) != DOSsecsize) || (dboot->BOOT_num_fats != 2) || (max_sector(dboot) != winisize))
+d434 7
+d442 47
+a488 85
+     dprintf(("","DOSFS_image_open: invalid partition BOOT block\n"));
+     free(dboot) ;
+     return_error0(DOSdisc *,err_notDOSimage) ;
+    }
+  } else {
+   dprintf(("","DOSFS_image_open: image is not a DOS partition (could be 320K or 160K format)\n"));
+   /* Could still be a DOS 320K or 160K format as they do not need a valid boot block,
+    * fake the info in the boot block (if it's not one of these then catch it later). */
+   dboot->BOOT_secsize = 0x00;
+   dboot->BOOT_secsizeHI = 0x02;
+   dboot->BOOT_reserved = 0x01;
+   dboot->BOOT_reservedHI = 0x00;
+   dboot->BOOT_num_fats = 0x02;
+   dboot->BOOT_magic = 0x00;
+   dboot->BOOT_FAT_size = 0x01;
+   dboot->BOOT_FAT_sizeHI = 0x00;
+   dboot->BOOT_secstrack = 0x08;
+   dboot->BOOT_secstrackHI = 0x00;
+   dboot->hidden = 0x00;
+   dboot->hidden1 = 0x00;
+  }
+ }
+
+ /* number of File Allocation Tables */
+ numFATs = dboot->BOOT_num_fats ;
+ /* bytesize of a FAT */
+// FATsize = (dboot->BOOT_FAT_size | (dboot->BOOT_FAT_sizeHI << 8)) * DOSsecsize ;
+ /* number of reserved (unusable) sectors */
+ numRESVD = (dboot->BOOT_reserved | (dboot->BOOT_reservedHI << 8)) ;
+
+ //CBC
+ dprintf(("","DOSFS_image_open: DOSsecsize = %x\n",DOSsecsize));
+ dprintf(("","DOSFS_image_open: numFATs    = %d\n",numFATs));
+ dprintf(("","DOSFS_image_open: numRESVD   = %d\n",numRESVD));
+
+ dprintf(("","DOSFS_image_open: cluster size = %x\n",dboot->BOOT_secalloc));
+ dprintf(("","DOSFS_image_open: Sector size = %d\n",((dboot->BOOT_secsize)|(dboot->BOOT_secsizeHI<<8))));
+ dprintf(("","DOSFS_image_open: cluster size = %d\n",dboot->BOOT_secalloc * ((dboot->BOOT_secsize)|(dboot->BOOT_secsizeHI<<8))));
+
+ int RootDirSectors = ((((dboot->BOOT_root_dir|(dboot->BOOT_root_dirHI << 8))*32) + (dboot->BOOT_secsize|(dboot->BOOT_secsizeHI << 8))-1)  / (dboot->BOOT_secsize|(dboot->BOOT_secsizeHI << 8)) );
+ dprintf(("","DOSFS_image_open: RootDirSectors = %d\n",RootDirSectors));
+ int TotSec=0, DataSec=0, CountOfClusters=0;
+ if( (dboot->BOOT_FAT_size|(dboot->BOOT_FAT_sizeHI<<8)) != 0)
+ {
+  FATsize = (dboot->BOOT_FAT_size|(dboot->BOOT_FAT_sizeHI<<8));
+ }else
+ {
+  FATsize = (dboot->BOOT_extra.fat32.FAT_sz0 | (dboot->BOOT_extra.fat32.FAT_sz1<<8) | (dboot->BOOT_extra.fat32.FAT_sz2<<16) | (dboot->BOOT_extra.fat32.FAT_sz3<<24) );
+ }
+ if( (dboot->BOOT_max_sect|(dboot->BOOT_max_sectHI<<8)) != 0)
+ {
+  TotSec = (dboot->BOOT_max_sect|(dboot->BOOT_max_sectHI<<8));
+ }else
+ {
+  TotSec = (dboot->big_sect | (dboot->big_sect1<<8) | (dboot->big_sect2<<16) | (dboot->big_sect3<<24) );
+ }
+ DataSec= TotSec - ( (dboot->BOOT_reserved|(dboot->BOOT_reservedHI<<8)) + (numFATs*FATsize) + RootDirSectors);
+ dprintf(("","DOSFS_image_open: FATsize = %x\n",FATsize));
+ dprintf(("","DOSFS_image_open: TotSec = %x\n",TotSec));
+ CountOfClusters = DataSec / dboot->BOOT_secalloc;
+ dprintf(("","DOSFS_image_open: CountOfClusters = %x\n",CountOfClusters));
+
+ /* allocate a DOS disc description structure large enough to hold a FAT
+  * copy. Note: the disc description structure already includes a single "FAT"
+  * sector.
+  */
+ if ((ddisc = (DOSdisc *)malloc(sizeof(DOSdisc) + ((FATsize*DOSsecsize) - sizeof(fFAT_sector)))) == NULL)
+  {
+   dprintf(("","DOSFS_image_open: unable to allocate memory for disc description\n"));
+   free(dboot) ;
+   return_errorT(DOSdisc *,err_heapexhausted,tok_heapexhausted,0,0) ;
+  }
+ dprintf(("","DOSFS_image_open: ddisc = &%08X\n",(int)ddisc));
+ 
+ if(RootDirSectors != 0)
+ {
+  if(CountOfClusters < 4085)
+  {
+   dprintf(("","DOSFS_image_open: Volume is FAT12\n"));
+   ddisc->disc_FATentry = 12;
+  }else if(CountOfClusters < 65525)
+  {
+   dprintf(("","DOSFS_image_open: Volume is FAT16\n"));
+   ddisc->disc_FATentry = 16;
+  }else
+d490 43
+a532 2
+   dprintf(("","DOSFS_image_open: Volume is FAT32\n"));
+   ddisc->disc_FATentry = 32;
+d534 3
+a536 1
+   return_errorX(DOSdisc *, &noFAT32support);    /* error for diagnostics */
+d538 2
+d541 4
+a544 4
+ }else
+ {
+   dprintf(("","DOSFS_image_open: Volume is FAT32\n"));
+   ddisc->disc_FATentry = 32;
+d546 3
+a548 1
+   return_errorX(DOSdisc *, &noFAT32support);    /* error for diagnostics */
+d550 1
+a550 2
+ }
+   ddisc->disc_RootCluster=(ddisc->disc_FATentry == 32)?(dboot->BOOT_extra.fat32.RootClus0 | (dboot->BOOT_extra.fat32.RootClus1<<8) | (dboot->BOOT_extra.fat32.RootClus2<<16) | (dboot->BOOT_extra.fat32.RootClus3<<24) ):0;
+d552 26
+a577 1
+ dprintf(("","DOSFS_image_open: No. of root entries = %x F32 cl:%x\n",(dboot->BOOT_root_dir | (dboot->BOOT_root_dirHI << 8)),ddisc->disc_RootCluster));
+d579 49
+d629 63
+d693 2
+a694 99
+ /* remember the FileSwitch handle */
+ ddisc->disc_fhand = fshand ;           /* FileSwitch handle of image file */
+ ddisc->disc_winioffset = winioffset ;  /* offset into image */
+
+ ddisc->disc_FATsecs = FATsize ;            /* remember how many sectors the FAT is */
+ ddisc->disc_FATsize = FATsize * DOSsecsize;/* remember how big the FAT is */
+ ddisc->disc_secsize = DOSsecsize;
+ ddisc->disc_RESVDsec = numRESVD;
+
+ /* Copy the boot block into the disc description. */
+ ddisc->disc_boot = *dboot ;           /* copy the disc boot sector */
+
+ /* release the copy we originally allocated */
+ free(dboot) ;
+ /* but keep the pointer around for short-hand work */
+ dboot = &(ddisc->disc_boot) ;
+
+ ddisc->disc_FATentries = 0; /* Stop DOS_FAT_RW attempting to count the free clusters. */
+
+ if (DOS_FAT_RW(Rdata, ddisc) < 0)
+  {
+   dprintf(("","DOSFS_image_open: unable to load DOS FAT sector(s)\n"));
+   free(ddisc) ;
+   /* error message should already be defined */
+   return_error0(DOSdisc *, err_fatloadfailed);
+  }
+
+ /* If the magic ID in the boot block is 0x00 then this is a 320K or 160K format
+  * which needs some info to be filled in depending on the first byte of the FAT.
+  */
+ if (dboot->BOOT_magic == 0x00) {
+  dboot->BOOT_magic = *((char *)&(ddisc->disc_FAT));
+  if (dboot->BOOT_magic == 0xFE) {
+   dboot->BOOT_secalloc = 0x01;
+   dboot->BOOT_root_dir = 0x40;
+   dboot->BOOT_root_dirHI = 0x00;
+   dboot->BOOT_max_sect = 0x40;
+   dboot->BOOT_max_sectHI = 0x01;
+   dboot->BOOT_heads = 0x01;
+   dboot->BOOT_headsHI = 0x00;
+  } else if (dboot->BOOT_magic == 0xFF) {
+   dboot->BOOT_secalloc = 0x02;
+   dboot->BOOT_root_dir = 0x70;
+   dboot->BOOT_root_dirHI = 0x00;
+   dboot->BOOT_max_sect = 0x80;
+   dboot->BOOT_max_sectHI = 0x02;
+   dboot->BOOT_heads = 0x02;
+   dboot->BOOT_headsHI = 0x00;
+  } else {
+   dprintf(("","DOSFS_image_open: not a valid DOS image\n"));
+   free(ddisc);
+   return_error0(DOSdisc *, err_notDOSimage);
+  }
+ }
+
+ /* size of the ROOT directory in sectors */
+ ROOTsize = (((dboot->BOOT_root_dir | (dboot->BOOT_root_dirHI << 8)) * sizeof(DOS_direntry))+(DOSsecsize-1)) / DOSsecsize ;
+ ddisc->disc_ROOTsize = ROOTsize ;      /* in sectors */
+ dprintf(("","DOSFS_image_open: ROOTsize   = &%08X\n",ROOTsize));
+
+ /* place remaining information into the disc description record */
+// ROOTsize = RootDirSectors;
+// ddisc->disc_ROOTsize = RootDirSectors ;      /* in sectors */
+ /* the start of the user allocatable sectors */
+// ddisc->disc_startsec =  (numRESVD + (numFATs * (FATsize/DOSsecsize))) + ROOTsize;
+ dprintf(("","DOSFS_image_open: numFATs = %x, FATsize = %x, DOSsecsize = %x, ROOTsize = %x\n",numFATs,FATsize,DOSsecsize,ROOTsize));
+ ddisc->disc_startsec =  numRESVD + (numFATs * FATsize) + ROOTsize +1; /* ensure '1 based' sector count (as used later!) */
+ dprintf(("","DOSFS_image_open: Data Start Sector (2nd cluster) = %x\n",ddisc->disc_startsec));
+
+ dprintf(("","DOSFS_image_open: disc_ROOTsize = %d\n",ROOTsize));
+ dprintf(("","DOSFS_image_open: disc_startsec = %d\n",ddisc->disc_startsec));
+
+
+ dprintf(("","DOSFS_image_open: Size of fat entry = %d\n",ddisc->disc_FATentry));
+ /* calculate the number of available cluster entries */
+ /* clarification needed here:
+  * max_sector() returns the total number of sectors on the disc
+  * disc_startsec is the 1-based index of the first sector on the disc used for file storage.
+  * Thus the number of sectors available for file storage is (total sectors - (startsec-1))
+  * JRS changed 2/3/92 ddisc->disc_startsec to (ddisc->disc_startsec-1)
+  */
+ FATentries = (max_sector(dboot) - (ddisc->disc_startsec-1)) / dboot->BOOT_secalloc ;
+// FATentries = (max_sector(dboot) - (ddisc->disc_startsec)) / dboot->BOOT_secalloc ;
+ dprintf(("","DOSFS_image_open: FATentries = %x (%d)\n",FATentries,FATentries));
+
+ ddisc->disc_FATentries = FATentries ; /* number of cluster entries */
+
+ /* DOS_FAT_RW will not have filled in the disc_freeclusters field so we must do that here. */
+ ddisc->disc_freeclusters = countfreeclusters(ddisc);
+
+ /* We have successfully loaded all the information we need */
+ ddisc->disc_flags = disc_UPDATEID ; /* next update should generate new disc ID */
+
+ dprintf(("","DOSFS_image_open: ddisc = &%08X\n",(int)ddisc));
+
+ dprintf(("","DOSFS_image_open: disc_FAT = %x\n",(int)&ddisc->disc_FAT));
+ /* out:
+  *     return   : image filesystem handle for FileSwitch file
+  */
+d696 33
+d730 27
+a756 2
+ return(ddisc) ;
+ UNUSED(buffsize) ; /* for the moment */
+d759 7
+a765 1
+int DOSFS_image_close(DOSdisc *ihand)
+d767 25
+a791 112
+ /* in:
+  *     ihand : image filesystem handle for FileSwitch file
+  */
+
+ dprintf(("","\n\nDOSFS_image_close: ihand = &%08X\n",(word)ihand));
+
+ /* All files opened onto this image should have been closed. This call
+  * should just ensure any buffered data and then release the resources
+  * attached to the image.
+  */
+
+
+ /* Flush the directory cache. */
+ flush_dir_cache(ihand);
+
+ /* If we just cache the FAT copies (and do not write-back during normal
+  * operation) then we should write all the FAT copies to the image at
+  * this point. At the moment we always ensure the FAT copies.
+  */
+ ensure_FATs(ihand);
+
+ free(ihand) ;
+
+ /* out:
+  *     no conditions
+  */
+
+ return(0) ;
+}
+
+int DOSFS_defect_list(char *fname,word buffer,word blen,DOSdisc *ihand)
+{
+ int             limit ;                         /* end of list */
+ int             index;
+
+ dprintf(("","DOSFS_defect_list: buffer &%08X (blen &%08X) ihand &%08X\n",buffer,blen,(int)ihand));
+
+ /* Fill the supplied buffer with the byte offsets of the defects
+  * within the image. The list should be terminated with 0x20000000.
+  * It is an error for the specified filename to not be a ROOT object.
+  *
+  * We should search the FAT for CLUSTER_bad values that are NOT part
+  * of a file chain. The offset we return is true byte offset within
+  * the image, ie. we count previous bad CLUSTERs as data.
+  */
+
+ /* At the moment I ignore the "fname" given. */
+
+ /* Scan the FAT returning information about BAD CLUSTERs */
+ /* We must not overflow the buffer... should we return an error instead? */
+ limit = (blen / sizeof(int)) - 1 ;
+
+ index = CLUSTER_first(ihand);
+ do {
+   int secs;
+   word addr;
+   int cluster = findCLUSTERtype(ihand, &index, CLUSTER_bad(ihand));
+   if (cluster < 0)
+     break;
+   secs = secsalloc(ihand);
+   addr = ((cluster - CLUSTER_first(ihand)) * secs + ihand->disc_startsec - 1) *
+          DOSsecsize + ihand->disc_winioffset;
+   if ((limit -= secs) < 0)
+     secs += limit;
+   while (secs--) {
+     *((word *)buffer) = addr;
+     dprintf(("","DOSFS_defect_list: found &%08X\n", addr));
+     addr += DOSsecsize;
+     buffer += sizeof(int) ;
+   }
+   index++;
+ } while (limit > 0);
+
+ /* We left enough room (in the calculation above) for the terminator */
+ /* NOTE: At the moment we do not generate an error if there are more
+  *       BAD CLUSTERs than will fit into the passed buffer.
+  */
+ *((word *)buffer) = 0x20000000 ; /* terminate the list */
+ return(0) ;
+ UNUSED(fname) ;
+}
+
+int DOSFS_add_defect(char *fname,word offset,DOSdisc *ihand)
+{
+ int CLUSTER ;
+ int nextCLUSTER ;
+
+ dprintf(("","DOSFS_add_defect: \"%s\" &%08X\n",fname,offset));
+
+ /* It is an error for the specified filename to not be a ROOT object
+  * an error should be returned if the defect cannot be mapped out.
+  *
+  * if the CLUSTER is part of a file chain then we cannot map it out
+  * if it is CLUSTER_bad then it is already mapped out
+  * if it is >= CLUSTER_resvd then we cannot map it out
+  *
+  * it can only be mapped out if it is CLUSTER_unused
+  *
+  * All we do to map the CLUSTER out is update the FAT. The FAT will then
+  * be un-usable by DOS filing systems.
+  */
+
+ /* Convert byte "offset" to CLUSTER address */
+ CLUSTER = ((offset - ihand->disc_winioffset) / DOSsecsize - ihand->disc_startsec + 1) /
+           secsalloc(ihand) + CLUSTER_first(ihand);
+
+ /* Load the FAT entry at the given CLUSTER */
+ nextCLUSTER = getnextCLUSTER(CLUSTER,ihand) ;
+ if (nextCLUSTER < CLUSTER_first(ihand)) /* JRS 9/3/92 ensure within FAT */
+   return_error0(int,err_clusterchain) ;
+ /* If it is CLUSTER_bad then it is already mapped out */
+ if (nextCLUSTER != CLUSTER_bad(ihand))
+d793 8
+a800 2
+   /* Otherwise check if the CLUSTER is being used */
+   if (nextCLUSTER == CLUSTER_unused(ihand))
+d802 10
+a811 4
+     writenextCLUSTER(CLUSTER,CLUSTER_bad(ihand),ihand) ;
+     if (ensure_FATs(ihand) < 0)
+      return((int)-1) ; /* error already defined */
+     (ihand->disc_freeclusters)--;
+a812 2
+   else
+    return_error0(int,err_clusterinuse) ;
+d814 2
+a815 3
+
+ return(0) ;
+ UNUSED(fname);
+d818 6
+a823 1
+word DOSFS_read_boot_option(char *fname,DOSdisc *ihand)
+d825 7
+a831 7
+ /* The *OPT 4 boot option is fixed, since there's nowhere to store it on a DOS disc, but it's
+  * far more useful for that fixed value to be 2, so we can run a modern boot sequence from it
+  */
+ dprintf(("","DOSFS_read_boot_option: \"%s\" always returning 2\n",fname));
+ return(2) ;
+ UNUSED(fname) ;
+ UNUSED(ihand) ;
+d834 7
+a840 1
+int DOSFS_write_boot_option(char *fname,word newoption,DOSdisc *ihand)
+d842 5
+a846 5
+ dprintf(("","DOSFS_write_boot_option: \"%s\" &%02X\n",fname,newoption));
+ return_error0(int,err_nobootoption) ;
+ UNUSED(fname) ;
+ UNUSED(newoption) ;
+ UNUSED(ihand) ;
+d849 7
+a855 1
+int DOSFS_used_space_map(char *buffer,word blen,DOSdisc *ihand)
+d857 36
+a892 7
+ int          loop;
+ fFAT_sector *dFAT = &(ihand->disc_FAT);
+ word         dval;
+ word         mask;
+ int         *bufp = (int *)((int)buffer & 0xFFFFFFFC);    /* Points to aligned buffer word. */
+ int          offset = ((int)buffer & 0x3) << 3;           /* Initial offset into aligned buffer word. */
+ int          secalloc = secsalloc(ihand);
+d894 19
+a912 36
+ dprintf(("","DOSFS_used_space_map: buffer &%08X (blen &%08X) ihand &%08X\n",(word)buffer,blen,(word)ihand));
+
+ /* Set all bits and the zero those which correspond to unused sectors.
+  * This ensures that things like the FATs and the root directory are copied.
+  */
+ for (loop = 0; (loop < blen); loop++)
+  *buffer++ = 0xFF;
+ /* buffer now points to the first byte past the end. */
+
+ /* Create a mask with as many bits set as there are sectors in a cluster. */
+ mask = (1 << secalloc) - 1;
+
+ /* Point to the word which contains the 1st bit corresponding to the 1st cluster. */
+ offset += ihand->disc_startsec - 1; /* JRS 22/4/92 added -1 since startsec is 1-based, though 0-based is expected for buffer */
+ bufp += offset >> 5;
+ offset &= 0x1F;
+
+ /* Set bits word by word. */
+ dval = *bufp;
+ for (loop = CLUSTER_first(ihand); loop < ihand->disc_FATentries; loop++) {
+  word bitaddress = (ihand->disc_FATentry * loop) ;
+  word byteaddress = ((bitaddress >> 3) + (word)dFAT) ;
+  word shift = (bitaddress & 0x00000007) ;
+  word datavalue = loadWORD((char *)byteaddress) ;
+  int  cluster = (int)((datavalue >> shift) & FAT_entry_mask(ihand)) ;
+
+  if (cluster == CLUSTER_unused(ihand))
+   dval &= ~(mask << offset);
+
+  offset += secalloc;
+  if (offset >= 32) {
+   *bufp++ = dval;
+   dval = *bufp;
+   offset &= 0x1F;
+   if (cluster == CLUSTER_unused(ihand))
+    dval &= ~(mask >> (secalloc - offset));
+d914 4
+a917 8
+
+  /* Make sure we don't write past the end of the buffer. */
+  if (((int)bufp + (offset >> 3)) >= (int)buffer)
+   break;
+ }
+ *bufp = dval;
+
+ return(0) ;
+d920 4
+d926 15
+a940 15
+ word            unitsize ;                      /* CLUSTER size */
+ DOS_bootsector *DOSboot = &(ihand->disc_boot) ; /* short-hand */
+
+ dprintf(("","DOSFS_read_free_space: ihand = &%08X\n",(word)ihand));
+
+ /* Return the free space information for the given image. */
+ unitsize = cluster_size(DOSboot) ;
+
+ fspace.freespace = ihand->disc_freeclusters;
+ fspace.freespace *= unitsize ;
+ fspace.largestobject = fspace.freespace ;
+ fspace.discsize = max_sector(DOSboot) * DOSsecsize ;
+
+ dprintf(("","DOSFS_read_free_space: returning %d\n", fspace.freespace));
+ return(&fspace) ;
+d943 5
+d950 56
+a1005 26
+ int           numFATs = ihand->disc_boot.BOOT_num_fats ;
+ int           FATsize = ihand->disc_FATsize ;
+ int           ROOTsize = (ihand->disc_ROOTsize * DOSsecsize) ;
+ DOS_direntry *rootdir = NULL ;
+ DIR_info *dirstruct;
+
+ dprintf(("","DOSFS_namedisc: \"%s\" (ihand = &%08X)\n",((newname == NULL)?"<NULL>":newname),(int)ihand));
+
+ /* Name the referenced image "newname". Under MS-DOS this involves updating
+  * the volume entry in the ROOT directory (or creating a new one).
+  */
+
+  {
+   int           index ;
+   DOS_direntry *dentry ;
+   char         *namebuff = NULL ;
+   time5byte     nameTIME ;
+   int           rootsec = ((((numFATs * FATsize) + DOSsecsize) / DOSsecsize) + 1) ;
+
+   /* Load the ROOT directory */
+   if ((int)(dirstruct = loadDIR("", ihand)) < 0)
+    return -1;
+   rootdir = (DOS_direntry*)DI_Base(dirstruct) ;
+
+   /* check ROOTsize (could be wrong for FAT32) */
+   if (ROOTsize == 0)
+d1007 8
+a1014 2
+     ROOTsize = dirstruct->dir_size ;
+     rootsec  = dirstruct->dir_sector ;
+d1017 2
+a1018 6
+   /* Search for a volume entry */
+   index = 0 ;
+   if ((dentry = findDIRtype((byte)FILE_win95,(byte)FILE_volume,rootdir,ROOTsize,&index)) == NULL)
+    dentry = findemptyDIRentry(rootdir,ROOTsize) ;
+
+   if (dentry == NULL)
+d1020 1
+a1020 2
+     /* There are no free slots in the ROOT directory */
+     return_error0(int,err_discfull) ;
+d1023 10
+a1032 27
+   /* zero the directory entry before placing our information */
+   for (index = 0; (index < sizeof(DOS_direntry)); index++)
+    ((char *)dentry)[index] = '\0' ;
+
+   /* write the given discname into the "dentry" */
+   namebuff = (char *)&(dentry->FILE_status) ;
+   /* copy upto the first space or NULL character */
+   for (index = 0; (index < (namsize + extsize)); index++)
+    if (*newname && (*newname != ' '))
+     *namebuff++ = *newname++ ;
+    else
+     break ; /* the for loop */
+
+   /* pad upto the limit with spaces */
+   for (; (index < (namsize + extsize)); index++)
+    *namebuff++ = ' ' ;
+
+   /* mark the directory entry as a "volume" */
+   dentry->FILE_attribute = (FILE_volume | FILE_archive) ;
+   get_RISCOS_TIME(&nameTIME) ;
+   put_FILE_time(dentry->FILE_time,dentry->FILE_timeHI,RISCOStoTIME(&nameTIME)) ;
+   put_FILE_date(dentry->FILE_date,dentry->FILE_dateHI,RISCOStoDATE(&nameTIME)) ;
+   put_FILE_cluster(dentry,0x00000000,ihand) ;
+   dentry->FILE_size = 0x00000000 ; /* labels have no size */
+
+   /* Save the (modified) ROOT directory */
+   if (DOS_image_RW(Wdata,rootsec,0,(byte *)rootdir,ROOTsize,ihand) < 0)
+d1034 2
+a1035 2
+     free_dir_cache("", ihand);
+     return((int)-1) ; /* error already defined */
+d1038 2
+a1039 2
+
+ return(0) ;
+d1042 6
+a1047 1
+int DOSFS_stampimage(int type,DOSdisc *ihand)
+d1049 1
+a1049 1
+ dprintf(("","DOSFS_stampimage: type %d (ihand = &%08X)\n",type,(int)ihand));
+d1051 21
+a1071 20
+ /* type = 0    stamp image on next update
+  * type = 1    stamp image now
+  *
+  * This call should either update the images unique identification number
+  * (ie. the value returned in the DiscID field of the disc record on an
+  * IdentifyDisc call) immediately or as part of the next image update.
+  * This is then used by FileCore to keep track of discs when it performs
+  * IdentifyDisc calls. When the identity has been updated we should perform
+  * an "OS_Args 8" (OSArgs_ImageStampIs) to inform FileCore of the new ID.
+  *     OS_Args
+  *             r0 = 8
+  *             r1 = image file handle
+  *             r2 = new image identity
+  */
+ if (type == 0) /* stamp image on next update */
+  ihand->disc_flags = disc_UPDATEID | disc_CHANGED ;
+ else
+  return(update_imageID(ihand)) ; /* update image ID immediately */
+
+ return(0) ;
+d1074 8
+a1081 1
+int DOSFS_objectatoffset(int offset,char *buffer,int blen,DOSdisc *ihand)
+d1083 40
+a1122 6
+ int allocsize = (secsalloc(ihand) * DOSsecsize) ; /* size of a CLUSTER */
+ int offCLUSTER ;  /* CLUSTER in which the given offset lies */
+ int nextCLUSTER ; /* CLUSTER referenced by offset CLUSTER (offCLUSTER) */
+ int state ;
+
+ dprintf(("","DOSFS_objectatoffset: offset &%08X, buffer &%08X (len &%08X) (ihand = &%08X)\n",offset,(int)buffer,blen,(int)ihand));
+d1124 1
+a1124 23
+ /* Return the type of the object found at the given image offset. If the
+  * object has a suitable path, then it should be returned in passed
+  * buffer (with a leading directory seperator "." character).
+  *
+  * type 0 - offset is free, defect or beyond the end of the image
+  *      1 - offset is allocated but not a file/directory (eg. FAT)
+  *      2 - offset is in single object
+  *      3 - offset is in multiple objects
+  *
+  * Return codes 2 and 3 should place the object name into the buffer.
+  */
+
+ /* For DOS discs we can easily spot the system areas of the image, and
+  * areas that have NOT yet been allocated. However, to find the name of
+  * an object we will have to scan every directory until we find an
+  * object whose chain contains the CLUSTER at the given offset.
+  */
+
+ /* CLUSTER align (downwards) the passed offset */
+ offCLUSTER = (offset / allocsize) ;
+ dprintf(("","DOSFS_objectatoffset: offCLUSTER = &%03X\n",offCLUSTER));
+
+ if (CLUSTERtoSECTOR(offCLUSTER,ihand) < ihand->disc_startsec)
+d1126 2
+a1127 2
+   dprintf(("","DOSFS_objectatoffset: CLUSTER in system area (returning 1)\n"));
+   return(1) ; /* CLUSTER is in the system area */
+d1129 11
+a1139 6
+
+ nextCLUSTER = getnextCLUSTER(offCLUSTER,ihand) ;
+ if (nextCLUSTER < CLUSTER_first(ihand))  /* JRS 9/3/92 ensure within FAT */
+   return_error0(int,err_clusterchain) ;
+
+ if ((nextCLUSTER == CLUSTER_unused(ihand)) || (nextCLUSTER == CLUSTER_bad(ihand)))
+d1141 2
+a1142 2
+   dprintf(("","DOSFS_objectatoffset: CLUSTER in free or bad (returning 0)\n"));
+   return(0) ; /* CLUSTER is free or bad */
+d1144 1
+a1144 11
+
+ /* Under DOSFS a CLUSTER can only be used by one object. Therefore we never
+  * return reason code 3 (offset used by multiple objects). If we reach here
+  * we must place the object name into the passed buffer and return reason
+  * code 2.
+  */
+ /* We need to scan from the root directory all file (and directory) chains,
+  * until we find a file which contains a reference to "offCLUSTER".
+  */
+ *buffer = '\0';    /* Start from root directory. */
+ if ((state = findCLUSTER(offCLUSTER,buffer,blen,ihand)) == 0)
+d1146 1
+a1146 2
+   dprintf(("","DOSFS_objectatoffset: CLUSTER could not be found in a chain\n"));
+   return(0) ; /* We could NOT find the CLUSTER in any chain */
+a1147 2
+ if (state < 0)
+  return(-1) ; /* error already defined */
+d1149 2
+a1150 2
+ /* The above "findCLUSTER" call will have filled the buffer suitably */
+ return(2) ; /* CLUSTER is in use */
+@
+
+
+4.1
+log
+@Source file subdivision
+The sources to DOSFS had become rather jumbled and monolithic
+* Split FileSwitch interface out into seperate ops source files.
+* Combined international error lookup with MsgTrans code.
+* Split utility functions into 'Helpers.c' along with wildcard matching functions.
+* Moved DOS naming functions into, erm, 'DOSnaming.c'.
+Also
+* Makefile tweaked to remove 'symbols' on clean.
+* Obsolete 'Help' and 'Syntax' placed in attic.
+
+RAM, debug, and ROM targets built. RAM target tested with a DOS floppy disc.
+
+Version 0.96. Tagged as 'DOSFS-0_96'
+@
+text
+@d25 1
+a28 1
+#include "ASCII.h"
+d328 1
+a328 1
+ reglist.r[0] = osgbpb_rptr ;   /* read operation */
+d400 1
+a400 1
+   reglist.r[0] = osgbpb_rptr ;
+@
+

@@ -1,0 +1,1220 @@
+head	4.10;
+access;
+symbols
+	NetTime-0_43:4.10
+	NetTime-0_42:4.10
+	NetTime-0_41:4.9
+	NetTime-0_40:4.8
+	NetTime-0_39:4.8
+	NetTime-0_38:4.8
+	NetTime-0_37:4.8
+	NetTime-0_36:4.7
+	NetTime-0_35:4.7
+	NetTime-0_34:4.6
+	NetTime-0_33:4.5
+	NetTime-0_32:4.5
+	NetTime-0_31:4.4
+	NetTime-0_30:4.3
+	NetTime-0_29:4.2
+	dellis_autobuild_BaseSW:4.2
+	NetTime-0_28:4.2
+	NetTime-0_26:4.2
+	NetTime-0_25:4.2
+	NetTime-0_24:4.2
+	NetTime-0_23:4.2
+	sbrodie_sedwards_16Mar2000:4.1
+	NetTime-0_22:4.2
+	NetTime-0_21:4.1
+	dcotton_autobuild_BaseSW:4.2
+	NetTime-0_20:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.10
+date	2013.11.24.12.17.17;	author rsprowson;	state Exp;
+branches;
+next	4.9;
+commitid	kdgSEA52DRKJIwex;
+
+4.9
+date	2013.11.17.11.19.31;	author rsprowson;	state Exp;
+branches;
+next	4.8;
+commitid	NvSppOvMaHeSCCdx;
+
+4.8
+date	2012.02.04.22.08.39;	author rsprowson;	state Exp;
+branches;
+next	4.7;
+commitid	W0erdTttgEwVaTRv;
+
+4.7
+date	2004.10.17.16.31.44;	author srevill;	state Exp;
+branches;
+next	4.6;
+
+4.6
+date	2004.10.14.16.12.10;	author srevill;	state Exp;
+branches;
+next	4.5;
+
+4.5
+date	2004.05.19.18.21.24;	author kbracey;	state Exp;
+branches;
+next	4.4;
+
+4.4
+date	2002.07.23.12.39.02;	author srevill;	state Exp;
+branches;
+next	4.3;
+
+4.3
+date	2002.04.25.15.20.53;	author srevill;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	2000.03.16.16.50.17;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2000.03.07.10.44.50;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.10
+log
+@Delagate RTC adjustments to RTC module when present
+When the RTC module is present don't try making the duplicate adjustments in this module, while largely harmless the status report would likely be out of sync as the two modules battle eachother for who can poke timer 0 more often.
+Changed files
+ machine.c: double quotes in debug text removed
+ ntp.c: use some named defines for OS_Hardware calls
+ Spec: typo correction
+ rtcadjust.c: when RTC module is active, delagate adjustments to RTC_Adjust SWI
+
+Tested on a Risc PC over 24 hours.
+
+Version 0.42. Tagged as 'NetTime-0_42'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <inttypes.h>
+
+#include <swis.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+
+#include <socklib.h>
+#include <inetlib.h>
+#include <unixlib.h>
+
+#include <Global/HALEntries.h>
+
+#include "nettime.h"
+#include "ntp.h"
+#include "rtcadjust.h"
+
+static int precise_bits;          /* All possible values of these bits are used */
+static int significant_bits;      /* All possible times can be set using these bits */
+static int insignificant_bits;    /* These bits are not required */
+static int randomise_bits;        /* These bits can be randomised */
+static int has_sync = 0;          /* Note when a server gains primary sync */
+#define PRECISE_MASK       (UINT_MAX << (32-precise_bits))
+#define SIGNIFICANT_MASK   (UINT_MAX << (32-significant_bits))
+#define INSIGNIFICANT_MASK ((1 << insignificant_bits) - 1)
+#define RANDOMISE_MASK     ((1 << randomise_bits) - 1)
+
+extern struct ntp_time ntp_add(struct ntp_time, struct ntp_time);
+extern struct ntp_time ntp_sub(struct ntp_time, struct ntp_time);
+
+static int32_t rand32(void)
+{
+    return (int32_t) rand() ^ ((int32_t) rand() << 16);
+}
+
+const char *riscos_to_text(struct riscos_time t)
+{
+    static char buffer[64];
+    char *p;
+
+    /* Null NTP value 00000000.00000000 maps to RISC OS time 6400000000 */
+    if (t.cs == 0x6400000000 && t.extrans == 0)
+        return "<none>";
+
+    _swix(Territory_ConvertDateAndTime, _INR(0,4)|_OUT(1), -1, &t, buffer, sizeof buffer,
+                                        "%we, %zdy %mo %ce%yr %24:%mi:%se.%cs", &p);
+    return buffer;
+}
+
+#if 0
+static const char *riscos8_to_text(riscos_time8 t)
+{
+    static char buffer[64];
+    char *p;
+
+    /* Null NTP value 00000000.00000000 maps to RISC OS time 6400000000 */
+    if (t == 0x6400000000000000)
+        return "<none>";
+
+    _swix(Territory_ConvertDateAndTime, _INR(0,4)|_OUT(1), -1, (char *) &t + 3, buffer, sizeof buffer,
+                                        "%we, %zdy %mo %ce%yr %24:%mi:%se.%cs", &p);
+
+    t = (t & 0xFFFFFF) * UINT64_C(10000000);
+    sprintf(p, "%07"PRId64, t >> 24);
+
+    return buffer;
+}
+
+static struct riscos_time ntp_to_riscos(struct ntp_time n)
+{
+    struct riscos_time t;
+    uint64_t micro2;
+    uint32_t cs;
+    t.cs = n.secs * UINT64_C(100);
+
+    /* Add in fudge for timestamp wrap in 2036 (RFC 2030 section 3).
+     * This gives us a representable range of dates from 20 Jan 1968 to 26 Feb 2104.
+     * (RISC OS allows 1 Jan 1900 to 3 Jun 2248).
+     */
+    if ((n.secs & 0x80000000) == 0)
+        t.cs += 0x100000000 * UINT64_C(100);
+
+    /* micro2 >> 32 := fraction of second in ns units */
+    micro2 = n.frac * UINT64_C(1000000000);
+
+    /* Round to nearest */
+    if (micro2 & 0x80000000)
+        micro2 += 0x100000000;
+
+    cs = (uint32_t) (micro2 >> 32) / 10000000;
+    t.extrans = (uint32_t) (micro2 >> 32) % 10000000;
+
+    t.cs += cs;
+
+    return t;
+}
+#endif
+
+static riscos_time8 ntp_to_riscos8(struct ntp_time n)
+{
+    riscos_time8 t;
+
+    /* Move fixed point down 8 bits - ignore 8 bottom bits - only 0.1µs */
+    t = ((uint64_t) n.secs << 24) | (n.frac >> 8);
+
+    /* Add in fudge for timestamp wrap in 2036 (RFC 2030 section 3).
+     * This gives us a representable range of dates from 20 Jan 1968 to 26 Feb 2104.
+     * (RISC OS allows 1 Jan 1900 to 3 Jun 2248).
+     */
+    if ((t & 0x0080000000000000) == 0)
+        t += 0x0100000000000000;
+
+    /* Convert to centiseconds */
+    t = t * 100;
+
+    return t;
+}
+
+static struct ntp_time riscos8_to_ntp(riscos_time8 t)
+{
+    struct ntp_time n;
+
+    /* Range check: NTP allows times from 0x80000000.00000000 to 0x7FFFFFFF.FFFFFFFF.
+     * (20 Jan 1968 04:14:08 to 26 Feb 2104 10:42:23).
+     * This corresponds to the set of RISC OS times 0x3200000000.000000-0x95FFFFFFFF.FFFFFF.
+     */
+    if (t < 0x3200000000000000 || t >= 0x9600000000000000)
+    {
+        /* Return null time for out of range */
+        n.secs = n.frac = 0;
+        return n;
+    }
+
+    /* Times 0x6400000000-0x95FFFFFFFF map to 00000000.00000000-7FFFFFFF.FFFFFFFF.
+     * Handle this by mapping down to 0x0000000000-0x31FFFFFFFF before dividing.
+     */
+    if (t >= 0x6400000000000000)
+        t -= 0x6400000000000000;
+
+    /* Only have signed divide, but doesn't matter because we know the top byte's in the range 00-63 */
+    t = t / 100;
+
+    n.secs = (uint32_t) (t >> 24);
+    n.frac = (uint32_t) t << 8;
+
+    return n;
+}
+
+/* r[1,0] := a[1,0] / b; a being a 64-bit number, and r being 32.32 fixed point
+ * least-significant word first.
+ */
+static void divfrac(uint32_t *a, uint32_t b, uint32_t *r)
+{
+    uint32_t n, f;
+    int i, j;
+
+    n = a[1];
+    f = a[0];
+
+    n -= (n/b) * b; /* Remove overflow */
+
+    for (j=1; j >=0; j--)
+    {
+        r[j] = 0;
+        for (i=31; i >= 0; i--)
+        {
+            n = (n << 1) + ((f & 0x80000000) ? 1 : 0);
+            f <<= 1;
+            if (n >= b)
+            {
+                n -= b;
+                r[j] |= (UINT32_C(1) << i);
+            }
+        }
+    }
+}
+
+struct ntp_time riscos_to_ntp(struct riscos_time t)
+{
+    struct ntp_time n;
+    uint32_t c[2], r[2];
+
+    /* Range check: NTP allows times from 0x80000000.00000000 to 0x7FFFFFFF.FFFFFFFF.
+     * (20 Jan 1968 04:14:08 to 26 Feb 2104 10:42:23).
+     * This corresponds to the set of RISC OS times 0x3200000000-0x95FFFFFFFF.
+     */
+    if (t.cs < 0x3200000000 || t.cs >= 0x9600000000)
+    {
+        /* Return null time for out of range */
+        n.secs = n.frac = 0;
+        return n;
+    }
+
+    /* Times 0x6400000000-0x95FFFFFFFF map to 00000000.00000000-7FFFFFFF.FFFFFFFF.
+     * Handle this by mapping down to 0x0000000000-0x31FFFFFFFF before dividing.
+     */
+    if (t.cs >= 0x6400000000)
+        t.cs -= 0x6400000000;
+
+    c[1] = (uint32_t) (t.cs >> 32);
+    c[0] = (uint32_t) t.cs;
+
+    divfrac(c, 100, r);
+    n.secs = r[1];
+    n.frac = r[0];
+
+    if (t.extrans)
+    {
+        struct ntp_time x;
+        c[1] = t.extrans;
+        c[0] = 0;
+        divfrac(c, 1000000000, r);
+
+        x.secs = 0;
+        x.frac = r[1];
+        if (r[0] & 0x80000000) x.frac++; /* Round to nearest */
+        n = ntp_add(n, x);
+    }
+
+    return n;
+}
+
+static inline bool ntp_is_null(struct ntp_time n)
+{
+    return n.secs == 0 && n.frac == 0;
+}
+
+static void randomise_ntp(struct ntp_time *n)
+{
+    if (!ntp_is_null(*n))
+    {
+        struct ntp_time r;
+        r.frac = rand32() >> (32 - randomise_bits);      /* Arithmetic shift (ta Norcroft) */
+        r.secs = (r.frac & 0x80000000) ? 0xFFFFFFFF : 0; /* Sign extend upwards */
+        *n = ntp_add(*n, r);
+    }
+}
+
+struct riscos_time current_time(void)
+{
+    struct riscos_time t;
+
+    t.extrans = 0;
+    t.cs = 3;
+    if (_swix(OS_Word, _INR(0,1), 14, &t.cs))
+        t.cs = 0;
+
+    return t;
+}
+
+static unsigned int t0_divisor; /* Divisor to convert ticks to usecs */
+static unsigned int t0_period;  /* Timer 0 period */
+static void       * HAL_TimerReadCountdown_Ptr;
+static uint32_t     HAL_TimerReadCountdown_SB;
+
+typedef enum
+{
+    timer_NOT_CHECKED,
+    timer_IOMD,
+    timer_HAL,
+    timer_NONE
+} timer_type;
+
+/*
+ * Return the type of hardware timer this platform has, and perform
+ * any necessary initialisation.
+ */
+static timer_type hw_check(void)
+{
+    _kernel_oserror * e;
+    unsigned int      granularity;
+    timer_type        type = timer_NONE;
+
+    /* Try to get Timer 0 granularity from HAL */
+    e = _swix(OS_Hardware,
+              _IN(0) | _INR(8,9) | _OUT(0),
+              0,
+              OSHW_CallHAL,
+              EntryNo_HAL_TimerGranularity,
+              &granularity);
+
+    /*
+     * Can only use HAL if this succeeded and granularity is an even
+     * number of MHz.
+     */
+    if (e == NULL && (granularity % 1000000) == 0)
+    {
+        t0_divisor = granularity / 1000000;
+
+        /* Try to get Timer 0 period from HAL */
+        e = _swix(OS_Hardware,
+                  _IN(0) | _INR(8,9) | _OUT(0),
+                  0,
+                  OSHW_CallHAL,
+                  EntryNo_HAL_TimerPeriod,
+                  &t0_period);
+
+        if (e == NULL && t0_divisor != 0 && t0_period != 0)
+        {
+            /* HAL_TimerReadCountdown counts from (period-1) to 0 */
+            t0_period--;
+
+            /* Try to get HAL_TimerReadCountdown pointer from HAL */
+            e = _swix(OS_Hardware,
+                      _INR(8,9) | _OUTR(0,1),
+                      OSHW_LookupRoutine,
+                      EntryNo_HAL_TimerReadCountdown,
+                      &HAL_TimerReadCountdown_Ptr,
+                      &HAL_TimerReadCountdown_SB);
+
+            if (e == NULL)
+            {
+                /*
+                 * OK so far, now make sure HAL_TimerReadCountdown doesn't
+                 * always return 0.
+                 */
+
+                unsigned long count1, count2;
+
+                count1 = get_hal_t0_count(HAL_TimerReadCountdown_SB, HAL_TimerReadCountdown_Ptr);
+                _swix(OS_Hardware, _IN(0)|_INR(8,9), 2, OSHW_CallHAL, EntryNo_HAL_CounterDelay);
+                count2 = get_hal_t0_count(HAL_TimerReadCountdown_SB, HAL_TimerReadCountdown_Ptr);
+
+                if (count1 != 0 || count2 != 0)
+                {
+                    /* Everything worked - use HAL */
+                    type = timer_HAL;
+                }
+            }
+        }
+    }
+
+    if (type != timer_HAL)
+    {
+        /* Couldn't use HAL, look for IOMD instead */
+
+        /* (OS_ReadSysInfo 2 bits 8-15 is I/O chip = 0 or 1 - IOC or IOMD) */
+        unsigned int hardware;
+        if (_swix(OS_ReadSysInfo, _IN(0)|_OUT(0), 2, &hardware))
+            type = timer_NONE;
+        else
+            type = (hardware & 0xFF00) <= 0x0100 ? timer_IOMD : timer_NONE;
+    }
+
+    switch (type)
+    {
+        case timer_IOMD:
+            precise_bits = 20;
+            significant_bits = 21;
+            break;
+        case timer_HAL:
+        {
+            unsigned int g;
+            precise_bits = 0;
+            for (g = granularity; g != 1; g >>= 1)
+                precise_bits++;
+            if (granularity == 1 << precise_bits)
+                significant_bits = precise_bits;
+            else
+                significant_bits = precise_bits+1;
+            break;
+        }
+        default:
+            precise_bits = 6;
+            significant_bits = 7;
+            break;
+    }
+    if (precise_bits > 32) precise_bits = 32;
+    if (significant_bits > 32) significant_bits = 32;
+    insignificant_bits = 32 - significant_bits;
+    randomise_bits = insignificant_bits - 1;
+    if (randomise_bits < 0) randomise_bits = 0;
+
+    return type;
+}
+
+static riscos_time8 precise_current_time(void)
+{
+    riscos_time8 t1, t2;
+    unsigned int timer_count;
+    static timer_type timer_check = timer_NOT_CHECKED;
+    /* Only poke the hardware if we're sure it's there :) */
+    if (timer_check == timer_NOT_CHECKED)
+        timer_check = hw_check();
+
+    t1 = 3 << 24;
+    t2 = 3 << 24;
+
+    if (timer_check != timer_NONE)
+    {
+        /* Check initial time */
+        _kernel_osword(14, (int *) ((char *) &t1 + 3));
+
+        if (timer_check == timer_IOMD)
+            timer_count = get_t0_count();
+        else
+            timer_count = get_hal_t0_count(HAL_TimerReadCountdown_SB, HAL_TimerReadCountdown_Ptr);
+    }
+    else
+    {
+        timer_count = 0;
+    }
+
+    /* Check new time */
+    _kernel_osword(14, (int *) ((char *) &t2 + 3));
+
+    if (timer_check != timer_NONE && t1 == t2)
+    {
+        unsigned int latch = rtcadjust_latch();
+        uint32_t tmp;
+        int64_t tmp2;
+
+        /* Clock didn't tick.
+         * Need to add a fraction of a centisecond. Fraction is ((latch-1)-(timer_count))/latch.
+         */
+        if (timer_count < latch)
+        {
+            tmp = latch - UINT32_C(1) - timer_count;
+            tmp2 = ((int64_t) tmp << 24) / latch;
+            t2 += tmp2;
+        }
+        else
+        {
+            /* Who knows what's going on. Leave the fraction out. */
+        }
+    }
+    else
+    {
+        /* Clock ticked - let it rest at the 1cs boundary */
+    }
+
+    dprintf(("ntp_4", "precise_current_time returning %016"PRIX64"\n", t2));
+
+    return t2;
+}
+
+static struct ntp_time ntp_ntoh(struct ntp_time t)
+{
+    t.secs = (uint32_t) ntohl(t.secs);
+    t.frac = (uint32_t) ntohl(t.frac);
+    return t;
+}
+
+#define ntp_hton ntp_ntoh
+#if 0
+static const char *ntp_to_text(struct ntp_time t)
+{
+    return riscos8_to_text(ntp_to_riscos8(t));
+}
+
+static struct riscos_time round_riscos_time(struct riscos_time t)
+{
+    if (t.extrans >= 5000000)
+        ++t.cs;
+    t.extrans = 0;
+
+    return t;
+}
+
+static _kernel_oserror *ntp_set_time(struct riscos_time t)
+{
+    t = round_riscos_time(t);
+
+    return module_set_time(&t);
+}
+#endif
+
+static struct ntp_time last_request;
+
+size_t ntp_construct_request(struct ntp *n, size_t len)
+{
+      memset(n, 0, len);
+      n->flags = (3 << 3) | 3; /* Version 3, mode 3 (client) */
+      n->transmit_timestamp = riscos8_to_ntp(precise_current_time());
+      randomise_ntp(&n->transmit_timestamp);
+      n->transmit_timestamp = last_request = ntp_hton(n->transmit_timestamp);
+
+      return sizeof(struct ntp);
+}
+
+int ntp_process_reply(const struct ntp *n, size_t len, riscos_timediff8 *offset_out)
+{
+    riscos_time8 recv, orig, xmit, dest;
+    int VN, LI, mode;
+
+    dest = precise_current_time();
+
+    LI = n->flags >> 6;
+    VN = (n->flags >> 3) & 7;
+    mode = n->flags & 7;
+
+    /* Record when we spot the server has primary sync */
+    if (LI != 3) has_sync = 1;
+    if ((n->stratum > 0) && (n->stratum < 15)) has_sync = 1;
+
+    /* Basic validity checks, as per RFC 2030 */
+    if (len < sizeof(struct ntp) ||
+        VN != 3 || mode != 4 ||
+        ntp_is_null(n->transmit_timestamp) ||
+        n->originate_timestamp.secs != last_request.secs ||
+        n->originate_timestamp.frac != last_request.frac)
+        return 0;
+
+    /* Only reject these packets after we've seen the server with primary sync */
+    if (has_sync)
+    {
+      if (LI == 3) return 0;
+      if ((n->stratum < 1) || (n->stratum > 14)) return 0;
+    }
+
+    orig = ntp_to_riscos8(ntp_ntoh(n->originate_timestamp));
+    xmit = ntp_to_riscos8(ntp_ntoh(n->transmit_timestamp));
+    recv = ntp_to_riscos8(ntp_ntoh(n->receive_timestamp));
+
+    dprintf(("ntp_1", "orig = %s\n", riscos8_to_text(orig)));
+    dprintf(("ntp_1", "recv = %s\n", riscos8_to_text(recv)));
+    dprintf(("ntp_1", "xmit = %s\n", riscos8_to_text(xmit)));
+    dprintf(("ntp_1", "dest = %s\n", riscos8_to_text(dest)));
+
+    if (ntp_is_null(n->originate_timestamp))
+    {
+        *offset_out = dest - xmit;
+    }
+    else
+    {
+        *offset_out = ((int64_t) (orig - recv) >> 1) + ((int64_t) (dest - xmit) >> 1);
+    }
+
+    dprintf(("ntp_1", "offset = %010"PRIX64".%06"PRIX64"cs\n",
+                      (*offset_out >> 24), *offset_out & 0xFFFFFF));
+
+    return -1;
+}
+@
+
+
+4.9
+log
+@Reverse the sense of the NetTime offset
+Rather than requiring a unary minus in rtcadjust, simply work out the offset the other way round (+ve means the RISC OS soft clock is fast compared with real time).
+
+Version 0.41. Tagged as 'NetTime-0_41'
+@
+text
+@d298 1
+a298 1
+              0,
+a299 1
+
+d314 1
+a314 1
+                  0,
+a315 1
+
+d326 1
+a326 1
+                      1,
+a327 1
+
+d341 1
+a341 1
+                _swix(OS_Hardware, _IN(0)|_INR(8,9), 2, 0, EntryNo_HAL_CounterDelay);
+@
+
+
+4.8
+log
+@Add SWI NetTime_States.
+Makefile changed to use "CModule" fragment.
+Soak up some compiler warnings.
+Extralong functions removed.
+Use central header files in preference to local defines.
+A failure to register resources no longer leaves EventV and WordV claimed.
+
+Version 0.37. Tagged as 'NetTime-0_37'
+@
+text
+@d545 1
+a545 1
+        *offset_out = xmit - dest;
+d549 1
+a549 1
+        *offset_out = ((int64_t) (recv - orig) >> 1) + ((int64_t) (xmit - dest) >> 1);
+@
+
+
+4.7
+log
+@  Different change to the problems with servers without primary sync.
+Detail:
+  We now simply keep a flag indicating if we have ever seen the configured
+  NTP server with primary sync. While the flag is FALSE, we will accept NTP
+  responses more flexibly. For example, we ignore leap indicator of 3 or
+  stratum of zero or greater than 14.
+Admin:
+  Works as hoped with the servers at Customer A.
+
+Version 0.35. Tagged as 'NetTime-0_35'
+@
+text
+@d38 5
+a42 5
+int precise_bits;          /* All possible values of these bits are used */
+int significant_bits;      /* All possible times can be set using these bits */
+int insignificant_bits;    /* These bits are not required */
+int randomise_bits;        /* These bits can be randomised */
+int has_sync = 0;          /* Note when a server gains primary sync */
+a49 1
+extern struct ntp_time ntp_div2(struct ntp_time);
+d51 1
+a51 1
+int32_t rand32(void)
+d70 2
+a71 1
+const char *riscos8_to_text(riscos_time8 t)
+a73 1
+    uint64_t tmp;
+d89 1
+a89 1
+struct riscos_time ntp_to_riscos(struct ntp_time n)
+d117 1
+d119 1
+a119 1
+riscos_time8 ntp_to_riscos8(struct ntp_time n)
+a121 1
+    uint64_t tmp;
+d139 1
+a139 1
+struct ntp_time riscos8_to_ntp(riscos_time8 t)
+a141 1
+    int64_t tmp;
+a247 2
+struct ntp_time ntp_null;
+
+d422 4
+d434 1
+a434 1
+        int64_t tmp2, tmp3;
+d460 1
+a460 1
+struct ntp_time ntp_ntoh(struct ntp_time t)
+d468 2
+a469 2
+
+const char *ntp_to_text(struct ntp_time t)
+d474 1
+a474 1
+struct riscos_time round_riscos_time(struct riscos_time t)
+d483 1
+a483 1
+_kernel_oserror *ntp_set_time(struct riscos_time t)
+d487 1
+a487 1
+    return set_time(&t);
+d489 1
+@
+
+
+4.6
+log
+@  Slight change to NTP behaviour.
+Detail:
+  NetTime will accept NTP responses from servers which do not have
+  primary sync until and after they gain it. It will not accept the
+  response from a server whos stratum increases, for example when
+  it loses primary sync.
+Admin:
+  Tested on Iyonix and works as desired without breaking existing
+  behaviour.
+
+Version 0.34. Tagged as 'NetTime-0_34'
+@
+text
+@d42 1
+a46 1
+unsigned char best_stratum = 255; /* Record the best response stratum we've seen thus far - don't accept higher */
+d514 4
+d520 1
+a520 2
+        LI == 3 || VN != 3 || mode != 4 ||
+        (n->stratum < 1 || n->stratum > best_stratum) ||
+d526 6
+a531 5
+    /* Keep track of the best (non-zero) stratum we've seen thus far. This
+     * means that we'll accept responses from servers who don't have primary
+     * sync only if we've never seen them with primary sync.
+     */
+    if (n->stratum < best_stratum) best_stratum = n->stratum;
+@
+
+
+4.5
+log
+@* Added support for non-IOMD, HAL-based platforms.
+* Improved *NetTime_PollInterval to make sure next poll happens at
+  the expected time.
+* On module init, no longer sets the time from the NVRAM if the current
+  time seems sensible (ie >= 2003ish).
+* Sets the time NVRAM on shutdown (was only on packet reception).
+
+Version 0.32. Tagged as 'NetTime-0_32'
+@
+text
+@d46 1
+d517 1
+a517 1
+        (n->stratum < 1 || n->stratum > 14) ||
+d522 6
+@
+
+
+4.4
+log
+@  Fixed to build with the latest cc (5.54) compiler.
+Detail:
+  This version now builds with cc-5_45. Note: it has not been verified as
+  actually functioning correctly.
+Admin:
+  Tested in DSL Baseline build.
+
+Version 0.31. Tagged as 'NetTime-0_31'
+@
+text
+@d32 2
+d38 8
+a45 9
+/* Our clock has a 2MHz resolution (precision = -20.9) */
+#define PRECISE_BITS       20               /* All possible values of these bits are used */
+#define PRECISE_MASK       0xFFFFF000
+#define SIGNIFICANT_BITS   21               /* All possible times can be set using these bits */
+#define SIGNIFICANT_MASK   0xFFFFF800
+#define INSIGNIFICANT_BITS 11               /* These bits are not required */
+#define INSIGNIFICANT_MASK 0x000007FF
+#define RANDOMISE_BITS     10               /* These bits can be randomised */
+#define RANDOMISE_MASK     0x000003FF
+d256 1
+a256 1
+        r.frac = rand32() >> (32 - RANDOMISE_BITS);      /* Arithmetic shift (ta Norcroft) */
+d274 13
+d288 2
+a289 2
+ * Return 1 if IOC/IOMD is present (OS_ReadSysInfo 2 reports I/O control
+ * chip = 0 or 1 - IOC or IOMD).
+d291 1
+a291 1
+static int iomd_present(void)
+d293 29
+a321 1
+    unsigned int hardware;
+d323 76
+a398 2
+    if (_swix(OS_ReadSysInfo, _IN(0)|_OUT(0), 2, &hardware))
+        return 2;
+d400 1
+a400 1
+    return (hardware & 0xFF00) <= 0x0100 ? 1 : 2;
+d403 1
+a403 1
+riscos_time8 precise_current_time(void)
+d407 1
+a407 1
+    static int iomd_check;  /* 0 = not checked, 1 = present, 2 = not present */
+d409 2
+a410 2
+    if (!iomd_check)
+        iomd_check = iomd_present();
+d415 1
+a415 1
+    if (iomd_check == 1)
+d420 4
+a423 4
+        /* Read the Timer 0 value - it counts down from (latch-1) to 0,
+         * the clock tick occurring as it changes from 0 to (latch-1).
+         */
+        timer_count = get_t0_count();
+d429 1
+a429 1
+    if (iomd_check == 1 && t1 == t2)
+@
+
+
+4.3
+log
+@  * Fixed all of the !Mk... files.
+  * Now builds with the latest TCPIPLibs.
+Detail:
+  * All of the !Mk... files are required to pass TARGET into the makefile.
+  * The new TCPIPLibs use the standard types.h from RISC_OSLib if it is
+    available. This defines u_int32 types using int rather than long, which
+    TCPIPLibs uses. Thus, NetTime needed a little tweaking to adjust for
+    this change.
+Admin:
+  Builds.
+  Requires TCPIPLibs-5_42 or later.
+
+Version 0.30. Tagged as 'NetTime-0_30'
+@
+text
+@d20 1
+a34 1
+#include "extralong.h"
+d50 1
+a50 1
+int32_t rand32()
+d61 1
+a61 1
+    if (t.l == 0 && t.h == 0x64 && t.extrans == 0)
+d72 1
+a72 1
+    u_int64_t tmp;
+d76 1
+a76 1
+    if (t.low == 0 && t.high == 0x64000000)
+d82 2
+a83 6
+    t.high = 0;
+    t.low <<= 8;
+    tmp.high = 0;
+    tmp.low = 10000000;
+    t = extralong_umultiply(t, tmp);
+    sprintf(p, "%07ld", t.high);
+d91 3
+a93 3
+    u_int32_t micro2[2];
+    u_int32_t cs;
+    mul64(n.secs, 100, (u_int64_t *)&t.l);
+d100 1
+a100 1
+        t.h += 100;
+d102 2
+a103 2
+    /* micro2[1] := fraction of second in ns units */
+    mul64(n.frac, 1000000000, (u_int64_t *)micro2);
+d106 2
+a107 2
+    if (micro2[0] & 0x80000000)
+        micro2[1]++;
+d109 2
+a110 2
+    cs = micro2[1] / 10000000;
+    t.extrans = micro2[1] % 10000000;
+d112 1
+a112 2
+    t.l += cs;
+    if (t.l < cs) t.h++;
+d120 1
+a120 1
+    u_int64_t tmp;
+d123 1
+a123 2
+    t.low = (n.secs << 24) | (n.frac >> 8);
+    t.high = n.secs >> 8;
+d129 2
+a130 2
+    if ((t.high & 0x00800000) == 0)
+        t.high += 0x01000000;
+d133 1
+a133 2
+    tmp.high = 0; tmp.low = 100;
+    t = extralong_umultiply(t, tmp);
+d147 1
+a147 1
+    if (t.high < 0x32000000 || t.high >= 0x96000000)
+d157 2
+a158 2
+    if (t.high >= 0x64000000)
+        t.high -= 0x64000000;
+d161 1
+a161 3
+    tmp.high = 0;
+    tmp.low = 100;
+    *(int64_t *)&t = extralong_divide(*(int64_t *)&t, tmp);
+d163 2
+a164 2
+    n.secs = (t.high << 8) | (t.low >> 24);
+    n.frac = t.low << 8;
+d172 1
+a172 1
+static void divfrac(u_int32_t *a, u_int32_t b, u_int32_t *r)
+d174 1
+a174 1
+    u_int32_t n, f;
+d192 1
+a192 1
+                r[j] |= (1ul << i);
+d201 1
+a201 1
+    u_int32_t c[2], r[2];
+d207 1
+a207 1
+    if (t.h < 0x32 || t.h >= 0x96)
+d217 2
+a218 2
+    if (t.h >= 0x64)
+        t.h -= 0x64;
+d220 2
+a221 2
+    c[1] = t.h;
+    c[0] = t.l;
+d243 1
+a243 1
+bool ntp_is_null(struct ntp_time n)
+d250 1
+a250 1
+void randomise_ntp(struct ntp_time *n)
+d266 3
+a268 3
+    t.l = 3;
+    if (_swix(OS_Word, _INR(0,1), 14, &t))
+        t.l = t.h = 0;
+d277 1
+a277 1
+static int iomd_present()
+d296 2
+a297 2
+    t1.low = 3 << 24;
+    t2.low = 3 << 24;
+d313 1
+a313 1
+    if (iomd_check == 1 && t1.low == t2.low)
+d316 1
+a316 1
+        u_int32_t tmp;
+d324 3
+a326 7
+            tmp = latch - 1L - timer_count;
+            tmp2.high = tmp >> 8;
+            tmp2.low = tmp << 24;
+            tmp3.high = 0;
+            tmp3.low = latch;
+            tmp2 = extralong_divide(tmp2, tmp3);
+            t2.low |= tmp2.low;
+d338 1
+a338 1
+    dprintf(("ntp_4", "precise_current_time returning %08lX %08lX\n", t2.high, t2.low));
+d345 2
+a346 2
+    t.secs = ntohl(t.secs);
+    t.frac = ntohl(t.frac);
+d360 1
+a360 4
+    {
+        if (++t.l == 0)
+           ++t.h;
+    }
+d417 1
+a417 1
+        *offset_out = extralong_usubtract(xmit, dest);
+d421 1
+a421 2
+        *offset_out = extralong_add(extralong_div2(extralong_usubtract(recv, orig)),
+                                    extralong_div2(extralong_usubtract(xmit, dest)));
+d424 2
+a425 1
+    dprintf(("ntp_1", "offset = %08lX.%08lX\n", offset_out->high, offset_out->low));
+@
+
+
+4.2
+log
+@Precision of internal arithmetic and clock reading improved. Now possible
+to maintain time to within a couple of milliseconds (given frequent enough
+polling).
+
+Version 0.22. Tagged as 'NetTime-0_22'
+@
+text
+@d97 1
+a97 1
+    mul64(n.secs, 100, &t.l);
+d107 1
+a107 1
+    mul64(n.frac, 1000000000, micro2);
+@
+
+
+4.1
+log
+@  Added support for NTP, gradual time adjustment, configurable DST,
+  and DHCP timezone.
+
+Detail:
+  If Inet$NTPServer is set, NetTime will use NTP (unicast SNTP, as per RFC2030).
+  Otherwise it will use the UDP time protocol (it used to use TCP).
+
+  NetTime will use the RTCAdjust algorithms to adjust the centisecond clock
+  rate by +/-10% to get in step with the time server. By polling every 30
+  minutes on a LAN, time will not deviate by more than 0.1 seconds once
+  synchronised. It interoperates with RTCAdjust and the hardware RTC to ensure
+  correct operation on a machine with RTC.
+
+  NetTime has returned to polling every 30 minutes. This may defeat PPP
+  timeouts - a suggested fix is to change PPP to only have TCP traffic keep the
+  link up, or to have a separate user inactivity timeout (like Lazarus).
+
+  The system variable NetTime$DST controls DST behaviour. Set to "European"
+  (the default) to use European rules. Set it to something like
+  "03-May-2000.01:00:00; 14-Sep-2000.01:00:00" to specify this year's start
+  and end dates (in UTC). Set to "No" to make it leave DST alone.
+
+  If a DHCP reply arrives while NetTime is loaded, it will check for the time
+  offset option - if present, the timezone will be configured.
+
+  New command *NetTime_Status gives information about the clock adjustments.
+
+  NetTime attempts to start operation immediately on a non-dialup machine -
+  removes the need for a *NetTime_Kick after softloading. *NetTime_Kick will
+  still be required after, say, setting Inet$NTPServer manually.
+
+Admin:
+  Tested on desktop systems and STBs. NTP operation on an NC will require a
+  way of finding out an NTP server - possibly redefining TIME_SERVER smartcard
+  tag to be NTP? Anycast operation may also be worth adding.
+
+Version 0.20. Tagged as 'NetTime-0_20'
+@
+text
+@d33 2
+d36 9
+a44 9
+/* Our clock has a 1/100s resolution (precision = -6.64) */
+#define PRECISE_BITS       6                /* All possible values of these bits are used */
+#define PRECISE_MASK       0xFC000000
+#define SIGNIFICANT_BITS   7                /* All possible times can be set using these bits */
+#define SIGNIFICANT_MASK   0xFE000000
+#define INSIGNIFICANT_BITS 25               /* These bits are not required */
+#define INSIGNIFICANT_MASK 0x01FFFFFF
+#define RANDOMISE_BITS     24               /* These bits can be randomised */
+#define RANDOMISE_MASK     0x00FFFFFF
+d55 1
+a55 1
+const char *riscos_to_text(struct riscos_time t, int precise)
+d66 22
+a87 2
+    if (precise)
+        sprintf(p, "%07ld", t.extrans);
+d122 56
+d282 74
+d367 1
+a367 1
+    return riscos_to_text(ntp_to_riscos(t), 1);
+d389 2
+d395 1
+a395 1
+      n->transmit_timestamp = riscos_to_ntp(current_time());
+d397 1
+a397 1
+      n->transmit_timestamp = ntp_hton(n->transmit_timestamp);
+d402 1
+a402 1
+int ntp_process_reply(const struct ntp *n, size_t len, struct riscos_time *time_out)
+d404 1
+a404 2
+    struct ntp_time destination_timestamp;
+    struct ntp_time offset, correct;
+d407 1
+a407 1
+    destination_timestamp = riscos_to_ntp(current_time());
+a412 2
+    /*printf("Current time = %s\n", riscos_to_text(current_time(), 1));*/
+
+d417 3
+a419 1
+        (ntp_is_null(ntp_ntoh(n->transmit_timestamp))))
+d422 10
+a431 1
+    if (ntp_is_null(ntp_ntoh(n->originate_timestamp)))
+d433 1
+a433 2
+        offset = ntp_null;
+        correct = ntp_ntoh(n->transmit_timestamp);
+d437 2
+a438 5
+        offset = ntp_add(ntp_div2(ntp_sub(ntp_ntoh(n->receive_timestamp), ntp_ntoh(n->originate_timestamp))),
+                         ntp_div2(ntp_sub(ntp_ntoh(n->transmit_timestamp), destination_timestamp))
+                        );
+
+        correct = ntp_add(riscos_to_ntp(current_time()), offset);
+d441 1
+a441 12
+    /*printf("Current time = %s\n", riscos_to_text(current_time(), 1));
+    printf("Offset=%08lX.%08lX\n"
+           "Correct=%s\n", offset.secs, offset.frac, ntp_to_text(correct));
+    printf("Rounded=%s\n", riscos_to_text(round_riscos_time(ntp_to_riscos(correct))));
+
+    printf("Originate Timestamp=%s\n", ntp_to_text(ntp_ntoh(n->originate_timestamp)));
+    printf("Receive Timestamp  =%s\n", ntp_to_text(ntp_ntoh(n->receive_timestamp)));
+    printf("Transmit Timestamp =%s\n", ntp_to_text(ntp_ntoh(n->transmit_timestamp)));
+    printf("Destina'n Timestamp=%s\n", ntp_to_text(destination_timestamp));
+    printf("\n");*/
+
+    *time_out = ntp_to_riscos(correct);
+@
+

@@ -1,0 +1,482 @@
+head	1.5;
+access;
+symbols
+	PortMan-0_29:1.5
+	PortMan-0_28:1.5
+	PortMan-0_27:1.5
+	PortMan-0_26:1.5
+	PortMan-0_25:1.5
+	PortMan-0_24:1.5
+	PortMan-0_23:1.5
+	PortMan-0_22:1.4
+	PortMan-0_21:1.4
+	RO_5_07:1.3
+	PortMan-0_20:1.4
+	PortMan-0_19:1.4
+	PortMan-0_18:1.3
+	PortMan-0_17:1.3
+	PortMan-0_16:1.2
+	PortMan-0_15:1.2
+	PortMan-0_14:1.1
+	PortMan-0_13:1.1
+	dellis_autobuild_BaseSW:1.1
+	dcotton_autobuild_BaseSW:1.1
+	PortMan-0_12:1.1
+	PortMan-0_11:1.1
+	PortMan-0_10:1.1
+	PortMan-0_09:1.1
+	PortMan-0_08:1.1
+	PortMan-0_07:1.1
+	PortMan-0_06:1.1
+	PortMan-0_05:1.1
+	PortMan-0_04:1.1
+	PortMan-0_03:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2005.03.22.17.59.31;	author kbracey;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2004.06.21.10.48.49;	author mhobbs;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2002.02.11.13.00.38;	author srevill;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.11.09.17.36.04;	author dellis;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.15.13.49.53;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Added button support for STB55. Non-trivial, as the buttons are
+implemented as a 2x4 matrix, using 4 of the LEDs as the column outputs.
+
+Version 0.23. Tagged as 'PortMan-0_23'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include "swis.h"
+
+#include "module.h"
+#include "tags.h"
+#include "msgfile.h"
+#include "PortMan.h"
+#include "messages.h"
+
+
+static struct msgfile tagsfile = MSGFILE_INIT;
+
+typedef struct tag_pair tag_pair;
+
+#define TOKEN_MAX_SIZE 16
+
+struct tag_pair {
+    tag_pair*       next;
+    char            name[TOKEN_MAX_SIZE];
+    struct bitdef   result;
+};
+
+static tag_pair* head_tag = 0;
+
+/*
+ * Get an integer from *str, updating *str to point to the end.  Returns
+ * 1 (true) if an integer was read.
+ */
+static
+int
+get_int(const char **str, unsigned long *result)
+{
+  const char *begin;
+
+  if(*str==NULL)
+  {
+    *result=0;
+    return 0;
+  }
+
+  /* Skip whitespace */
+  *str+=strspn(*str, " \t");
+
+  switch(**str)
+  {
+  case '\r': case '\n': case 0:
+    *result=0;
+    return 0;
+  case '&':
+    *result=strtoul(begin=*str+1, (char**)str, 16);
+    break;
+  default:
+    *result=strtoul(begin=*str, (char**)str, 0);
+    break;
+  }
+  return *str!=begin;
+}
+
+/*
+ * Gets a field separator from *str, updating *str to point to the end of
+ * the separator.  Returns 1 (true) if a separator was read.  Sets *str
+ * to NULL on error.
+ */
+
+static
+int
+get_sep(const char **str)
+{
+  if(*str==NULL)
+    return 0;
+
+  /* Skip whitespace */
+  *str+=strspn(*str, " \t");
+
+  switch(**str)
+  {
+  /* End of line */
+  case '\r': case '\n': case 0:
+    return 0;
+  case ':':
+    ++*str;
+    return 1;
+  default:
+    *str=NULL;
+    return 0;
+  };
+}
+
+/* Format of line:
+ *   <bit>:[port]:[flags]
+ */
+
+static
+_kernel_oserror *
+parse_line(struct bitdef *bit, const char *line)
+{
+  unsigned long num;
+
+  /* Gobble the bit number */
+  if(!get_int(&line, &num))
+    return msgfile_error_lookup(&messages, PortMan_BadLine, BadLine);
+
+  bit->num=(int)num;
+
+  /* Fill in the defaults. */
+  bit->flags=0;
+  bit->port=0;
+
+  /* Gobble the separator */
+  if(!get_sep(&line))
+  {
+    if(line==NULL)
+      return msgfile_error_lookup(&messages, PortMan_BadLine, BadLine);
+    return NULL;
+  }
+
+  /* Get and check port number */
+  if(get_int(&line, &num))
+    bit->port=(int)num;
+
+  /* Gobble the separator */
+  if(!get_sep(&line))
+  {
+    if(line==NULL)
+      return msgfile_error_lookup(&messages, PortMan_BadLine, BadLine);
+    return NULL;
+  }
+
+  /* Get the flags */
+  if(get_int(&line, &num))
+    bit->flags=(int)num;
+
+  /* Check for errors at the end of the line */
+  get_sep(&line);
+
+  if(line==NULL)
+    return msgfile_error_lookup(&messages, PortMan_BadLine, BadLine);
+  return NULL;
+}
+
+_kernel_oserror *
+tag_get(struct bitdef *result, const char *name)
+{
+  tag_pair *t = head_tag;
+  while (t) {
+      int l = strlen (t->name);
+      /* the string can be terminated by control */
+      if (strncmp (name, t->name, l) == 0 && (name[l] <= ' ')) {
+          *result = t->result;
+          return 0;
+      }
+      t = t->next;
+  }
+
+  return msgfile_error_lookup(&messages, PortMan_NoTag, NoTag, name);
+}
+
+void tag_foreach(void (*fn)(const char *name, struct bitdef bit))
+{
+  for (tag_pair *t = head_tag; t; t = t->next)
+    fn(t->name, t->result);
+}
+
+void tag_close(void)
+{
+  tag_pair* t = head_tag, *tt;
+  while (t) {
+    tt = t->next;
+    free (t);
+    t = tt;
+  }
+  head_tag = 0;
+}
+
+_kernel_oserror* tag_init(void)
+{
+  _kernel_oserror* err;
+  int index = 0;
+  int length = 0;
+  const char *line;
+  char name[TOKEN_MAX_SIZE];
+  int more = 0;
+  tag_pair **t = &head_tag;
+  err=msgfile_open( &tagsfile, TAGS_FILE );
+  if(err)
+    return err;
+
+  do {
+    err = _swix (MessageTrans_EnumerateTokens, _INR(0, 4) | _OUTR(2, 4),
+      &tagsfile.buf[0], "*", &name[0], TOKEN_MAX_SIZE, index,
+      &more, &length, &index);
+    if (err) goto error1;
+
+    if (more) {
+      *t = malloc(sizeof **t);
+      if (*t == 0) {
+        err = msgfile_error_lookup(&messages, PortMan_BadLine, BadLine);
+        goto error1;
+      }
+
+      (*t)->next = 0;
+      strncpy ((*t)->name, name, length+1);
+
+      err=msgfile_lookup( &tagsfile, &line, name );
+      if(err)
+          goto error2;
+
+      /* if there's an error parsing the line then just skip this entry */
+      err=parse_line(&((*t)->result), line);
+      if (err) {
+          free (*t);
+          continue;
+      }
+
+      t = &(*t)->next;
+    }
+  } while (more);
+
+  msgfile_close (&tagsfile);
+
+  return 0;
+error2:
+  free (*t);
+  (*t) = 0;
+error1:
+  msgfile_close (&tagsfile);
+  return err;
+
+}
+@
+
+
+1.4
+log
+@  Added support for STB5
+Detail:
+  Files modified: Resources.UK.Messages - Corrected typo in non-existent tag message
+  Files added: Resources.STB.Tags
+Admin:
+  Updated from Kev's machine by Mike H.
+
+Version 0.19. Tagged as 'PortMan-0_19'
+@
+text
+@d39 1
+a39 1
+tag_pair* head_tag = 0;
+d174 6
+@
+
+
+1.3
+log
+@Commit of PortMan changes made by DEllis around the time he left Pace...
+
+Summary:
+  - Only rescans resource files if resourcefs handle changes
+  - Disregards invalid tokens in tags file
+Details:
+  Since the tags file is cached when initialised, there's no point doing this
+  if the actual data hasn't changed, so the resourcefs internal file handle
+  is now recorded, which is a constant for a given file in resourcefs, only
+  changing if the file itself changes.  This avoids unnecessary recaching of
+  the data.
+
+  There are 2 invalid entries in the STB3 messages file which musn't be
+  cached.  These are now skipped.
+Admin:
+  Tested on a RiscPC with the hardware writes commented out.  There are 2
+  BASIC programs in the test directory which exercise the module.
+
+Version 0.17. Tagged as 'PortMan-0_17'
+@
+text
+@d117 1
+a117 1
+    return msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+d123 1
+d129 1
+a129 1
+      return msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+d134 2
+a135 4
+  if(get_int(&line, &num) && num!=0)
+  {
+    return msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+  }
+d141 1
+a141 1
+      return msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+d153 1
+a153 1
+    return msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+d171 1
+a171 1
+  return msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+d207 1
+a207 1
+        err = msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+@
+
+
+1.2
+log
+@  - Message lookups are now cached, so safe when IRQs threaded.
+  - AddCallback in finalise corrected to RemoveCallback
+  - RAM rule added to makefile for making ROM replacement
+
+Detail:
+  Customer I reported that the STB-3 was suffering from IRQ reentrancy problems.
+Some of these were tracked down to PortManager calling MessageTrans_LookUp
+(when IRQs were threaded), which can cause file operations after
+Service_ResourceFSStarting has been issued, invalidating the MessageTrans FD.
+
+  PortManager now caches the contents of its Tags file upon startup in a
+linked list, which it searches instead of using MessageTrans.
+
+  During testing, it was also found that crashes would often occur when
+killing the module.  This was tracked down to an erroneous OS_AddCallback in
+the finalisation handler.
+
+Admin:
+  Tested on STB-3.  Rentrancy problems during booting fixed.  The module
+should be loaded _very_ early on in the boot sequence.  Preferrably a the
+module should be launched from a utility which peeks the current softcopy of
+the port bits, and programs the module with these as it's initial value for
+the port.
+
+
+Version 0.15. Tagged as 'PortMan-0_15'
+@
+text
+@a25 1
+#define TAGS_FILE "Resources:$.Resources.PortMan.Tags"
+d203 1
+a203 2
+    if (err)
+      return err;
+d207 4
+a210 2
+      if (*t == 0) return
+        msgfile_error_lookup(&messages, PortMan_BadTag, BadLine);
+d217 1
+a217 1
+        return err;
+d219 1
+d221 4
+a224 2
+      if (err)
+        return err;
+d230 1
+a230 1
+//  printf ("head_tag = %p\n", head_tag);
+d233 7
+@
+
+
+1.1
+log
+@Added c.tags and h.tags which got missed last time.
+
+Version 0.03. Tagged as 'PortMan-0_03'
+@
+text
+@d17 2
+d30 12
+d109 1
+a109 1
+ 
+d162 30
+a191 1
+  _kernel_oserror *err;
+d193 3
+a195 1
+
+d200 26
+a225 3
+  err=msgfile_lookup( &tagsfile, &line, name );
+  if(err)
+    return err;
+d227 1
+a227 2
+  return parse_line(result, line);
+}
+d229 1
+a229 3
+void tag_close(void)
+{
+  msgfile_close( &tagsfile );
+@
+

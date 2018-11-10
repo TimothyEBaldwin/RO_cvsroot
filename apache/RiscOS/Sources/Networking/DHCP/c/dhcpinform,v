@@ -1,0 +1,233 @@
+head	1.3;
+access;
+symbols
+	DHCP-0_27:1.3
+	DHCP-0_26:1.3
+	DHCP-0_25:1.3
+	DHCP-0_24:1.3
+	DHCP-0_23:1.2
+	DHCP-0_22:1.2
+	RO_5_07:1.2
+	DHCP-0_21:1.2
+	DHCP-0_20:1.2
+	DHCP-0_19:1.2
+	DHCP-0_18:1.2
+	dellis_autobuild_BaseSW:1.2
+	DHCP-0_17:1.2
+	DHCP-0_16:1.2
+	DHCP-0_15:1.2
+	sbrodie_sedwards_16Mar2000:1.2
+	DHCP-0_14:1.2
+	DHCP-0_13:1.2
+	DHCP-0_12:1.2
+	dcotton_autobuild_BaseSW:1.2
+	DHCP-0_11:1.2
+	DHCP-0_10:1.2
+	DHCP-0_09:1.1
+	DHCP-0_08:1.1
+	DHCP-0_07:1.1
+	DHCP-0_06:1.1
+	DHCP-0_05:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2013.09.04.07.10.38;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	Mw18urjsIckYC54x;
+
+1.2
+date	99.07.22.16.00.49;	author kbracey;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.06.25.13.24.46;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@Makefile recreated from fragments
+Renamed dhcpextern.h to DHCP.h so the shared makefiles can export it without needing a different source and target filename.
+
+Version 0.24. Tagged as 'DHCP-0_24'
+@
+text
+@/* Copyright 1999 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ *  DHCP (dhcpinform.c)
+ *
+ * Copyright (C) Pace Micro Technologies plc. 1999
+ *
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stddef.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "sys/dcistructs.h"
+#include "net/if.h"
+#include "netinet/in.h"
+#include "protocols/dhcp.h"
+#include "arpa/inet.h"
+
+#include "dhcpintern.h"
+#include "interfaces.h"
+#include "sockets.h"
+#include "module.h"
+#include "packets.h"
+#include "dhcpinform.h"
+
+static ifdhcpreq inform;
+
+void dhcpinform_init(void)
+{
+        /* Yes, I really do want strncpy's semantics */
+        strncpy(inform.ifr.ifr_name, "lo0", IFNAMSIZ);
+        /* Mark the buffer as invalid */
+        inform.packet.op = BOOTREPLY;
+}
+
+void dhcpinform_discard(void)
+{
+        /* Nothing to do */
+}
+
+int dhcpinform_deliver_incoming_packet(DHCP *d, void *private_word)
+{
+        u_char *opt;
+        (void) private_word;
+
+        opt = dhcp_find_option(d, OPTION_DHCPMESSAGETYPE);
+
+        if (inform.packet.op != BOOTREQUEST ||
+                d->xid != inform.packet.xid ||
+                opt == NULL ||
+                opt[2] != DHCPACK) {
+                trace(("DHCP: inform handler not interested in this\n"));
+                return 0;
+        }
+
+        /* This was a response to our inform message */
+        inform.packet = *d;
+        sockets_direct_transmit(&inform, st_ACK_INFORM);
+        return 1;
+}
+
+int dhcpinform_execute(struct in_addr ia, u_char *req_list, u_char len)
+{
+	dhcp_init_inform_packet(&inform.packet, NULL, htonl(INADDR_ANY));
+	if (req_list != NULL) {
+		dhcp_add_option(&inform.packet, OPTION_PARAMETERREQLIST, len, req_list);
+	}
+
+	sockets_inform(&inform.packet, ia, inform.ifr.ifr_name);
+        return 0;
+}
+@
+
+
+1.2
+log
+@Tweaked to build with latest TCPIPLibs
+@
+text
+@d35 1
+a35 1
+#include "dhcp.h"
+@
+
+
+1.1
+log
+@  Support for DHCPINFORM
+  Dynamic leasing behaviour brought in line with DHCP specification
+Detail:
+  New *-command *DHCPExecute to enable CLI launching of DHCP interface
+    control.
+  Output of *DHCPInfo tidied up and irrevelant timer info is suppressed.
+  The algorithm for deciding which offer to accept (where multiple offers
+    are received) has been significantly enhanced (and moved to voting.c)
+    If a previous offer from a server has been DHCPNAK'd by something else
+    then the server offering the dodgy IP address is blacklisted and will
+    no longer be preferred to a server which isn't blacklisted.
+  DHCP module will request and prefer offers of an existing IP address
+    configuration wherever possible.
+  DHCP module will initialise an interface into the INITREBOOT/REBOOTING
+    states if it is asked to take control of an interface which has
+    already been configured externally.
+  IP lease length suggestions are no longer sent in appropriate messages.
+    The server is trusted to choose an appropriate value.
+  The DHCP module is more careful to insert appropriate options into each
+    message.  It is no longer in breach of RFC2131 in this respect.
+  Timer values for renew and rebind times are now inferred automatically
+    where necessary (server doesn't have to send them) and are now correct.
+  DHCPRELEASE and DHCPDECLINE now include a textual message indicating the
+    reason for the message's generation.
+  Where allowed, outgoing messages contain a client class identifier to
+    enable the server to vary configuration information depending on the
+    client hardware/software type.  Currently, this information is the
+    output of OS_Byte 0.
+  In the SWI interface for examining DHCP packets, a pointer to a specific
+    packet to examine may be supplied instead of an interface identifier
+    (depending on a flag bit)
+  New SWI DHCP_Inform for sending DHCPINFORM messages to arbitrary servers
+    in order to enable retrieval of configuration information when the IP
+    address has been established via other means (eg. from NVRAM).
+  DHCP module is now capable of deleting IP addresses from interfaces.
+  DHCP module will cede control of an interface if something else changes
+    the interface's address and send a message to the server indicating
+    that the lease is being relinquished.
+  DHCP will trap the Internet (5.26 and later) module's panic service call
+    when a duplicate IP address is detected on the network, and resolve
+    the situation (send the server DHCPDECLINE and deconfigure the interface
+    and restart address discovery) if it was controlling that interface.
+  Transaction ID generation improved (uses interface MAC address to
+    reduce chance of duplication with other hosts)
+  MAC address discovery code added.
+  DHCP module attempts to unicast packets wherever possible.
+  Retry delays adjusted to conform more closely to spec (RFC2131)
+  Possible hole in state table that IPConfig triggered which caused several
+    DHCPDISCOVER messages to be sent in succession very quickly has been
+    closed.
+  Co-operates with Internet 5.26 to ensure that callers of the Internet
+    module's BOOTP ioctl are returned sensible error values so that they
+    no longer need to probe the DHCP module independently to discover
+    whether an interface has been configured successfully or not.
+Admin:
+  Requires Internet 5.26
+  Requires TCPIPLibs 5.19
+
+Version 0.05. Tagged as 'DHCP-0_05'
+@
+text
+@d28 2
+d31 1
+a32 2
+#include "sys/dcistructs.h"
+#include "netinet/in.h"
+@

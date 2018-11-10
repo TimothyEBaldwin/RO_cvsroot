@@ -1,0 +1,2016 @@
+head	1.6;
+access;
+symbols
+	FrontEnd-1_34:1.6
+	FrontEnd-1_33:1.6
+	FrontEnd-1_32:1.6
+	FrontEnd-1_31:1.6
+	FrontEnd-1_30-2:1.6
+	FrontEnd-1_30:1.6
+	FrontEnd-1_29:1.6
+	FrontEnd-1_28:1.5
+	FrontEnd-1_27:1.5
+	FrontEnd-1_26:1.4
+	FrontEnd-1_25:1.3
+	FrontEnd-1_24:1.3
+	FrontEnd-1_23:1.3
+	FrontEnd-1_22:1.2
+	FrontEnd-1_21:1.1.1.1
+	FrontEnd-1_20:1.1.1.1
+	FrontEnd-1_19:1.1.1.1
+	FrontEnd-1_18:1.1.1.1
+	FrontEnd-1_17:1.1.1.1
+	FrontEnd-1_16:1.1.1.1
+	FrontEnd-Aquarius-1_16:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2006.03.13.17.32.17;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2001.06.15.17.25.00;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2001.06.01.15.56.00;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.05.22.13.58.41;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.05.11.15.37.34;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.18.10.30.27;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.03.18.10.30.27;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.6
+log
+@  Bug fix, bug aversion, compiles.
+Detail:
+  "Command line too short" error from DDEUtils down to not including space
+  for a terminating NUL character fixed. Nasty crashes due to lines being
+  exactly 64 characters long averted, but I don't understand the root cause
+  of the fault; changing the parser block size to 128 pushes the problem
+  further away. Not ideal but time was short. A few instances of static
+  structures initialised to "{}" removed; the C99 compiler disliked them.
+Admin:
+  !MkBrowse FrontEnd application being developed at the time, provoking
+  the above faults. Faults no longer show up, FrontEnd behaves as hoped.
+
+Version 1.29. Tagged as 'FrontEnd-1_29'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* Title:    parser.c
+ * Purpose:  RD parsing of an application description
+ * Author:   IDJ
+ * History:  09-Apr-90: IDJ: Created
+ *           21-May-90: IDJ: added IF_ARROWUP/DOWN flags
+ *           19-Jun-90: IDJ: big addition:  added choices parsing
+ *           19-Mar-91: IDJ: added menu and icon prefix_by
+ *
+ *           Re-release
+ *           04-Nov-91: IDJ: bug-fix to DDE-0846 to allow tokens of any length
+ *
+ *           11-May-01: ADH: added support for quoted_string in icns, and ctrl_chars
+ *                           <escape | hide | text> plus tab_width <number> in the
+ *                           metaoptions
+ *
+ */
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "swis.h"
+
+#include "global.h"
+#include "types.h"
+#include "FrontEnd.h"
+#include "slist.h"
+#include "lexer.h"
+#include "gen.h"
+#include "bool.h"
+#include "FEoptions.h"
+#include "FEinterr.h"
+#include "FEmem.h"
+
+#include "parser.h"
+
+
+/* --- errors --- */
+#define perr_internal       "internal error (parser): %s"
+#define perr_expected       "expected %s but found %s"
+#define perr_cant_open      "failed to open %s"
+#define perr_eof            "unexpected <eof> expecting %s"
+
+/* --- exported data --- */
+FILE *fp;
+
+/* --- private data --- */
+static lexer_token token;
+static lexer_token lookahead;
+
+/* --- forward declarations for RD routines --- */
+static void parser__RD_dbox(void);
+static void parser__RD_menu(void);
+static void parser__RD_icons(void);
+static void parser__RD_rdsei(int enforce1, int enforce2);
+static void parser__RD_make_exclusions(void);
+static void parser__RD_imports(void);
+static void parser__RD_import(void);
+static void parser__RD_optentry(BOOL off);
+static void parser__RD_orderis(BOOL order_is);
+
+/* ---------------------------------------- general routines ------------------------------- */
+static void parser__error(BOOL wimp_init, char *s, ...)
+{
+   _kernel_oserror e;
+   va_list a;
+
+   (void) wimp_init; /* No longer needed - pending command window anyway and Wimp_ReportError is allowed */
+
+   va_start(a, s);
+
+   /* Try to report the error with a Wimp error box. If that fails,
+    * try to print it with OS_PrettyPrint to get word wrapping when
+    * inside narrow displays / command windows. If that fails, use
+    * printf.
+    */
+
+   e.errnum = 0;
+
+   /* Yes, this is not very satisfactory - it assumes the message will
+    * fit... But we're about to call exit() anyway ;-)
+    */
+
+   sprintf(e.errmess, "FrontEnd (line %d): ", line_number);
+   vsprintf(e.errmess + strlen(e.errmess), s, a);
+   e.errmess[sizeof(e.errmess) - 1] = '\0';
+
+   if (
+         _swix(Wimp_ReportError,
+               _INR(0,5),
+
+               &e,
+               (1u<<8) | (3u<<9),
+               application.name != NULL && *application.name != '\0' ? application.name : 0,
+               0,
+               0,
+               "Quit")
+
+         != NULL
+      )
+   {
+      if (_swix(OS_PrettyPrint, _INR(0,2), e.errmess, 0, NULL) != NULL)
+         printf("%s\n", e.errmess);
+      else
+         printf("\n");
+   }
+
+   va_end(a);
+   exit(EXIT_FAILURE);       /* --- no attempt at error recovery --- */
+}
+
+
+static BOOL parser__checkfor(int shouldbe)
+{
+   BOOL result;
+#if VARIABLE_LENGTH_TOKENS
+   lexer_copy_token(&token, &lookahead);
+#else
+   token = lookahead;
+#endif
+#if VARIABLE_LENGTH_TOKENS
+   if (token.number == s_unknown) lexer_next_token(&token);
+#else
+   if (token.number == s_unknown) token = lexer_next_token();
+#endif
+   if (token.number == s_eof) parser__error(FALSE,perr_eof, lexer_tokenstrings[shouldbe]);
+   if (token.number == shouldbe) result =  TRUE;
+   else
+   {
+      parser__error(FALSE,perr_expected, lexer_tokenstrings[shouldbe], token.lexeme);
+      result = FALSE;
+   }
+#if VARIABLE_LENGTH_TOKENS
+   lexer_next_token(&lookahead);
+#else
+   lookahead = lexer_next_token();
+#endif
+   return result;
+}
+
+
+static BOOL parser__match_2(int maybe1, int maybe2)
+{
+#if VARIABLE_LENGTH_TOKENS
+   lexer_copy_token(&token, &lookahead);
+#else
+   token = lookahead;
+#endif
+#if VARIABLE_LENGTH_TOKENS
+   if (token.number == s_unknown) lexer_next_token(&token);
+#else
+   if (token.number == s_unknown) token = lexer_next_token();
+#endif
+   if (token.number == maybe1 || token.number == maybe2)
+   {
+#if VARIABLE_LENGTH_TOKENS
+      lexer_next_token(&lookahead);
+#else
+      lookahead = lexer_next_token();
+#endif
+      return TRUE;
+   }
+   else
+      return FALSE;
+}
+
+
+static BOOL parser__match(int maybe)
+{
+#if VARIABLE_LENGTH_TOKENS
+   lexer_copy_token(&token, &lookahead);
+#else
+   token = lookahead;
+#endif
+#if VARIABLE_LENGTH_TOKENS
+   if (token.number == s_unknown) lexer_next_token(&token);
+#else
+   if (token.number == s_unknown) token = lexer_next_token();
+#endif
+   if (token.number == maybe)
+   {
+#if VARIABLE_LENGTH_TOKENS
+      lexer_next_token(&lookahead);
+#else
+      lookahead = lexer_next_token();
+#endif
+      return TRUE;
+   }
+   else
+      return FALSE;
+}
+
+
+/* ----------------------------------------- parsing the description ----------------------- */
+static void parser__RD_application(void)
+{
+   /* --- mandatory tool details section --- */
+   parser__checkfor(s_tool_details_start);
+
+   /* --- the application's name --- */
+   parser__checkfor(s_name);
+   parser__checkfor(s_string_value);
+   gen_appname(&token);
+   parser__checkfor(s_semicolon);
+
+   /* --- optional command name --- */
+   if (parser__match(s_command_is))
+   {
+      parser__checkfor(s_string_value);
+      gen_appcommand(&token);
+      parser__checkfor(s_semicolon);
+   }
+
+   /* --- the version string --- */
+   parser__checkfor(s_version);
+   parser__checkfor(s_string_value);
+   gen_version(&token);
+   parser__checkfor(s_semicolon);
+
+   /* --- filetype of input files --- */
+   if (parser__match(s_filetype))
+   {
+       parser__checkfor(s_number_value);
+       gen_filetype(&token);
+       parser__checkfor(s_semicolon);
+   }
+
+   /* --- generate dialogue box structure --- */
+   gen_dbox();
+
+   /* --- minimum application size --- */
+   if (parser__match(s_wimpslot))
+   {
+       parser__checkfor(s_number_value);
+       gen_wimpslot(&token);
+       parser__checkfor(s_k);
+       parser__checkfor(s_semicolon);
+   }
+
+   /* --- does it use extended command line --- */
+   if (parser__match(s_has_extended_cmdline))
+   {
+      gen_extended_cmdline();
+      parser__checkfor(s_semicolon);
+   }
+
+   parser__checkfor(s_tool_details_end);
+
+   /* --- optional metaoptions section --- */
+   if (parser__match(s_metaoptions_start))
+   {
+
+      /* --- does it have auto-run --- */
+      if (parser__match(s_has_auto_run))
+      {
+         if (parser__match(s_on))
+             gen_setautorun(&token);
+         parser__checkfor(s_semicolon);
+         gen_autorun();
+      }
+
+      /* --- does it have auto-save --- */
+      if (parser__match(s_has_auto_save))
+      {
+         int num_hats = 0;
+
+         gen_autosave();
+
+         if (parser__match(s_on))
+             gen_setautosave(&token);
+
+         while (parser__match(s_hat))
+         {
+             num_hats++;
+             parser__checkfor(s_dot);
+         }
+         if (num_hats != 0) gen_numhats(num_hats);
+
+         if (parser__match(s_string_value))
+         {
+            gen_saveprefix(&token);
+         }
+
+         if (parser__match(s_leafname))
+             gen_leafname();
+
+         if (parser__match(s_string_value))
+         {
+            gen_savesuffix(&token);
+         }
+
+         parser__checkfor(s_from);
+         parser__checkfor(s_icn);
+         parser__checkfor(s_number_value);
+         gen_savefrom(&token);
+         parser__checkfor(s_semicolon);
+      }
+
+      /* --- has it got a text output window ? --- */
+      if (parser__match(s_has_text_window))
+      {
+         gen_outputwindow();
+         parser__checkfor(s_semicolon);
+      }
+
+      /* --- has it got a summary window ? --- */
+      if (parser__match(s_has_summary_window))
+      {
+          gen_summarywindow();
+          parser__checkfor(s_semicolon);
+      }
+
+      /* --- what is the default display --- */
+      if (parser__match(s_display_dft_is))
+      {
+         if (parser__match_2(s_summary, s_text))
+             gen_displaydft(&token);
+         parser__checkfor(s_semicolon);
+      }
+
+      /* --- escape or hide control characters when redrawing ? --- */
+      if (parser__match(s_ctrl_chars))
+      {
+         if (parser__match_2(s_hide, s_escape) || parser__match(s_text))
+             gen_ctrlchars(&token);
+         parser__checkfor(s_semicolon);
+      }
+
+      /* --- tab width --- */
+      if (parser__match(s_tab_width))
+      {
+         parser__checkfor(s_number_value);
+         gen_tabwidth(&token);
+         parser__checkfor(s_semicolon);
+      }
+
+      parser__checkfor(s_metaoptions_end);
+   }
+
+   /* --- optional fileoutput section --- */
+   if (parser__match(s_fileoutput_start))
+   {
+
+      /* --- what is the output option --- */
+      if (parser__match(s_output_option_is))
+      {
+          parser__checkfor(s_string_value);
+          gen_outputoption(&token);
+          parser__checkfor(s_semicolon);
+      }
+
+      /* --- default output file name --- */
+      if (parser__match(s_output_dft_string))
+      {
+          parser__checkfor(s_string_value);
+          gen_outname(&token);
+          parser__checkfor(s_semicolon);
+      }
+
+      /* --- does it produce output by default --- */
+      if (parser__match(s_output_dft_is))
+      {
+          if (parser__match(s_produces_output) || parser__match(s_produces_no_output))
+              gen_produces_output_dft(&token);
+          parser__checkfor(s_semicolon);
+      }
+
+
+      parser__checkfor(s_fileoutput_end);
+   }
+
+   /* --- the window descriptions --- */
+   if (parser__match(s_dbox_start))
+   {
+       parser__RD_dbox();
+       parser__checkfor(s_dbox_end);
+   }
+
+   /* --- extra menu options --- */
+   if (parser__match(s_menu_start))
+       parser__RD_menu();
+
+   /* --- selections --- */
+   if (parser__match(s_selections_start))
+       parser__RD_rdsei(s_select, s_selects);
+
+   /* --- deselections --- */
+   if (parser__match(s_deselections_start))
+       parser__RD_rdsei(s_deselect, s_deselects);
+
+   /* --- inclusions --- */
+   if (parser__match(s_inclusions_start))
+       parser__RD_rdsei(s_include, s_includes);
+
+   /* --- exclusions --- */
+   if (parser__match(s_exclusions_start))
+       parser__RD_rdsei(s_exclude, s_excludes);
+
+   /* --- rules --- */
+   if (parser__match(s_rules_start))
+       parser__RD_rdsei(s_unknown, s_unknown);
+
+   /* --- things excluded by make --- */
+   if (parser__match(s_make_excludes))
+       parser__RD_make_exclusions();
+
+   /* --- ordering on command-line (non-make) --- */
+   if (parser__match(s_order_is))
+       parser__RD_orderis(FALSE);
+
+   /* --- ordering on command-line for make --- */
+   if (parser__match(s_make_order_is))
+       parser__RD_orderis(TRUE);
+}
+
+
+static void parser__RD_icondefaults(void)
+{
+   int icn;
+
+   do
+   {
+      parser__checkfor(s_icn);
+      parser__checkfor(s_number_value);
+      icn = token.value.integer;
+      if (parser__match(s_on) || parser__match(s_off)
+        ||parser__match(s_string_value) || parser__match(s_number_value))
+          gen_icondefaults(&token, icn);
+      else parser__error(FALSE,perr_expected, "icon default", token.lexeme);
+
+   } while (parser__match(s_comma));
+
+   parser__checkfor(s_semicolon);
+
+   /* --- defaults for use in makefile (if different from above) --- */
+   if (parser__match(s_make_defaults))
+   {
+      do
+      {
+         parser__checkfor(s_icn);
+         parser__checkfor(s_number_value);
+         icn = token.value.integer;
+         if (parser__match(s_on) || parser__match(s_off)
+           ||parser__match(s_string_value) || parser__match(s_number_value))
+             gen_make_icondefaults(&token, icn);
+         else parser__error(FALSE,perr_expected, "icon default", token.lexeme);
+      } while (parser__match(s_comma));
+
+      parser__checkfor(s_semicolon);
+   }
+}
+
+
+static void parser__RD_dbox(void)
+{
+   /* --- icon defn's --- */
+   parser__checkfor(s_icons_start);
+   parser__RD_icons();
+   if (parser__match(s_defaults))
+       parser__RD_icondefaults();
+
+   if (parser__match(s_imports_start))
+       parser__RD_imports();
+}
+
+
+static void parser__RD_menudefaults(void)
+{
+   int m;
+
+   do
+   {
+      parser__checkfor(s_menu);
+      parser__checkfor(s_number_value);
+      m = token.value.integer;
+      if (parser__match(s_on) || parser__match(s_off))
+          gen_menudefaults(&token, m);
+      else
+          parser__error(FALSE,perr_expected, "menu default", token.lexeme);
+      if (parser__match(s_sub_menu))
+      {
+         if (parser__match_2(s_string_value, s_number_value))
+             gen_sub_menudefaults(&token, m);
+         else
+            parser__error(FALSE,perr_expected, "submenu default", token.lexeme);
+      }
+
+   } while (parser__match(s_comma));
+
+   parser__checkfor(s_semicolon);
+
+   /* --- defaults for use in makefile (if different from above) --- */
+   if (parser__match(s_make_defaults))
+   {
+      do
+      {
+         parser__checkfor(s_menu);
+         parser__checkfor(s_number_value);
+         m = token.value.integer;
+         if (parser__match(s_on) || parser__match(s_off))
+             gen_make_menudefaults(&token, m);
+         else
+             parser__error(FALSE,perr_expected, "menu default", token.lexeme);
+         if (parser__match(s_sub_menu))
+         {
+            if (parser__match_2(s_string_value, s_number_value))
+                gen_make_sub_menudefaults(&token, m);
+            else
+                parser__error(FALSE,perr_expected, "submenu default", token.lexeme);
+         }
+      } while (parser__match(s_comma));
+
+      parser__checkfor(s_semicolon);
+   }
+}
+
+
+static void parser__RD_menu(void)
+{
+   BOOL off;
+
+   while (!parser__match(s_menu_end))
+   {
+      if (parser__match(s_defaults))
+      {
+          parser__RD_menudefaults();
+      }
+      else if (parser__checkfor(s_string_value))
+      {
+         gen_menuentry();
+         gen_addmenutext(&token);
+
+         if (parser__match(s_on)) off = FALSE;
+         else if (parser__match(s_off)) off = TRUE;
+         else off = FALSE;
+
+         parser__checkfor(s_maps_to);
+         parser__checkfor(s_string_value);
+
+         if (off) gen_menumapsto_off(&token);
+         else gen_menumapsto(&token);
+
+         if (parser__match(s_sub_menu))
+         {
+             parser__checkfor(s_string_value);
+             gen_subtext(&token);
+
+             parser__checkfor(s_number_value);
+             gen_menubufsize(&token);
+
+             if (parser__match(s_prefix_by))
+             {
+                parser__checkfor(s_string_value);
+                gen_menu_prefix(&token);
+             }
+         }
+
+         if (parser__match(s_produces_no_output))
+         {
+             gen_menuproducesnooutput();
+         }
+         else if (parser__match(s_produces_output))
+         {
+             gen_menuproducesoutput();
+         }
+
+         if (parser__match(s_not_saved))
+         {
+             gen_menunotsaved();
+         }
+
+         parser__checkfor(s_semicolon);
+      }
+      else
+          parser__error(FALSE,perr_expected, "menu entry or defaults", token.lexeme);
+   }
+}
+
+
+static void parser__RD_icons(void)
+{
+   int icn_num;
+   BOOL off;
+
+   while (!parser__match(s_icons_end))
+   {
+      parser__checkfor(s_icn);
+      parser__checkfor(s_number_value);
+      icn_num = token.value.integer;
+      gen_icon(&token);
+
+      if (parser__match(s_on)) off = FALSE;
+      else if (parser__match(s_off)) off = TRUE;
+      else off = FALSE;
+
+      if (parser__match(s_maps_to))
+      {
+         if (parser__match(s_string_value))
+         {
+            if (off)
+               gen_mapstring_off(&token);
+            else
+               gen_mapstring(&token);
+         }
+
+         if (parser__match_2(s_string, s_number) || parser__match(s_quoted_string))
+         {
+            gen_conversion(&token);
+         }
+
+         if (parser__match(s_prefix_by))
+         {
+            parser__checkfor(s_string_value);
+            gen_icon_prefix(&token);
+         }
+
+         if (parser__match(s_followed_by))
+         {
+            if (parser__match(s_spaces))
+            {
+                if (off) gen_followiconspaces_off();
+                else gen_followiconspaces();
+            }
+
+            parser__RD_optentry(off);
+            while (parser__match(s_comma))
+                parser__RD_optentry(off);
+
+            if (parser__match(s_separator_is))
+            {
+               parser__checkfor(s_string_value);
+               if (off) gen_separator_off(&token);
+               else gen_separator(&token);
+            }
+         }
+
+         if (parser__match(s_produces_no_output))
+         {
+             gen_iconproducesnooutput();
+         }
+         else if (parser__match(s_produces_output))
+         {
+             gen_iconproducesoutput();
+         }
+
+         if (parser__match(s_not_saved))
+         {
+             gen_iconnotsaved();
+         }
+      }
+      else if (parser__match(s_increases))
+      {
+          parser__checkfor(s_icn);
+          parser__checkfor(s_number_value);
+          gen_changesicon(&token, IF_ARROWUP);
+          if (parser__match(s_by))
+          {
+              parser__checkfor(s_number_value);
+              gen_by(&token);
+          }
+          if (parser__match(s_min))
+          {
+             parser__checkfor(s_number_value);
+             gen_minval(&token);
+          }
+          if (parser__match(s_max))
+          {
+              parser__checkfor(s_number_value);
+              gen_maxval(&token);
+          }
+      }
+      else if (parser__match(s_decreases))
+      {
+          parser__checkfor(s_icn);
+          parser__checkfor(s_number_value);
+          gen_changesicon(&token, IF_ARROWDOWN);
+          if (parser__match(s_by))
+          {
+              parser__checkfor(s_number_value);
+              gen_by(&token);
+          }
+          if (parser__match(s_min))
+          {
+             parser__checkfor(s_number_value);
+             gen_minval(&token);
+          }
+          if (parser__match(s_max))
+          {
+              parser__checkfor(s_number_value);
+              gen_maxval(&token);
+          }
+      }
+      else if (parser__match(s_inserts))
+      {
+          parser__checkfor(s_string_value);
+          gen_insertliteral(&token);
+      }
+      else if (parser__match(s_extends))
+      {
+          gen_extends(icn_num);
+          parser__checkfor(s_from);
+          parser__checkfor(s_icn);
+          parser__checkfor(s_number_value);
+          gen_extendsfrom(&token);
+          parser__checkfor(s_to);
+          parser__checkfor(s_icn);
+          parser__checkfor(s_number_value);
+          gen_extendsto(&token);
+      }
+      else
+          parser__error(FALSE,perr_expected, "maps_to, increases or decreases", token.lexeme);
+
+      parser__checkfor(s_semicolon);
+   }
+}
+
+
+static void parser__RD_optentry(BOOL off)
+{
+   if (parser__match_2(s_icn, s_string_value))
+   {
+      if (token.number == s_icn)
+          parser__checkfor(s_number_value);
+   }
+   else
+      parser__error(FALSE,perr_expected, "follow item", token.lexeme);
+   gen_followicon(&token, off);
+}
+
+
+/* Handle rules / deselections / selections / exclusions / inclusions
+ * sections, allowing any of those rule types inside any of those
+ * sections.
+ *
+ * The two parameters are used to enforce the presence of the rule
+ * keyword. They should be the singular and plural form of the rule
+ * keyword, in either order (e.g. 's_select, s_selects'). If neither
+ * is present when expected, the parser will complain about the lack
+ * of the first one you give.
+ *
+ * If you don't care (e.g. for a rules_start...rules_end section),
+ * pass 's_unknown' in both parameters. Now the parser will only
+ * complain if none of the recognised rule keywords are present.
+ */
+
+static void parser__RD_rdsei(int enforce1, int enforce2)
+{
+   /* Pointers to the gen.c routines to call for a given rule */
+
+   gen_icon_dsei_ptr     icon_dsei;
+   gen_icon_dsei_ptr     menu_dsei;
+   gen_icon_dsei_ptr     icon_dsei_off;
+   gen_icon_dsei_ptr     menu_dsei_off;
+
+   /* Hold a list of items to which the rule should be applied */
+
+   Frontend_parserlist * at      = NULL;
+   Frontend_parserlist * curat;
+   Frontend_parserlist * newat;
+
+   /* Hold a list of the items listed by the rule */
+
+   Frontend_parserlist * rl      = NULL;
+   Frontend_parserlist * currl;
+   Frontend_parserlist * newrl;
+
+   /* General working variables */
+
+   BOOL                  off;
+   BOOL                  is_icon = FALSE;
+   int                   rule, temp;
+
+   /* We don't care if this is a rules section, or a section named
+    * to hold a specific type of rule - it's all treated the same.
+    * This means the [de]selections_[start|end], [in|ex]clusions_
+    * [start|end] and rules_[start|end] tokens are now synonymous.
+    */
+
+   while (
+            !parser__match  (s_rules_end)                          &&
+            !parser__match_2(s_selections_end, s_deselections_end) &&
+            !parser__match_2(s_inclusions_end, s_exclusions_end)
+         )
+   {
+      /* Build a list of menu entries or icons with which the rule will be associated */
+
+      do
+      {
+         /* Icon or menu? */
+
+         if (parser__match(s_icn))
+            is_icon = TRUE;
+         else if (parser__match(s_menu))
+            is_icon = FALSE;
+         else
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+
+         parser__checkfor(s_number_value);
+         temp = token.value.integer;
+
+         /* On or off? */
+
+         if      (parser__match(s_off)) off = TRUE;
+         else if (parser__match(s_on))  off = FALSE;
+         else off = FALSE;
+
+         /* Add the item to the list */
+
+         newat = FEmem_alloc(sizeof(Frontend_parserlist));
+         newat->is_icon = is_icon ? 1 : 0;
+         newat->off     = off     ? 1 : 0;
+         newat->number  = temp;
+
+         at = slist_addend(at, (void *) newat);
+
+      } while (parser__match(s_comma));
+
+      /* Find the rule type */
+
+      if (enforce1 != s_unknown && enforce2 != s_unknown)
+      {
+         /* I.e. if neither enforce1 or enforce2 is present, complain
+          * about enforce1.
+          */
+
+         if (!parser__match_2(enforce1, enforce2)) parser__checkfor(enforce1);
+
+         /* Otherwise, use the first rule keyword (either of them will do) */
+
+         rule = enforce1;
+      }
+      else
+      {
+         if      (parser__match_2(s_select,   s_selects))   rule = s_selects;
+         else if (parser__match_2(s_deselect, s_deselects)) rule = s_deselects;
+         else if (parser__match_2(s_include,  s_includes))  rule = s_includes;
+         else if (parser__match_2(s_exclude,  s_excludes))  rule = s_excludes;
+         else                                               rule = s_unknown;
+      }
+
+      /* From this, work out what gen.c functions to call */
+
+      switch (rule)
+      {
+         case s_select:
+         case s_selects:
+            icon_dsei     = gen_icon_selects;
+            menu_dsei     = gen_menu_selects;
+            icon_dsei_off = gen_icon_selects_off;
+            menu_dsei_off = gen_menu_selects_off;
+            break;
+
+         case s_deselect:
+         case s_deselects:
+            icon_dsei     = gen_icon_deselects;
+            menu_dsei     = gen_menu_deselects;
+            icon_dsei_off = gen_icon_deselects_off;
+            menu_dsei_off = gen_menu_deselects_off;
+            break;
+
+         case s_include:
+         case s_includes:
+            #ifndef INCLUDES_AS_INCLUDES
+               icon_dsei     = gen_icon_excludes_off;
+               menu_dsei     = gen_menu_excludes_off;
+               icon_dsei_off = gen_icon_excludes;
+               menu_dsei_off = gen_menu_excludes;
+            #else
+               icon_dsei     = gen_icon_includes;
+               menu_dsei     = gen_menu_includes;
+               icon_dsei_off = gen_icon_includes_off;
+               menu_dsei_off = gen_menu_includes_off;
+            #endif
+            break;
+
+         case s_exclude:
+         case s_excludes:
+            icon_dsei     = gen_icon_excludes;
+            menu_dsei     = gen_menu_excludes;
+            icon_dsei_off = gen_icon_excludes_off;
+            menu_dsei_off = gen_menu_excludes_off;
+            break;
+
+         default:
+            parser__error(FALSE,
+                          perr_expected,
+                          "select(s), deselect(s), include(s) or exclude(s)",
+                          token.lexeme);
+            return;
+      }
+
+      /* Now have to read all the things listed by the rule */
+
+      do
+      {
+         if (parser__match(s_icn))
+            is_icon = TRUE;
+         else if (parser__match(s_menu))
+            is_icon = FALSE;
+         else
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+
+         parser__checkfor(s_number_value);
+         temp = token.value.integer;
+
+         /* Add the item to the list */
+
+         newrl = FEmem_alloc(sizeof(Frontend_parserlist));
+         newrl->is_icon = is_icon ? 1 : 0;
+         newrl->off     = 0; /* Not relevant */
+         newrl->number  = temp;
+
+         rl = slist_addend(rl, (void *) newrl);
+
+      } while (parser__match(s_comma));
+
+      parser__checkfor(s_semicolon);
+
+      /* Now go through the list of items built previously */
+
+      curat = at;
+
+      while (curat != NULL)
+      {
+         /* Tell the gen.c routines what icon we're working on */
+
+         if (curat->is_icon) gen_icon_setdsei(curat->number);
+         else                gen_menu_setdsei(curat->number);
+
+         /* Add the rules to this item */
+
+         currl = rl;
+
+         while (currl != NULL)
+         {
+            if (curat->is_icon)
+            {
+               if (curat->off)
+                  (icon_dsei_off)(currl->number, currl->is_icon ? IS_ICON : IS_MENU);
+               else
+                  (icon_dsei)(currl->number, currl->is_icon ? IS_ICON : IS_MENU);
+            }
+            else
+            {
+               if (curat->off)
+                  (menu_dsei_off)(currl->number, currl->is_icon ? IS_ICON : IS_MENU);
+               else
+                  (menu_dsei)(currl->number, currl->is_icon ? IS_ICON : IS_MENU);
+            }
+
+            /* Next item to add to the current menu entry or icon */
+
+            currl = currl->next;
+         }
+
+         /* Get next item to be added to */
+
+         curat = curat->next;
+      }
+
+      /* Free up the temporary lists ready for the next rule declaration */
+
+      while (at->next != NULL)
+      {
+         curat = at->next;
+         free(at);
+         at = curat;
+      }
+
+      free(at), at = NULL;
+
+      while (rl->next != NULL)
+      {
+         currl = rl->next;
+         free(rl);
+         rl = currl;
+      }
+
+      free(rl), rl = NULL;
+   }
+}
+
+
+static void parser__RD_make_exclusions(void)
+{
+   if (parser__match(s_icn))
+   {
+       parser__checkfor(s_number_value);
+       gen_make_excludes(&token, IS_ICON);
+   }
+   else if (parser__match(s_menu))
+   {
+       parser__checkfor(s_number_value);
+       gen_make_excludes(&token, IS_MENU);
+   }
+   else
+      parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+
+   while(parser__match(s_comma))
+   {
+      if (parser__match(s_icn))
+      {
+          parser__checkfor(s_number_value);
+          gen_make_excludes(&token, IS_ICON);
+      }
+      else if (parser__match(s_menu))
+      {
+          parser__checkfor(s_number_value);
+          gen_make_excludes(&token, IS_MENU);
+      }
+      else
+         parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+   }
+   parser__checkfor(s_semicolon);
+}
+
+
+static void parser__RD_orderentry(BOOL make_order)
+{
+   if (parser__match_2(s_menu, s_icn))
+   {
+       if (token.number == s_menu)
+       {
+           parser__checkfor(s_number_value);
+           gen_orderis(&token, IS_MENU, make_order);
+       }
+       else  /* s_icn */
+       {
+           parser__checkfor(s_number_value);
+           gen_orderis(&token, IS_ICON, make_order);
+       }
+   }
+   else if (parser__match(s_string_value))
+   {
+      gen_orderis(&token, IS_STRING, make_order);
+   }
+   else if (parser__match(s_output))
+   {
+      gen_orderis(&token, IS_OUTPUT, make_order);
+   }
+   else
+       parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+}
+
+
+static void parser__RD_orderis(BOOL make_order)
+{
+   parser__RD_orderentry(make_order);
+
+   while (parser__match(s_comma))
+          parser__RD_orderentry(make_order);
+
+   parser__checkfor(s_semicolon);
+}
+
+
+static void parser__RD_imports(void)
+{
+   if (parser__match(s_wild_card_is))
+   {
+       parser__checkfor(s_string_value);
+       gen_wildcard(&token);
+       parser__checkfor(s_semicolon);
+   }
+
+   while (!parser__match(s_imports_end))
+   {
+      parser__RD_import();
+   }
+}
+
+
+static void parser__RD_import(void)
+{
+   parser__checkfor(s_drag_to);
+   if (parser__match_2(s_any, s_iconbar))
+   {
+   }
+   else
+   {
+      parser__checkfor(s_icn);
+      parser__checkfor(s_number_value);
+   }
+
+   gen_dragto(&token);
+
+   parser__checkfor(s_inserts);
+
+   parser__checkfor(s_icn);
+   parser__checkfor(s_number_value);
+   gen_insert(&token);
+   while(parser__match(s_comma))
+   {
+      parser__checkfor(s_icn);
+      parser__checkfor(s_number_value);
+      gen_insert(&token);
+   }
+
+   if (parser__match(s_separator_is))
+   {
+      parser__checkfor(s_string_value);
+      gen_dragseparator(&token);
+   }
+
+   parser__checkfor(s_semicolon);
+}
+
+
+/* --------------------------------------- choices processing ------------------------------ */
+
+/* NOTE: meta options are just set by tweaking the application flags appropriately
+         other options call FEoptions to set the dbox/menus correctly
+*/
+
+
+static void parser__RD_choices(void)
+{
+   /* --- first the "meta"options: auto_run, auto_save, display mode --- */
+
+   if (parser__match_2(s_on, s_off))
+   {
+      /* --- set auto-run option --- */
+      if (application.flags & AF_HAS_AUTORUN)
+          gen_setautorun(&token);
+   }
+   else
+      parser__error(TRUE,perr_expected, "on or off", token.lexeme);
+
+   if (parser__match_2(s_on, s_off))
+   {
+      /* --- set auto-save option --- */
+      if (application.flags & AF_HAS_AUTOSAVE)
+          gen_setautosave(&token);
+   }
+   else
+      parser__error(TRUE,perr_expected, "on or off", token.lexeme);
+
+   if (parser__match_2(s_text, s_summary))
+   {
+      /* --- set dft display --- */
+      gen_displaydft(&token);
+   }
+
+   /* --- now the dbox icons and menu entries --- */
+   while (parser__match_2(s_icn, s_menu))
+   {
+      if (token.number == s_icn)
+      {
+         int i;
+
+         parser__checkfor(s_number_value);
+         i = token.value.integer;
+
+         if (parser__match(s_on))
+         {
+            FEoptions_iconclick(i, TRUE);
+         }
+         else if (parser__match(s_off))
+         {
+            FEoptions_iconclick(i, FALSE);
+         }
+         else if (parser__match(s_string_value))
+         {
+            FEoptions_iconval(i, token.lexeme);
+         }
+         else
+            parser__error(TRUE,perr_expected, "on, off or string", token.lexeme);
+      }
+      else if (token.number == s_menu)
+      {
+         int m;
+
+         parser__checkfor(s_number_value);
+         m = token.value.integer;
+
+         if (parser__match(s_on))
+         {
+             FEoptions_menuclick(m, TRUE);
+         }
+         else if (parser__match(s_off))
+         {
+             FEoptions_menuclick(m, FALSE);
+         }
+         else
+            parser__error(TRUE,perr_expected, "on or off", token.lexeme);
+
+         if (parser__match(s_string_value))
+         {
+             FEoptions_menuval(m, token.lexeme);
+         }
+      }
+   }
+}
+
+
+/* --------------------------------------- exported functions ------------------------------ */
+void parser_readdescription(char *filename)
+{
+   if ((fp = fopen(filename, "r")) == 0)
+   {
+      parser__error(FALSE,perr_cant_open, filename);
+      return;
+   }
+
+   token.number = lookahead.number = s_unknown;
+
+   parser__RD_application();
+
+   fclose(fp);
+}
+
+
+void parser_readchoices(char *filename)
+{
+   if ((fp = fopen(filename, "r")) == 0)
+   {
+      /* --- just return, cos there's no choices file --- */
+      return;
+   }
+
+   token.number = lookahead.number = s_unknown;
+
+   parser__RD_choices();
+
+   fclose(fp);
+}
+
+
+
+
+
+@
+
+
+1.5
+log
+@  Finally got the rules stuff sorted. Hurrah.
+Detail:
+  A few tricks to this; maintain a usage count for greying/ungreying where
+  the initial state for an icon is zero, meaning 'unknown', and going to
+  either < or > 0 thereafter once the state is determined. That's done
+  at load-time from the Defaults and Choices settings. In addition, the
+  module has to know when an icon is part of a selection group - normally
+  this means a radio button - and detects that when this is happening, the
+  'off' rules for items deselected by the selection of another should *not*
+  be run. This makes a great deal of difference to behaviour, which is now
+  a lot more straightforward and a lot clearer in the code itself.
+
+  The caveat of this is that exclude on = include off / exclude off =
+  include on, which never worked before, now should; you can infact totally
+  remove inclusion support internally beyond leaving it as syntactic sugar
+  for the Desc file by undefining INCLUDES_AS_INCLUDES when building. By
+  default, this isn't done, as there's an omission in this work. Since any
+  item judged to be in a selection group will not have its Off rules run
+  (or On rules unwound IYSWIM) then *any* off item for a radio won't be
+  run. What FrontEnd *should* do is compare the list of icons altered by
+  the selecting item's selection rules and only run rules for the
+  deselecting items that are not part of the other list. It doesn't do
+  this, which creates a slight lack of orthogonality overall. It's minor.
+Admin:
+  Tested it as heavily as I easily can in UpgCreate. Ensured that Link
+  still works. Had a quick look at menu behaviour (sane); brought Docs up
+  to date.
+
+Version 1.27. Tagged as 'FrontEnd-1_27'
+@
+text
+@d63 2
+a64 2
+static lexer_token token = {};
+static lexer_token lookahead = {};
+@
+
+
+1.4
+log
+@  Doh.
+Detail:
+  Testing "fairly thoroughly" wasn't thoroughly enough. I'd missed two
+  tricks; first, it's only necessary to do that last minute inclusion
+  unwind and exclusion run at the outer recursion level, and second, it
+  must *not* be done if the icon in question is already part of the
+  causal link between selection/deselection items - i.e. check it's not
+  mentioned in the [i|m]sel / [i|m]desel arrays before proceeding.
+Admin:
+  More confident of this one!
+
+Version 1.26. Tagged as 'FrontEnd-1_26'
+@
+text
+@d878 11
+a888 4
+            icon_dsei     = gen_icon_includes;
+            menu_dsei     = gen_menu_includes;
+            icon_dsei_off = gen_icon_includes_off;
+            menu_dsei_off = gen_menu_includes_off;
+@
+
+
+1.3
+log
+@  Great many changes and a few fixes.
+Detail:
+  See 'ReadMe' in the Docs directory. Summary - new includes and selections
+  rules, rules_start/rules_end section, lists before rules keywords, actions
+  can take place when icons go off as well as on, and more.
+Admin:
+  Tested new features a reasonable amount by playing around with the UpgFetch
+  front-end. Link still behaves as it should, and all the other Desktop tools
+  run without any parser errors or obvious faults in behaviour.
+
+
+Version 1.23. Tagged as 'FrontEnd-1_23'
+@
+text
+@d398 1
+@
+
+
+1.2
+log
+@  Improved redraw strategy; added 'quoted_string' option for icons, plus
+  'ctrl_chars' and 'tab_width' for metaoptions.
+Detail:
+  Previously the redraw engine stayed one line behind current output as it
+  did not know where to terminate redraw of the current line. At task exit
+  it forced \n\r into the output to flush the last line. Now, the incoming
+  data buffer is oversized by 1 byte and a \0 written in to give the redraw
+  engine something to stop at. This allows it to redraw the current line,
+  meaning e.g. "....[...]" progress indicators and so-on will work. It also
+  means the \r\n hack isn't needed so saved output doesn't have a spurious
+  blank line.
+
+  For 'icn <n> maps_to ...' you can now say 'quoted_string' where you used
+  to say 'string'. This encloses the relevant writable field's text in
+  double quotes, escaping any double quotes from the writable with '\'. If
+  you use 'prefix_by', all of the prefixes and strings are within the
+  double quotes (rather than e.g. enclosing each item individually).
+
+  Previously, control characters were output more or less directly. This
+  could cause a crash for some nasty ones (e.g. send output to printer)
+  or just cause redraw corruptions and the bell to ring. Now, any control
+  characters are replaced with "?" by default, including &7F, except for
+  tab (&09), which is replaced with a single space. Behaviour is chosen by
+  the "ctrl_chars" metaoption, which takes parameters "text" for the usual
+  behaviour as described, "escape" for !Edit-style "[aa]" escaping, or
+  "hide" to not draw anything at all (so e.g. put "ctrl_chars escape" in
+  your metaoptions section of the Desc file). Another new option is
+  "tab_width"; tabs are now understood for all three output types. To
+  avoid unduly changing existing output the default tab width is 1, but it
+  can be 0 to hide tabs, or up to 32. The limit is arbitrary and only in
+  place to stop the redraw engine trying to do silly things if given a
+  very large value.
+
+  Finally, lexer.c's list of text items was mirrored in lexer.h by a list
+  of numbered items - all done by #define, so you had to manually renumber
+  them all! This has been changed to an enum, with compiled output checked
+  against the previous version - identical as expected.
+Admin:
+  Remember, you MUST NOT soft load this if you have any FrontEnd apps
+  running already! Either quit them all (check there are no instantiations
+  with *Modules) and then run it, or put it in !System and reboot. The new
+  features have been tested with a work-in-progress !UpgCreate utility,
+  and the usual set of DDE apps run to ensure they don't give any syntax
+  errors. GNUDiff and Find tested fairly heavily. Builds ROM and RAM
+  variants from clean.
+
+
+Version 1.22. Tagged as 'FrontEnd-1_22'
+@
+text
+@d37 1
+a37 1
+#include "werr.h"
+d42 1
+d48 1
+d70 1
+a70 2
+static void parser__RD_deselections(void);
+static void parser__RD_exclusions(void);
+d74 1
+a74 1
+static void parser__RD_optentry(void);
+a76 1
+
+d80 1
+d82 3
+d86 30
+a115 1
+   if (!wimp_init)
+d117 4
+a120 3
+       printf("FrontEnd: line %d: ", line_number);
+       vprintf(s, a);
+       printf("\n");
+d122 1
+a122 2
+   else
+       werr(FALSE, s, a);
+d218 1
+a218 1
+   gen_appname(token);
+d225 1
+a225 1
+      gen_appcommand(token);
+d232 1
+a232 1
+   gen_version(token);
+d239 1
+a239 1
+       gen_filetype(token);
+d250 1
+a250 1
+       gen_wimpslot(token);
+d272 1
+a272 1
+             gen_setautorun(token);
+d285 1
+a285 1
+             gen_setautosave(token);
+d296 1
+a296 1
+            gen_saveprefix(token);
+d304 1
+a304 1
+            gen_savesuffix(token);
+d310 1
+a310 1
+         gen_savefrom(token);
+d332 1
+a332 1
+             gen_displaydft(token);
+d340 1
+a340 1
+             gen_ctrlchars(token);
+d348 1
+a348 1
+         gen_tabwidth(token);
+d363 1
+a363 1
+          gen_outputoption(token);
+d371 1
+a371 1
+          gen_outname(token);
+d379 1
+a379 1
+              gen_produces_output_dft(token);
+a395 1
+   {
+d397 3
+a399 1
+   }
+d403 5
+a407 1
+       parser__RD_deselections();
+d411 5
+a415 1
+       parser__RD_exclusions();
+d442 1
+a442 1
+          gen_icondefaults(token, icn);
+d459 1
+a459 1
+             gen_make_icondefaults(token, icn);
+d491 1
+a491 1
+          gen_menudefaults(token, m);
+d497 1
+a497 1
+             gen_sub_menudefaults(token, m);
+d515 1
+a515 1
+             gen_make_menudefaults(token, m);
+d521 1
+a521 1
+                gen_make_sub_menudefaults(token, m);
+d534 2
+d545 5
+a549 1
+         gen_addmenutext(token);
+d553 3
+a555 1
+         gen_menumapsto(token);
+d560 1
+a560 1
+             gen_subtext(token);
+d563 1
+a563 1
+             gen_menubufsize(token);
+d568 1
+a568 1
+                gen_menu_prefix(token);
+d597 1
+d604 5
+a608 1
+      gen_icon(token);
+d614 4
+a617 1
+             gen_mapstring(token);
+d622 1
+a622 1
+            gen_conversion(token);
+d628 1
+a628 1
+            gen_icon_prefix(token);
+d635 2
+a636 1
+                gen_followiconspaces();
+d639 1
+a639 1
+            parser__RD_optentry();
+d641 1
+a641 1
+                parser__RD_optentry();
+d646 2
+a647 1
+               gen_separator(token);
+d669 1
+a669 1
+          gen_changesicon(token, IF_ARROWUP);
+d673 1
+a673 1
+              gen_by(token);
+d678 1
+a678 1
+             gen_minval(token);
+d683 1
+a683 1
+              gen_maxval(token);
+d690 1
+a690 1
+          gen_changesicon(token, IF_ARROWDOWN);
+d694 1
+a694 1
+              gen_by(token);
+d699 1
+a699 1
+             gen_minval(token);
+d704 1
+a704 1
+              gen_maxval(token);
+d710 1
+a710 1
+          gen_insertliteral(token);
+d718 1
+a718 1
+          gen_extendsfrom(token);
+d722 1
+a722 1
+          gen_extendsto(token);
+d732 1
+a732 1
+static void parser__RD_optentry(void)
+d741 1
+a741 1
+   gen_followicon(token);
+d745 16
+a760 1
+static void parser__RD_deselections(void)
+d762 36
+a797 1
+   while (!parser__match(s_deselections_end))
+d799 3
+a801 1
+      if (parser__match(s_icn))
+d803 1
+a803 3
+         parser__checkfor(s_number_value);
+         gen_icon_setdeselects(token);
+         parser__checkfor(s_deselects);
+d806 1
+a806 4
+         {
+             parser__checkfor(s_number_value);
+             gen_icon_deselects(token, IS_ICON);
+         }
+d808 1
+a808 4
+         {
+             parser__checkfor(s_number_value);
+             gen_icon_deselects(token, IS_MENU);
+         }
+d811 34
+a844 16
+         while(parser__match(s_comma))
+         {
+            if (parser__match(s_icn))
+            {
+                parser__checkfor(s_number_value);
+                gen_icon_deselects(token, IS_ICON);
+            }
+            else if (parser__match(s_menu))
+            {
+                parser__checkfor(s_number_value);
+                gen_icon_deselects(token, IS_MENU);
+            }
+            else
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+         }
+         parser__checkfor(s_semicolon);
+d846 1
+a846 1
+      else if (parser__match(s_menu))
+d848 52
+a899 3
+         parser__checkfor(s_number_value);
+         gen_menu_setdeselects(token);
+         parser__checkfor(s_deselects);
+d901 2
+d904 1
+a904 4
+         {
+             parser__checkfor(s_number_value);
+             gen_menu_deselects(token, IS_ICON);
+         }
+d906 1
+a906 4
+         {
+             parser__checkfor(s_number_value);
+             gen_menu_deselects(token, IS_MENU);
+         }
+a908 16
+         while(parser__match(s_comma))
+         {
+            if (parser__match(s_icn))
+            {
+                parser__checkfor(s_number_value);
+                gen_menu_deselects(token, IS_ICON);
+            }
+            else if (parser__match(s_menu))
+            {
+                parser__checkfor(s_number_value);
+                gen_menu_deselects(token, IS_MENU);
+            }
+            else
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+         }
+         parser__checkfor(s_semicolon);
+d910 17
+a926 5
+      }
+      else
+         parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+   }
+}
+d928 1
+d930 1
+a930 5
+static void parser__RD_exclusions(void)
+{
+   while (!parser__match(s_exclusions_end))
+   {
+      if (parser__match(s_icn))
+d932 8
+a939 3
+         parser__checkfor(s_number_value);
+         gen_icon_setexcludes(token);
+         parser__checkfor(s_excludes);
+d941 1
+a941 13
+         if (parser__match(s_icn))
+         {
+             parser__checkfor(s_number_value);
+             gen_icon_excludes(token, IS_ICON);
+         }
+         else if (parser__match(s_menu))
+         {
+             parser__checkfor(s_number_value);
+             gen_icon_excludes(token, IS_MENU);
+         }
+         else
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+         while(parser__match(s_comma))
+d943 1
+a943 1
+            if (parser__match(s_icn))
+d945 4
+a948 2
+                parser__checkfor(s_number_value);
+                gen_icon_excludes(token, IS_ICON);
+d950 1
+a950 1
+            else if (parser__match(s_menu))
+d952 4
+a955 2
+                parser__checkfor(s_number_value);
+                gen_icon_excludes(token, IS_MENU);
+d957 4
+a960 2
+            else
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+d962 4
+a965 1
+         parser__checkfor(s_semicolon);
+d967 4
+a970 1
+      else if (parser__match(s_menu))
+d972 6
+a977 3
+         parser__checkfor(s_number_value);
+         gen_menu_setexcludes(token);
+         parser__checkfor(s_excludes);
+d979 5
+a983 28
+         if (parser__match(s_icn))
+         {
+             parser__checkfor(s_number_value);
+             gen_menu_excludes(token, IS_ICON);
+         }
+         else if (parser__match(s_menu))
+         {
+             parser__checkfor(s_number_value);
+             gen_menu_excludes(token, IS_MENU);
+         }
+         else
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+         while(parser__match(s_comma))
+         {
+            if (parser__match(s_icn))
+            {
+                parser__checkfor(s_number_value);
+                gen_menu_excludes(token, IS_ICON);
+            }
+            else if (parser__match(s_menu))
+            {
+                parser__checkfor(s_number_value);
+                gen_menu_excludes(token, IS_MENU);
+            }
+            else
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+         }
+         parser__checkfor(s_semicolon);
+d985 2
+a986 2
+      else
+         parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);
+d996 1
+a996 1
+       gen_make_excludes(token, IS_ICON);
+d1001 1
+a1001 1
+       gen_make_excludes(token, IS_MENU);
+d1011 1
+a1011 1
+          gen_make_excludes(token, IS_ICON);
+d1016 1
+a1016 1
+          gen_make_excludes(token, IS_MENU);
+d1032 1
+a1032 1
+           gen_orderis(token, IS_MENU, make_order);
+d1037 1
+a1037 1
+           gen_orderis(token, IS_ICON, make_order);
+d1042 1
+a1042 1
+      gen_orderis(token, IS_STRING, make_order);
+d1046 1
+a1046 1
+      gen_orderis(token, IS_OUTPUT, make_order);
+d1069 1
+a1069 1
+       gen_wildcard(token);
+d1092 1
+a1092 1
+   gen_dragto(token);
+d1098 1
+a1098 1
+   gen_insert(token);
+d1103 1
+a1103 1
+      gen_insert(token);
+d1109 1
+a1109 1
+      gen_dragseparator(token);
+d1131 1
+a1131 1
+          gen_setautorun(token);
+d1140 1
+a1140 1
+          gen_setautosave(token);
+d1148 1
+a1148 1
+      gen_displaydft(token);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d26 4
+d185 1
+a185 1
+   gen_appname(token);  
+d303 16
+d325 1
+a325 1
+      
+d368 1
+a368 1
+   if (parser__match(s_deselections_start)) 
+d372 1
+a372 1
+   if (parser__match(s_exclusions_start)) 
+d394 1
+a394 1
+   {   
+d398 1
+a398 1
+      if (parser__match(s_on) || parser__match(s_off) 
+d411 1
+a411 1
+      {   
+d415 1
+a415 1
+         if (parser__match(s_on) || parser__match(s_off) 
+d434 1
+a434 1
+   if (parser__match(s_imports_start)) 
+d444 1
+a444 1
+   {   
+d450 1
+a450 1
+      else 
+d457 1
+a457 1
+            parser__error(FALSE,perr_expected, "submenu default", token.lexeme); 
+d468 1
+a468 1
+      {   
+d474 1
+a474 1
+         else 
+d481 1
+a481 1
+                parser__error(FALSE,perr_expected, "submenu default", token.lexeme); 
+d506 1
+a506 1
+             
+d540 1
+a540 1
+   } 
+d562 1
+a562 1
+         if (parser__match_2(s_string, s_number))
+d706 1
+a706 1
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d720 1
+a720 1
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d741 1
+a741 1
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d755 1
+a755 1
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d762 1
+a762 1
+   }        
+d787 1
+a787 1
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d801 1
+a801 1
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d810 1
+a810 1
+  
+d822 1
+a822 1
+            parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d836 1
+a836 1
+               parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d859 1
+a859 1
+      parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);     
+d874 1
+a874 1
+         parser__error(FALSE,perr_expected, "menu or icn", token.lexeme);  
+d911 1
+a911 1
+   
+d994 1
+a994 1
+      if (application.flags & AF_HAS_AUTOSAVE) 
+d1004 1
+a1004 1
+   }  
+@
+
+
+1.1.1.1
+log
+@  Initial import of FrontEnd module to CVS from Aquarius.
+Detail:
+  Code claims to build FrontEnd 1.16 (11 Jan 1995), but will not
+    build in current build environment.
+Admin:
+  Does not compile - checked in for reference purposes only.
+  Tagged appropriately.  Use tag FrontEnd-1_16 to extract version
+    which builds in the current build environment.
+
+Tagged as FrontEnd-Aquarius-1_16
+
+
+@
+text
+@@

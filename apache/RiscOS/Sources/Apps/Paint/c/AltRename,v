@@ -1,0 +1,721 @@
+head	4.7;
+access;
+symbols
+	Paint-2_23-1:4.7
+	Paint-2_23:4.7
+	Paint-2_22:4.7
+	Paint-2_21:4.7
+	Paint-2_20:4.7
+	Paint-2_19:4.7
+	Paint-2_18:4.7
+	Paint-2_17:4.7
+	Paint-2_16:4.7
+	Paint-2_15:4.7
+	Paint-2_14:4.7
+	Paint-2_13:4.6
+	Paint-2_12:4.6
+	Paint-2_11:4.5
+	Paint-2_10:4.5
+	Paint-2_09:4.5
+	Paint-2_08:4.5
+	Paint-2_07:4.5
+	Paint-2_06:4.5
+	Paint-2_05:4.5
+	Paint-2_04:4.5
+	Paint-2_03:4.4
+	Paint-2_02:4.3
+	Paint-2_01:4.2
+	Paint-2_00:4.1
+	Paint-1_99:4.1
+	Paint-1_98:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.7
+date	2013.07.13.17.42.25;	author rsprowson;	state Exp;
+branches;
+next	4.6;
+commitid	KU75iaLuw8AlPkXw;
+
+4.6
+date	2012.08.22.07.18.09;	author rsprowson;	state Exp;
+branches;
+next	4.5;
+commitid	jkPgRNvjP7QROvhw;
+
+4.5
+date	2010.12.06.22.30.45;	author rsprowson;	state Exp;
+branches;
+next	4.4;
+
+4.4
+date	2010.12.05.19.04.57;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+
+4.3
+date	2010.11.29.20.55.24;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+
+4.2
+date	2009.05.29.02.09.28;	author pnaulls;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2007.07.27.21.23.32;	author srevill;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.7
+log
+@Don't silently do nothing when trying to rename to a duplicate name
+Paint, when renaming a sprite via alt-clicking on the name, would silently do nothing if the target name already exists. This was different behaviour to renaming via the menu (which gives "Sprite name already exists") and the Filer (which gives "Filename already exists". Now, alt-click-rename also gives a suitable error.
+
+Version 2.14. Tagged as 'Paint-2_14'
+@
+text
+@/* Copyright 2007 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <swis.h>
+#include <string.h>
+#include "os.h"
+#include "bbc.h"
+#include "wimpt.h"
+#include "werr.h"
+#include "sprite.h"
+
+#include "AltRename.h"
+#include "PSprite.h"
+#include "PaintLib.h"
+#include "main.h"
+#include "SprWindow.h"
+#include "akbd.h"
+
+static wimp_i        rename_icon = -1;
+static char          rename_buffer[16];
+static main_window  *rename_window;
+static main_sprite  *rename_sprite;
+static wimp_box      rename_bbox;
+static int           rename_sprites_per_row;
+
+static void altrename_renamesprite (main_sprite *sprite, char *newname)
+
+{ sprite_id sid;
+  char name[NAME_LIMIT+1];
+  sid.tag = sprite_id_name; /*doesn't flex*/
+  sid.s.name = newname;
+
+  if (*newname == 0) return;
+
+  strncpy (name, psprite_address (sprite)->name, NAME_LIMIT);
+  name[NAME_LIMIT] = 0;
+  sid.s.name = name;
+  if (wimpt_complain (sprite_rename
+      (sprite->file->spritearea, &sid, newname)) !=
+      NULL) return;
+
+  main_set_modified (sprite->file);
+  sprwindow_set_window_titles (sprite);
+
+  /* rename must reset the titles of all the windows open on
+    the sprite */
+  if (sprite->colourdialogue != NULL)
+  { char new_title [80];
+    colourpicker_dialogue dialogue;
+
+    dialogue.title = new_title;
+    sprintf (new_title, msgs_lookup ("PntW7"), newname);
+    ftracef0 ("ColourPicker_UpdateDialogue: setting new title");
+    wimpt_complain (os_swix3 (ColourPicker_UpdateDialogue,
+        colourpicker_UPDATE_TITLE, sprite->colourdialogue,
+        &dialogue));
+  }
+  else if (sprite->colourhandle != NULL)
+  { wimp_winfo winfo;
+    wimp_redrawstr redraw_str;
+    wimp_wstate wstate;
+
+    winfo.w = sprite->colourhandle;
+    wimpt_noerr (paintlib_get_wind_info (&winfo));
+
+    sprintf (winfo.info.title.indirecttext.buffer,
+        msgs_lookup ("PntW7"), newname);
+
+    /*Force redraw of the title bar.*/
+    wimpt_noerr (wimp_get_wind_state
+        (sprite->colourhandle, &wstate));
+
+    redraw_str.w = sprite->colourhandle;
+    wimpt_noerr (wimp_getwindowoutline (&redraw_str));
+
+    redraw_str.w = -1;
+    redraw_str.box.y0 = wstate.o.box.y1;
+    wimpt_noerr (wimp_force_redraw (&redraw_str));
+  } 
+}
+
+void altrename_delete (void)
+
+{ wimp_redrawstr ds;
+
+  if (!rename_window) return;
+  wimp_delete_icon (rename_window->handle, rename_icon);
+  ds.w = rename_window->handle;
+  ds.box = rename_bbox;
+  wimp_force_redraw (&ds);
+
+  rename_window = NULL;
+}
+
+static int altrename_sprites_per_row (int *toggled)
+
+{ wimp_wstate ws;
+  int width;
+
+  if (!rename_window) return 0;
+
+  if (rename_window->data->file.fullinfo)
+    width = main_FILER_FullInfoWidth;
+  else
+    width = main_FILER_TotalWidth;
+
+  wimp_get_wind_state(rename_window->handle, &ws);
+
+  if (toggled) *toggled = (ws.flags & wimp_WCLICK_TOGGLE);
+
+  width = (ws.o.box.x1-ws.o.box.x0)/width;
+
+  return width ? width : 1;
+}
+
+void altrename_start (main_window *window, main_sprite *sprite)
+
+{ wimp_box bbox;
+  psprite_info sinfo;
+  wimp_icreate icon;
+  wimp_wstate ws;
+  int y, scy;
+  wimp_redrawstr ds;
+  wimp_caretstr  caret;
+
+  if (!window || !sprite) return;
+  if (window==rename_window && sprite==rename_sprite) return;
+
+  altrename_delete();
+ 
+  if (!main_get_all_sprite_bboxes (window, sprite, &bbox, 0, &icon.i.box))
+    return;
+
+  if (window->data->file.fullinfo)
+    icon.i.box.x1 = icon.i.box.x0+12*main_FILER_TextWidth;
+  else
+  { icon.i.box.x0 = bbox.x0;
+    icon.i.box.x1 = bbox.x1;
+  }
+
+  icon.w = window->handle;
+  icon.i.flags = (wimp_iconflags)(wimp_ITEXT | wimp_INDIRECT | wimp_IHCENTRE |
+                                 wimp_IFILLED | wimp_IBORDER |
+                                 (7 * wimp_IFORECOL) | (0 * wimp_IBACKCOL) |
+                                 (wimp_BWRITABLE * wimp_IBTYPE));
+               
+  icon.i.data.indirecttext.buffer = rename_buffer;
+  icon.i.data.indirecttext.validstring = "";
+  icon.i.data.indirecttext.bufflen = NAME_LIMIT+1;
+  psprite_read_full_info (sprite, &sinfo);
+  strcpy (rename_buffer, sinfo.name);
+
+  if (wimpt_complain (wimp_create_icon (&icon, &rename_icon))) return;
+
+  rename_window = window;
+  rename_sprite = sprite;
+  ds.w = icon.w;
+  ds.box = icon.i.box;
+  rename_bbox = ds.box;
+  rename_sprites_per_row = altrename_sprites_per_row (0);
+  caret.w = window->handle;
+  caret.i = rename_icon;
+  caret.x = caret.y = 0;
+  caret.height = -1;
+  caret.index = strlen (sinfo.name);
+  wimp_set_caret_pos (&caret);
+  wimp_force_redraw (&ds);
+  wimp_get_wind_state (window->handle,&ws);
+  
+  scy = ws.o.y;
+  y = WORKAREA_TO_SCREEN_Y(&ws, bbox.y1);
+  if (y>ws.o.box.y1)
+    ws.o.y += (y-ws.o.box.y1);
+
+  y = WORKAREA_TO_SCREEN_Y(&ws, bbox.y0);
+  if (y<ws.o.box.y0)
+    ws.o.y += (y-ws.o.box.y0);
+
+  if (scy != ws.o.y) wimp_open_wind (&ws.o);
+}
+
+BOOL altrename_claim_event (wimp_eventstr *e, main_window *window)
+
+{ if (!rename_window) return FALSE;
+  switch (e->e)
+  {
+    case wimp_EBUT:
+      if (window->handle!=rename_window->handle ||
+          (e->data.but.m.bbits & wimp_BMID))
+      { altrename_delete ();
+        break;
+      }
+      if ( e->data.but.m.i==rename_icon &&
+           window->handle==rename_window->handle) return TRUE;
+
+      if (e->data.but.m.bbits & (wimp_BCLICKLEFT | wimp_BCLICKRIGHT))
+      { altrename_delete ();
+        break;
+      }
+      return TRUE;
+
+    case wimp_EOPEN:
+    { int wid;
+      if (window->handle==rename_window->handle)
+      { int toggled;
+        wid = altrename_sprites_per_row (&toggled);
+        if (wid != rename_sprites_per_row || toggled)
+          altrename_delete();
+      }
+      break;
+    }
+
+    case wimp_EKEY: 
+      if (window->handle!=rename_window->handle) break;
+      switch (e->data.key.chcode)
+      {
+        case 13:
+          altrename_renamesprite (rename_sprite, rename_buffer);
+          if (!akbd_pollctl ())
+          { altrename_delete ();
+            break;
+          }
+          /*fall through*/
+          
+        case 0x18A: /* TAB -  next sprite */
+          { main_sprite *sprite=rename_sprite->link;
+            if (sprite==0) sprite=rename_window->data->file.sprites;
+            altrename_start (rename_window, sprite);
+          }
+          break;
+          
+        case 0x19A: /* Shift TAB -  previous sprite */
+          { main_sprite *sprite=rename_sprite;
+            for (sprite = rename_window->data->file.sprites;
+                 !(sprite->link == NULL || sprite->link == rename_sprite);
+                 sprite = sprite->link);
+            altrename_start (rename_window, sprite);
+          }
+          break;
+      }
+  }
+  return FALSE;
+}
+@
+
+
+4.6
+log
+@Sprite filer selection logic made consistent with filer
+Specifically, in the filer when you menu click on a file it is temporarily selected. Clicking on a different file loses the first temporary selection and moves the highlight to the new file. This behaviour is skipped if there are already files selected (using left or right click).
+This change makes !Paint behave this way too, previously the menu click was a permanent selection, so menu clicking elsewhere on a different sprite would actually manipulate the sprite selected some time earlier - very confusing.
+Tidy ups
+ * Remove hardwired mouse button bitmask operations, now uses defines from <wimp.h>.
+ * Use OS_Byte numbers from header
+
+Version 2.12. Tagged as 'Paint-2_12'
+@
+text
+@a45 3
+  /* check if new name exists */
+  if (!sprite_select (sprite->file->spritearea,&sid)) return;
+
+@
+
+
+4.5
+log
+@Clean up pass.
+No functional changes, but it's now a consistent ball of spaghetti.
+@
+text
+@d203 1
+a203 1
+          (e->data.but.m.bbits & 2))
+@
+
+
+4.4
+log
+@Prune the plethora of targets a bit.
+Spurious ';' after an if at line 2386 of c.Main deleted, something to do with scroll wheel support. Untested.
+Refer to FileType_ using the filetypes header file.
+Internationalised "Selection" when saving a sprite selection.
+main_save_selection wasn't checking if fwrite() worked so never reported 'disc full'.
+Turn on egg timer during main_save_selection().
+Fix (de)selection bug when in full sprite info view, the 'spritesperrow' was being rounded down to zero, and unlike everywhere else it wasn't being adjusted back to a minimum of 1.
+
+Version 2.03. Tagged as 'Paint-2_03'
+@
+text
+@d30 1
+a30 1
+static wimp_i        rename_icon=-1;
+d37 3
+a39 3
+static void AltRename_renamesprite(main_sprite *sprite, char *newname)
+{
+  sprite_id sid;
+d44 1
+a44 1
+  if (*newname==0) return;
+d47 1
+a47 1
+  if (!sprite_select (sprite->file->spritearea,&sid)) return ;
+d49 3
+a51 3
+  strncpy(name,psprite_address(sprite)->name,NAME_LIMIT);
+  name[NAME_LIMIT]=0;
+  sid.s.name=name;
+d56 1
+a56 1
+  main_set_modified(sprite->file);
+d78 1
+a78 1
+    wimpt_noerr (PaintLib_get_wind_info (&winfo));
+d96 4
+a99 3
+void AltRename_delete(void)
+{
+  wimp_redrawstr ds;
+d101 4
+a104 4
+  wimp_delete_icon(rename_window->handle,rename_icon);
+  ds.w=rename_window->handle;
+  ds.box=rename_bbox;
+  wimp_force_redraw(&ds);
+d106 1
+a106 1
+  rename_window=0;
+d109 3
+a111 3
+static int AltRename_sprites_per_row(int *toggled)
+{
+  wimp_wstate ws;
+d121 1
+a121 1
+  wimp_get_wind_state(rename_window->handle,&ws);
+d123 1
+a123 1
+  if (toggled) *toggled=(ws.flags & wimp_WCLICK_TOGGLE);
+d125 1
+a125 1
+  width=(ws.o.box.x1-ws.o.box.x0)/width;
+d127 2
+d130 1
+a130 2
+  return width?width:1;
+}
+d132 1
+a132 3
+void AltRename_start(main_window *window, main_sprite *sprite)
+{
+  wimp_box bbox;
+d136 3
+a138 1
+  int y,scy;
+d140 1
+a140 1
+  if (!window || ! sprite) return;
+d143 1
+a143 1
+  AltRename_delete();
+d145 1
+a145 1
+  if (!main_get_all_sprite_bboxes (window,sprite,&bbox,0,&icon.i.box))
+d149 1
+a149 1
+    icon.i.box.x1=icon.i.box.x0+12*main_FILER_TextWidth;
+d151 2
+a152 3
+  {
+    icon.i.box.x0=bbox.x0;
+    icon.i.box.x1=bbox.x1;
+d155 5
+a159 5
+  icon.w=window->handle;
+  icon.i.flags=(wimp_iconflags)(wimp_ITEXT | wimp_INDIRECT | wimp_IHCENTRE |
+                                wimp_IFILLED | wimp_IBORDER |
+                                (7*wimp_IFORECOL) | (0*wimp_IBACKCOL) |
+                                (wimp_BWRITABLE*wimp_IBTYPE));
+d161 3
+a163 3
+  icon.i.data.indirecttext.buffer=rename_buffer;
+  icon.i.data.indirecttext.validstring="";
+  icon.i.data.indirecttext.bufflen=NAME_LIMIT+1;
+d165 1
+a165 1
+  strcpy(rename_buffer,sinfo.name);
+d167 1
+a167 1
+  if (wimpt_complain(wimp_create_icon(&icon,&rename_icon))) return;
+d169 14
+a182 16
+  wimp_redrawstr ds;
+  wimp_caretstr  caret;
+  rename_window=window;
+  rename_sprite=sprite;
+  ds.w=icon.w;
+  ds.box=icon.i.box;
+  rename_bbox=ds.box;
+  rename_sprites_per_row=AltRename_sprites_per_row(0);
+  caret.w=window->handle;
+  caret.i=rename_icon;
+  caret.x=caret.y=0;
+  caret.height=-1;
+  caret.index=strlen(sinfo.name);
+  wimp_set_caret_pos(&caret);
+  wimp_force_redraw(&ds);
+  wimp_get_wind_state(window->handle,&ws);
+d184 2
+a185 2
+  scy=ws.o.y;
+  y=WORKAREA_TO_SCREEN_Y(&ws,bbox.y1);
+d187 1
+a187 1
+    ws.o.y+=(y-ws.o.box.y1);
+d189 1
+a189 1
+  y=WORKAREA_TO_SCREEN_Y(&ws,bbox.y0);
+d191 1
+a191 1
+    ws.o.y+=(y-ws.o.box.y0);
+d193 1
+a193 2
+  if (scy != ws.o.y) wimp_open_wind(&ws.o);
+  
+d196 3
+a198 3
+BOOL AltRename_claim_event(wimp_eventstr *e,main_window *window)
+{
+  if (!rename_window) return 0;
+d204 2
+a205 3
+      {
+          AltRename_delete();
+          break;
+d208 1
+a208 1
+           window->handle==rename_window->handle) return 1;
+d211 1
+a211 2
+      {
+        AltRename_delete();
+d214 2
+a215 1
+      return 1;
+d217 1
+a217 2
+    {
+      int wid;
+d219 4
+a222 5
+      {
+         int toggled;
+         wid = AltRename_sprites_per_row(&toggled);
+         if (wid != rename_sprites_per_row || toggled)
+            AltRename_delete();
+d226 1
+d231 4
+a234 5
+       case 13: 
+          AltRename_renamesprite(rename_sprite,rename_buffer);
+          if (!akbd_pollctl())
+          {
+            AltRename_delete();
+d239 2
+a240 3
+       case 0x18A: /* TAB -  next sprite */
+          {
+            main_sprite *sprite=rename_sprite->link;
+d242 1
+a242 1
+            AltRename_start(rename_window,sprite);
+d245 1
+d247 5
+a251 6
+          {
+            main_sprite *sprite=rename_sprite;
+            for (sprite=rename_window->data->file.sprites;
+                 !(sprite->link==0 || sprite->link==rename_sprite);
+                 sprite=sprite->link);
+            AltRename_start(rename_window,sprite);
+d256 1
+a256 1
+  return 0;
+@
+
+
+4.3
+log
+@Fix abort when sorting the sprites by name and one or more sprite viewers
+are open, also massively simplified it since the copying around of
+main_sprite blocks was pointless - much simpler to just rejoin the linked
+list leaving the data in place.
+*Tidy up
+ Delete awk.*, change to use central 'AwkVers' script.
+ Delete h.types.
+ Delete h.Paint, it's a duplicate of h.main.
+ Delete writepixel, swap to using the one in RISCOS_Lib
+ Retire 'h.fixes', switches collapsed, bugfixes proven after 18 years use.
+ Cast away some warnings.
+ Sprinkled in some consts, moved pointer qualifiers to get syntax colouring
+ right.
+ Remove local SWI defines, read from <swis.h> now.
+ !MkInstall now installs into <Install$Dir>.Apps
+*Little UI changes
+ Make the colour number in the colour picker be in the right place vertically
+ and correct horizontal position of 'T' and 'E' for ECFs.
+ In the create new sprite dialogue box the 32k and 16M options are shaded
+ when a palette is requested, this avoids the problem of selecting a deep
+ colour mode (which trapped the radio icon in a shaded paletted selection).
+ The 'Selection' menu is now shaded when there are zero sprites in the
+ file
+*Sprite filer
+ Fix tiled main window fill to work in EX0 modes and not overwrite in EX2
+ modes (was using the sprite's mode word not the current mode to deduce eigen
+ factors), leading to odd chequer board areas not being redrawn.
+ Refactored main_clear_background() to use stronger typing of RISC_OSLib
+ rather than _swix where possible.
+ A failure to get the Wimp pixel translation table now falls back to solid
+ fill
+ Double clicking on a sprite in the sprite file window no longer leaves it
+ selected, to mimic the filer.
+ Set DISPLAY_MARGIN to 0 to counter for the recent increase from 32 to 40
+ of main_FILER_TextHeight
+ Added 'Sort by size' after 'Sort by name'
+
+Version 2.02. Tagged as 'Paint-2_02'
+@
+text
+@d236 8
+a243 7
+           AltRename_renamesprite(rename_sprite,rename_buffer);
+           if (!akbd_pollctl())
+           {
+             AltRename_delete();
+             break;
+           }
+          // fall through
+@
+
+
+4.2
+log
+@Filename fixes for case-sensitive environments.  No functional changes.  First commit to ROOL CVS, hooray.
+
+Version 2.00. Not tagged
+@
+text
+@d15 3
+a17 1
+#include "AltRename.h"
+d21 3
+a23 1
+#include "string.h"
+a25 1
+#include "os.h"
+a26 1
+#include "sprite.h"
+a27 1
+#include "swis.h"
+d32 2
+a33 2
+static main_window*  rename_window;
+static main_sprite*  rename_sprite;
+d37 1
+a37 1
+static void AltRename_renamesprite(main_sprite* sprite,char* newname)
+d108 1
+a108 1
+static int AltRename_sprites_per_row(int* toggled)
+d130 1
+a130 1
+void AltRename_start(main_window* window, main_sprite* sprite)
+d198 1
+a198 1
+BOOL AltRename_claim_event(wimp_eventstr *e,main_window* window)
+d245 1
+a245 1
+            main_sprite* sprite=rename_sprite->link;
+d252 1
+a252 1
+            main_sprite* sprite=rename_sprite;
+@
+
+
+4.1
+log
+@  Changes to SpriteFile window to allow selections and
+  sprite edit window changed to improve positioning accuracy.
+Detail:
+  * Wimp_EScroll event added to make wheelmouse work.
+  * Tool rubber banding now snaps to pixel centres making location easier.
+  * flickering of box stopped in move (hand) tool.
+  * Bottom left of sprites used in painting aligned with grid and sprite plotted
+    directly under moving version.
+  * Text painting now plots under the moving version of the text.
+  * copy, move and hand tools cancel dragging with Adjust.
+  * SpriteFile window changed to allow selections using Select,Adjust or Drag.
+  * Alt-Select/Adjust on name allows renaming of sprite.
+  * TAB moves rename icon to next sprite.
+  * Shift TAB moves rename icon to previous sprite
+  * Ctrl-Return renames sprite and moves the rename icon to the
+    next sprite.
+ V2 changes
+  * Rubber band rectangular boxes with 0 width or height drawn as a
+   line so they don't disappear.
+  * Parallelogram rubber band where all the points are in line drawn
+    as a line so they don't disappear.
+Admin:
+  Tested on Iyonix RO5.10
+  Programmer tested only.
+Changed by:
+  Colin Granville
+
+Version 1.98. Tagged as 'Paint-1_98'
+@
+text
+@d20 1
+a20 1
+#include "psprite.h"
+d25 1
+a25 1
+#include "sprwindow.h"
+@
+

@@ -1,0 +1,2311 @@
+head	1.6;
+access;
+symbols
+	DWCDriver-0_35:1.6
+	DWCDriver-0_34:1.6
+	DWCDriver-0_33:1.6
+	DWCDriver-0_32:1.6
+	DWCDriver-0_31:1.6
+	DWCDriver-0_30:1.6
+	DWCDriver-0_29:1.6
+	DWCDriver-0_28:1.6
+	DWCDriver-0_27:1.6
+	DWCDriver-0_26:1.6
+	DWCDriver-0_24-1:1.6
+	DWCDriver-0_25:1.6
+	DWCDriver-0_24:1.6
+	DWCDriver-0_23:1.6
+	DWCDriver-0_22:1.6
+	DWCDriver-0_21:1.6
+	DWCDriver-0_20:1.5
+	DWCDriver-0_19:1.5
+	DWCDriver-0_18:1.5
+	DWCDriver-0_17:1.5
+	DWCDriver-0_16:1.5
+	DWCDriver-0_15:1.5
+	DWCDriver-0_14:1.5
+	DWCDriver-0_13:1.5
+	DWCDriver-0_12:1.5
+	DWCDriver-0_11:1.5
+	DWCDriver-0_10:1.4
+	DWCDriver-0_09:1.4
+	DWCDriver-0_08:1.3
+	DWCDriver-0_07:1.3
+	DWCDriver-0_06:1.3
+	DWCDriver-0_05:1.2
+	DWCDriver-0_04:1.1
+	DWCDriver-0_03:1.1
+	DWCDriver-0_02:1.1
+	DWCDriver-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2015.10.07.20.59.56;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	qck3WWYzKpNMGdEy;
+
+1.5
+date	2014.04.26.18.18.05;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	3PdzN60cJJ3zNdyx;
+
+1.4
+date	2012.09.17.16.32.56;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	DXVFy2WJjyak3Ukw;
+
+1.3
+date	2012.07.22.00.08.51;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	m2n7BnxI1winrudw;
+
+1.2
+date	2012.07.21.19.22.50;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	5Kpl2qWWr4efRsdw;
+
+1.1
+date	2012.06.03.15.13.07;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ZZ9X1FvMWAU11h7w;
+
+
+desc
+@@
+
+
+1.6
+log
+@Update to 'FIQ FSM' USB driver
+Detail:
+  Makefile, dwc/* - Updated to latest-ish code from Raspberry Pi github (rev c8baa9702c). Includes the 'FIQ FSM' USB driver, which replaces the older 'FIQ fix'. Note that many files appear to have no functional changes - just trailing whitespace removal to keep things in sync with github.
+  Makefile - add DEBUGLIBS back into the debug libs listing to fix debug builds
+  c/cmodule - Update to work with new FIQ FSM flags
+  c/dwc_otg_riscos - Update to work with new FIQ FSM flags. Update initialisation procedure. Change IRQ handling to try both the HCD & CIL interrupt handlers (HCD can claim interrupt is handled when there's still a CIL interrupt pending). Disable support for falling back to IRQ if the FIQ vector is claimed by someone else - will need new implementation to cope with starting & stopping the FIQ FSM.
+  s/regaccess - Update FIQ veneer & install routine to allow operation with either the dwc_otg_fiq_fsm or dwc_otg_fiq_nop functions.
+Admin:
+  Tested on Raspberry Pi 1 & 2
+
+
+Version 0.21. Tagged as 'DWCDriver-0_21'
+@
+text
+@/*==========================================================================
+ * $File: //dwh/usb_iip/dev/software/otg/linux/drivers/dwc_otg_hcd_ddma.c $
+ * $Revision: #10 $
+ * $Date: 2011/10/20 $
+ * $Change: 1869464 $
+ *
+ * Synopsys HS OTG Linux Software Driver and documentation (hereinafter,
+ * "Software") is an Unsupported proprietary work of Synopsys, Inc. unless
+ * otherwise expressly agreed to in writing between Synopsys and you.
+ *
+ * The Software IS NOT an item of Licensed Software or Licensed Product under
+ * any End User Software License Agreement or Agreement for Licensed Product
+ * with Synopsys or any supplement thereto. You are permitted to use and
+ * redistribute this Software in source and binary forms, with or without
+ * modification, provided that redistributions of source code must retain this
+ * notice. You may not view, use, disclose, copy or distribute this file or
+ * any information contained herein except pursuant to this license grant from
+ * Synopsys. If you do not agree with this notice, including the disclaimer
+ * below, then you are not authorized to use the Software.
+ *
+ * THIS SOFTWARE IS BEING DISTRIBUTED BY SYNOPSYS SOLELY ON AN "AS IS" BASIS
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE HEREBY DISCLAIMED. IN NO EVENT SHALL SYNOPSYS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+ * DAMAGE.
+ * ========================================================================== */
+#ifndef DWC_DEVICE_ONLY
+
+/** @@file
+ * This file contains Descriptor DMA support implementation for host mode.
+ */
+
+#include "dwc_otg_hcd.h"
+#include "dwc_otg_regs.h"
+
+extern bool microframe_schedule;
+
+static inline uint8_t frame_list_idx(uint16_t frame)
+{
+	return (frame & (MAX_FRLIST_EN_NUM - 1));
+}
+
+static inline uint16_t desclist_idx_inc(uint16_t idx, uint16_t inc, uint8_t speed)
+{
+	return (idx + inc) &
+	    (((speed ==
+	       DWC_OTG_EP_SPEED_HIGH) ? MAX_DMA_DESC_NUM_HS_ISOC :
+	      MAX_DMA_DESC_NUM_GENERIC) - 1);
+}
+
+static inline uint16_t desclist_idx_dec(uint16_t idx, uint16_t inc, uint8_t speed)
+{
+	return (idx - inc) &
+	    (((speed ==
+	       DWC_OTG_EP_SPEED_HIGH) ? MAX_DMA_DESC_NUM_HS_ISOC :
+	      MAX_DMA_DESC_NUM_GENERIC) - 1);
+}
+
+static inline uint16_t max_desc_num(dwc_otg_qh_t * qh)
+{
+	return (((qh->ep_type == UE_ISOCHRONOUS)
+		 && (qh->dev_speed == DWC_OTG_EP_SPEED_HIGH))
+		? MAX_DMA_DESC_NUM_HS_ISOC : MAX_DMA_DESC_NUM_GENERIC);
+}
+static inline uint16_t frame_incr_val(dwc_otg_qh_t * qh)
+{
+	return ((qh->dev_speed == DWC_OTG_EP_SPEED_HIGH)
+		? ((qh->interval + 8 - 1) / 8)
+		: qh->interval);
+}
+
+static int desc_list_alloc(dwc_otg_qh_t * qh)
+{
+	int retval = 0;
+
+	qh->desc_list = (dwc_otg_host_dma_desc_t *)
+	    DWC_DMA_ALLOC(sizeof(dwc_otg_host_dma_desc_t) * max_desc_num(qh),
+			  &qh->desc_list_dma);
+
+	if (!qh->desc_list) {
+		retval = -DWC_E_NO_MEMORY;
+		DWC_ERROR("%s: DMA descriptor list allocation failed\n", __func__);
+
+	}
+
+	dwc_memset(qh->desc_list, 0x00,
+		   sizeof(dwc_otg_host_dma_desc_t) * max_desc_num(qh));
+
+	qh->n_bytes =
+	    (uint32_t *) DWC_ALLOC(sizeof(uint32_t) * max_desc_num(qh));
+
+	if (!qh->n_bytes) {
+		retval = -DWC_E_NO_MEMORY;
+		DWC_ERROR
+		    ("%s: Failed to allocate array for descriptors' size actual values\n",
+		     __func__);
+
+	}
+	return retval;
+
+}
+
+static void desc_list_free(dwc_otg_qh_t * qh)
+{
+	if (qh->desc_list) {
+		DWC_DMA_FREE(max_desc_num(qh), qh->desc_list,
+			     qh->desc_list_dma);
+		qh->desc_list = NULL;
+	}
+
+	if (qh->n_bytes) {
+		DWC_FREE(qh->n_bytes);
+		qh->n_bytes = NULL;
+	}
+}
+
+static int frame_list_alloc(dwc_otg_hcd_t * hcd)
+{
+	int retval = 0;
+	if (hcd->frame_list)
+		return 0;
+
+	hcd->frame_list = DWC_DMA_ALLOC(4 * MAX_FRLIST_EN_NUM,
+					&hcd->frame_list_dma);
+	if (!hcd->frame_list) {
+		retval = -DWC_E_NO_MEMORY;
+		DWC_ERROR("%s: Frame List allocation failed\n", __func__);
+	}
+
+	dwc_memset(hcd->frame_list, 0x00, 4 * MAX_FRLIST_EN_NUM);
+
+	return retval;
+}
+
+static void frame_list_free(dwc_otg_hcd_t * hcd)
+{
+	if (!hcd->frame_list)
+		return;
+
+	DWC_DMA_FREE(4 * MAX_FRLIST_EN_NUM, hcd->frame_list, hcd->frame_list_dma);
+	hcd->frame_list = NULL;
+}
+
+static void per_sched_enable(dwc_otg_hcd_t * hcd, uint16_t fr_list_en)
+{
+
+	hcfg_data_t hcfg;
+
+	hcfg.d32 = DWC_READ_REG32(&hcd->core_if->host_if->host_global_regs->hcfg);
+
+	if (hcfg.b.perschedena) {
+		/* already enabled */
+		return;
+	}
+
+	DWC_WRITE_REG32(&hcd->core_if->host_if->host_global_regs->hflbaddr,
+			hcd->frame_list_dma);
+
+	switch (fr_list_en) {
+	case 64:
+		hcfg.b.frlisten = 3;
+		break;
+	case 32:
+		hcfg.b.frlisten = 2;
+		break;
+	case 16:
+		hcfg.b.frlisten = 1;
+		break;
+	case 8:
+		hcfg.b.frlisten = 0;
+		break;
+	default:
+		break;
+	}
+
+	hcfg.b.perschedena = 1;
+
+	DWC_DEBUGPL(DBG_HCD, "Enabling Periodic schedule\n");
+	DWC_WRITE_REG32(&hcd->core_if->host_if->host_global_regs->hcfg, hcfg.d32);
+
+}
+
+static void per_sched_disable(dwc_otg_hcd_t * hcd)
+{
+	hcfg_data_t hcfg;
+
+	hcfg.d32 = DWC_READ_REG32(&hcd->core_if->host_if->host_global_regs->hcfg);
+
+	if (!hcfg.b.perschedena) {
+		/* already disabled */
+		return;
+	}
+	hcfg.b.perschedena = 0;
+
+	DWC_DEBUGPL(DBG_HCD, "Disabling Periodic schedule\n");
+	DWC_WRITE_REG32(&hcd->core_if->host_if->host_global_regs->hcfg, hcfg.d32);
+}
+
+/*
+ * Activates/Deactivates FrameList entries for the channel
+ * based on endpoint servicing period.
+ */
+void update_frame_list(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh, uint8_t enable)
+{
+	uint16_t i, j, inc;
+	dwc_hc_t *hc = NULL;
+
+	if (!qh->channel) {
+		DWC_ERROR("qh->channel = %p", qh->channel);
+		return;
+	}
+
+	if (!hcd) {
+		DWC_ERROR("------hcd = %p", hcd);
+		return;
+	}
+
+	if (!hcd->frame_list) {
+		DWC_ERROR("-------hcd->frame_list = %p", hcd->frame_list);
+		return;
+	}
+
+	hc = qh->channel;
+	inc = frame_incr_val(qh);
+	if (qh->ep_type == UE_ISOCHRONOUS)
+		i = frame_list_idx(qh->sched_frame);
+	else
+		i = 0;
+
+	j = i;
+	do {
+		if (enable)
+			hcd->frame_list[j] |= (1 << hc->hc_num);
+		else
+			hcd->frame_list[j] &= ~(1 << hc->hc_num);
+		j = (j + inc) & (MAX_FRLIST_EN_NUM - 1);
+	}
+	while (j != i);
+	if (!enable)
+		return;
+	hc->schinfo = 0;
+	if (qh->channel->speed == DWC_OTG_EP_SPEED_HIGH) {
+		j = 1;
+		/* TODO - check this */
+		inc = (8 + qh->interval - 1) / qh->interval;
+		for (i = 0; i < inc; i++) {
+			hc->schinfo |= j;
+			j = j << qh->interval;
+		}
+	} else {
+		hc->schinfo = 0xff;
+	}
+}
+
+#if 1
+void dump_frame_list(dwc_otg_hcd_t * hcd)
+{
+	int i = 0;
+	DWC_PRINTF("--FRAME LIST (hex) --\n");
+	for (i = 0; i < MAX_FRLIST_EN_NUM; i++) {
+		DWC_PRINTF("%x\t", hcd->frame_list[i]);
+		if (!(i % 8) && i)
+			DWC_PRINTF("\n");
+	}
+	DWC_PRINTF("\n----\n");
+
+}
+#endif
+
+static void release_channel_ddma(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh)
+{
+	dwc_irqflags_t flags;
+	dwc_spinlock_t *channel_lock = hcd->channel_lock;
+
+	dwc_hc_t *hc = qh->channel;
+	if (dwc_qh_is_non_per(qh)) {
+		DWC_SPINLOCK_IRQSAVE(channel_lock, &flags);
+		if (!microframe_schedule)
+			hcd->non_periodic_channels--;
+		else
+			hcd->available_host_channels++;
+		DWC_SPINUNLOCK_IRQRESTORE(channel_lock, flags);
+	} else
+		update_frame_list(hcd, qh, 0);
+
+	/*
+	 * The condition is added to prevent double cleanup try in case of device
+	 * disconnect. See channel cleanup in dwc_otg_hcd_disconnect_cb().
+	 */
+	if (hc->qh) {
+		dwc_otg_hc_cleanup(hcd->core_if, hc);
+		DWC_CIRCLEQ_INSERT_TAIL(&hcd->free_hc_list, hc, hc_list_entry);
+		hc->qh = NULL;
+	}
+
+	qh->channel = NULL;
+	qh->ntd = 0;
+
+	if (qh->desc_list) {
+		dwc_memset(qh->desc_list, 0x00,
+			   sizeof(dwc_otg_host_dma_desc_t) * max_desc_num(qh));
+	}
+}
+
+/**
+ * Initializes a QH structure's Descriptor DMA related members.
+ * Allocates memory for descriptor list.
+ * On first periodic QH, allocates memory for FrameList
+ * and enables periodic scheduling.
+ *
+ * @@param hcd The HCD state structure for the DWC OTG controller.
+ * @@param qh The QH to init.
+ *
+ * @@return 0 if successful, negative error code otherwise.
+ */
+int dwc_otg_hcd_qh_init_ddma(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh)
+{
+	int retval = 0;
+
+	if (qh->do_split) {
+		DWC_ERROR("SPLIT Transfers are not supported in Descriptor DMA.\n");
+		return -1;
+	}
+
+	retval = desc_list_alloc(qh);
+
+	if ((retval == 0)
+	    && (qh->ep_type == UE_ISOCHRONOUS || qh->ep_type == UE_INTERRUPT)) {
+		if (!hcd->frame_list) {
+			retval = frame_list_alloc(hcd);
+			/* Enable periodic schedule on first periodic QH */
+			if (retval == 0)
+				per_sched_enable(hcd, MAX_FRLIST_EN_NUM);
+		}
+	}
+
+	qh->ntd = 0;
+
+	return retval;
+}
+
+/**
+ * Frees descriptor list memory associated with the QH.
+ * If QH is periodic and the last, frees FrameList memory
+ * and disables periodic scheduling.
+ *
+ * @@param hcd The HCD state structure for the DWC OTG controller.
+ * @@param qh The QH to init.
+ */
+void dwc_otg_hcd_qh_free_ddma(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh)
+{
+	desc_list_free(qh);
+
+	/*
+	 * Channel still assigned due to some reasons.
+	 * Seen on Isoc URB dequeue. Channel halted but no subsequent
+	 * ChHalted interrupt to release the channel. Afterwards
+	 * when it comes here from endpoint disable routine
+	 * channel remains assigned.
+	 */
+	if (qh->channel)
+		release_channel_ddma(hcd, qh);
+
+	if ((qh->ep_type == UE_ISOCHRONOUS || qh->ep_type == UE_INTERRUPT)
+	    && (microframe_schedule || !hcd->periodic_channels) && hcd->frame_list) {
+
+		per_sched_disable(hcd);
+		frame_list_free(hcd);
+	}
+}
+
+static uint8_t frame_to_desc_idx(dwc_otg_qh_t * qh, uint16_t frame_idx)
+{
+	if (qh->dev_speed == DWC_OTG_EP_SPEED_HIGH) {
+		/*
+		 * Descriptor set(8 descriptors) index
+		 * which is 8-aligned.
+		 */
+		return (frame_idx & ((MAX_DMA_DESC_NUM_HS_ISOC / 8) - 1)) * 8;
+	} else {
+		return (frame_idx & (MAX_DMA_DESC_NUM_GENERIC - 1));
+	}
+}
+
+/*
+ * Determine starting frame for Isochronous transfer.
+ * Few frames skipped to prevent race condition with HC.
+ */
+static uint8_t calc_starting_frame(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh,
+				   uint8_t * skip_frames)
+{
+	uint16_t frame = 0;
+	hcd->frame_number = dwc_otg_hcd_get_frame_number(hcd);
+
+	/* sched_frame is always frame number(not uFrame) both in FS and HS !! */
+
+	/*
+	 * skip_frames is used to limit activated descriptors number
+	 * to avoid the situation when HC services the last activated
+	 * descriptor firstly.
+	 * Example for FS:
+	 * Current frame is 1, scheduled frame is 3. Since HC always fetches the descriptor
+	 * corresponding to curr_frame+1, the descriptor corresponding to frame 2
+	 * will be fetched. If the number of descriptors is max=64 (or greather) the
+	 * list will be fully programmed with Active descriptors and it is possible
+	 * case(rare) that the latest descriptor(considering rollback) corresponding
+	 * to frame 2 will be serviced first. HS case is more probable because, in fact,
+	 * up to 11 uframes(16 in the code) may be skipped.
+	 */
+	if (qh->dev_speed == DWC_OTG_EP_SPEED_HIGH) {
+		/*
+		 * Consider uframe counter also, to start xfer asap.
+		 * If half of the frame elapsed skip 2 frames otherwise
+		 * just 1 frame.
+		 * Starting descriptor index must be 8-aligned, so
+		 * if the current frame is near to complete the next one
+		 * is skipped as well.
+		 */
+
+		if (dwc_micro_frame_num(hcd->frame_number) >= 5) {
+			*skip_frames = 2 * 8;
+			frame = dwc_frame_num_inc(hcd->frame_number, *skip_frames);
+		} else {
+			*skip_frames = 1 * 8;
+			frame = dwc_frame_num_inc(hcd->frame_number, *skip_frames);
+		}
+
+		frame = dwc_full_frame_num(frame);
+	} else {
+		/*
+		 * Two frames are skipped for FS - the current and the next.
+		 * But for descriptor programming, 1 frame(descriptor) is enough,
+		 * see example above.
+		 */
+		*skip_frames = 1;
+		frame = dwc_frame_num_inc(hcd->frame_number, 2);
+	}
+
+	return frame;
+}
+
+/*
+ * Calculate initial descriptor index for isochronous transfer
+ * based on scheduled frame.
+ */
+static uint8_t recalc_initial_desc_idx(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh)
+{
+	uint16_t frame = 0, fr_idx, fr_idx_tmp;
+	uint8_t skip_frames = 0;
+	/*
+	 * With current ISOC processing algorithm the channel is being
+	 * released when no more QTDs in the list(qh->ntd == 0).
+	 * Thus this function is called only when qh->ntd == 0 and qh->channel == 0.
+	 *
+	 * So qh->channel != NULL branch is not used and just not removed from the
+	 * source file. It is required for another possible approach which is,
+	 * do not disable and release the channel when ISOC session completed,
+	 * just move QH to inactive schedule until new QTD arrives.
+	 * On new QTD, the QH moved back to 'ready' schedule,
+	 * starting frame and therefore starting desc_index are recalculated.
+	 * In this case channel is released only on ep_disable.
+	 */
+
+	/* Calculate starting descriptor index. For INTERRUPT endpoint it is always 0. */
+	if (qh->channel) {
+		frame = calc_starting_frame(hcd, qh, &skip_frames);
+		/*
+		 * Calculate initial descriptor index based on FrameList current bitmap
+		 * and servicing period.
+		 */
+		fr_idx_tmp = frame_list_idx(frame);
+		fr_idx =
+		    (MAX_FRLIST_EN_NUM + frame_list_idx(qh->sched_frame) -
+		     fr_idx_tmp)
+		    % frame_incr_val(qh);
+		fr_idx = (fr_idx + fr_idx_tmp) % MAX_FRLIST_EN_NUM;
+	} else {
+		qh->sched_frame = calc_starting_frame(hcd, qh, &skip_frames);
+		fr_idx = frame_list_idx(qh->sched_frame);
+	}
+
+	qh->td_first = qh->td_last = frame_to_desc_idx(qh, fr_idx);
+
+	return skip_frames;
+}
+
+#define	ISOC_URB_GIVEBACK_ASAP
+
+#define MAX_ISOC_XFER_SIZE_FS 1023
+#define MAX_ISOC_XFER_SIZE_HS 3072
+#define DESCNUM_THRESHOLD 4
+
+static void init_isoc_dma_desc(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh,
+			       uint8_t skip_frames)
+{
+	struct dwc_otg_hcd_iso_packet_desc *frame_desc;
+	dwc_otg_qtd_t *qtd;
+	dwc_otg_host_dma_desc_t *dma_desc;
+	uint16_t idx, inc, n_desc, ntd_max, max_xfer_size;
+
+	idx = qh->td_last;
+	inc = qh->interval;
+	n_desc = 0;
+
+	ntd_max = (max_desc_num(qh) + qh->interval - 1) / qh->interval;
+	if (skip_frames && !qh->channel)
+		ntd_max = ntd_max - skip_frames / qh->interval;
+
+	max_xfer_size =
+	    (qh->dev_speed ==
+	     DWC_OTG_EP_SPEED_HIGH) ? MAX_ISOC_XFER_SIZE_HS :
+	    MAX_ISOC_XFER_SIZE_FS;
+
+	DWC_CIRCLEQ_FOREACH(qtd, &qh->qtd_list, qtd_list_entry) {
+		while ((qh->ntd < ntd_max)
+		       && (qtd->isoc_frame_index_last <
+			   qtd->urb->packet_count)) {
+
+			dma_desc = &qh->desc_list[idx];
+			dwc_memset(dma_desc, 0x00, sizeof(dwc_otg_host_dma_desc_t));
+
+			frame_desc = &qtd->urb->iso_descs[qtd->isoc_frame_index_last];
+
+			if (frame_desc->length > max_xfer_size)
+				qh->n_bytes[idx] = max_xfer_size;
+			else
+				qh->n_bytes[idx] = frame_desc->length;
+			dma_desc->status.b_isoc.n_bytes = qh->n_bytes[idx];
+			dma_desc->status.b_isoc.a = 1;
+			dma_desc->status.b_isoc.sts = 0;
+
+			dma_desc->buf = qtd->urb->dma + frame_desc->offset;
+
+			qh->ntd++;
+
+			qtd->isoc_frame_index_last++;
+
+#ifdef	ISOC_URB_GIVEBACK_ASAP
+			/*
+			 * Set IOC for each descriptor corresponding to the
+			 * last frame of the URB.
+			 */
+			if (qtd->isoc_frame_index_last ==
+			    qtd->urb->packet_count)
+				dma_desc->status.b_isoc.ioc = 1;
+
+#endif
+			idx = desclist_idx_inc(idx, inc, qh->dev_speed);
+			n_desc++;
+
+		}
+		qtd->in_process = 1;
+	}
+
+	qh->td_last = idx;
+
+#ifdef	ISOC_URB_GIVEBACK_ASAP
+	/* Set IOC for the last descriptor if descriptor list is full */
+	if (qh->ntd == ntd_max) {
+		idx = desclist_idx_dec(qh->td_last, inc, qh->dev_speed);
+		qh->desc_list[idx].status.b_isoc.ioc = 1;
+	}
+#else
+	/*
+	 * Set IOC bit only for one descriptor.
+	 * Always try to be ahead of HW processing,
+	 * i.e. on IOC generation driver activates next descriptors but
+	 * core continues to process descriptors followed the one with IOC set.
+	 */
+
+	if (n_desc > DESCNUM_THRESHOLD) {
+		/*
+		 * Move IOC "up". Required even if there is only one QTD
+		 * in the list, cause QTDs migth continue to be queued,
+		 * but during the activation it was only one queued.
+		 * Actually more than one QTD might be in the list if this function called
+		 * from XferCompletion - QTDs was queued during HW processing of the previous
+		 * descriptor chunk.
+		 */
+		idx = dwc_desclist_idx_dec(idx, inc * ((qh->ntd + 1) / 2), qh->dev_speed);
+	} else {
+		/*
+		 * Set the IOC for the latest descriptor
+		 * if either number of descriptor is not greather than threshold
+		 * or no more new descriptors activated.
+		 */
+		idx = dwc_desclist_idx_dec(qh->td_last, inc, qh->dev_speed);
+	}
+
+	qh->desc_list[idx].status.b_isoc.ioc = 1;
+#endif
+}
+
+static void init_non_isoc_dma_desc(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh)
+{
+
+	dwc_hc_t *hc;
+	dwc_otg_host_dma_desc_t *dma_desc;
+	dwc_otg_qtd_t *qtd;
+	int num_packets, len, n_desc = 0;
+
+	hc = qh->channel;
+
+	/*
+	 * Start with hc->xfer_buff initialized in
+	 * assign_and_init_hc(), then if SG transfer consists of multiple URBs,
+	 * this pointer re-assigned to the buffer of the currently processed QTD.
+	 * For non-SG request there is always one QTD active.
+	 */
+
+	DWC_CIRCLEQ_FOREACH(qtd, &qh->qtd_list, qtd_list_entry) {
+
+		if (n_desc) {
+			/* SG request - more than 1 QTDs */
+			hc->xfer_buff = (uint8_t *)qtd->urb->dma + qtd->urb->actual_length;
+			hc->xfer_len = qtd->urb->length - qtd->urb->actual_length;
+		}
+
+		qtd->n_desc = 0;
+
+		do {
+			dma_desc = &qh->desc_list[n_desc];
+			len = hc->xfer_len;
+
+			if (len > MAX_DMA_DESC_SIZE)
+				len = MAX_DMA_DESC_SIZE - hc->max_packet + 1;
+
+			if (hc->ep_is_in) {
+				if (len > 0) {
+					num_packets = (len + hc->max_packet - 1) / hc->max_packet;
+				} else {
+					/* Need 1 packet for transfer length of 0. */
+					num_packets = 1;
+				}
+				/* Always program an integral # of max packets for IN transfers. */
+				len = num_packets * hc->max_packet;
+			}
+
+			dma_desc->status.b.n_bytes = len;
+
+			qh->n_bytes[n_desc] = len;
+
+			if ((qh->ep_type == UE_CONTROL)
+			    && (qtd->control_phase == DWC_OTG_CONTROL_SETUP))
+				dma_desc->status.b.sup = 1;	/* Setup Packet */
+
+			dma_desc->status.b.a = 1;	/* Active descriptor */
+			dma_desc->status.b.sts = 0;
+
+			dma_desc->buf =
+			    ((unsigned long)hc->xfer_buff & 0xffffffff);
+
+			/*
+			 * Last descriptor(or single) of IN transfer
+			 * with actual size less than MaxPacket.
+			 */
+			if (len > hc->xfer_len) {
+				hc->xfer_len = 0;
+			} else {
+				hc->xfer_buff += len;
+				hc->xfer_len -= len;
+			}
+
+			qtd->n_desc++;
+			n_desc++;
+		}
+		while ((hc->xfer_len > 0) && (n_desc != MAX_DMA_DESC_NUM_GENERIC));
+
+
+		qtd->in_process = 1;
+
+		if (qh->ep_type == UE_CONTROL)
+			break;
+
+		if (n_desc == MAX_DMA_DESC_NUM_GENERIC)
+			break;
+	}
+
+	if (n_desc) {
+		/* Request Transfer Complete interrupt for the last descriptor */
+		qh->desc_list[n_desc - 1].status.b.ioc = 1;
+		/* End of List indicator */
+		qh->desc_list[n_desc - 1].status.b.eol = 1;
+
+		hc->ntd = n_desc;
+	}
+}
+
+/**
+ * For Control and Bulk endpoints initializes descriptor list
+ * and starts the transfer.
+ *
+ * For Interrupt and Isochronous endpoints initializes descriptor list
+ * then updates FrameList, marking appropriate entries as active.
+ * In case of Isochronous, the starting descriptor index is calculated based
+ * on the scheduled frame, but only on the first transfer descriptor within a session.
+ * Then starts the transfer via enabling the channel.
+ * For Isochronous endpoint the channel is not halted on XferComplete
+ * interrupt so remains assigned to the endpoint(QH) until session is done.
+ *
+ * @@param hcd The HCD state structure for the DWC OTG controller.
+ * @@param qh The QH to init.
+ *
+ * @@return 0 if successful, negative error code otherwise.
+ */
+void dwc_otg_hcd_start_xfer_ddma(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh)
+{
+	/* Channel is already assigned */
+	dwc_hc_t *hc = qh->channel;
+	uint8_t skip_frames = 0;
+
+	switch (hc->ep_type) {
+	case DWC_OTG_EP_TYPE_CONTROL:
+	case DWC_OTG_EP_TYPE_BULK:
+		init_non_isoc_dma_desc(hcd, qh);
+
+		dwc_otg_hc_start_transfer_ddma(hcd->core_if, hc);
+		break;
+	case DWC_OTG_EP_TYPE_INTR:
+		init_non_isoc_dma_desc(hcd, qh);
+
+		update_frame_list(hcd, qh, 1);
+
+		dwc_otg_hc_start_transfer_ddma(hcd->core_if, hc);
+		break;
+	case DWC_OTG_EP_TYPE_ISOC:
+
+		if (!qh->ntd)
+			skip_frames = recalc_initial_desc_idx(hcd, qh);
+
+		init_isoc_dma_desc(hcd, qh, skip_frames);
+
+		if (!hc->xfer_started) {
+
+			update_frame_list(hcd, qh, 1);
+
+			/*
+			 * Always set to max, instead of actual size.
+			 * Otherwise ntd will be changed with
+			 * channel being enabled. Not recommended.
+			 *
+			 */
+			hc->ntd = max_desc_num(qh);
+			/* Enable channel only once for ISOC */
+			dwc_otg_hc_start_transfer_ddma(hcd->core_if, hc);
+		}
+
+		break;
+	default:
+
+		break;
+	}
+}
+
+static void complete_isoc_xfer_ddma(dwc_otg_hcd_t * hcd,
+				    dwc_hc_t * hc,
+				    dwc_otg_hc_regs_t * hc_regs,
+				    dwc_otg_halt_status_e halt_status)
+{
+	struct dwc_otg_hcd_iso_packet_desc *frame_desc;
+	dwc_otg_qtd_t *qtd, *qtd_tmp;
+	dwc_otg_qh_t *qh;
+	dwc_otg_host_dma_desc_t *dma_desc;
+	uint16_t idx, remain;
+	uint8_t urb_compl;
+
+	qh = hc->qh;
+	idx = qh->td_first;
+
+	if (hc->halt_status == DWC_OTG_HC_XFER_URB_DEQUEUE) {
+		DWC_CIRCLEQ_FOREACH_SAFE(qtd, qtd_tmp, &hc->qh->qtd_list, qtd_list_entry)
+		    qtd->in_process = 0;
+		return;
+	} else if ((halt_status == DWC_OTG_HC_XFER_AHB_ERR) ||
+		   (halt_status == DWC_OTG_HC_XFER_BABBLE_ERR)) {
+		/*
+		 * Channel is halted in these error cases.
+		 * Considered as serious issues.
+		 * Complete all URBs marking all frames as failed,
+		 * irrespective whether some of the descriptors(frames) succeeded or no.
+		 * Pass error code to completion routine as well, to
+		 * update urb->status, some of class drivers might use it to stop
+		 * queing transfer requests.
+		 */
+		int err = (halt_status == DWC_OTG_HC_XFER_AHB_ERR)
+		    ? (-DWC_E_IO)
+		    : (-DWC_E_OVERFLOW);
+
+		DWC_CIRCLEQ_FOREACH_SAFE(qtd, qtd_tmp, &hc->qh->qtd_list, qtd_list_entry) {
+			for (idx = 0; idx < qtd->urb->packet_count; idx++) {
+				frame_desc = &qtd->urb->iso_descs[idx];
+				frame_desc->status = err;
+			}
+			hcd->fops->complete(hcd, qtd->urb->priv, qtd->urb, err);
+			dwc_otg_hcd_qtd_remove_and_free(hcd, qtd, qh);
+		}
+		return;
+	}
+
+	DWC_CIRCLEQ_FOREACH_SAFE(qtd, qtd_tmp, &hc->qh->qtd_list, qtd_list_entry) {
+
+		if (!qtd->in_process)
+			break;
+
+		urb_compl = 0;
+
+		do {
+
+			dma_desc = &qh->desc_list[idx];
+
+			frame_desc = &qtd->urb->iso_descs[qtd->isoc_frame_index];
+			remain = hc->ep_is_in ? dma_desc->status.b_isoc.n_bytes : 0;
+
+			if (dma_desc->status.b_isoc.sts == DMA_DESC_STS_PKTERR) {
+				/*
+				 * XactError or, unable to complete all the transactions
+				 * in the scheduled micro-frame/frame,
+				 * both indicated by DMA_DESC_STS_PKTERR.
+				 */
+				qtd->urb->error_count++;
+				frame_desc->actual_length = qh->n_bytes[idx] - remain;
+				frame_desc->status = -DWC_E_PROTOCOL;
+			} else {
+				/* Success */
+
+				frame_desc->actual_length = qh->n_bytes[idx] - remain;
+				frame_desc->status = 0;
+			}
+
+			if (++qtd->isoc_frame_index == qtd->urb->packet_count) {
+				/*
+				 * urb->status is not used for isoc transfers here.
+				 * The individual frame_desc status are used instead.
+				 */
+
+				hcd->fops->complete(hcd, qtd->urb->priv, qtd->urb, 0);
+				dwc_otg_hcd_qtd_remove_and_free(hcd, qtd, qh);
+
+				/*
+				 * This check is necessary because urb_dequeue can be called
+				 * from urb complete callback(sound driver example).
+				 * All pending URBs are dequeued there, so no need for
+				 * further processing.
+				 */
+				if (hc->halt_status == DWC_OTG_HC_XFER_URB_DEQUEUE) {
+					return;
+				}
+
+				urb_compl = 1;
+
+			}
+
+			qh->ntd--;
+
+			/* Stop if IOC requested descriptor reached */
+			if (dma_desc->status.b_isoc.ioc) {
+				idx = desclist_idx_inc(idx, qh->interval, hc->speed);
+				goto stop_scan;
+			}
+
+			idx = desclist_idx_inc(idx, qh->interval, hc->speed);
+
+			if (urb_compl)
+				break;
+		}
+		while (idx != qh->td_first);
+	}
+stop_scan:
+	qh->td_first = idx;
+}
+
+uint8_t update_non_isoc_urb_state_ddma(dwc_otg_hcd_t * hcd,
+				       dwc_hc_t * hc,
+				       dwc_otg_qtd_t * qtd,
+				       dwc_otg_host_dma_desc_t * dma_desc,
+				       dwc_otg_halt_status_e halt_status,
+				       uint32_t n_bytes, uint8_t * xfer_done)
+{
+
+	uint16_t remain = hc->ep_is_in ? dma_desc->status.b.n_bytes : 0;
+	dwc_otg_hcd_urb_t *urb = qtd->urb;
+
+	if (halt_status == DWC_OTG_HC_XFER_AHB_ERR) {
+		urb->status = -DWC_E_IO;
+		return 1;
+	}
+	if (dma_desc->status.b.sts == DMA_DESC_STS_PKTERR) {
+		switch (halt_status) {
+		case DWC_OTG_HC_XFER_STALL:
+			urb->status = -DWC_E_PIPE;
+			break;
+		case DWC_OTG_HC_XFER_BABBLE_ERR:
+			urb->status = -DWC_E_OVERFLOW;
+			break;
+		case DWC_OTG_HC_XFER_XACT_ERR:
+			urb->status = -DWC_E_PROTOCOL;
+			break;
+		default:
+			DWC_ERROR("%s: Unhandled descriptor error status (%d)\n", __func__,
+				  halt_status);
+			break;
+		}
+		return 1;
+	}
+
+	if (dma_desc->status.b.a == 1) {
+		DWC_DEBUGPL(DBG_HCDV,
+			    "Active descriptor encountered on channel %d\n",
+			    hc->hc_num);
+		return 0;
+	}
+
+	if (hc->ep_type == DWC_OTG_EP_TYPE_CONTROL) {
+		if (qtd->control_phase == DWC_OTG_CONTROL_DATA) {
+			urb->actual_length += n_bytes - remain;
+			if (remain || urb->actual_length == urb->length) {
+				/*
+				 * For Control Data stage do not set urb->status=0 to prevent
+				 * URB callback. Set it when Status phase done. See below.
+				 */
+				*xfer_done = 1;
+			}
+
+		} else if (qtd->control_phase == DWC_OTG_CONTROL_STATUS) {
+			urb->status = 0;
+			*xfer_done = 1;
+		}
+		/* No handling for SETUP stage */
+	} else {
+		/* BULK and INTR */
+		urb->actual_length += n_bytes - remain;
+		if (remain || urb->actual_length == urb->length) {
+			urb->status = 0;
+			*xfer_done = 1;
+		}
+	}
+
+	return 0;
+}
+
+static void complete_non_isoc_xfer_ddma(dwc_otg_hcd_t * hcd,
+					dwc_hc_t * hc,
+					dwc_otg_hc_regs_t * hc_regs,
+					dwc_otg_halt_status_e halt_status)
+{
+	dwc_otg_hcd_urb_t *urb = NULL;
+	dwc_otg_qtd_t *qtd, *qtd_tmp;
+	dwc_otg_qh_t *qh;
+	dwc_otg_host_dma_desc_t *dma_desc;
+	uint32_t n_bytes, n_desc, i;
+	uint8_t failed = 0, xfer_done;
+
+	n_desc = 0;
+
+	qh = hc->qh;
+
+	if (hc->halt_status == DWC_OTG_HC_XFER_URB_DEQUEUE) {
+		DWC_CIRCLEQ_FOREACH_SAFE(qtd, qtd_tmp, &hc->qh->qtd_list, qtd_list_entry) {
+			qtd->in_process = 0;
+		}
+		return;
+	}
+
+	DWC_CIRCLEQ_FOREACH_SAFE(qtd, qtd_tmp, &qh->qtd_list, qtd_list_entry) {
+
+		urb = qtd->urb;
+
+		n_bytes = 0;
+		xfer_done = 0;
+
+		for (i = 0; i < qtd->n_desc; i++) {
+			dma_desc = &qh->desc_list[n_desc];
+
+			n_bytes = qh->n_bytes[n_desc];
+
+			failed =
+			    update_non_isoc_urb_state_ddma(hcd, hc, qtd,
+							   dma_desc,
+							   halt_status, n_bytes,
+							   &xfer_done);
+
+			if (failed
+			    || (xfer_done
+				&& (urb->status != -DWC_E_IN_PROGRESS))) {
+
+				hcd->fops->complete(hcd, urb->priv, urb,
+						    urb->status);
+				dwc_otg_hcd_qtd_remove_and_free(hcd, qtd, qh);
+
+				if (failed)
+					goto stop_scan;
+			} else if (qh->ep_type == UE_CONTROL) {
+				if (qtd->control_phase == DWC_OTG_CONTROL_SETUP) {
+					if (urb->length > 0) {
+						qtd->control_phase = DWC_OTG_CONTROL_DATA;
+					} else {
+						qtd->control_phase = DWC_OTG_CONTROL_STATUS;
+					}
+					DWC_DEBUGPL(DBG_HCDV, "  Control setup transaction done\n");
+				} else if (qtd->control_phase == DWC_OTG_CONTROL_DATA) {
+					if (xfer_done) {
+						qtd->control_phase = DWC_OTG_CONTROL_STATUS;
+						DWC_DEBUGPL(DBG_HCDV, "  Control data transfer done\n");
+					} else if (i + 1 == qtd->n_desc) {
+						/*
+						 * Last descriptor for Control data stage which is
+						 * not completed yet.
+						 */
+						dwc_otg_hcd_save_data_toggle(hc, hc_regs, qtd);
+					}
+				}
+			}
+
+			n_desc++;
+		}
+
+	}
+
+stop_scan:
+
+	if (qh->ep_type != UE_CONTROL) {
+		/*
+		 * Resetting the data toggle for bulk
+		 * and interrupt endpoints in case of stall. See handle_hc_stall_intr()
+		 */
+		if (halt_status == DWC_OTG_HC_XFER_STALL)
+			qh->data_toggle = DWC_OTG_HC_PID_DATA0;
+		else
+			dwc_otg_hcd_save_data_toggle(hc, hc_regs, qtd);
+	}
+
+	if (halt_status == DWC_OTG_HC_XFER_COMPLETE) {
+		hcint_data_t hcint;
+		hcint.d32 = DWC_READ_REG32(&hc_regs->hcint);
+		if (hcint.b.nyet) {
+			/*
+			 * Got a NYET on the last transaction of the transfer. It
+			 * means that the endpoint should be in the PING state at the
+			 * beginning of the next transfer.
+			 */
+			qh->ping_state = 1;
+			clear_hc_int(hc_regs, nyet);
+		}
+
+	}
+
+}
+
+/**
+ * This function is called from interrupt handlers.
+ * Scans the descriptor list, updates URB's status and
+ * calls completion routine for the URB if it's done.
+ * Releases the channel to be used by other transfers.
+ * In case of Isochronous endpoint the channel is not halted until
+ * the end of the session, i.e. QTD list is empty.
+ * If periodic channel released the FrameList is updated accordingly.
+ *
+ * Calls transaction selection routines to activate pending transfers.
+ *
+ * @@param hcd The HCD state structure for the DWC OTG controller.
+ * @@param hc Host channel, the transfer is completed on.
+ * @@param hc_regs Host channel registers.
+ * @@param halt_status Reason the channel is being halted,
+ *		      or just XferComplete for isochronous transfer
+ */
+void dwc_otg_hcd_complete_xfer_ddma(dwc_otg_hcd_t * hcd,
+				    dwc_hc_t * hc,
+				    dwc_otg_hc_regs_t * hc_regs,
+				    dwc_otg_halt_status_e halt_status)
+{
+	uint8_t continue_isoc_xfer = 0;
+	dwc_otg_transaction_type_e tr_type;
+	dwc_otg_qh_t *qh = hc->qh;
+
+	if (hc->ep_type == DWC_OTG_EP_TYPE_ISOC) {
+
+		complete_isoc_xfer_ddma(hcd, hc, hc_regs, halt_status);
+
+		/* Release the channel if halted or session completed */
+		if (halt_status != DWC_OTG_HC_XFER_COMPLETE ||
+		    DWC_CIRCLEQ_EMPTY(&qh->qtd_list)) {
+
+			/* Halt the channel if session completed */
+			if (halt_status == DWC_OTG_HC_XFER_COMPLETE) {
+				dwc_otg_hc_halt(hcd->core_if, hc, halt_status);
+			}
+
+			release_channel_ddma(hcd, qh);
+			dwc_otg_hcd_qh_remove(hcd, qh);
+		} else {
+			/* Keep in assigned schedule to continue transfer */
+			DWC_LIST_MOVE_HEAD(&hcd->periodic_sched_assigned,
+					   &qh->qh_list_entry);
+			continue_isoc_xfer = 1;
+
+		}
+		/** @@todo Consider the case when period exceeds FrameList size.
+		 *  Frame Rollover interrupt should be used.
+		 */
+	} else {
+		/* Scan descriptor list to complete the URB(s), then release the channel */
+		complete_non_isoc_xfer_ddma(hcd, hc, hc_regs, halt_status);
+
+		release_channel_ddma(hcd, qh);
+		dwc_otg_hcd_qh_remove(hcd, qh);
+
+		if (!DWC_CIRCLEQ_EMPTY(&qh->qtd_list)) {
+			/* Add back to inactive non-periodic schedule on normal completion */
+			dwc_otg_hcd_qh_add(hcd, qh);
+		}
+
+	}
+	tr_type = dwc_otg_hcd_select_transactions(hcd);
+	if (tr_type != DWC_OTG_TRANSACTION_NONE || continue_isoc_xfer) {
+		if (continue_isoc_xfer) {
+			if (tr_type == DWC_OTG_TRANSACTION_NONE) {
+				tr_type = DWC_OTG_TRANSACTION_PERIODIC;
+			} else if (tr_type == DWC_OTG_TRANSACTION_NON_PERIODIC) {
+				tr_type = DWC_OTG_TRANSACTION_ALL;
+			}
+		}
+		dwc_otg_hcd_queue_transactions(hcd, tr_type);
+	}
+}
+
+#endif /* DWC_DEVICE_ONLY */
+@
+
+
+1.5
+log
+@Update to latest code from Raspberry Pi github
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github (rev e0001dd59d). Includes the fabled 'FIQ fix' code, although the code isn't yet enabled in the RISC OS version of the driver.
+  c/cmodule - Add extra flags for controlling driver behaviour, as required by the new core code
+  c/dwc_otg_riscos - Add some missing driver parameters (although we leave them at default). Handle DWC_E_SHUTDOWN xfer errors, which will now be produced when the driver is shutting down
+  c/softc_device - Disable interrupts around dwc_otg_hcd_urb_enqueue, to mirror behaviour of Linux code (previously, it was the responsibility of the DWC code to disable interrupts for the appropriate part of the operation)
+  s/regaccess - Add some extra IRQ/memory barrier functions required by the new code (mainly the FIQ fix). Make DWC_MODIFY_REG32 operate atomicly (mirrors change in Linux version)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.11. Tagged as 'DWCDriver-0_11'
+@
+text
+@d89 1
+a89 1
+		
+d145 1
+a145 1
+	
+d194 1
+a194 1
+	
+d205 2
+a206 2
+/* 
+ * Activates/Deactivates FrameList entries for the channel 
+d292 1
+a292 1
+	/* 
+d311 1
+a311 1
+/** 
+d314 1
+a314 1
+ * On first periodic QH, allocates memory for FrameList 
+d328 2
+a329 2
+    		return -1;
+    	}
+d348 4
+a351 4
+/** 
+ * Frees descriptor list memory associated with the QH. 
+ * If QH is periodic and the last, frees FrameList memory 
+ * and disables periodic scheduling. 
+d360 2
+a361 2
+	/* 
+	 * Channel still assigned due to some reasons. 
+d381 1
+a381 1
+		/* 
+d391 3
+a393 3
+/* 
+ * Determine starting frame for Isochronous transfer. 
+ * Few frames skipped to prevent race condition with HC. 
+d400 1
+a400 1
+	
+d402 2
+a403 2
+	
+	/* 
+d417 1
+a417 1
+		/* 
+d420 1
+a420 1
+		 * just 1 frame. 
+d428 1
+a428 1
+		 	frame = dwc_frame_num_inc(hcd->frame_number, *skip_frames);
+d436 1
+a436 1
+		/* 
+d448 1
+a448 1
+/* 
+d450 1
+a450 1
+ * based on scheduled frame. 
+d456 1
+a456 1
+	/* 
+d459 1
+a459 1
+	 * Thus this function is called only when qh->ntd == 0 and qh->channel == 0. 
+d463 2
+a464 2
+	 * do not disable and release the channel when ISOC session completed, 
+	 * just move QH to inactive schedule until new QTD arrives. 
+d473 1
+a473 1
+		/* 
+d545 2
+a546 2
+			/* 
+			 * Set IOC for each descriptor corresponding to the 
+d570 2
+a571 2
+	/* 
+	 * Set IOC bit only for one descriptor. 
+d578 2
+a579 2
+		/* 
+		 * Move IOC "up". Required even if there is only one QTD 
+d582 1
+a582 1
+		 * Actually more than one QTD might be in the list if this function called 
+d588 1
+a588 1
+		/* 
+d610 2
+a611 2
+	/* 
+	 * Start with hc->xfer_buff initialized in 
+d621 1
+a621 1
+	 		hc->xfer_buff = (uint8_t *)qtd->urb->dma + qtd->urb->actual_length;
+d659 2
+a660 2
+			/* 
+			 * Last descriptor(or single) of IN transfer 
+d674 1
+a674 1
+		
+d695 1
+a695 1
+/** 
+d703 2
+a704 2
+ * Then starts the transfer via enabling the channel. 
+ * For Isochronous endpoint the channel is not halted on XferComplete 
+d743 1
+a743 1
+			/* 
+d745 1
+a745 1
+			 * Otherwise ntd will be changed with 
+d782 1
+a782 1
+		/* 
+d785 1
+a785 1
+		 * Complete all URBs marking all frames as failed, 
+d794 1
+a794 1
+						
+d816 1
+a816 1
+			
+d821 3
+a823 3
+				/* 
+				 * XactError or, unable to complete all the transactions 
+				 * in the scheduled micro-frame/frame, 
+d831 1
+a831 1
+								
+d845 2
+a846 2
+				/* 
+				 * This check is necessary because urb_dequeue can be called 
+d851 1
+a851 1
+				if (hc->halt_status == DWC_OTG_HC_XFER_URB_DEQUEUE) {	
+d863 1
+a863 1
+				idx = desclist_idx_inc(idx, qh->interval, hc->speed);	
+d904 1
+a904 1
+		default:	
+d906 1
+a906 1
+			  	  halt_status);
+d923 1
+a923 1
+				/* 
+d1011 1
+a1011 1
+						/* 
+d1028 1
+a1028 1
+		/* 
+d1030 1
+a1030 1
+		 * and interrupt endpoints in case of stall. See handle_hc_stall_intr() 
+d1060 1
+a1060 1
+ * In case of Isochronous endpoint the channel is not halted until 
+d1069 1
+a1069 1
+ * @@param halt_status Reason the channel is being halted, 
+d1104 1
+a1104 1
+		 *  Frame Rollover interrupt should be used. 
+@
+
+
+1.4
+log
+@Update to version 3.00 of DWC_otg
+Detail:
+  This big batch of changes brings us in line with rev 70428950df of the Raspberry Pi Linux github.
+  Briefly:
+  * Deleted HTML docs as they're a waste of space
+  * Dropped the SOF fix (which we never used anyway)
+  * Dropped our implementation of the microframe scheduling patch, in favour of their implementation
+  * Updated to version 3.00 of the DWC sources. Hard to tell what useful changes this brings, due to API tweaks resulting in pretty much every file being littered with changes.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  This new version seems like it might be a bit more sensitive to insufficient power supplies. Beware!
+
+
+Version 0.09. Tagged as 'DWCDriver-0_09'
+@
+text
+@d279 1
+a279 1
+	dwc_spinlock_t *channel_lock = DWC_SPINLOCK_ALLOC();
+a308 1
+	DWC_SPINLOCK_FREE(channel_lock);
+@
+
+
+1.3
+log
+@Incorporate patch to add support for scheduling of transfers on a per-microframe basis
+Detail:
+  Makefile, dwc/driver/c/dwc_otg_hcd, dwc/driver/c/dwc_otg_hcd_intr, dwc/driver/c/dwc_otg_hcd_queue, dwc/driver/h/dwc_otg_hcd - Adapted the microframe scheduling patch at http://git.denx.de/?p=linux-denx.git;a=commit;h=9796e39e7a513d8a4acde759ec5d0023645143d8 to work with our newer version of the DWC driver. Enabled by SCHEDULE_PATCH #define.
+  dwc/driver/c/dwc_otg_hcd_ddma - Fix up descriptor DMA support to compile (but not run properly) when the scheduling patch is active
+  dwc/dwc_common_port/h/dwc_os - Provide local_irq_save() and local_irq_restore() implementations, as used by the scheduling patch
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Appears to fix problems with devices becoming unresponsive once too many periodic transfers are active (e.g. too many interrupt pipes open)
+
+
+Version 0.06. Tagged as 'DWCDriver-0_06'
+@
+text
+@d3 3
+a5 3
+ * $Revision: 1.2 $
+ * $Date: 2012/07/21 19:22:50 $
+ * $Change: 1237473 $
+d38 1
+a38 1
+ 
+d41 3
+a43 2
+		
+		
+d51 4
+a54 2
+	return (idx + inc) & 
+		(((speed == DWC_OTG_EP_SPEED_HIGH) ? MAX_DMA_DESC_NUM_HS_ISOC : MAX_DMA_DESC_NUM_GENERIC) - 1);
+d59 4
+a62 2
+	return (idx - inc) & 
+		(((speed == DWC_OTG_EP_SPEED_HIGH) ? MAX_DMA_DESC_NUM_HS_ISOC : MAX_DMA_DESC_NUM_GENERIC) - 1);
+d67 3
+a69 5
+	return (((qh->ep_type == UE_ISOCHRONOUS) && (qh->dev_speed == DWC_OTG_EP_SPEED_HIGH)) 
+							?
+							MAX_DMA_DESC_NUM_HS_ISOC
+							:
+							MAX_DMA_DESC_NUM_GENERIC);
+d73 3
+a75 4
+	return ((qh->dev_speed == DWC_OTG_EP_SPEED_HIGH) 
+						? ((qh->interval + 8 - 1) / 8)
+						:
+						qh->interval);
+d81 5
+a85 6
+	
+	qh->desc_list = (dwc_otg_host_dma_desc_t *) 
+				dwc_dma_alloc(sizeof(dwc_otg_host_dma_desc_t) * max_desc_num(qh),
+				  	      &qh->desc_list_dma
+					      );
+	
+a90 3
+	
+	dwc_memset(qh->desc_list, 0x00, sizeof(dwc_otg_host_dma_desc_t) * max_desc_num(qh));
+	 
+d92 6
+a97 2
+	qh->n_bytes = (uint32_t *) dwc_alloc(sizeof(uint32_t) * max_desc_num(qh));
+	
+d100 5
+a104 4
+		DWC_ERROR("%s: Failed to allocate array for descriptors' size actual values\n",
+			  __func__);
+		
+	}	
+d111 3
+a113 2
+	if(qh->desc_list) {
+		dwc_dma_free(max_desc_num(qh), qh->desc_list, qh->desc_list_dma);
+d116 1
+a116 1
+	
+d118 1
+a118 1
+		dwc_free(qh->n_bytes);
+d125 1
+a125 1
+	int retval = 0;	
+d128 3
+a130 4
+	
+	hcd->frame_list = dwc_dma_alloc(4 * MAX_FRLIST_EN_NUM,
+					&hcd->frame_list_dma
+					);
+d135 1
+a135 1
+	
+d137 1
+a137 1
+	
+d146 1
+a146 1
+	dwc_dma_free(4 * MAX_FRLIST_EN_NUM, hcd->frame_list, hcd->frame_list_dma);
+d152 1
+a152 1
+		
+d155 1
+a155 1
+	hcfg.d32 = dwc_read_reg32(&hcd->core_if->host_if->host_global_regs->hcfg);
+d157 2
+a158 2
+	if (hcfg.b.perschedstat) {
+		/* already enabled*/	
+d161 5
+a165 4
+	
+	dwc_write_reg32(&hcd->core_if->host_if->host_global_regs->hflbaddr, hcd->frame_list_dma);
+	
+	switch(fr_list_en) {
+d167 2
+a168 2
+	    hcfg.b.frlisten = 3;
+    	    break;
+d170 2
+a171 2
+	    hcfg.b.frlisten = 2;
+	    break;
+d173 7
+a179 5
+	    hcfg.b.frlisten = 1;    
+  	case 8:
+	    hcfg.b.frlisten = 0;
+  	default:
+	    break;        
+d181 1
+a181 1
+	
+d185 1
+a185 1
+	dwc_write_reg32(&hcd->core_if->host_if->host_global_regs->hcfg, hcfg.d32);
+d188 1
+a188 1
+ 
+d193 1
+a193 1
+	hcfg.d32 = dwc_read_reg32(&hcd->core_if->host_if->host_global_regs->hcfg);
+d195 2
+a196 2
+	if (!hcfg.b.perschedstat) {
+		/* already disabled */	
+d200 1
+a200 1
+	
+d202 1
+a202 1
+	dwc_write_reg32(&hcd->core_if->host_if->host_global_regs->hcfg, hcfg.d32);
+d212 18
+a229 2
+	dwc_hc_t *hc = qh->channel;
+	
+a230 1
+	
+a244 1
+	
+a246 1
+	
+d250 3
+a252 1
+		for (i = 0 ; i < 8 / qh->interval; i++) {
+d256 2
+d259 2
+a260 4
+	else {
+		hc->schinfo = 0xff;
+	}	
+}		
+d265 1
+a265 1
+	DWC_PRINTF("--FRAME LIST (hex) --\n");		
+d267 2
+a268 2
+    		DWC_PRINTF("%x\t",hcd->frame_list[i]);
+		if (!(i % 8) && i)    
+d278 3
+d283 7
+a289 7
+#ifdef SCHEDULE_PATCH
+		dwc_assert(0,"Schedule patch incompatible with descriptor DMA\n");
+#else
+		hcd->non_periodic_channels--;
+#endif
+	}
+	else {
+d291 1
+a291 1
+	}
+d296 1
+a296 1
+	if (hc->qh) {	
+d301 1
+a301 1
+	
+d304 1
+a304 1
+	
+d306 2
+a307 2
+		dwc_memset(qh->desc_list, 0x00, 
+			    sizeof(dwc_otg_host_dma_desc_t) * max_desc_num(qh));
+d309 1
+d322 1
+a322 1
+ */		
+d326 2
+a327 2
+	
+    	if (qh->do_split) {
+d333 5
+a337 4
+	
+	if ((retval == 0) && (qh->ep_type == UE_ISOCHRONOUS || qh->ep_type == UE_INTERRUPT)) {
+		if(!hcd->frame_list) {
+			retval = frame_list_alloc(hcd);	
+d339 1
+a339 1
+			if (retval == 0)		
+d343 1
+a343 1
+	
+d345 1
+a345 1
+	
+a370 3
+#ifdef SCHEDULE_PATCH
+	dwc_assert(0,"Schedule patch incompatible with descriptor DMA\n");
+#else
+d372 4
+a375 4
+			&& !hcd->periodic_channels && hcd->frame_list) {
+		
+		per_sched_disable(hcd);	
+		frame_list_free(hcd);	
+d377 1
+a377 2
+#endif
+}	
+d385 1
+a385 1
+		 */	
+d387 1
+a387 2
+ 	}
+	else {
+d389 1
+a389 1
+	}	
+d396 2
+a397 1
+static uint8_t calc_starting_frame(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh, uint8_t* skip_frames)
+d411 5
+a415 5
+	 * will be fetched. If the number of descriptors is max=64 (or greather) the list will
+	 * be fully programmed with Active descriptors and it is possible case(rare) that the latest 
+	 * descriptor(considering rollback) corresponding to frame 2 will be serviced first.
+	 * HS case is more probable because, in fact, up to 11 uframes(16 in the code)
+	 * may be skipped.
+d426 2
+a427 2
+			
+		if (dwc_micro_frame_num(hcd->frame_number)  >= 5) {
+d430 1
+a430 2
+		}	
+		else {
+d433 3
+a435 3
+		}	
+				 
+		frame = dwc_full_frame_num(frame); 
+d438 5
+a442 5
+	 	 * Two frames are skipped for FS - the current and the next.
+	 	 * But for descriptor programming, 1 frame(descriptor) is enough,
+	 	 * see example above.
+	 	 */
+	 	*skip_frames = 1;	 
+d445 1
+a445 1
+	
+d448 1
+d455 2
+a456 2
+	uint16_t frame = 0, fr_idx, fr_idx_tmp;	
+	uint8_t skip_frames = 0 ;
+d470 1
+a470 1
+	 
+d473 1
+a473 1
+		frame = calc_starting_frame(hcd, qh, &skip_frames);	
+d475 3
+a477 3
+ 		 * Calculate initial descriptor index based on FrameList current bitmap
+ 		 * and servicing period.
+ 		 */
+d479 4
+a482 2
+		fr_idx = (MAX_FRLIST_EN_NUM + frame_list_idx(qh->sched_frame) - fr_idx_tmp) 
+				% frame_incr_val(qh);
+d484 2
+a485 3
+	}
+	else {
+		qh->sched_frame = calc_starting_frame(hcd, qh, &skip_frames);	
+d488 3
+a490 3
+	
+	qh->td_first = qh->td_last =  frame_to_desc_idx(qh, fr_idx);
+	
+d493 1
+a493 1
+ 
+d495 1
+a495 1
+ 
+d500 2
+a501 1
+static void init_isoc_dma_desc(dwc_otg_hcd_t * hcd, dwc_otg_qh_t * qh, uint8_t skip_frames)
+d505 1
+a505 1
+	dwc_otg_host_dma_desc_t	*dma_desc;
+d507 1
+a507 1
+	
+d511 1
+a511 1
+	
+d514 7
+a520 5
+		ntd_max = ntd_max - skip_frames / qh->interval;	
+	
+	max_xfer_size = (qh->dev_speed == DWC_OTG_EP_SPEED_HIGH) ? MAX_ISOC_XFER_SIZE_HS 
+								 : MAX_ISOC_XFER_SIZE_FS;
+			
+d522 4
+a525 2
+		while ((qh->ntd < ntd_max) && (qtd->isoc_frame_index_last < qtd->urb->packet_count)) {
+				
+d530 1
+a530 1
+			
+d537 2
+a538 1
+			
+d540 1
+a540 1
+			
+d544 2
+a545 2
+			
+		#ifdef	ISOC_URB_GIVEBACK_ASAP
+d549 3
+a551 2
+			 */	
+			if (qtd->isoc_frame_index_last == qtd->urb->packet_count)
+d553 2
+a554 2
+			
+		#endif	
+d557 1
+a557 1
+			
+d561 1
+a561 1
+	
+d563 1
+a563 1
+	
+d565 1
+a565 1
+	/* Set IOC for the last descriptor if descriptor list is full */	
+d570 1
+a570 1
+#else	
+d586 1
+a586 1
+		 */	
+d588 1
+a588 2
+	}
+	else {
+d593 1
+a593 1
+		 */	
+d596 1
+a596 1
+	
+a600 1
+
+d605 1
+a605 1
+	dwc_otg_host_dma_desc_t	*dma_desc;
+d607 4
+a610 4
+	int	num_packets, len, n_desc = 0;
+	
+	hc =  qh->channel;
+	 
+d617 1
+a617 1
+	
+d619 3
+a621 3
+	 		
+	 	if (n_desc) {
+	  		/* SG request - more than 1 QTDs */
+d624 1
+a624 1
+	 	}
+d627 1
+a627 1
+		
+a630 1
+			
+d634 1
+a634 1
+			
+d638 1
+a638 2
+				}
+				else {
+d643 3
+a645 3
+				len = num_packets * hc->max_packet;	
+			}				
+				
+d647 1
+a647 1
+			
+a648 1
+			
+d650 9
+a658 6
+			if ((qh->ep_type == UE_CONTROL) && (qtd->control_phase == DWC_OTG_CONTROL_SETUP))
+				dma_desc->status.b.sup = 1; /* Setup Packet */
+				
+			dma_desc->status.b.a = 1; /* Active descriptor */
+			
+			dma_desc->buf = (uint32_t) hc->xfer_buff;
+d666 1
+a666 2
+			}
+			else {
+d670 1
+a670 1
+			
+d678 4
+a681 1
+		
+d688 1
+a688 1
+		qh->desc_list[n_desc-1].status.b.ioc = 1;
+d690 2
+a691 2
+		qh->desc_list[n_desc-1].status.b.eol = 1;
+		
+d718 1
+a718 1
+	
+d723 1
+a723 1
+		
+d728 1
+a728 1
+		
+d730 1
+a730 1
+		
+d734 2
+a735 2
+			
+		if(!qh->ntd)
+d737 1
+a737 1
+		
+d743 1
+a743 1
+		
+d749 1
+a749 1
+			 */	
+d751 1
+a751 1
+			/* Enable channel only once for ISOC */	
+d754 1
+a754 1
+		
+d757 1
+a757 1
+		
+d762 12
+a773 12
+static void complete_isoc_xfer_ddma(dwc_otg_hcd_t *hcd,
+				   dwc_hc_t *hc,
+				   dwc_otg_hc_regs_t *hc_regs,
+				   dwc_otg_halt_status_e halt_status)
+{
+	struct dwc_otg_hcd_iso_packet_desc	*frame_desc;		
+	dwc_otg_qtd_t				*qtd, *qtd_tmp;
+	dwc_otg_qh_t				*qh;
+	dwc_otg_host_dma_desc_t			*dma_desc;
+	uint16_t 				idx, remain;
+	uint8_t 				urb_compl;	
+	
+a775 1
+	
+d779 4
+a782 5
+			qtd->in_process = 0;
+		return;	
+	}
+	else if ((halt_status == DWC_OTG_HC_XFER_AHB_ERR) || 
+			(halt_status == DWC_OTG_HC_XFER_BABBLE_ERR)) {
+d791 4
+a794 4
+		 */	
+		int err = (halt_status == DWC_OTG_HC_XFER_AHB_ERR) 
+							? (-DWC_E_IO)
+							: (-DWC_E_OVERFLOW);
+d797 1
+a797 1
+			for(idx = 0; idx < qtd->urb->packet_count; idx++) {
+d804 1
+a804 1
+		return;	
+d806 1
+a806 2
+	
+	
+d808 1
+a808 1
+		
+d810 2
+a811 2
+		    break;
+		
+d813 1
+a813 1
+		
+d820 1
+a820 1
+	
+d823 4
+a826 4
+			 	 * XactError or, unable to complete all the transactions 
+	 		 	 * in the scheduled micro-frame/frame, 
+	 		 	 * both indicated by DMA_DESC_STS_PKTERR.
+	 		 	 */	
+d830 2
+a831 3
+			}
+			else {
+				/* Success */	
+d836 1
+a836 1
+			
+d845 1
+a845 1
+				
+d851 1
+a851 1
+		 		 */
+d855 3
+a857 3
+				
+				urb_compl = 1;		
+				
+d859 1
+a859 1
+			
+d861 1
+a861 1
+			
+d867 1
+a867 1
+			
+d869 1
+a869 1
+			
+d873 1
+a873 1
+		while(idx != qh->td_first);
+d875 1
+a875 1
+stop_scan:	
+d878 1
+a878 1
+	
+d880 5
+a884 6
+		      	   dwc_hc_t * hc,
+		      	   dwc_otg_qtd_t * qtd,
+		      	   dwc_otg_host_dma_desc_t * dma_desc,
+		      	   dwc_otg_halt_status_e halt_status,
+		      	   uint32_t n_bytes,
+		      	   uint8_t *xfer_done)
+d889 1
+a889 2
+	
+	
+d912 1
+a912 1
+	
+d914 3
+a916 1
+		DWC_DEBUGPL(DBG_HCDV, "Active descriptor encountered on channel %d\n", hc->hc_num);
+d919 1
+a919 1
+	
+d921 17
+a937 1
+	    if (qtd->control_phase == DWC_OTG_CONTROL_DATA) {
+d939 2
+a940 5
+		if (remain || urb->actual_length >= urb->length) {
+			/* 
+			 * For Control Data stage do not set urb->status=0 to prevent
+			 * URB callback. Set it when Status phase done. See below.
+			 */
+d942 1
+a942 17
+		}		
+	    
+	    }
+	    else if (qtd->control_phase == DWC_OTG_CONTROL_STATUS) {
+		urb->status = 0;
+		*xfer_done = 1;
+	    }
+	    /* No handling for SETUP stage */
+
+	}
+	else { 
+	    /* BULK and INTR */
+	    urb->actual_length += n_bytes - remain;
+	    if (remain || urb->actual_length >= urb->length) {
+		urb->status = 0;
+		*xfer_done = 1;
+	    }
+d949 11
+a959 11
+				   	dwc_hc_t * hc,
+				   	dwc_otg_hc_regs_t * hc_regs,
+				   	dwc_otg_halt_status_e halt_status)
+{
+	dwc_otg_hcd_urb_t	*urb = NULL;
+	dwc_otg_qtd_t		*qtd, *qtd_tmp;
+	dwc_otg_qh_t		*qh;
+	dwc_otg_host_dma_desc_t	*dma_desc;
+	uint32_t 		n_bytes, n_desc, i;
+	uint8_t			failed = 0, xfer_done;
+	
+d961 1
+a961 1
+	
+a963 1
+	
+d970 1
+a970 1
+	
+d972 1
+a972 1
+		
+d975 3
+a977 3
+		n_bytes = 0; 
+		xfer_done = 0; 
+		
+d980 1
+a980 1
+		
+d982 13
+a994 8
+			
+			
+			failed = update_non_isoc_urb_state_ddma(hcd, hc, qtd, dma_desc, 
+								halt_status, n_bytes, &xfer_done);
+			
+			if (failed || (xfer_done && (urb->status != -DWC_E_IN_PROGRESS))) {
+				
+				hcd->fops->complete(hcd, urb->priv, urb, urb->status);
+d999 1
+a999 2
+			}
+			else if (qh->ep_type == UE_CONTROL) {
+d1007 1
+a1007 2
+				}
+				else if(qtd->control_phase == DWC_OTG_CONTROL_DATA) {
+d1011 1
+a1011 1
+					} else if (i+1 == qtd->n_desc){
+d1015 1
+a1015 1
+						 */	
+d1020 1
+a1020 1
+			
+d1023 1
+a1023 1
+		
+d1025 3
+a1027 3
+	
+stop_scan:	
+	
+d1032 4
+a1035 5
+		 */	
+		if (halt_status == DWC_OTG_HC_XFER_STALL) {	
+			qh->data_toggle = DWC_OTG_HC_PID_DATA0;	
+		}
+		else {
+a1036 1
+		}
+d1038 1
+a1038 1
+	
+d1041 1
+a1041 1
+		hcint.d32 = dwc_read_reg32(&hc_regs->hcint);
+d1044 4
+a1047 4
+		 	 * Got a NYET on the last transaction of the transfer. It
+		 	 * means that the endpoint should be in the PING state at the
+		 	 * beginning of the next transfer.
+		 	 */
+d1073 4
+a1076 4
+void dwc_otg_hcd_complete_xfer_ddma(dwc_otg_hcd_t *hcd,
+			    dwc_hc_t *hc,
+			    dwc_otg_hc_regs_t *hc_regs,
+			    dwc_otg_halt_status_e halt_status)
+d1081 1
+a1081 1
+	
+d1085 2
+a1086 2
+		
+		/* Release the channel if halted or session completed */	
+d1088 1
+a1088 1
+				DWC_CIRCLEQ_EMPTY(&qh->qtd_list)) {
+d1090 1
+a1090 1
+			/* Halt the channel if session completed */ 	
+d1093 2
+a1094 2
+			}	
+			
+d1097 1
+a1097 2
+		}
+		else {
+d1102 1
+a1102 1
+				
+d1107 2
+a1108 3
+	}
+	else {
+		/* Scan descriptor list to complete the URB(s), then release the channel */	
+d1110 1
+a1110 1
+		
+a1111 1
+		
+d1113 1
+a1113 1
+		
+a1117 1
+	
+d1132 2
+a1133 2
+	
+#endif	/* DWC_DEVICE_ONLY */
+@
+
+
+1.2
+log
+@Track latest developments on Raspberry Pi github
+Detail:
+  Makefile, c/cmodule, h/module, dwc/driver/c/dwc_otg_driver, dwc/driver/c/dwc_otg_hcd, dwc/driver/c/dwc_otg_hcd_ddma, dwc/driver/c/dwc_otg_hcd_intr, dwc/driver/c/dwc_otg_hcd_linex, dwc/driver/h/dwc_otg_hcd, dwc/dwc_common_port/c/dwc_common_linux - Track latest developments on Raspberry Pi github. Includes fixes for buffer overruns when unexpectedly receiving too much data, and changes to allow SOF interrupt spam to be reduced.
+  c/dwc_common_riscos - Make sure we always round up delay values when converting from msec to csec. Avoids issues with high frequency timers (e.g. SOF re-enable timer) hogging all the CPU time. May be the cause of some other bad behaviour that I've experienced in the past?
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Note - SOF fix is currently disabled, as it was causing too many interrupt packets (e.g. mouse clicks) to be lost. Probable cause is that we're running the SOF re-enable timer at 100Hz instead of 1kHz. May be worth investigating moving all timer/thread scheduling over to a HAL timer which can provide us a 1kHz ticker interrupt.
+
+
+Version 0.05. Tagged as 'DWCDriver-0_05'
+@
+text
+@d3 2
+a4 2
+ * $Revision: 1.1 $
+ * $Date: 2012/06/03 15:13:07 $
+d259 5
+a263 1
+		hcd->non_periodic_channels--;			
+d345 4
+a348 1
+	if ((qh->ep_type == UE_ISOCHRONOUS || qh->ep_type == UE_INTERRUPT) 
+d354 1
+@
+
+
+1.1
+log
+@Add initial version of DWCDriver - USB driver for Synopsys DWC OTG controllers
+Detail:
+  A fairly simple wrapper for Synopsys's open source "DWC_otg" Linux driver, based around a GPL-free version of the DWC_otg 2.90a sources received from the Raspberry Pi foundation.
+  Instead of interfacing with the Linux USB stack a new host interface layer has been implemented to allow it to talk to the standard BSD-derived RISC OS stack.
+  RTSupport is used to provide the threading functionality that the DWC driver relies upon.
+  Interesting files:
+  - c/cmodule, h/cmodule - Main module frontend
+  - c/dwc_common_riscos, h/dwc_common_riscos - Implementation of the OS support layer required by the DWC driver
+  - c/dwc_otg_riscos, h/dwc_otg_riscos - Core code for the BSD driver implementation, driver init/shutdown, and for handling calls from the DWC host driver to us
+  - c/port - Some support functions required by BSD-style code inherited from the other USB drivers
+  - c/softc_device - Code to handle requests from the BSD layer to attached USB devices
+  - c/softc_root - Code to handle requests from the BSD layer to the controller root hub
+  - dwc/doc/* - Original Synopsys release notes & user guide pdfs
+  - dwc/driver/*, dwc/dwc_common_port/* - Synopsys code and documentation. A few tweaks were required to allow it to compile under Norcroft, but otherwise it's functionally equivalent to the original sources.
+Admin:
+  Tested in BCM2835 ROM
+  There are a few loose ends still to tidy up (search for "DWCTODO"), mainly regarding implementation of Isochronous support, but otherwise the driver seems stable enough for daily use.
+
+
+Version 0.01. Tagged as 'DWCDriver-0_01'
+@
+text
+@d3 2
+a4 2
+ * $Revision: #2 $
+ * $Date: 2009/04/21 $
+d889 1
+a889 1
+		if (remain || urb->actual_length == urb->length) {
+d908 1
+a908 1
+	    if (remain || urb->actual_length == urb->length) {
+@
+

@@ -1,0 +1,2330 @@
+head	1.8;
+access;
+symbols
+	Omni-2_30:1.8
+	Omni-2_29:1.8
+	Omni-2_28:1.8
+	Omni-2_27:1.8
+	Omni-2_26:1.8
+	Omni-2_25:1.8
+	Omni-2_24:1.8
+	Omni-2_23:1.7
+	Omni-2_22:1.7
+	Omni-2_21:1.7
+	Omni-2_20:1.7
+	Omni-2_19:1.7
+	Omni-2_18:1.7
+	Omni-2_17:1.6
+	Omni-2_16:1.6
+	Omni-2_15:1.6
+	Omni-2_14:1.6
+	Omni-2_13:1.5
+	Omni-2_12:1.5
+	Omni-2_11:1.5
+	Omni-2_10:1.5
+	Omni-2_09:1.5
+	Omni-2_08:1.5
+	Omni-2_07:1.4
+	Omni-2_06:1.3
+	Omni-2_05:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.8
+date	2016.09.24.10.58.39;	author rsprowson;	state Exp;
+branches;
+next	1.7;
+commitid	vqcfLpgQE8f71xnz;
+
+1.7
+date	2013.03.14.20.18.45;	author rsprowson;	state Exp;
+branches;
+next	1.6;
+commitid	6rnS12BNmFl5ANHw;
+
+1.6
+date	2009.04.23.14.05.02;	author rool;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	2000.08.16.18.28.04;	author blaughto;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2000.04.12.17.06.28;	author blaughto;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.03.23.17.44.10;	author blaughto;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.07.19.24.16;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.02.19.41.33;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.8
+log
+@Add support for drag-to-iconbar for all of Omni's clients
+The bones of support for this were already present, but disabled by the 'EXPERT' switch.
+Since the other filers have supported the operation since Ursula, enable & refactor the code to use the same protocol the other filers use.
+Allow a non root destinate to be used if the variable 'FSTitle + Filer$DefaultDir' is set.
+Remove dead UserDrag code.
+Tested with LanManFS and (Omni) NetFiler.
+
+Version 2.24. Tagged as 'Omni-2_24'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	Mount.c - core application routines
+ *
+ * Project:	!Omni OmniClient(tm) project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	18 August 1994
+ * Last Edited:	3 January 1996
+ *
+ * Copyright 1994,1995,1996 by ANT Limited
+ */
+
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <DebugLib/DebugLib.h>
+
+#include <Desk/ColourTran.h>
+#include <Desk/Error.h>
+#include <Desk/Event.h>
+#include <Desk/EventMsg.h>
+#include <Desk/Hourglass.h>
+#include <Desk/Icon.h>
+#include <Desk/Menu.h>
+#include <Desk/Msgs.h>
+#include <Desk/Resource.h>
+#include <Desk/Screen.h>
+#include <Desk/Str.h>
+#include <Desk/Time.h>
+#include <Desk/WimpSWIs.h>
+
+#include "Client.h"
+#include "Defs.h"
+#include "Events.h"
+#include "ExtLib.h"
+#include "Filer.h"
+#include "Heap.h"
+#include "List.h"
+#include "Mount.h"
+
+#define ReadModeVar(m, v, r) _swi(OS_ReadModeVariable, _INR (0, 2) | _OUT (2), (m), (v), 0, (r))
+
+/*  Copy string (CR, LF and NULL as terminators - *not* Tab, etc)
+ *  to a maximum of 'n' characters.
+ */
+static char *strncpylf(char *d, const char *s, int n)
+{
+  char c;
+  char *dest = d;
+  int count = 0;
+
+  if ((s == NULL) || (d == NULL)) return(NULL);
+  do
+  {
+    c = *s;
+    *dest = c;
+    s++;
+    dest++;
+    count++;
+  } while ((c != '\r') && (c != '\n') && (c != '\0') && (count < n));
+  *(dest-1) = '\0';
+  return(d);
+}
+
+
+/*  Expand line to add whitespace between consecutive field separators.
+ */
+static char *expand(char *s)
+{
+  char line[256];
+  char *d = line;
+  char *o = s;
+
+  if (s == NULL) return(NULL);
+  while (*s != '\0')
+  {
+    if ((*d = *s++) == ',') *++d = ' ';
+    d++;
+  }
+  *d = '\0';
+  strncpy(o, line, 255);
+  dprintf (("", "expand: '%s'\n", o));
+  return(o);
+}
+
+
+/*  Strip special menu item chars.
+ */
+static char *stripmenu(char *s)
+{
+  char *d = s;
+  char *o = s;
+
+  if (!s) return(s);
+  while (*s != '\0')
+  {
+    if ((*s == ' ') || (*s == '!') || (*s == '~') || (*s == '>') || (*s == '-') ||
+        (*s == ',') || (*s == '|'))
+    {
+      s++;
+      continue;
+    }
+    *d++ = *s++;
+  }
+  *d = '\0';
+  return(o);
+}
+
+
+/*  Find item in linked list from client_id
+ *  Returns first record matching, or last record matching (first==false)
+ */
+extern mount_record *MountIconFind(int client_id, const char *mount, int icon, bool first,
+		int server_id)
+{
+  mount_record *mr = (mount_record *) mount_anchor.next;
+  mount_record *mr_found = NULL;
+  int loop = 0;
+  int searchtype = 0;
+
+  dprintf (("", "MountIconFind:\n"));
+  if (mount) searchtype = 1;
+  if (icon != -1) searchtype = 2;
+  if ((server_id != -1) && (client_id != -1)) searchtype = 3;
+  while (mr != NULL)
+  {
+    switch (searchtype)
+    {
+      case 0: if (mr->client_id == client_id)
+              {
+                mr_found = mr;
+                if (first) return(mr);
+              }
+              break;
+      case 1: dprintf (("", "MountIconFind: mount '%s' '%s'\n", mr->mount, mount));
+              if (!Desk_stricmp(mr->mount, mount))
+              {
+                if (((client_id != -1) && (mr->client_id == client_id)) || (client_id == -1))
+                {
+                  mr_found = mr;
+                  if (first) return(mr);
+                }
+              }
+              break;
+      case 2: if (mr->icon == icon)
+              {
+                mr_found = mr;
+                if (first) return(mr);
+              }
+              break;
+      case 3: dprintf (("", "MountIconFind: client %x %x\n", mr->client_id, client_id));
+              dprintf (("", "MountIconFind: server %x %x\n", mr->server_id, server_id));
+              if ((mr->client_id == client_id) && (mr->server_id == server_id))
+              {
+                mr_found = mr;
+                if (first) return(mr);
+              }
+              break;
+      default:
+        break;
+    }
+    loop++;
+    mr = (mount_record *) mr->header.next;
+  }
+  return(mr_found);
+}
+
+
+
+/*  Create an indirected sprite icon on iconbar, from given spritearea.
+ */
+static Desk_icon_handle Icon_BarSprite(mount_record *ir, char *spritename, char *text)
+{
+  Desk_sprite_info   	sinfo;
+  int           	xeigfactor, yeigfactor;
+  char			sprite[13];
+  Desk_icon_createblock	*icreate = &ir->icon_create;
+  Desk_icon_handle 		icon = ir->icon;
+
+  dprintf (("", "icon = %d %x\n", ir->icon, (int) icreate));
+  dprintf (("", "%s %s\n", spritename, text));
+  if (icon != -1)
+  {
+    FREE(icreate->icondata.data.indirecttext.validstring);
+    FREE(icreate->icondata.data.indirecttext.buffer);
+  }
+  icreate->icondata.flags.value = 0x1700610b; /* iconbtype_CLICKDRAG */
+  icreate->icondata.data.indirecttext.buffer = cpystr(text);
+  sprintf(sprite, "s%s", spritename);
+  icreate->icondata.data.indirecttext.validstring = cpystr(sprite);
+  icreate->icondata.data.indirecttext.bufflen = strlen(text)+1;
+
+  icreate->icondata.workarearect.min.x = 0;
+  icreate->icondata.workarearect.min.y = -16;
+  if (Wimp_SpriteReadInfo(spritename, &sinfo) == NULL)
+  {
+    ReadModeVar(sinfo.mode, 4, &xeigfactor);
+    ReadModeVar(sinfo.mode, 5, &yeigfactor);
+    if (strlen(text) * 16 > sinfo.width  << xeigfactor)
+      icreate->icondata.workarearect.max.x = Text_StringWidth(text)-8; /* strlen(text) * 16; */
+    else
+      icreate->icondata.workarearect.max.x = sinfo.width  << xeigfactor;
+    icreate->icondata.workarearect.max.y = (sinfo.height << yeigfactor) + 20;
+  }
+  else
+  {
+    icreate->icondata.workarearect.max.x = Text_StringWidth(text)-8; /* strlen(text) * 16; */
+    icreate->icondata.workarearect.max.y = 84;
+  }
+
+  /* Create in order!! */
+  if (MountCount() <= 1)
+  {
+    /* If only one icon, and it already exists ... ? */
+    if (icon != -1)
+    {
+      /* Create to left, then delete the old */
+      icreate->window = -3;
+      _swi (Wimp_CreateIcon, _INR (0, 1) | _OUT (0), icon, icreate, &ir->icon);
+    }
+    else
+    {
+      /* Create on LHS of iconbar, priority 0x20000000 (Econet) */
+      icreate->window = -5;
+      _swi (Wimp_CreateIcon, _INR (0, 1) | _OUT (0), 0x20000000, icreate, &ir->icon);
+    }
+  }
+  else
+  {
+    mount_record *ir_r = (mount_record *) ir->header.next;
+    mount_record *ir_l = (mount_record *) ir->header.previous;
+
+    /* Multiple icons, and 1st in list ... ? */
+    if (ir_l == NULL)
+    {
+      /* Create to left of next icon in list */
+      icreate->window = -3;
+      _swi (Wimp_CreateIcon, _INR (0, 1) | _OUT (0), ir_r->icon, icreate, &ir->icon);
+    }
+    else
+    {
+      /* Create to right of previous icon in list */
+      icreate->window = -4;
+      _swi (Wimp_CreateIcon, _INR (0, 1) | _OUT (0), ir_l->icon, icreate, &ir->icon);
+    }
+  }
+  if (icon != -1) Desk_Wimp_DeleteIcon(-1, icon);
+  return(ir->icon);
+}
+
+
+/*  Display correct icons on iconbar (on mode change).
+ */
+extern Desk_bool MountModeChange(Desk_event_pollblock *event, void *reference)
+{
+  static int y = -1;
+  mount_record *mr = (mount_record *) mount_anchor.next;
+
+  UNUSED (event);
+  UNUSED (reference);
+
+  /* Exit if no change in resolution */
+  Desk_Screen_CacheModeInfo();
+  if (Desk_screen_eig.y == y) return(Desk_TRUE);
+  y = Desk_screen_eig.y;
+  /* Recreate icons on iconbar with correct sprite names */
+  while (mr != NULL)
+  {
+    if (mr->client_id != -1)
+    {
+      client_record *cr = ClientFind(mr->client_id, NULL, -1, NULL);
+      char buf[16];
+
+      if (cr) Icon_BarSprite(mr, SpriteName(cr->spritename, buf, Desk_FALSE), mr->mount);
+    }
+    mr = (mount_record *) mr->header.next;
+  }
+  return(Desk_TRUE);
+}
+
+
+/*  Create submenu menu structure for NetFS discs on a server.
+ */
+static void NetFSMenu(mount_record *mr)
+{
+  char menu[512];
+  char tmp[32];
+  char buf[44];
+  char server[24];
+  int next = 0;
+  int read = 1;
+  Desk_os_error *err = NULL;
+  char *s = NULL;
+  int server_id = 0;
+
+  /* Initialise menu */
+  dprintf (("", "NetFSMenu:\n"));
+  if (mr->menu != NULL) Menu_Dispose(mr->menu);
+
+  /* Build list of client names */
+  strcpy(menu, "");
+
+  /* Loop on connections list call */
+  while ((next != -1) && (read != 0) && (!err))
+  {
+    /* Call to get basic server details */
+    err = _swix(NetFS_EnumerateFSList, _INR (0, 3) | _OUT (0) | _OUT (3),
+                next, &buf, 20, 1,
+                &next, &read);
+    if ((read < 1) || (err)) continue;
+    strcpy(server, (char *) &buf[3]);
+    s = strchr(server, ' ');
+    if (s) *s = '\0';
+    server_id = buf[0] + (buf[1] << 8);
+    /* Add submenu item */
+    if (server_id == mr->server_id)
+    {
+      dprintf (("", "NetFSMenu: %x found '%s'\n", server_id, server));
+      if (strlen(menu) + strlen(server) < 509)
+      {
+        strcat(menu, server);
+        strcat(menu, ", ");
+      }
+    }
+  }
+  /* Truncate menu string */
+  if (strlen(menu) > 1) menu[strlen(menu)-2] = '\0';
+
+  /* Create menu */
+  dprintf (("", "NetFSMenu: '%s'\n", menu));
+  Desk_Msgs_Lookup("mhdr.icon_o", tmp, 31);
+  mr->menu = Desk_Menu_New(tmp, menu);
+  dprintf (("", "NetFSMenu: %x\n", (int) mr->menu));
+}
+
+
+/*  Create a new Mount icon.
+ */
+extern mount_record *MountCreate(mlist_record *lr)
+{
+  mount_record *mr = NULL;
+  mount_record *mr_tmp = NULL;
+
+  dprintf (("", "MountCreate:create new server list\n"));
+  mr = (mount_record *) heap_alloc(sizeof(mount_record));
+  if (mr == NULL)
+  {
+    Desk_Error_OutOfMemory(Desk_FALSE, "mount header");
+    return(NULL);
+  }
+  /* Add to list, grouped by client_id */
+  if (lr != NULL)
+  {
+    bool found = false;
+
+    /* Add in alphabetical ordering, for a protocol group */
+    mr_tmp = (mount_record *) mount_anchor.next;
+    while ((mr_tmp != NULL) && (mr_tmp->client_id <= lr->client_id) && (!found))
+    {
+      dprintf (("", "MountCreate: '%s' '%s'\n", mr_tmp->mount ? mr_tmp->mount : "",
+        lr->mount ? lr->mount : ""));
+      if ((mr_tmp->client_id == lr->client_id) && (mr_tmp->mount) &&
+          (Desk_stricmp(mr_tmp->mount, lr->mount) > 0))
+      {
+        dprintf (("", "MountCreate: found!\n"));
+        Desk_LinkList_InsertBefore(&mount_anchor, &(mr_tmp->header), &(mr->header));
+        found = true;
+      } else mr_tmp = (mount_record *) mr_tmp->header.next;
+    }
+    if (!found)
+    {
+      dprintf (("", "MountCreate: not found\n"));
+      if ((mr_tmp) && (mr_tmp->client_id > lr->client_id))
+      {
+        Desk_LinkList_InsertBefore(&mount_anchor, &(mr_tmp->header), &(mr->header));
+      } else Desk_LinkList_AddToTail(&mount_anchor, &(mr->header));
+    }
+  } else Desk_LinkList_AddToTail(&mount_anchor, &(mr->header));
+  mr->icon = -1;
+  if (lr != NULL)
+  {
+    client_record *cr = ClientFind(lr->client_id, NULL, -1, NULL);
+    char buf[16];
+
+    mr->icon_state = ISTATE_OK;
+    mr->client_id = lr->client_id;
+    mr->menu = NULL;
+    mr->server_id = lr->server_id;
+    mr->mount_id = lr->mount_id;
+    /* Hack for NetFS - build us a submenu if we need one */
+    if ((mr->server_id != -1) && (mr->client_id == 0x4a540)) NetFSMenu(mr);
+    strcpy(mr->mount, (lr->mount) ? lr->mount : "");
+    Icon_BarSprite(mr, SpriteName(cr->spritename, buf, Desk_FALSE), lr->mount);
+    /* Hunt down and kill the dummy record ? */
+    mr_tmp = MountIconFind(-1, NULL, -1, Desk_TRUE, -1);
+    if (mr_tmp) MountDelete(mr_tmp);
+  }
+  else
+  {
+    mr->icon_state = ISTATE_BROKEN;
+    mr->client_id = -1;
+    mr->server_id = -1;
+    mr->menu = NULL;
+    mr->mount_id = -1;
+    strcpy(mr->mount, "");
+    Icon_BarSprite(mr, "!omni", "Net");
+  }
+  dprintf (("", "MountCreate:new server list length %d\n", Desk_LinkList_ListLength(&mount_anchor)));
+
+  Desk_Event_Claim(Desk_event_CLICK, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) ButtonClick, mr);
+  if (MountCount() == 1)
+  {
+    /* First mount */
+    Desk_Event_Claim(Desk_event_MENU,  Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) MenuChoice,  mr);
+    Desk_Event_Claim(Desk_event_KEY,   Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) KeyPress,    mr);
+    Desk_Event_Claim(Desk_event_NONZEROPOLLWORD, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) PollWordNZ, mr);
+    Desk_EventMsg_Claim(Desk_message_MENUWARN, Desk_event_ANY, (Desk_event_handler) MenuWarn, mr);
+  }
+
+  return(mr);
+}
+
+
+/*  Delete an Mount server icon.
+ */
+extern void MountDelete(mount_record *mr)
+{
+  mlist_record *ml = NULL;
+
+  dprintf (("", "MountDelete:\n"));
+
+  if (mr->icon != -1)
+  {
+    Desk_Wimp_DeleteIcon(-1, mr->icon);
+    FREE(mr->icon_create.icondata.data.indirecttext.validstring);
+    FREE(mr->icon_create.icondata.data.indirecttext.buffer);
+  }
+  Desk_Event_Release(Desk_event_CLICK, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) ButtonClick, mr);
+  if (MountCount() == 1)
+  {
+    /* About to remove last mount */
+    Desk_Event_Release(Desk_event_MENU,  Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) MenuChoice,  mr);
+    Desk_Event_Release(Desk_event_KEY,   Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) KeyPress,    mr);
+    Desk_Event_Release(Desk_event_NONZEROPOLLWORD, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) PollWordNZ, mr);
+    Desk_EventMsg_Release(Desk_message_MENUWARN, Desk_event_ANY, (Desk_event_handler) MenuWarn);
+  }
+
+  /* Delete from mlist structure ? */
+  if (mr->icon_state != ISTATE_BROKEN)
+  {
+    ml = MountFind(mr->mount_id, NULL, -1, -1);
+    if ((ml) && (ml->transient))
+    {
+      dprintf (("", "MountDelete: delete from mlist %x\n", (int) ml));
+      MountDeleteList(ml);
+    }
+  }
+
+  Menu_Close();
+  Desk_menu_currentopen = NULL;
+  if (mr->menu) Menu_Dispose(mr->menu);
+  Desk_LinkList_Unlink(&mount_anchor, &(mr->header));
+  FREE(mr);
+  dprintf (("", "MountDelete:new server list length %d\n", Desk_LinkList_ListLength(&mount_anchor)));
+
+  /* Recreate the dummy record ? */
+  if (mount_anchor.next == NULL) MountCreate(NULL);
+}
+
+
+/*  Return number of items in Mount linked list.
+ */
+extern int MountCount(void)
+{
+  mount_record *mr = (mount_record *) mount_anchor.next;
+  int count = 0;
+
+  while (mr != NULL)
+  {
+    count++;
+    mr = (mount_record *) mr->header.next;
+  }
+  return(count);
+}
+
+
+/*  Create a new Mount list item.
+ */
+static mlist_record *MountCreateList(client_record *cr, char *server,
+		char *user, char *passwd, char *mount, char *path, char *auth, bool preset,
+		bool hidden, bool locked, bool open)
+{
+  mlist_record *mr = NULL;
+
+  dprintf (("", "MountCreateList:create new mounts list\n"));
+  mr = MountFind(-1, mount, preset, cr->client_id);
+  if (mr != NULL) MountDeleteList(mr);
+  mr = (mlist_record *) rma_alloc(sizeof(mlist_record));
+  if (mr == NULL)
+  {
+    Desk_Error_OutOfMemory(Desk_FALSE, "mount list header");
+    return(NULL);
+  }
+  Desk_LinkList_AddToTail(&mlist_anchor, &(mr->header));
+  mr->server_id = -1;
+  mr->mount_id = -1;
+  mr->client_id = cr->client_id;
+  mr->server = cpyrma(server);
+  mr->user = cpyrma(user);
+  mr->passwd = cpyrma(passwd);
+  mr->mount = cpyrma(mount);
+  dprintf (("", "MountCreateList: '%s' '%s'\n", mr->mount ? mr->mount : "?", mount ? mount : "?"));
+  mr->path = cpyrma(path);
+  dprintf (("", "MountCreateList: '%s' '%s'\n", mr->path ? mr->path : "?", path ? path : "?"));
+  mr->auth = cpyrma(auth);
+  dprintf (("", "MountCreateList: '%s' '%s'\n", mr->auth ? mr->auth : "?", auth ? auth : "?"));
+  mr->transient = true;
+  mr->preset = preset;
+  mr->hidden = hidden;
+  mr->locked = locked;
+  mr->open = open;
+  mr->connected = false;
+  dprintf (("", "MountCreateList:new mount list length %d\n", Desk_LinkList_ListLength(&mlist_anchor)));
+  return(mr);
+}
+
+
+/*  Delete an Mount list item.
+ */
+extern void MountDeleteList(mlist_record *mr)
+{
+  if (mr == NULL) return;
+  dprintf (("", "MountDeleteList:\n"));
+  RMAFREE(mr->server);
+  RMAFREE(mr->user);
+  if (mr->passwd) memset(mr->passwd, 0, strlen(mr->passwd));
+  RMAFREE(mr->passwd);
+  RMAFREE(mr->mount);
+  RMAFREE(mr->path);
+  RMAFREE(mr->auth);
+  Desk_LinkList_Unlink(&mlist_anchor, &(mr->header));
+  RMAFREE(mr);
+  dprintf (("", "MountDeleteList:new list length %d\n", Desk_LinkList_ListLength(&mlist_anchor)));
+}
+
+
+/*  Load & parse mounts file.
+ */
+extern bool MountLoadFile(const char *name)
+{
+  FILE *f; 
+  bool failures = false;
+  char line[256];
+  mlist_record *mr = NULL;
+
+  /* Open failed ? no error */
+  if (name != NULL)
+  {
+    f = fopen(name, "r");
+  }
+  else
+  {
+    f = fopen("Choices:"app_DIR".Mounts", "r");
+    if (f == NULL)
+    {
+      f = fopen(app_FILES"Mounts", "r");
+    }
+  }
+  dprintf (("", "MountLoadFile: %d\n", (int) f));
+  if (f == NULL) return false;
+
+  /* Display hourglass during operation */
+  Desk_Hourglass_On();
+  /* Desk_LinkList_Init(&mlist_anchor); */
+
+  /* Read lines from file until EOF */
+  while (fgets(line, 255, f) != NULL)
+  {
+    char *s = NULL;
+    char *server, *user, *passwd, *mount, *path, *auth = NULL;
+    bool hidden = false;
+    bool locked = false;
+    bool preset = false;
+    bool open   = true;
+    client_record *cr = NULL;
+
+    /* Comment line - ignore */
+    if (line[0] == '#') continue;
+    dprintf (("", "load: '%s'\n", line));
+    if ((strlen(line) < 5) || (!strchr(line, ','))) continue;
+    if (strstr(line, ",,") != NULL) expand(line);
+    if ((s = strtok(line, ",")) == NULL) continue;
+      else strip(s);
+    dprintf (("", "load: protocol = '%s'\n", s));
+    if ((cr = ClientFind(-1, NULL, -1, s)) == NULL)
+    {
+      dprintf (("", "load: invalid protocol\n"));
+      failures = true;
+      continue;
+    }
+    if ((s = strtok(NULL, ",")) != NULL)
+    {
+      char *tmp;
+      mount = strip(s);
+      mount = stripmenu(mount);
+      if ((tmp = strchr(mount, ' ')) != NULL) *tmp = '\0';
+      if (strlen(mount) > 15) mount[15] = '\0';
+      dprintf (("", "load: mount alias = '%s'\n", mount));
+    } else continue;
+    if ((s != NULL) && ((s = strtok(NULL, ",")) != NULL))
+    {
+      s = strip(s);
+      dprintf (("", "load: flags = '%s'\n", s));
+      if ((strchr(s, 'H')) || (strchr(s, 'h'))) hidden = Desk_TRUE;
+      if ((strchr(s, 'L')) || (strchr(s, 'l'))) locked = Desk_TRUE;
+      if ((strchr(s, 'P')) || (strchr(s, 'p'))) preset = Desk_TRUE;
+      if ((strchr(s, 'O')) || (strchr(s, 'o'))) open = Desk_FALSE;
+      if (preset && hidden) hidden = Desk_FALSE;
+    }
+    if ((strlen(mount) < 1) && (!preset)) continue;
+    if ((s != NULL) && ((s = strtok(NULL, ",")) != NULL))
+    {
+      server = strip(s);
+      dprintf (("", "load: server = '%s'\n", server));
+    } else server = NULL;
+    if ((s != NULL) && ((s = strtok(NULL, ",")) != NULL))
+    {
+      path = strip(s);
+      dprintf (("", "load: mount path = '%s'\n", path));
+    } else path = NULL;
+    if ((s != NULL) && ((s = strtok(NULL, ",")) != NULL))
+    {
+      user = strip(s);
+      dprintf (("", "load: user ID = '%s'\n", user));
+    } else user = NULL;
+    if ((s != NULL) && ((s = strtok(NULL, ",")) != NULL))
+    {
+      passwd = strip(s);
+      dprintf (("", "load: password = '%s'\n", passwd));
+    } else passwd = NULL;
+    if ((s != NULL) && ((s = strtok(NULL, ",")) != NULL))
+    {
+      auth = strip(s);
+      dprintf (("", "load: authentication server = '%s'\n", auth));
+    } else auth = NULL;
+    if (flagSET(cr, flag_SPECIAL) && !preset)
+    {
+      hidden = true;
+    }
+    mr = MountCreateList(cr, server, user, passwd, mount, path, auth, preset, hidden,
+      locked, open);
+    if (mr) mr->transient = false;
+  }
+
+  /* Close file and exit */
+  Desk_Hourglass_Off();
+  fclose(f);
+
+  /* If failures, then report just once */
+  if (failures)
+  {
+    Desk_Msgs_Report(0, "mount.loadfail");
+    return false;
+  }
+  return true;
+}
+
+
+/*  Build a menu of currently listed mounts.
+ */
+extern Desk_menu_ptr MountMakeMenu(Desk_menu_ptr oldmenu)
+{
+  char menu[768];
+  mlist_record *r = (mlist_record *) mlist_anchor.next;
+  char buf[128];
+
+  /* Initialise menu */
+  dprintf (("", "MountMakeMenu: %x\n", (int) oldmenu));
+  if (oldmenu != NULL) Menu_Dispose(oldmenu);
+  Desk_Msgs_Lookup("menu.icon_m", menu, 767);
+  dprintf (("", "MountMakeMenu: lookup '%s'\n", menu));
+  if (r != NULL)
+  {
+    /* Build list of client names */
+    strcat(menu, "|");
+    while (r != NULL)
+    {
+      bool preset;
+
+      /* mlist items that are PRESET, but connected should appear */
+      preset = ((r->preset) && (!MountIconFind(r->client_id,r->mount,-1,true,-1)));
+      if ((ClientFind(r->client_id, NULL, -1, NULL) != NULL) && (!r->hidden) && (!preset) &&
+          (r->mount))
+      {
+        if (r->header.next != NULL) sprintf(buf, ">%s,", r->mount);
+          else sprintf(buf, ">%s", r->mount);
+        dprintf (("", "MountMakeMenu: '%s'\n", r->mount));
+        if (strlen(menu) + strlen(buf) < 764) strcat(menu, buf);
+      }
+      dprintf (("", "MountMakeMenu: %s\n", menu));
+      r = (mlist_record *) r->header.next;
+    }
+  }
+  if (menu[strlen(menu)-1] == ',') menu[strlen(menu)-1] = '\0';
+  if (menu[strlen(menu)-1] == '|') menu[strlen(menu)-1] = '\0';
+  dprintf (("", "MountMakeMenu: %s\n", menu));
+  /* Create menu */
+  Desk_Msgs_Lookup("mhdr.icon_m", buf, 31);
+  return(Desk_Menu_New(buf, menu));
+}
+
+
+/*  Find item in linked list from either mount_id (name=NULL) or name.
+ *  OR from menuitem (if menuitem != -1) OR from client_id (if client_id != -1)
+ */
+extern mlist_record *MountFind(int mount_id, const char *name, int menuitem, int client_id)
+{
+  mlist_record *mr = (mlist_record *) mlist_anchor.next;
+  int loop = 0;
+  int searchtype = 0;
+  bool preset;
+
+  dprintf (("", "MountFind:\n"));
+  if (name != NULL) searchtype = 1;
+  if (menuitem != -1) searchtype = 2;
+  if ((client_id != -1) && (name != NULL)) searchtype = 3;
+  while (mr != NULL)
+  {
+    switch (searchtype)
+    {
+      case 0: if (mr->mount_id == mount_id) return(mr);
+              break;
+      case 1: dprintf (("", "MountFind: '%s' '%s'\n", (mr->mount) ? mr->mount : "", name));
+              if ((mr->mount) && (!Desk_stricmp(mr->mount, name))) return(mr);
+              break;
+      case 2: dprintf (("", "MountFind: %d %d\n", menuitem, loop));
+              /* mlist items that are PRESET, but connected should appear */
+              preset = ((mr->preset) && (!MountIconFind(mr->client_id,mr->mount,-1,Desk_TRUE,-1)));
+              if ((ClientFind(mr->client_id, NULL, -1, NULL) == NULL) || (mr->hidden) ||
+                (preset) || (!mr->mount))
+              {
+                mr = (mlist_record *) mr->header.next;
+                continue;
+              }
+	      if (menuitem == loop) return(mr);
+	      break;
+      case 3: if ((mr->client_id == client_id) && (!Desk_stricmp(mr->mount, name)))
+              {
+                if ((menuitem > -1) && (mr->preset == menuitem)) return(mr);
+                if (menuitem == -1) return(mr);
+              }
+              break;
+      default:
+        break;
+    }
+    loop++;
+    mr = (mlist_record *) mr->header.next;
+  }
+  return(NULL);
+}
+
+
+/*  Save mounts file.
+ */
+extern bool MountSaveFile(void)
+{
+  FILE *f;
+  char s[256];
+  time_t tt;
+  int mtime;
+  mlist_record *r = (mlist_record *) mlist_anchor.next;
+
+  /* Try to create the dir, if it fails, the subsequent fopen() fail will be reported */
+  _swix (OS_File, _INR (0, 1) | _IN (4),
+         8, "<Choices$Write>."app_DIR, 0);
+
+  /* Open failed ? give error */
+  f = fopen("<Choices$Write>."app_DIR".Mounts", "w");
+  if (f == NULL)
+  {
+    Desk_Msgs_Report(0, "mount.noopen", "<Choices$Write>."app_DIR".Mounts");
+    return false;
+  }
+
+  /* Display hourglass during operation */
+  Desk_Hourglass_Start(1);
+  mtime = Desk_Time_Monotonic();
+
+  /* Write header */
+  tt = time(NULL);
+  strftime(s, 31, "%H:%M:%S on %d %b %Y", localtime(&tt));
+  fputs("# Mount list saved by "app_NAME" at ", f);
+  fputs(s, f);
+  fputs("\n# \n# Protocol, Alias, Flags, Server, Mount path, User ID, Password, Authentication\n# \n", f);
+
+  /* Write list of mounts */
+  while (r != NULL)
+  {
+    client_record *cr = ClientFind(r->client_id, NULL, -1, NULL);
+    char *fsname = (cr) ? cr->fsname : NULL;
+    sprintf(s, "%s,%s,%s%s%s,%s,%s,%s,%s,%s\n", fsname ? fsname : "",
+      r->mount ? r->mount : "", r->hidden ? "H" : "", r->preset ? "P" : "",
+      !r->open ? "O" : "", r->server ? r->server : "",
+      r->path ? r->path : "", r->user ? r->user : "", r->passwd ? r->passwd : "",
+      r->auth ? r->auth : "");
+    if ((!r->locked) && (fsname))
+    {
+      fputs(s, f);
+      r->transient = false;
+    }
+    r = (mlist_record *) r->header.next;
+  }
+
+  /* Make sure we have hourglass'd for at least 70 cs */
+  while (mtime+30 > Desk_Time_Monotonic());
+
+  /* Close file and exit */
+  Desk_Hourglass_Off();
+  fclose(f);
+  return true;
+}
+
+
+/*  Attempt to connect to named network.
+ */
+extern bool DomainConnect(mlist_record *mr, Desk_window_handle w)
+{
+  Desk_bool res;
+  char *domain;
+  char *user;
+  char *password;
+  int mount_id;
+  int client_id = mr ? mr->client_id : clientwindow->client_id;
+
+  /* Update contents of record from icon fields */
+  dprintf (("", "DomainConnect: %p %x\n", mr, client_id));
+  if (!mr && !clientwindow) return false;
+
+  domain   = Icon_GetTextPtr (w, domain_domain);
+  user     = Icon_GetTextPtr (w, domain_user);
+  password = Icon_GetTextPtr (w, domain_password);
+
+  /* NULL password is supplied by user as '""', but passed to protocol as empty string */
+  if (!strcmp(password, "\"\"")) strcpy (password, "");
+
+  /* Make Connect SWI call */
+  dprintf (("", "DomainConnect: pre Omni_Op,Mount\n"));
+  dprintf (("", "'%s' '%s' ", domain, user));
+  dprintf (("", "'%s' %x\n", password, client_id));
+  Desk_Hourglass_Start(5);
+  res = Desk_Error_Check (ClientMount (client_id,
+                                       domain, user, password, 0, 0, 0,
+                                       &mount_id));
+  dprintf (("", "DomainConnect: %x %x\n", res, mount_id));
+  if (mount_id == 0) res = Desk_TRUE;
+    else res = Desk_FALSE;
+
+  /* Fudge to ensure password is overwritten in template memory */
+  if (!res)
+  {
+    Icon_SetBlank (w, domain_password);
+  }
+  Desk_Hourglass_Off();
+  return ((bool) !res);
+}
+
+
+/*  Attempt to connect to named server.
+ */
+extern bool MountConnect(mlist_record *mr, Desk_window_handle w)
+{
+  bool temporary = false;
+  bool res;
+  client_record *cr = mr ? ClientFind(mr->client_id, NULL, -1, NULL) : clientwindow;
+  mlist_record *mrl = NULL;
+  _kernel_oserror *err = NULL;
+  char *s;
+  char *pw;
+
+  /* If really a domain login, then use that code */
+  dprintf (("", "MountConnect: %p %d\n", cr, flagSET(cr, flag_SPECIAL)));
+  if (!mr && !clientwindow) return false;
+  if (cr && flagSET(cr, flag_SPECIAL)) return(DomainConnect(mr, w));
+
+  /* Check for a valid mount alias */
+  dprintf (("", "MountConnect:\n"));
+
+  /* If no valid mount name, and we are registered as not needing one, use server text */
+  if (Icon_IsEmpty (w, mount_mount) && flagSET(cr, flag_MOUNT) &&
+      Icon_IsEmpty (w, mount_server))
+  {
+    Desk_Msgs_Report(Desk_FALSE, "mount.badname");
+    return false;
+  }
+
+  /* Check for an existing mount with this client_id/mount pair */
+  s = Icon_GetTextPtr(w, mount_mount);
+  dprintf (("", "MountConnect: looking for '%s'\n", s));
+  if (MountIconFind(-1, s, -1, Desk_TRUE, -1) != NULL)
+  {
+    Desk_Msgs_Report(Desk_FALSE, "mount.connect");
+    return false;
+  }
+
+  /* Check for a valid server name */
+  if (Icon_IsEmpty (w, mount_server))
+  {
+    Desk_Msgs_Report(Desk_FALSE, "mount.badserv");
+    return false;
+  }
+
+  /* Check for existing mlist entry with this client_id/mount pair */
+  s = Icon_GetTextPtr(w, mount_mount);
+  mrl = MountFind(-1, s, -1, -1);
+  /* If we are *really* coming from the same mlist item, then will always update
+   * that mlist entry, without a user prompt.
+   */
+  if ((mr) && (mrl) && (mr == mrl)) mrl = NULL;
+  if (mrl)
+  {
+    bool ident = true;
+
+    /* mlist entry with this mount alias exists, check for same contents */
+    s = Icon_GetTextPtr(w, mount_server);
+    if ((mrl->server) && (strcmp(s, mrl->server))) ident = false;
+
+    s = Icon_GetTextPtr(w, mount_user);
+    if ((mrl->user) && (strcmp(s, mrl->user))) ident = false;
+
+    s = Icon_GetTextPtr(w, mount_password);
+    if ((mrl->passwd) && (strcmp(s, mrl->passwd))) ident = false;
+
+    s = Icon_GetTextPtr(w, mount_path);
+    if ((mrl->path) && (strcmp(s, mrl->path))) ident = false;
+
+    s = Icon_GetTextPtr(w, mount_auth);
+    if ((mrl->auth) && (strcmp(s, mrl->auth))) ident = false;
+
+    s = Icon_GetTextPtr(w, mount_mount);
+    if (ident)
+    {
+      /* Identical, so it doesn't matter if we overwrite the mlist entry */
+      mr = mrl;
+    }
+    else
+    {
+      /* Some change to a field, better ask the user what they want */
+      if (Msgs_QueryOK(0, "mount.query"))
+      {
+        /* Overwriting ... */
+        mr = mrl;
+      }
+      else
+      {
+        /* Don't want to overwrite, so blank the alias field and they can try again */
+        Desk_Icon_SetText(w, mount_mount, "");
+        Desk_Icon_SetCaret(w, mount_mount);
+        return false;
+      }
+    }
+  }
+
+  /* Has the mount name changed? If so, new mount item */
+  if ((mr) && (Desk_stricmp(s, mr->mount))) mr = NULL;
+
+  /* New, or existing item in list ? */
+  if (mr == NULL)
+  {
+    /* Create temporary item */
+    mr = (mlist_record *) rma_alloc(sizeof(mlist_record));
+    if (mr == NULL)
+    {
+      Desk_Error_OutOfMemory(Desk_FALSE, "mount list header");
+      return false;
+    }
+    Desk_LinkList_AddToTail(&mlist_anchor, &(mr->header));
+    mr->server_id = -1;
+    mr->mount_id = -1;
+    mr->client_id = cr->client_id;
+    mr->server = NULL;
+    mr->user = NULL;
+    mr->passwd = NULL;
+    mr->mount = NULL;
+    mr->path = NULL;
+    mr->auth = NULL;
+    mr->transient = true;
+    mr->hidden    = false;
+    mr->locked    = false;
+    mr->preset    = false;
+    mr->open      = false;
+    mr->connected = false;
+    temporary     = true;
+  }
+  else
+  {
+    RMAFREE(mr->server);
+    RMAFREE(mr->user);
+    RMAFREE(mr->mount);
+    RMAFREE(mr->path);
+    RMAFREE(mr->auth);
+  }
+
+  /* Update contents of record from icon fields */
+  s = Icon_GetTextPtr(w, mount_server);
+  dprintf (("", "Server: (%d) %s\n", strlen (s), s));
+  mr->server = cpyrma(s);
+
+  s = Icon_GetTextPtr(w, mount_user);
+  dprintf (("", "User: (%d) %s\n", strlen (s), s));
+  mr->user = cpyrma(s);
+
+  pw = Icon_GetTextPtr(w, mount_password);
+  /* NULL password is supplied by user as '""', but passed to protocol as empty string */
+  if (!strcmp(pw, "\"\"")) strcpy(pw, "");
+
+  s = Icon_GetTextPtr(w, mount_mount);
+  dprintf (("", "Mount: (%d) %s\n", strlen (s), s));
+  mr->mount = cpyrma(s);
+
+  s = Icon_GetTextPtr(w, mount_path);
+  dprintf (("", "Path: (%d) %s\n", strlen (s), s));
+  mr->path = cpyrma(s);
+
+  s = Icon_GetTextPtr(w, mount_auth);
+  dprintf (("", "Auth: (%d) %s\n", strlen (s), s));
+  mr->auth = cpyrma(s);
+
+  mr->open = Desk_Icon_GetSelect(w, mount_open);
+
+  /* Make Connect SWI call */
+  dprintf (("", "MountConnect: pre Omni_Op,Mount\n"));
+  Desk_Hourglass_Start(5);
+  err = ClientMount (mr->client_id,
+                     mr->server, mr->user, pw, mr->mount, mr->path, mr->auth,
+                     &mr->mount_id);
+  res = Desk_Error_Check(err);
+  dprintf (("", "MountConnect: %x %x\n", res, mr->mount_id));
+  if (mr->mount_id == 0)
+  {
+    res = true;
+  }
+  else
+  {
+    res = false;
+  }
+
+  /* Re-read mount fields back from successful mount */
+  if (!res)
+  {
+    char *server  = NULL;
+    char *user    = NULL;
+    char *mount   = NULL;
+    char *path    = NULL;
+    char *auth    = NULL;
+    int server_id = 0;
+
+    err = ClientGetActiveMountInfo (mr->client_id, mr->mount_id,
+                                    &server, &user, &mount, &path, &auth, &server_id);
+    res = Desk_Error_Check (err);
+    if (!res)
+    {
+      client_record *cr;
+
+      RMAFREE(mr->server);
+      RMAFREE(mr->user);
+      RMAFREE(mr->mount);
+      RMAFREE(mr->path);
+      RMAFREE(mr->auth);
+      mr->server = cpyrma(server);
+      dprintf (("", "MountConnect: server '%s'\n", mr->server ? mr->server : ""));
+      mr->user = cpyrma(user);
+
+      /* Set Omni$UserXXX variable */
+      cr = ClientFind(mr->client_id, NULL, -1, NULL);
+      if (cr)
+      {
+        char var_name[32];
+        sprintf(var_name, "Omni$User%s", cr->fsname);
+        _kernel_setenv(var_name, mr->user);
+      }
+      dprintf (("", "MountConnect: user '%s'\n", mr->user ? mr->user : ""));
+      if (temporary) mr->passwd = NULL;
+      mr->mount = cpyrma(mount);
+      dprintf (("", "MountConnect: mount '%s'\n", mr->mount ? mr->mount : ""));
+      mr->path = cpyrma(path);
+      dprintf (("", "MountConnect: path '%s'\n", mr->path ? mr->path : ""));
+      mr->auth = cpyrma(auth);
+      dprintf (("", "MountConnect: auth '%s'\n", mr->auth ? mr->auth : ""));
+      mr->server_id = server_id;
+
+      /* Fudge to ensure password is overwritten in template memory */
+      Icon_SetBlank (w, mount_password);
+
+      /* Special field - network authentication server, we don't 'really' connect with
+       * an icon on the iconbar.
+       */
+      /* if ((clientwindow) && (flagSET(clientwindow, flag_SPECIAL)))
+      {
+        dprintf (("", "MountConnect: special flag set\n"));
+        mr->mount_id = -1;
+        if (temporary) MountDeleteList(mr);
+        Desk_Hourglass_Off();
+        return(true);
+      } */
+
+      /* Icon on iconbar */
+      if ((!mr->hidden))
+      {
+        if (MountCreate(mr) == NULL)
+        {
+          res = true;
+        }
+      }
+      dprintf (("", "MountConnect: %x %x\n", res, mr->mount_id));
+    }
+  }
+
+  if (res)
+  {
+    mr->mount_id = -1;
+    if (temporary) MountDeleteList(mr);
+    Desk_Hourglass_Off();
+    /* Horrible hack for Access 'already connected' error - don't keep window open */
+    if ((cr->client_id == 0x4a900) && (err->errnum == ERR_MESSBASE+2))
+      return true;
+    return false;
+  }
+
+  /* Filer_OpenDir on root of mount */
+  if (!mr->hidden && mr->open) Desk_Error_Check (ClientOpenUserRoot (mr->client_id, mr->mount_id));
+  mr->connected = true;
+  Desk_Hourglass_Off();
+  dprintf (("", "done MountConnect\n"));
+  return true;
+}
+
+
+/*  CLI *command parsing.
+ */
+extern void MountCLI(const char *s1, bool running)
+{
+  char p[256];
+  char * s;
+
+  dprintf (("", "MountCLI: entry1 '%s'\n", s1));
+  strncpylf(p, s1, 255);
+  s = strip(p);
+  dprintf (("", "MountCLI: entry2 '%s'\n", s));
+
+  /* Are we running, with our application space paged in? */
+  if (!running)
+  {
+    char *t = NULL;
+
+    if (pollword_str)
+    {
+      t = rma_alloc(strlen(pollword_str) + strlen(s) + 2);
+      if (!t) return;
+      sprintf(t, "%s %s", pollword_str, s);
+      rma_free(pollword_str);
+    }
+    else
+    {
+      t = rma_alloc(strlen(s) + 1);
+      if (!t) return;
+      strcpy(t, s);
+    }
+    pollword_str = t;
+    pollword |= pollword_MOUNTCLI;
+    return;
+  }
+
+  /* -ALL flag */
+  if (strstr(s, "-a") || strstr(s, "-A"))
+  {
+    int loop = 0;
+    mlist_record *ml = (mlist_record *) mlist_anchor.next;
+
+    dprintf (("", "MountCLI: found all ... \n"));
+    while (ml)
+    {
+      if (ml->hidden) CreateMount(mount_MLISTREC, (int) ml, false);
+      ml = (mlist_record *) ml->header.next;
+    }
+    while (MountFind(-1, NULL, loop, -1))
+    {
+      CreateMount(mount_MLIST, loop+2, false);
+      loop++;
+    }
+    return;
+  }
+
+  /* -URL flag */
+# if 0
+  if ((t = strstr(s, "-url")) || (t = strstr(s, "-URL")))
+  {
+    Desk_message_block m;
+
+    strcpy(t, "    ");
+    t = strtok(t, " \n\r\t");
+    dprintf (("", "MountCLI: URL! '%s'\n", t));
+    strncpy((char *) &m.data.words[0], t, 235);
+    /* OpenURL(Desk_event_SEND, m); */
+    return;
+  }
+# endif
+
+  s = strtok(s, " ");
+  while (s)
+  {
+    mlist_record *ml = NULL;
+
+    dprintf (("", "MountCLI: '%s'\n", s));
+    /* Find code - could be improved... */
+    ml = MountFind(-1, s, -1, -1);
+    if (ml != NULL)
+    {
+      int loop = 0;
+      bool found = false;
+
+      dprintf (("", "MountCLI: found once!\n"));
+      if ((ml->hidden) || (ml->preset))
+      {
+        dprintf (("", "MountCLI: hidden %d preset %d\n", ml->hidden, ml->preset));
+        CreateMount(mount_MLISTREC, (int) ml, false);
+      }
+      else
+      {
+        while (!found)
+        {
+          ml = MountFind(-1, NULL, loop, -1);
+          if ((ml != NULL) && (!Desk_stricmp(ml->mount, s)))
+          {
+            dprintf (("", "MountCLI: found %d\n", loop));
+            found = true;
+            CreateMount(mount_MLIST, loop+2, false);
+          }
+          loop++;
+        }
+      }
+    }
+    else
+    {
+      client_record *cr;
+
+      /* Not found - is it a Client FS name? */
+      cr = ClientFind(-1, NULL, -1, s);
+      if (cr)
+      {
+        dprintf (("", "MountCLI: found FS name - faking!\n"));
+        ml = MountCreateList(cr, "", "", "", s, "", "", Desk_TRUE, Desk_FALSE, Desk_TRUE, Desk_FALSE);
+        CreateMount(mount_MLISTREC, (int) ml, false);
+      }
+    }
+    s = strtok(NULL, " ");
+  }
+  return;
+}
+@
+
+
+1.7
+log
+@Write out choices to <Choices$Write> rather than inside the application directory
+UK/Messages: English for "update" was trapped in the C code rather than in the messages
+Filer.c/CoreInit.c: name the application as OmniClient
+FileType.c: Try Choices first then Omni:
+Mount.c: Write to <Choices$Write>, for reading try Choices first then Omni:
+Defs.h: Change app_FILES to "Omni:" so path names using this define are proper
+
+Version 2.18. Tagged as 'Omni-2_18'
+@
+text
+@a439 1
+    Desk_Event_Claim(Desk_event_USERDRAG, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) UserDrag, mr);
+a467 1
+    Desk_Event_Release(Desk_event_USERDRAG, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) UserDrag, mr);
+d813 1
+a813 1
+  tt = Risc_Time(NULL);
+@
+
+
+1.6
+log
+@  Removed MemCheck dependencies. Minor fix in !Run file.
+Detail:
+  As summary for MemCheck. !Run file use of "<Omni$Path>Start" changed
+  to "Run Omni:Start", to properly support multiple paths set inside
+  "Omni$Path" (in case anyone does that).
+Admin:
+  Tested with Tungsten env file on a Batch 5 tree using !Mk* Obey files.
+
+
+Version 2.14. Tagged as 'Omni-2_14'
+@
+text
+@d576 1
+a576 1
+  FILE *f = fopen((name) ? name : app_FILES"Mounts", "r");
+d582 12
+d792 1
+a792 1
+  FILE *f = fopen(app_FILES"Mounts", "w");
+d798 4
+d803 1
+d806 1
+a806 1
+    Desk_Msgs_Report(0, "mount.noopen", app_FILES"Mounts", "update");
+d817 1
+a817 1
+  fputs("# > "app_FILES"Mounts\n# Mount list saved by "app_DIR"Client at ", f);
+d822 1
+a822 1
+  if (r != NULL)
+d824 8
+a831 1
+    while (r != NULL)
+d833 2
+a834 13
+      client_record *cr = ClientFind(r->client_id, NULL, -1, NULL);
+      char *fsname = (cr) ? cr->fsname : NULL;
+      sprintf(s, "%s,%s,%s%s%s,%s,%s,%s,%s,%s\n", fsname ? fsname : "",
+        r->mount ? r->mount : "", r->hidden ? "H" : "", r->preset ? "P" : "",
+        !r->open ? "O" : "", r->server ? r->server : "",
+        r->path ? r->path : "", r->user ? r->user : "", r->passwd ? r->passwd : "",
+        r->auth ? r->auth : "");
+      if ((!r->locked) && (fsname))
+      {
+        fputs(s, f);
+        r->transient = false;
+      }
+      r = (mlist_record *) r->header.next;
+d836 1
+d838 1
+@
+
+
+1.5
+log
+@  * Fixed Bugzilla ID 21, where typing *RMKill OmniClient from the command
+    line would cause the error "free failed, (heap overwritten)" if task part
+    of the OmniClient module task was running at the time, rendering
+    OmniClient unusable and unloadable until the next reboot.
+  * Fixed Bugzilla ID 19, where killing a protocol module when OmniClient was
+    already loaded would cause an "Invalid Wimp Operation In This Context"
+    error.
+
+  * Miscellaneous bug fixes and tidy-ups.
+Detail:
+  * The "free failed, (heap overwritten)" error is due to a bug in the
+    SharedCLibrary, triggered by OmniClient calling getenv in the C library
+    from its task.  The bug results from the implementation of getenv calling
+    malloc - see Bugzilla ID 28 for further details.  This has been worked
+    around by copying the C Library's getenv routine into OmniClient,
+    renaming it to omni_getenv, and making all calls to getenv call
+    omni_getenv instead; if the malloc happens from within the task rather
+    than from within the C library, then things are fine.
+  * The "Invalid Wimp Operation In This Context" error is caused by OmniClient
+    calling Wimp_CreateMenu with R0=-1 from within the SWI handler that deals
+    with protocol module deregistration.  The reasoning for this is that if,
+    for example, you have the Mounts menu open, it becomes invalid at this point
+    as all of the dying protocol module's mounts become unavailable.  However,
+    it is not legal to call Wimp_CreateMenu at this point as you are not in
+    your Wimp task context!
+
+    The call to Wimp_CreateMenu has simply been removed.  This doesn't appear
+    to cause a problem if you have a menu open with mounts belonging to the
+    dying protocol module - attemping to perform an operation on one causes a
+    sensible error to be reported.  A possible future enhancement would be to
+    use OmniClient's pollword mechanism to cause the task to close any open
+    menus on the module's behalf.
+
+    The reason it never occurred before is that it used to call the X-bit-set
+    form of the SWI and didn't check the error returned.  When I modified
+    OmniClient to use Desk instead of DeskLib, I changed most SWI calls from
+    the task part to be non-X-bit-set calls, and used Desk's psuedo-exception
+    system to catch and report all errors at the top level of the
+    application.
+
+  * Uses AsmUtils to obtain Image$$RO$$Base.
+
+  * Potential write through null pointer fixed in string duplication routines
+    cpystr and cpyrma - they weren't checking the result of their allocation
+    calls.
+
+  * Replaced the somewhat confusing all_done variable, which could take (magic)
+    values between 0 and 2 inclusive to cause different sorts of quit, with
+    an enumerated type called RunState.
+
+  * Issuing of Service_OmniClient (dying) in module finalisation made
+    unconditional (was previously conditional on the value of all_done), as it's
+    most definitely always dying if the finalisation routine is called.  I
+    think this was a hangover from when the module finalisation code was
+    implemented as an atexit handler.
+
+  * Exit code in the task does not issue Service_OmniClient (dying) if the
+    entire filing system is being killed off - this will happen in module
+    finalisation, which will be called as a result of the task calling
+    OS_ExitAndDie.  This can only happen in "expert" builds.
+
+  * Fixed allocation of too much memory in ItemParse routine!  It dynamically
+    creates an array of pointers to structures, but was allocating enough space
+    for an array of structures.
+
+  * Fixed potential memory leak in PrintListServers routine - was calling
+    realloc and assigning the result directly to the original pointer, instead
+    of assigning it to a temporary and only updating the original poiiner if
+    the realloc succeeds.
+
+  * Fixed potential null pointer dereference in SortMessages routine - had a
+    check for a null pointer parameter at the start, but managed to dereference
+    the pointer before the check as part of a variable initialisation.
+
+  * Added all documents from ANT's Docs directory into ours.
+
+Admin:
+  Tested on a Risc PC.
+  Fixes Bugzilla bugs 19 & 21.
+
+Version 2.08. Tagged as 'Omni-2_08'
+@
+text
+@a39 1
+#include <MemCheck/MemCheck.h>
+@
+
+
+1.4
+log
+@  Fixed a bug where submenus would sometimes not open.
+Detail:
+  More fallout from the modifications to use Desk's standard event handling
+  mechanisms rather that ANT's customised one.
+
+  Releasing Wimp message event claims in Desk releases all handlers
+  registered for that message, not just one.  The Omni code was
+  (re)registering the event handlers for all new mounts, so if you had more
+  than one mount active and did a dismount, the message event handler would
+  be deregistered for all the other active mounts as well.  This means you'd
+  no longer revceive MenuWarn messages, so submenus wouldn't be opened.
+
+  All mount event handlers with the exception of the ButtonClick handler are
+  now only registered once, irrespective of the number of active mounts, and
+  only deregistered once there are no active mounts.  Non-message event
+  handlers do not suffer the problem described above, so the ButtonClick
+  handler is safe.  The reason it is still registered for each mount is that
+  the handler actually uses the user-supplied data for context, whereas none
+  of the other handlers did; they obtain it from global variables instead -
+  lovely.
+Admin:
+  Compiled and tested on a Risc PC.
+
+Version 2.07. Tagged as 'Omni-2_07'
+@
+text
+@d433 1
+d1156 1
+a1156 1
+  dprintf (("", "MountCLI: entry1 '%s'\n", s));
+d1205 1
+a1205 1
+#if 0
+d1217 1
+a1217 1
+#endif
+@
+
+
+1.3
+log
+@  * Fixed bug which I introduced in previous version, where errors that
+    occurred when trying to connect to a mount would cause two errors to be
+    reported.
+Detail:
+  * When I went through blindly changing all _kernel_swi or Desk_SWI calls
+    to _swix, I failed to notice that one or two of the calls rely on the
+    output parameters being filled in even if an error occurs - _swix does not
+    do this.  I've now created a set of type safe C veneers for all calls to
+    client modules, which use _swix or _kernel_swi as necessary.  This has the
+    additional benefit of making the code more readable and getting rid of
+    quite a few uses of magic numbers.
+Admin:
+  * Compiled and tested on a Risc PC.
+
+Version 2.06. Tagged as 'Omni-2_06'
+@
+text
+@d434 9
+a442 5
+  Desk_Event_Claim(Desk_event_MENU,  Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) MenuChoice,  mr);
+  Desk_Event_Claim(Desk_event_KEY,   Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) KeyPress,    mr);
+  Desk_Event_Claim(Desk_event_NONZEROPOLLWORD, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) PollWordNZ, mr);
+  Desk_Event_Claim(Desk_event_USERDRAG, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) UserDrag, mr);
+  Desk_EventMsg_Claim(Desk_message_MENUWARN, Desk_event_ANY, (Desk_event_handler) MenuWarn, mr);
+d463 9
+a471 5
+  Desk_Event_Release(Desk_event_MENU,  Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) MenuChoice,  mr);
+  Desk_Event_Release(Desk_event_KEY,   Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) KeyPress,    mr);
+  Desk_Event_Release(Desk_event_NONZEROPOLLWORD, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) PollWordNZ, mr);
+  Desk_Event_Release(Desk_event_USERDRAG, Desk_event_ANY, Desk_event_ANY, (Desk_event_handler) UserDrag, mr);
+  Desk_EventMsg_Release(Desk_message_MENUWARN, Desk_event_ANY, (Desk_event_handler) MenuWarn);
+@
+
+
+1.2
+log
+@  Several major bugfixes and further tidying to make Omni fit into our
+  build environment better.
+Detail:
+  * Bug fix: ClientList function (Client.c) creates a textual menu desription
+    for a list of clients (Info and Mounts submenus).  The description was
+    generated on the stack and a pointer to it was returned.  The buffer is now
+    static.
+  * Bug fix: select or adjust clicks on the Omni icon just after it's loaded
+    would kill the task part of Omni.  FilerCreate function (List.c) always
+    calls FilerDelete, which would always attempt to close any existing filer
+    window.  However, on the first call, no window exists so it passes the Wimp
+    a 0 window handle.  This only appeared to happen on RISC OS 4, but I suspect
+    this is to do with RISC OS 4's stricter protection of zero page.  Current
+    fix is for FilerDelete to check if window handle is 0 before closing it;
+    this is not very elegant - would be nicer to only call FilerDelete when the
+    window was actually closed.
+  * Bug fix: writable icon handling overhauled completely.  Many of the buffers
+    which Omni would read the contents of writable icons into were too short
+    to hold the maximum amount of text allowed in the icon.  New Icon_GetText
+    call added (ExtLib.c) to allow Omni to work directly on indirected icon
+    buffers wherever possible, thus removing the whole issue.
+  * Stripped commented-out code from several places.
+  * Changed use of Desk_bool to bool in most places.  This is a bit grim, but
+    the way Desk_bool is implemented means you need to cast it in many places,
+    which is even more grim.
+  * Removed a few error assignements(!) because
+    a) they weren't even being checked
+    b) Desk's psuedo-exception system should now catch them
+  * Got rid of home-grown strcasecmp calls and used Desk's instead.
+  * Removed many local constants definitions and get them from system header
+    files instead.
+  * Removed Hdrs.h which would include *every* header file in *every* C file
+    in the interests of compilation times.  C files now only include what they
+    need.
+  * Reimplemented the fully recursive Menu_Dispose along the lines of the
+    non-recursive Desk_Menu_Dispose, which had changed since ANT's DeskLib
+    split-off.
+  * Altered quite a bit of code to prevent compiler warnings (mainly
+    "use of '=' in condition context" and "variable declared but not used").
+  * Uses 'proper' module finalisation instead of atexit in the interests of
+    consistency and symmetry.
+  * Added MemCheck support.
+  * Reimplemented rma_alloc and rma_free in C (side effect of MemCheck support).
+  * Altered assembler to use system header files instead of local ones.
+  * Omni previously used a seeming random mixture of _kernel_swi and Desk_SWI
+    SWI veneers.  All have now been changed to use _swix/_swi as appropriate.
+  * Converted to use srccommit.
+Admin:
+  Files removed:
+   c.Error
+   c.StrCaseCmp
+   h.Debug
+   h.Hdrs
+   h.ModuleWrap
+   h.OmniClient
+   h.StrCaseCmp
+   hdr.Macros
+   hdr.RegDefs
+   hdr.SwiNos
+
+  Files added:
+   Docs.DeskLibDiffs
+   Docs.EventHandling
+   h.Omni
+
+  * Compiled.
+  * All windows, menus checked to make sure they at least display.
+  * Played around with a new NFS and LanMan mounts.
+  * Basically, there shouldn't be any showstoppers, but the change from a very
+    old DeskLib to Desk is a large one.  I'd be surprised if there aren't a
+    few problems and this should definitely be thrashed a bit by people
+    willing to do so before anyone has any confidence in it.
+
+
+
+Version 2.05. Tagged as 'Omni-2_05'
+@
+text
+@d853 3
+a855 3
+  res = Desk_Error_Check (_swix (client_id, _INR (0, 6) | _OUT (1),
+                                 0, domain, user, password, 0, 0, 0,
+                                 &mount_id));
+d875 1
+a875 1
+  Desk_bool res;
+d878 1
+a878 1
+  Desk_os_error *err = NULL;
+a880 2
+  char *r1, *r2, *r3, *r4, *r5;
+  int r6;
+d1035 3
+a1037 3
+  err = _swix (mr->client_id, _INR (0, 6) | _OUT (1),
+               0, mr->server, mr->user, pw, mr->mount, mr->path, mr->auth,
+               &mr->mount_id);
+d1040 8
+a1047 2
+  if (mr->mount_id == 0) res = Desk_TRUE;
+    else res = Desk_FALSE;
+a1049 2
+  r1 = r2 = r3 = r4 = r5 = NULL;
+  r6 = 0;
+d1051 14
+a1064 3
+    res = Desk_Error_Check(_swix (mr->client_id, _INR (0, 1) | _OUTR (1, 6),
+                                  9, mr->mount_id,
+                                  &r1, &r2, &r3, &r4, &r5, &r6));
+d1066 41
+a1106 3
+  if (!res)
+  {
+    client_record *cr;
+d1108 9
+a1116 16
+    RMAFREE(mr->server);
+    RMAFREE(mr->user);
+    RMAFREE(mr->mount);
+    RMAFREE(mr->path);
+    RMAFREE(mr->auth);
+    mr->server = cpyrma(r1);
+    dprintf (("", "MountConnect: server '%s'\n", mr->server ? mr->server : ""));
+    mr->user = cpyrma(r2);
+
+    /* Set Omni$UserXXX variable */
+    cr = ClientFind(mr->client_id, NULL, -1, NULL);
+    if (cr)
+    {
+      char var_name[32];
+      sprintf(var_name, "Omni$User%s", cr->fsname);
+      _kernel_setenv(var_name, mr->user);
+a1117 12
+    dprintf (("", "MountConnect: user '%s'\n", mr->user ? mr->user : ""));
+    if (temporary) mr->passwd = NULL;
+    mr->mount = cpyrma(r3);
+    dprintf (("", "MountConnect: mount '%s'\n", mr->mount ? mr->mount : ""));
+    mr->path = cpyrma(r4);
+    dprintf (("", "MountConnect: path '%s'\n", mr->path ? mr->path : ""));
+    mr->auth = cpyrma(r5);
+    dprintf (("", "MountConnect: auth '%s'\n", mr->auth ? mr->auth : ""));
+    mr->server_id = r6;
+
+    /* Fudge to ensure password is overwritten in template memory */
+    Icon_SetBlank (w, mount_password);
+a1119 15
+  /* Special field - network authentication server, we don't 'really' connect with
+   * an icon on the iconbar.
+   */
+  /* if ((!res) && (clientwindow) && (flagSET(clientwindow, flag_SPECIAL)))
+  {
+    dprintf (("", "MountConnect: special flag set\n"));
+    mr->mount_id = -1;
+    if (temporary) MountDeleteList(mr);
+    Desk_Hourglass_Off();
+    return(Desk_TRUE);
+  } */
+
+  /* Icon on iconbar */
+  if ((!res) && (!mr->hidden)) res = (Desk_bool) (MountCreate(mr) == NULL);
+  dprintf (("", "MountConnect: %x %x\n", res, mr->mount_id));
+d1132 1
+a1132 1
+  if (!mr->hidden && mr->open) Desk_Error_Check (_swix (mr->client_id, _INR (0, 1), 7, mr->mount_id));
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d31 5
+a35 1
+/* #undef DEBUG */
+d37 4
+a40 1
+#include <time.h>
+d46 2
+d50 4
+a53 4
+#include <Desk/Resource.h>          	/* Handles finding resource files  */
+#include <Desk/Screen.h>            	/* Getting screen size info, etc   */
+#include <Desk/SWI.h>              	/* Low level OS calls              */
+#include <Desk/Time.h>          	/* */
+d56 10
+a65 1
+#include "Hdrs.h"
+d106 1
+a106 1
+  TRACE1("expand: '%s'\n", o);
+d113 1
+a113 1
+extern char *stripmenu(char *s)
+d135 1
+a135 1
+ *  Returns first record matching, or last record matching (first==Desk_FALSE)
+d137 1
+a137 1
+extern mount_record *MountIconFind(int client_id, char *mount, int icon, Desk_bool first,
+d145 1
+a145 1
+  TRACE("MountIconFind:\n");
+d159 2
+a160 2
+      case 1: TRACE2("MountIconFind: mount '%s' '%s'\n", mr->mount, mount);
+              if (!strcasecmp(mr->mount, mount))
+d175 2
+a176 2
+      case 3: TRACE2("MountIconFind: client %x %x\n", mr->client_id, client_id);
+              TRACE2("MountIconFind: server %x %x\n", mr->server_id, server_id);
+a192 2
+#define ReadModeVar(m, v, r) 	Desk_SWI(3, 3, 0x20035, (m), (v), 0,   0, 0, (r))
+#define _Wimp_CreateIcon	0x400c2
+d204 2
+a205 2
+  TRACE2("icon = %d %x\n", ir->icon, (int) icreate);
+  TRACE2("%s %s\n", spritename, text);
+d243 1
+a243 1
+      Desk_SWI(2,1, _Wimp_CreateIcon, icon, icreate, &ir->icon);
+d249 1
+a249 1
+      Desk_SWI(2,1, _Wimp_CreateIcon, 0x20000000, icreate, &ir->icon);
+d262 1
+a262 1
+      Desk_SWI(2,1, _Wimp_CreateIcon, ir_r->icon, icreate, &ir->icon);
+d268 1
+a268 1
+      Desk_SWI(2,1, _Wimp_CreateIcon, ir_l->icon, icreate, &ir->icon);
+d283 3
+a305 2
+#define NetFS_EnumerateFSList		0x040049
+
+d321 2
+a322 2
+  TRACE("NetFSMenu:\n");
+  if (mr->menu != NULL) Menu_Dispose(mr->menu, Desk_TRUE);
+d331 3
+a333 1
+    err = Desk_SWI(4,4, NetFS_EnumerateFSList, next,&buf,20,1, &next,NULL,NULL,&read);
+d342 1
+a342 1
+      TRACE2("NetFSMenu: %x found '%s'\n", server_id, server);
+d354 1
+a354 1
+  TRACE1("NetFSMenu: '%s'\n", menu);
+d357 1
+a357 1
+  TRACE1("NetFSMenu: %x\n", (int) mr->menu);
+d368 1
+a368 1
+  TRACE("MountCreate:create new server list\n");
+d378 1
+a378 1
+    Desk_bool found = Desk_FALSE;
+d384 2
+a385 2
+      TRACE2("MountCreate: '%s' '%s'\n", mr_tmp->mount ? mr_tmp->mount : "",
+        lr->mount ? lr->mount : "");
+d387 1
+a387 1
+          (strcasecmp(mr_tmp->mount, lr->mount) > 0))
+d389 1
+a389 1
+        TRACE("MountCreate: found!\n");
+d391 1
+a391 1
+        found = Desk_TRUE;
+d396 1
+a396 1
+      TRACE("MountCreate: not found\n");
+d432 1
+a432 1
+  TRACE1("MountCreate:new server list length %d\n", Desk_LinkList_ListLength(&mount_anchor));
+d450 1
+a450 1
+  TRACE("MountDelete:\n");
+d471 1
+a471 1
+      TRACE1("MountDelete: delete from mlist %x\n", (int) ml);
+d478 1
+a478 1
+  if (mr->menu) Menu_Dispose(mr->menu, Desk_TRUE);
+d481 1
+a481 1
+  TRACE1("MountDelete:new server list length %d\n", Desk_LinkList_ListLength(&mount_anchor));
+d506 3
+a508 3
+extern mlist_record *MountCreateList(client_record *cr, char *server,
+		char *user, char *passwd, char *mount, char *path, char *auth, Desk_bool preset,
+		Desk_bool hidden, Desk_bool locked, Desk_bool open)
+d512 3
+a514 2
+  TRACE("MountCreateList:create new mounts list\n");
+  if (mr = MountFind(-1, mount, preset, cr->client_id)) MountDeleteList(mr);
+d529 1
+a529 1
+  TRACE2("MountCreateList: '%s' '%s'\n", mr->mount ? mr->mount : "?", mount ? mount : "?");
+d531 1
+a531 1
+  TRACE2("MountCreateList: '%s' '%s'\n", mr->path ? mr->path : "?", path ? path : "?");
+d533 2
+a534 2
+  TRACE2("MountCreateList: '%s' '%s'\n", mr->auth ? mr->auth : "?", auth ? auth : "?");
+  mr->transient = Desk_TRUE;
+d539 2
+a540 2
+  mr->connected = Desk_FALSE;
+  TRACE1("MountCreateList:new mount list length %d\n", Desk_LinkList_ListLength(&mlist_anchor));
+d550 1
+a550 1
+  TRACE("MountDeleteList:\n");
+d560 1
+a560 1
+  TRACE1("MountDeleteList:new list length %d\n", Desk_LinkList_ListLength(&mlist_anchor));
+d566 1
+a566 1
+extern Desk_bool MountLoadFile(const char *name)
+d569 1
+a569 1
+  Desk_bool failures = Desk_FALSE;
+d574 2
+a575 2
+  TRACE1("MountLoadFile: %d\n", (int) f);
+  if (f == NULL) return(Desk_FALSE);
+d586 4
+a589 4
+    Desk_bool hidden = Desk_FALSE;
+    Desk_bool locked = Desk_FALSE;
+    Desk_bool preset = Desk_FALSE;
+    Desk_bool open = Desk_TRUE;
+d594 1
+a594 1
+    TRACE1("load: '%s'\n", line);
+d599 1
+a599 1
+    TRACE1("load: protocol = '%s'\n", s);
+d602 2
+a603 2
+      TRACE("load: invalid protocol\n");
+      failures = Desk_TRUE;
+d613 1
+a613 1
+      TRACE1("load: mount alias = '%s'\n", mount);
+d618 1
+a618 1
+      TRACE1("load: flags = '%s'\n", s);
+d629 1
+a629 1
+      TRACE1("load: server = '%s'\n", server);
+d634 1
+a634 1
+      TRACE1("load: mount path = '%s'\n", path);
+d639 1
+a639 1
+      TRACE1("load: user ID = '%s'\n", user);
+d644 1
+a644 1
+      TRACE1("load: password = '%s'\n", passwd);
+d649 1
+a649 1
+      TRACE1("load: authentication server = '%s'\n", auth);
+d653 1
+a653 1
+      hidden = Desk_TRUE;
+d657 1
+a657 1
+    if (mr) mr->transient = Desk_FALSE;
+d668 1
+a668 1
+    return(Desk_FALSE);
+d670 1
+a670 1
+  return(Desk_TRUE);
+d683 2
+a684 2
+  TRACE1("MountMakeMenu: %x\n", (int) oldmenu);
+  if (oldmenu != NULL) Menu_Dispose(oldmenu, Desk_TRUE);
+d686 1
+a686 1
+  TRACE1("MountMakeMenu: lookup '%s'\n", menu);
+d693 1
+a693 1
+      Desk_bool preset;
+d696 1
+a696 1
+      preset = (r->preset) && (!MountIconFind(r->client_id,r->mount,-1,Desk_TRUE,-1));
+d702 1
+a702 1
+        TRACE1("MountMakeMenu: '%s'\n", r->mount);
+d705 1
+a705 1
+      TRACE1("MountMakeMenu: %s\n", menu);
+d711 1
+a711 1
+  TRACE1("MountMakeMenu: %s\n", menu);
+d721 1
+a721 1
+extern mlist_record *MountFind(int mount_id, char *name, int menuitem, int client_id)
+d726 1
+a726 1
+  Desk_bool preset;
+d728 1
+a728 1
+  TRACE("MountFind:\n");
+d738 2
+a739 2
+      case 1: TRACE2("MountFind: '%s' '%s'\n", (mr->mount) ? mr->mount : "", name);
+              if ((mr->mount) && (!strcasecmp(mr->mount, name))) return(mr);
+d741 1
+a741 1
+      case 2: TRACE2("MountFind: %d %d\n", menuitem, loop);
+d743 1
+a743 1
+              preset = (mr->preset) && (!MountIconFind(mr->client_id,mr->mount,-1,Desk_TRUE,-1));
+d752 1
+a752 1
+      case 3: if ((mr->client_id == client_id) && (!strcasecmp(mr->mount, name)))
+d770 1
+a770 1
+extern Desk_bool MountSaveFile(void)
+d782 1
+a782 1
+    return(Desk_FALSE);
+d811 1
+a811 1
+        r->transient = Desk_FALSE;
+d822 1
+a822 1
+  return(Desk_TRUE);
+d828 1
+a828 1
+extern Desk_bool DomainConnect(mlist_record *mr, Desk_window_handle w)
+d831 4
+a834 5
+  Desk_os_error *err = NULL;
+  char s[96];
+  char us[32];
+  char pw[32];
+  int r6, mount_id;
+d838 7
+a844 6
+  TRACE2("DomainConnect: %p %x\n", mr, client_id);
+  if (!mr && !clientwindow) return(Desk_FALSE);
+  Desk_Icon_GetText(w, domain_domain, s);
+  strtok(s, "\n\r");
+  Desk_Icon_GetText(w, domain_user, us);
+  Desk_Icon_GetText(w, domain_password, pw);
+d846 6
+a851 5
+  if (!strcmp(pw, "\"\"")) strcpy(pw, "");
+  /* Make Connect Desk_SWI call */
+  TRACE("DomainConnect: pre Omni_Op,Mount\n");
+  TRACE2("'%s' '%s' ", s, us);
+  TRACE2("'%s' %x\n", pw, client_id);
+d853 4
+a856 3
+  res = Desk_Error_Check(err = Desk_SWI(7,2, client_id, 0,(int) s,(int) us,
+    (int) pw,0,0,0, NULL,&mount_id));
+  TRACE2("DomainConnect: %x %x\n", res, mount_id);
+d863 1
+a863 3
+    Desk_Icon_GetText(w, domain_password, pw);
+    for (r6 = 0; r6 < strlen(pw); r6++) pw[r6] = ' ';
+    Desk_Icon_SetText(w, domain_password, pw);
+d866 1
+a866 1
+  return(!res);
+d872 1
+a872 1
+extern Desk_bool MountConnect(mlist_record *mr, Desk_window_handle w)
+d874 1
+a874 1
+  Desk_bool temporary = Desk_FALSE;
+d879 2
+a880 2
+  char s[96];
+  char pw[16];
+d885 2
+a886 2
+  TRACE2("MountConnect: %p %d\n", cr, flagSET(cr, flag_SPECIAL));
+  if (!mr && !clientwindow) return(Desk_FALSE);
+d890 2
+a891 2
+  TRACE("MountConnect:\n");
+  Desk_Icon_GetText(w, mount_mount, s);
+d893 2
+a894 3
+  if ((strlen(s) < 1) && (flagSET(cr, flag_MOUNT)))
+    Desk_Icon_GetText(w, mount_server, s);
+  if (strlen(s) < 1)
+d897 1
+a897 1
+    return(Desk_FALSE);
+d901 2
+a902 2
+  Desk_Icon_GetText(w, mount_mount, s);
+  TRACE1("MountConnect: looking for '%s'\n", s);
+d906 1
+a906 1
+    return(Desk_FALSE);
+d910 1
+a910 2
+  Desk_Icon_GetText(w, mount_server, s);
+  if (strlen(s) < 1)
+d913 1
+a913 1
+    return(Desk_FALSE);
+d917 1
+a917 1
+  Desk_Icon_GetText(w, mount_mount, s);
+d925 1
+a925 1
+    Desk_bool ident = Desk_TRUE;
+d928 16
+a943 11
+    Desk_Icon_GetText(w, mount_server, s);
+    if ((mrl->server) && (strcmp(s, mrl->server))) ident = Desk_FALSE;
+    Desk_Icon_GetText(w, mount_user, s);
+    if ((mrl->user) && (strcmp(s, mrl->user))) ident = Desk_FALSE;
+    Desk_Icon_GetText(w, mount_password, s);
+    if ((mrl->passwd) && (strcmp(s, mrl->passwd))) ident = Desk_FALSE;
+    Desk_Icon_GetText(w, mount_path, s);
+    if ((mrl->path) && (strcmp(s, mrl->path))) ident = Desk_FALSE;
+    Desk_Icon_GetText(w, mount_auth, s);
+    if ((mrl->auth) && (strcmp(s, mrl->auth))) ident = Desk_FALSE;
+    Desk_Icon_GetText(w, mount_mount, s);
+d962 1
+a962 1
+        return(Desk_FALSE);
+d968 1
+a968 1
+  if ((mr) && (strcasecmp(s, mr->mount))) mr = NULL;
+d978 1
+a978 1
+      return(Desk_FALSE);
+d990 7
+a996 7
+    mr->transient = Desk_TRUE;
+    mr->hidden = Desk_FALSE;
+    mr->locked = Desk_FALSE;
+    mr->preset = Desk_FALSE;
+    mr->open = Desk_FALSE;
+    mr->connected = Desk_FALSE;
+    temporary = Desk_TRUE;
+d1008 2
+a1009 1
+  Desk_Icon_GetText(w, mount_server, s);
+d1011 3
+a1013 1
+  Desk_Icon_GetText(w, mount_user, s);
+d1015 2
+a1016 2
+  Desk_Icon_GetText(w, mount_password, s);
+  strncpy(pw, s, 15);
+d1019 3
+a1021 1
+  Desk_Icon_GetText(w, mount_mount, s);
+d1023 3
+a1025 1
+  Desk_Icon_GetText(w, mount_path, s);
+d1027 3
+a1029 1
+  Desk_Icon_GetText(w, mount_auth, s);
+d1031 1
+d1034 2
+a1035 2
+  /* Make Connect Desk_SWI call */
+  TRACE("MountConnect: pre Omni_Op,Mount\n");
+d1037 5
+a1041 3
+  res = Desk_Error_Check(err = Desk_SWI(7,2, mr->client_id, 0,(int) mr->server,(int) mr->user,
+    (int) pw, (int) mr->mount, (int) mr->path,(int) mr->auth, NULL,&mr->mount_id));
+  TRACE2("MountConnect: %x %x\n", res, mr->mount_id);
+d1049 4
+a1052 1
+    res = Desk_Error_Check(Desk_SWI(2,7, mr->client_id, 9,mr->mount_id, NULL,&r1,&r2,&r3,&r4,&r5,&r6));
+d1063 1
+a1063 1
+    TRACE1("MountConnect: server '%s'\n", mr->server ? mr->server : "");
+d1065 1
+d1070 3
+a1072 2
+      sprintf(s, "Omni$User%s", cr->fsname);
+      _kernel_setenv(s, mr->user);
+d1074 1
+a1074 1
+    TRACE1("MountConnect: user '%s'\n", mr->user ? mr->user : "");
+d1077 1
+a1077 1
+    TRACE1("MountConnect: mount '%s'\n", mr->mount ? mr->mount : "");
+d1079 1
+a1079 1
+    TRACE1("MountConnect: path '%s'\n", mr->path ? mr->path : "");
+d1081 1
+a1081 1
+    TRACE1("MountConnect: auth '%s'\n", mr->auth ? mr->auth : "");
+d1083 1
+d1085 1
+a1085 3
+    Desk_Icon_GetText(w, mount_password, pw);
+    for (r6 = 0; r6 < strlen(pw); r6++) pw[r6] = ' ';
+    Desk_Icon_SetText(w, mount_password, pw);
+d1093 1
+a1093 1
+    TRACE("MountConnect: special flag set\n");
+d1101 2
+a1102 2
+  if ((!res) && (!mr->hidden)) res = (MountCreate(mr) == NULL);
+  TRACE2("MountConnect: %x %x\n", res, mr->mount_id);
+d1110 2
+a1111 2
+      return(Desk_TRUE);
+    return(Desk_FALSE);
+d1115 2
+a1116 2
+  if (!mr->hidden && mr->open) Desk_Error_Check(Desk_SWI(2,0, mr->client_id, 7,mr->mount_id));
+  mr->connected = Desk_TRUE;
+d1118 2
+a1119 1
+  return(Desk_TRUE);
+d1125 1
+a1125 1
+extern void MountCLI(const char *s1, Desk_bool running)
+d1130 1
+a1130 1
+  TRACE1("MountCLI: entry1 '%s'\n", s);
+d1133 1
+a1133 1
+  TRACE1("MountCLI: entry2 '%s'\n", s);
+d1164 1
+a1164 1
+    TRACE("MountCLI: found all ... \n");
+d1167 1
+a1167 1
+      if (ml->hidden) CreateMount(mount_MLISTREC, (int) ml, Desk_FALSE);
+d1172 1
+a1172 1
+      CreateMount(mount_MLIST, loop+2, Desk_FALSE);
+d1186 1
+a1186 1
+    TRACE1("MountCLI: URL! '%s'\n", t);
+d1198 1
+a1198 1
+    TRACE1("MountCLI: '%s'\n", s);
+d1200 2
+a1201 1
+    if (ml = MountFind(-1, s, -1, -1))
+d1204 1
+a1204 1
+      Desk_bool found = Desk_FALSE;
+d1206 1
+a1206 1
+      TRACE("MountCLI: found once!\n");
+d1209 2
+a1210 2
+        TRACE2("MountCLI: hidden %d preset %d\n", ml->hidden, ml->preset);
+        CreateMount(mount_MLISTREC, (int) ml, Desk_FALSE);
+d1216 2
+a1217 1
+          if ((ml = MountFind(-1, NULL, loop, -1)) && (!strcasecmp(ml->mount, s)))
+d1219 3
+a1221 3
+            TRACE1("MountCLI: found %d\n", loop);
+            found = Desk_TRUE;
+            CreateMount(mount_MLIST, loop+2, Desk_FALSE);
+d1235 1
+a1235 1
+        TRACE("MountCLI: found FS name - faking!\n");
+d1237 1
+a1237 1
+        CreateMount(mount_MLISTREC, (int) ml, Desk_FALSE);
+@
+
+
+1.1.1.1
+log
+@  Initial import of Omni into CVS.
+
+Detail:
+  This is an import of the sources obtained from ANT some time ago, with
+  sufficient changes to allow it to build in our standard environment.  In
+  particular, this involved converting Omni to use Desk instead of DeskLib.
+  ANT's DeskLib was not 'off-the-shelf' - it was based on DeskLib 2.04 (very
+  old), with their own modifications.
+  
+  This means that there are quite severe bugs in the Omni code, which will
+  show up if you attempt to use this version, which were previously masked by
+  some of ANT's DeskLib alterations.  (Hopefully) most of these have already
+  been identified, fixed and will be checked-in soon.  I felt that a
+  minimal version that would simply build would be worthwhile, so that as
+  many changes as possible end up under CVS' control.
+
+Admin:
+  Compiled.
+  Untested.
+@
+text
+@@

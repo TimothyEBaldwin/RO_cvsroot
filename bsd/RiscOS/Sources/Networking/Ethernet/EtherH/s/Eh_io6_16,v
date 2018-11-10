@@ -1,0 +1,772 @@
+head	1.6;
+access;
+symbols
+	EtherH-4_59:1.6
+	EtherH-4_58:1.6
+	EtherH-4_57:1.6
+	EtherH-4_56:1.6
+	EtherH-4_55:1.4
+	EtherH-4_54:1.3
+	EtherH-4_53:1.2
+	EtherH-4_52:1.1.1.1
+	designit-4_52:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2012.10.13.20.58.42;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	622MTy7PdZDGGgow;
+
+1.5
+date	2012.10.13.20.56.57;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	4sVrnZlgMCe1Ggow;
+
+1.4
+date	2012.10.13.20.55.31;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	iWEN5VZZYRYzFgow;
+
+1.3
+date	2012.10.13.20.49.33;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	wW7NhIHyp8SxDgow;
+
+1.2
+date	2012.10.13.20.41.26;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	wjgMh8kSS5QCAgow;
+
+1.1
+date	2012.10.13.20.36.27;	author rsprowson;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	K58crg30YaBxygow;
+
+1.1.1.1
+date	2012.10.13.20.36.27;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	K58crg30YaBxygow;
+
+
+desc
+@@
+
+
+1.6
+log
+@32 bitted the assembler
+Only a couple of places make OS interface calls, everything else is called from APCS-32 C, so doesn't need to flag preserve.
+Fixed *CONFIGURE output to not show a "Syntax:" error prefix.
+Now uses device number queried from podule manager (or falls back to hardwired assignments if Podule_ReadInfo missing).
+
+Version 4.56. Tagged as 'EtherH-4_56'
+@
+text
+@; Copyright (c) 2002, Design IT
+; All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+;
+;**************************************************************************
+; Title:       Heron Ethernet Driver Source
+; Author:      Douglas J. Berry
+; File:        eh_io6_16.s
+;
+; Copyright (C) 1993 i-cubed Ltd
+; Copyright (C) 2000 Design IT
+;
+;***************************************************************************
+
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+
+        EXPORT  eh_io_out_6
+        EXPORT  eh_io_hout_6
+        EXPORT  eh_flush_output_6
+
+        AREA    io_etherlan600,CODE,READONLY
+
+oddbyte         *       &100    ; Flags whether byte buffer is occupied
+
+;**********************************************************************
+;
+;       copy packet header from src out to I/O port at dst
+;
+;       void eh_io_hout_6(u_char *src1, u_char src2, int type, u_int *dst)
+;
+
+eh_io_hout_6 ROUT
+        Push    "r4-r10, lr"
+ 
+        LDRB    r4, [r0]
+        LDRB    r5, [r0, #1]
+        ADD     r5, r4, r5, LSL #8
+ 
+        LDRB    r4, [r0, #2]
+        LDRB    r6, [r0, #3]
+        ADD     r6, r4, r6, LSL #8
+ 
+        LDRB    r4, [r0, #4]
+        LDRB    r7, [r0, #5]
+        ADD     r7, r4, r7, LSL #8
+ 
+        LDRB    r4, [r1]
+        LDRB    r8, [r1, #1]
+        ADD     r8, r4, r8, LSL #8
+ 
+        LDRB    r4, [r1, #2]
+        LDRB    r9, [r1, #3]
+        ADD     r9, r4, r9, LSL #8
+ 
+        LDRB    r4, [r1, #4]
+        LDRB    r10, [r1, #5]
+        ADD     r10, r4, r10, LSL #8
+ 
+        STMIA   r3, {r5-r10}
+        STR     r2, [r3]
+
+        ; finished
+
+        Pull    "r4-r10, pc"
+
+;**********************************************************************
+;
+;       copy nbytes from src out to I/O port at dst
+;
+;       void eh_io_out_6(u_char *src, u_int *dst, int nbytes, u_int *bytebuf)
+;
+
+eh_io_out_6 ROUT
+        Push    "r4-r10, lr"
+
+        ; calculate how many single byte transfers are required
+        ; to word align the source ADDress, skip if zero
+        MOV     r12, r2
+        MVN     r2, r0
+        ADD     r2, r2, #5
+        ANDS    r2, r2, #3
+        BEQ     l0
+
+        ; make sure that no. to align is <= total transfer count, then
+        ; MOVe data across & decrement xfer count
+        CMP     r2, r12
+        MOVGT   r2, r12
+        BL      byte_output
+        SUB     r12, r12, r2
+
+        ; calculate no. of 16 byte block transfers required
+l0      MOVS    r2, r12, LSR #4
+        BEQ     l2
+
+        ; transfer as many bytes as possiBLe using load/store multiple routines;
+        ; decide which block transfer routine to call: dependant upon whether
+        ; or not there is an odd byte ouTSTanding
+        LDR     r4, [r3]
+        TST     r4, #oddbyte
+        BNE     l1
+        BL      even_block_output
+        B       l2
+l1
+        BL      odd_block_output
+
+        ; now transfer remaining bytes oNE at a time
+l2      ANDS    r2, r12, #&0f
+        BLNE    byte_output
+
+        ;finished
+        Pull    "r4-r10, pc"
+
+;**********************************************************************
+;
+;       flush any odd byte remaining at end of transfer
+;
+;       void eh_flush_output_6(u_int *dst, u_int *bytebuf)
+;
+eh_flush_output_6 ROUT
+        LDR     r1, [r1]
+        TST     r1, #oddbyte
+        MOVEQ   pc, lr
+        BIC     r1, r1, #oddbyte
+        ORR     r1, r1, r1, LSL #8
+        STR     r1, [r0]
+        MOV     pc, lr
+
+;**********************************************************************
+;
+;       transfer bytes from src (incremented) to 16-bit DMA port
+;       at dst. must return with byte count preserved in r2
+;
+;       void byte_output(u_char *src, u_int *dst, int nbytes, u_char *bytebuf)
+;
+byte_output ROUT
+        LDR     r6, [r3]
+        MOV     r4, #0
+
+l01     CMP     r4, r2
+        STREQ   r6, [r3]
+        MOVEQ   pc, lr
+
+        ; increment byte count, then get NExt src byte into r5. test to
+        ; see whether we already have an odd byte
+        ADD     r4, r4, #1
+        LDRB    r5, [r0], #1
+        TST     r6, #oddbyte
+
+        ; no - mark as odd byte & repeat the loop
+        ORREQ   r6, r5, #oddbyte
+        BEQ     l01
+
+        ; already have an odd byte - clear oddbyte marker,
+        ; build 1/2 word & write it out
+        BIC     r6, r6, #oddbyte
+        ORR     r5, r6, r5, LSL #8
+        STR     r5, [r1]
+
+        ; repeat the loop
+        B       l01
+
+;**********************************************************************
+;
+;       transfer 16 byte blocks of data to `aligNEd' destination
+;       DMA port
+;
+;       void even_block_output(u_char *src, u_int *dst, int niterations)
+;
+
+even_block_output ROUT
+        Push    "r3, lr"
+
+        ; transfer NExt block
+l02     LDMIA   r0!, {r3, r5, r7, r9}
+
+        MOV     r10, r9, LSR #16
+
+        MOV     r8,  r7, LSR #16
+
+        MOV     r6,  r5, LSR #16
+
+        MOV     r4,  r3, LSR #16
+
+        STMIA   r1, {r3-r10}
+
+        ; decrement & test loop counter
+        SUBS    r2, r2, #1
+        BNE     l02
+
+        ; finished
+        Pull    "r3, pc"
+
+;**********************************************************************
+;
+;       transfer 16 byte blocks of data to `non-aligNEd' destination
+;       DMA port
+;
+;       void odd_block_output(u_char *src, u_int *dst, int niterations, u_int *bytebuf)
+;
+;
+
+odd_block_output ROUT
+        Push    "r11-r12, lr"
+
+        ; load buffered byte & clear extraNEous bits from it
+        STR     r3, [sp, #-4]!
+        LDR     r3, [r3]
+        AND     r3, r3, #&ff
+
+        ; load NExt data block & preserve byte to be buffered
+l03     LDMIA   r0!, {r4-r7}
+        MOV     r11, r7, LSR #24
+
+        ; shuffle data ready for transfer to 16-bit I/O space
+        MOV     r12, r7, LSR #8
+        MOV     r10, r7, LSL #8
+        ORR     r10, r10, r6, LSR #24
+
+        MOV     r9, r6, LSR #8
+        MOV     r8, r6, LSL #8
+        ORR     r8, r8, r5, LSR #24
+
+        MOV     r7, r5, LSR #8
+        MOV     r6, r5, LSL #8
+        ORR     r6, r6, r4, LSR #24
+
+        MOV     r5, r4, LSR #8
+        MOV     r4, r4, LSL #8
+        ORR     r4, r4, r3
+
+        ; write this out & update byte buffer
+        STMIA   r1, {r4-r10, r12}
+
+        MOV     r3, r11
+
+        ; decrement & test loop counter
+        SUBS    r2, r2, #1
+        BNE     l03
+
+        ; reset marker in buffered byte, save it away then return
+        ORR     r4, r3, #oddbyte
+        LDR     r3, [sp], #4
+        STR     r4, [r3]
+        Pull    "r11-r12, pc"
+
+        END
+
+;       /* EOF Eh_io6_16.s */
+@
+
+
+1.5
+log
+@Lined up the assembler to familiar column numbers
+No code changes, not tagged.
+@
+text
+@d58 1
+a58 1
+        STMFD   sp!, {r4-r10,lr}
+d89 1
+a89 1
+        LDMFD   sp!, {r4-r10, pc}^
+d99 1
+a99 1
+        STMFD   sp!, {r4-r10,lr}
+d118 1
+a118 1
+        BEQ     l1
+d125 5
+a129 2
+        BLEQ    even_block_output
+        BLNE    odd_block_output
+d132 1
+a132 1
+l1      ANDS    r2, r12, #&0f
+d136 1
+a136 1
+        LDMFD   sp!, {r4-r10, pc}^
+d147 1
+a147 1
+        MOVEQS  pc, lr
+d151 1
+a151 1
+        MOVS    pc, lr
+d166 1
+a166 1
+        MOVEQS  pc, lr
+d196 1
+a196 1
+        STMFD   sp!, {r3, lr}
+d216 1
+a216 1
+        LDMFD   sp!, {r3, pc}^
+d228 1
+a228 1
+        STMFD   sp!, {r11, r12, lr}
+d269 1
+a269 1
+        LDMFD   sp!, {r11, r12, pc}^
+@
+
+
+1.4
+log
+@Replaced htons and friends with ${INETLIB} ones
+Functions max() and min() changed for macros.
+Made supporting assembler functions common -> support.s, so the IO sources just manipulate IO.
+Unused header file 'int_hndlr.h' removed.
+Resolved all the remaining compiler warnings.
+File 'dma.c' compiles now, but is unused.
+Substituted magic numbers for defines from exported header files where available.
+Text for NIC slot 8 is now "Network slot" rather than "Expansion slot 8".
+Builds but not tested. 26 bit only.
+
+Version 4.55. Tagged as 'EtherH-4_55'
+@
+text
+@d38 7
+a44 3
+                GET     Hdr:ListOpts
+                GET     Hdr:Macros
+                GET     Hdr:System
+d46 1
+a46 8
+;
+; Defines.
+;
+                EXPORT  eh_io_out_6
+                EXPORT  eh_io_hout_6
+                EXPORT  eh_flush_output_6
+
+                AREA    io_etherlan600,CODE,READONLY
+d50 1
+a50 9
+                ALIGN
+
+;
+;   **********************************************************************
+;
+;
+;   **********************************************************************
+;
+
+d57 29
+a85 10
+eh_io_hout_6    ROUT
+                STMFD   sp!, {r4-r10,lr}
+
+                LDRB    r4, [r0]
+                LDRB    r5, [r0, #1]
+                ADD     r5, r4, r5, LSL #8
+
+                LDRB    r4, [r0, #2]
+                LDRB    r6, [r0, #3]
+                ADD     r6, r4, r6, LSL #8
+d87 1
+a87 3
+                LDRB    r4, [r0, #4]
+                LDRB    r7, [r0, #5]
+                ADD     r7, r4, r7, LSL #8
+d89 1
+a89 23
+                LDRB    r4, [r1]
+                LDRB    r8, [r1, #1]
+                ADD     r8, r4, r8, LSL #8
+
+                LDRB    r4, [r1, #2]
+                LDRB    r9, [r1, #3]
+                ADD     r9, r4, r9, LSL #8
+
+                LDRB    r4, [r1, #4]
+                LDRB    r10, [r1, #5]
+                ADD     r10, r4, r10, LSL #8
+
+                STMIA   r3, {r5-r10}
+                STR     r2, [r3]
+
+;
+;       finished
+;
+                LDMFD   sp!, {r4-r10, pc}^
+
+;
+;   **********************************************************************
+;
+d91 1
+d98 2
+a99 2
+eh_io_out_6     ROUT
+                STMFD   sp!, {r4-r10,lr}
+d101 30
+a130 8
+;
+;       calculate how many single byte transfers are required
+;       to word align the source ADDress, skip if zero
+                MOV     r12, r2
+                MVN     r2, r0
+                ADD     r2, r2, #5
+                ANDS    r2, r2, #3
+                BEQ     l0
+d132 2
+a133 39
+;
+;       make sure that no. to align is <= total transfer count, then
+;       MOVe data across & decrement xfer count
+;
+                CMP     r2, r12
+                MOVGT   r2, r12
+                BL      byte_output
+                SUB     r12, r12, r2
+
+;
+;       calculate no. of 16 byte block transfers required
+;
+l0              MOVS    r2, r12, LSR #4
+                BEQ     l1
+
+;
+;       transfer as many bytes as possiBLe using load/store multiple routines;
+;       decide which block transfer routine to call: dependant upon whether
+;       or not there is an odd byte ouTSTanding
+;
+                LDR     r4, [r3]
+                TST     r4, #oddbyte
+                BLEQ    even_block_output
+                BLNE    odd_block_output
+
+;
+;       now transfer remaining bytes oNE at a time
+;
+l1              ANDS    r2, r12, #&0f
+                BLNE    byte_output
+
+;
+;       finished
+;
+                LDMFD   sp!, {r4-r10, pc}^
+
+;
+;       **********************************************************************
+;
+d135 1
+d141 8
+a148 13
+eh_flush_output_6
+                ROUT
+                LDR     r1, [r1]
+                TST     r1, #oddbyte
+                MOVEQS  pc, lr
+                BIC     r1, r1, #oddbyte
+                ORR     r1, r1, r1, LSL #8
+                STR     r1, [r0]
+                MOVS    pc, lr
+
+;
+;       **********************************************************************
+;
+d150 1
+d157 23
+a179 3
+byte_output     ROUT
+                LDR     r6, [r3]
+                MOV     r4, #0
+d181 2
+a182 34
+l01             CMP     r4, r2
+                STREQ   r6, [r3]
+                MOVEQS  pc, lr
+
+;
+;       increment byte count, then get NExt src byte into r5. test to
+;       see whether we already have an odd byte
+;
+                ADD     r4, r4, #1
+                LDRB    r5, [r0], #1
+                TST     r6, #oddbyte
+
+;
+;       no - mark as odd byte & repeat the loop
+;
+                ORREQ   r6, r5, #oddbyte
+                BEQ     l01
+
+;
+;       already have an odd byte - clear oddbyte marker,
+;       build 1/2 word & write it out
+;
+                BIC     r6, r6, #oddbyte
+                ORR     r5, r6, r5, LSL #8
+                STR     r5, [r1]
+
+;
+;        repeat the loop
+;
+                B       l01
+
+;
+;       **********************************************************************
+;
+d184 1
+d192 2
+a193 8
+even_block_output
+                ROUT
+                STMFD   sp!, {r3, lr}
+
+;
+;       transfer NExt block
+;
+l02             LDMIA   r0!, {r3, r5, r7, r9}
+d195 2
+a196 1
+                MOV     r10, r9, LSR #16
+d198 1
+a198 1
+                MOV     r8,  r7, LSR #16
+d200 1
+a200 1
+                MOV     r6,  r5, LSR #16
+d202 1
+a202 1
+                MOV     r4,  r3, LSR #16
+d204 1
+a204 1
+                STMIA   r1, {r3-r10}
+d206 1
+a206 3
+;       decrement & test loop counter
+                SUBS    r2, r2, #1
+                BNE     l02
+d208 3
+a210 2
+;       finished
+                LDMFD   sp!, {r3, pc}^
+d212 2
+a213 3
+;
+;       **********************************************************************
+;
+d215 1
+d224 2
+a225 23
+odd_block_output
+                ROUT
+                STMFD   sp!, {r11, r12, lr}
+
+;
+;       load buffered byte & clear extraNEous bits from it
+;
+                STR     r3, [sp, #-4]!
+                LDR     r3, [r3]
+                AND     r3, r3, #&ff
+
+;
+;       load NExt data block & preserve byte to be buffered
+;
+l03             LDMIA   r0!, {r4-r7}
+                MOV     r11, r7, LSR #24
+
+;
+;       shuffle data ready for transfer to 16-bit I/O space
+;
+                MOV     r12, r7, LSR #8
+                MOV     r10, r7, LSL #8
+                ORR     r10, r10, r6, LSR #24
+d227 40
+a266 36
+                MOV     r9, r6, LSR #8
+                MOV     r8, r6, LSL #8
+                ORR     r8, r8, r5, LSR #24
+
+                MOV     r7, r5, LSR #8
+                MOV     r6, r5, LSL #8
+                ORR     r6, r6, r4, LSR #24
+
+                MOV     r5, r4, LSR #8
+                MOV     r4, r4, LSL #8
+                ORR     r4, r4, r3
+
+;
+;       write this out & update byte buffer
+;
+                STMIA   r1, {r4-r10, r12}
+
+                MOV     r3, r11
+
+;
+;       decrement & test loop counter
+;
+                SUBS    r2, r2, #1
+                BNE     l03
+
+;
+;       reset marker in buffered byte, save it away then return
+;
+                ORR     r4, r3, #oddbyte
+                LDR     r3, [sp], #4
+                STR     r4, [r3]
+                LDMFD   sp!, {r11, r12, pc}^
+
+;
+;       **********************************************************************
+;
+d268 1
+a268 1
+                END
+@
+
+
+1.3
+log
+@Makefile recreated from fragments
+CMHG file inserts version from VersionNum.
+Use ensure_irqs_on/irqs_restore from AsmUtils.
+Trimmed revision history now the code is in CVS.
+Debug switch SHOW_INFO removed - there was no supporting code.
+Dozens of minor warning fixups as the shared makefiles have stricter checking enabled by default.
+Builds, tested on RISC OS 3.70. 26 bit only.
+
+Version 4.54. Tagged as 'EtherH-4_54'
+@
+text
+@d41 2
+a42 2
+                GET     Hdr:EnvNumbers
+                GET     Hdr:ModHand
+d49 1
+a49 1
+                AREA    exit_control,CODE,READONLY
+a334 3
+;
+;       **********************************************************************
+;
+d337 1
+a337 1
+;       /* EOF eh_io_16.s */
+@
+
+
+1.2
+log
+@Add explicit copyright header to all files
+Builds but not tested. 26 bit only.
+@
+text
+@a34 2
+; Initial Revision 1.0  9th June 1993  DJB
+;
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d1 26
+@
+
+
+1.1.1.1
+log
+@Import of EtherH driver for i-cubed/Acorn/DesignIT NIC
+Special thanks to Rob Cowell of Design IT for taking the time to locate the sources, and agreeing to them being published. 
+This is EtherH 4.52, the last public release. 
+Only changes
+ - makefile now creates empty dirs (to avoid importing empty dirs into CVS)
+ - local copies of Hdr: removed, assembler files point to exported central copies
+Builds but not tested. 26 bit only.
+@
+text
+@@

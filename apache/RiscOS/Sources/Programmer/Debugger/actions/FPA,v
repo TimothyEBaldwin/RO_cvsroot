@@ -1,0 +1,487 @@
+head	1.1;
+access;
+symbols
+	Debugger-2_02-1:1.1
+	Debugger-2_02:1.1
+	Debugger-2_01:1.1
+	Debugger-2_00:1.1
+	Debugger-1_99:1.1
+	Debugger-1_98:1.1
+	Debugger-1_97:1.1
+	Debugger-1_96:1.1
+	Debugger-1_95:1.1
+	Debugger-1_94:1.1
+	Debugger-1_93:1.1
+	Debugger-1_92:1.1
+	Debugger-1_91:1.1
+	Debugger-1_90:1.1
+	Debugger-1_89:1.1
+	Debugger-1_88:1.1
+	Debugger-1_87:1.1
+	Debugger-1_86:1.1
+	Debugger-1_85:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2013.11.28.01.29.19;	author jlee;	state Exp;
+branches;
+next	;
+commitid	STgm4PaoUxPr0Zex;
+
+
+desc
+@@
+
+
+1.1
+log
+@Add a new, machine-generated VFP/NEON disassembler. Fix some ARMv6/v7 disassembly bugs.
+Detail:
+  This change adds up-to-date VFP & NEON disassembly to the module, by way of a partially machine-generated disassembler written in C.
+  It's also possible to build a standalone disassembler utility (dubbed 'dis2') which is 100% C and has support for all ARM instructions (including some obscure stuff the assembler disassembler currently lacks, e.g. XScale DSP instructions). One day this may completely replace the assembler disassembler, but at the moment it's a bit bulky and probably has a few bugs left to squash. The disassembler is also fairly flexible, supporting various output formatting options.
+
+  Main changes:
+  - Makefile - Rewritten to switch over to using the CModule makefile fragment instead of AAsmModule, to allow the C code to be included in the component. Also added 'dis2' as an alternative component to build as.
+  - Resources/UK/Messages, Resources/Germany/Messages - Updated with new disassembler messages
+  - s/Debugger - Add new UseCVFPNEON switch to allow control over whether the module builds with the C VFP/NEON disassembler or the original assembler VFP disassembler
+  - s/CGlue - Glue code used with the C disassembler to bridge the gap between the assembler world and the C world
+  - actions/* - A set of decgen action files describing what to do for each instruction the new disassembler supports. These are basically just blocks of C code - although they need to match up with the encoding names in Library/Misc/decgen/encodings
+  - cache/* - Folder for decgen to cache decision trees in. Building the decision tree for the disassembler is currently a lengthy process, but caching the trees reduces the build time to a fraction of the full time.
+  - c/head - Stub C file that decgen prepends to the code it generates
+  - c/main - main frontend for the standalone version of the disassembler
+  - c/support - Reimplementation of the standard C library functions required for the disassembler. This allows us to avoid a runtime dependency on the shared C library, and also allows us to deal with control-terminated strings from messagetrans where relevant. For convenience this file also has the main entry point that's called from assembler.
+  - c/util - Utility code for outputting various forms of instruction, decoding immediate constants, etc.
+  - h/dis2 - Header file for the C code
+  - Test/c/testbed - Simple C testbed app to allow the output of dis2 to be compared against the Debugger module and decaof
+  - !MkDis2,fd7 - Script to allow easy building of the standalone 'dis2' disassembler
+  Bugfixes:
+  - s/ARMv6 - Change 'ROR#' to 'ROR #' for UXTAB, etc. disassembly. Fix bitfield extract & clear instructions to detect unpredictable/invalid bitfield definitions
+  Misc other changes:
+  - s/* - Source files updated so s/Debugger contains a list of GETs instead of each source file LNK'ing to the next
+Admin:
+  Tested in ROM form on BB-xM, and as softload on Iyonix
+  German messages are in need of translation
+  Requires Library-1_65 and BuildSys-6_34
+
+
+Version 1.85. Tagged as 'Debugger-1_85'
+@
+text
+@# Copyright 2013 Castle Technology Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# Actions for FPA disassembly
+
+LDF_STF(cond,P,UD,T1,Wb,LS,Rn,T0,Fd,offset,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"%s%s%c\tF%d,",(LS?"LDF":"STF"),condition(JUSTPARAMS,cond),fpaprecision(T0,T1),Fd);
+	if((Rn == 15) && P)
+	{
+		doldrstrlit(JUSTPARAMS,UD,Wb,offset<<2,true);
+	}
+	else
+	{
+		scatf(params->buf,"[%s",REG(Rn));
+		doldrstrimm(JUSTPARAMS,P,UD,Wb,offset<<2);
+		if((Rn == 15) && !P)
+			warning(JUSTPARAMS,WARN_PC_POSTINDEXED);
+	}
+	return;
+}
+
+LFM_SFM(cond,P,UD,N1:N0,Wb,LS,Rn,Fd,offset,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	const char *cc = condition(JUSTPARAMS,cond);
+	uint32_t count = N1_N0;
+	if(!count)
+		count = 4;
+	/* Default to form1 if a nonstandard offset is used, or unusual P/UD combination */
+	if((params->opt->lfmsfmmode == LFMSFM_FORM1)
+	  || (Wb && (offset != count*12))
+	  || (!Wb && offset)
+	  || !(P ^ UD))
+	{
+		sprintf(params->buf,"%s%s\tF%d,%d,",(LS?"LFM":"SFM"),cc,Fd,count);
+		if((Rn == 15) && P)
+		{
+			doldrstrlit(JUSTPARAMS,UD,Wb,offset<<2,false);
+		}
+		else
+		{
+			scatf(params->buf,"[%s",REG(Rn));
+			doldrstrimm(JUSTPARAMS,P,UD,Wb,offset<<2);
+		}
+	}
+	else if(params->opt->lfmsfmmode == LFMSFM_FORM2)
+	{
+		sprintf(params->buf,"%s%s%s\tF%d,%d,[%s]%s",(LS?"LFM":"SFM"),cc,ldmmode(P,UD),Fd,count,REG(Rn),(Wb?"!":""));
+	}
+	else
+	{
+		sprintf(params->buf,"%s%s%s\t%s%s,{F%d",(LS?"LFM":"SFM"),cc,ldmmode(P,UD),REG(Rn),(Wb?"!":""),Fd);
+		if(count == 1)
+			scatf(params->buf,"}");
+		else
+		{
+			uint32_t Fd2 = Fd+count-1;
+			if(Fd2 > 7)
+				Fd2 = 7;
+			scatf(params->buf,"%cF%d",((Fd2-Fd)>1?'-':','),Fd2);
+			Fd2 = (Fd+count-1) & 7;
+			if(Fd2 < Fd)
+				scatf(params->buf,(Fd2?",F0%cF%d}":",F0}"),(Fd2>1?'-':','),Fd2);
+			else
+				scatf(params->buf,"}");
+		}
+	}
+	if((Rn == 15) && !P)
+		warning(JUSTPARAMS,WARN_PC_POSTINDEXED);
+	return;
+}
+
+ADF(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"ADF",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+MUF(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"MUF",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+SUF(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"SUF",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+RSF(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"RSF",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+DVF(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"DVF",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+RDF(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"RDF",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+POW(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"POW",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+RPW(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"RPW",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+RMF(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"RMF",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+FML(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"FML",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+FDV(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"FDV",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+FRD(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"FRD",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+POL(cond,e:f,Fn,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FN_FMIMM(JUSTPARAMS,"POL",cond,e_f,gh,Fd,Fn,i,Fm);
+	return;
+}
+
+MVF(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"MVF",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+MNF(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"MNF",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+ABS(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"ABS",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+RND(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"RND",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+SQT(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"SQT",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+LOG(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"LOG",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+LGN(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"LGN",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+EXP(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"EXP",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+SIN(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"SIN",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+COS(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"COS",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+TAN(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"TAN",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+ASN(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"ASN",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+ACS(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"ACS",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+ATN(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"ATN",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+URD(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"URD",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+NRM(cond,e:f,Fd,gh,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	FPA_CC_FD_FMIMM(JUSTPARAMS,"NRM",cond,e_f,gh,Fd,i,Fm);
+	return;
+}
+
+FLT(cond,e,Fn,Rd,f,gh,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"FLT%s%c%s\tF%d,%s",condition(JUSTPARAMS,cond),fpaprecision(f,e),fpa_round[gh],Fn,REG(Rd));
+	return;
+}
+
+FIX(cond,Rd,gh,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"FIX%s%s\t%s,F%d",condition(JUSTPARAMS,cond),fpa_round[gh],REG(Rd),Fm);
+	return;
+}
+
+WFS(cond,Rd,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"WFS%s\t%s",condition(JUSTPARAMS,cond),REG(Rd));
+	return;
+}
+
+RFS(cond,Rd,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"RFS%s\t%s",condition(JUSTPARAMS,cond),REG(Rd));
+	return;
+}
+
+WFC(cond,Rd,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"WFC%s\t%s",condition(JUSTPARAMS,cond),REG(Rd));
+	return;
+}
+
+RFC(cond,Rd,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"RFC%s\t%s",condition(JUSTPARAMS,cond),REG(Rd));
+	return;
+}
+
+CMF(cond,Fn,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"CMF%s\tF%d,",condition(JUSTPARAMS,cond),Fn);
+	if(i)
+		strcat(params->buf,fpa_imm[Fm]);
+	else
+		scatf(params->buf,"F%d",Fm);
+	return;
+}
+
+CNF(cond,Fn,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"CNF%s\tF%d,",condition(JUSTPARAMS,cond),Fn);
+	if(i)
+		strcat(params->buf,fpa_imm[Fm]);
+	else
+		scatf(params->buf,"F%d",Fm);
+	return;
+}
+
+CMFE(cond,Fn,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"CMFE%s\tF%d,",condition(JUSTPARAMS,cond),Fn);
+	if(i)
+		strcat(params->buf,fpa_imm[Fm]);
+	else
+		scatf(params->buf,"F%d",Fm);
+	return;
+}
+
+CNFE(cond,Fn,i,Fm,nonstandard)
+{
+	COMMON
+	ONLY1(FPA);
+	sprintf(params->buf,"CNFE%s\tF%d,",condition(JUSTPARAMS,cond),Fn);
+	if(i)
+		strcat(params->buf,fpa_imm[Fm]);
+	else
+		scatf(params->buf,"F%d",Fm);
+	return;
+}
+@

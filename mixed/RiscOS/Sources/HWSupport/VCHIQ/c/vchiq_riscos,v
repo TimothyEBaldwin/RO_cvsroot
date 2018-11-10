@@ -1,0 +1,733 @@
+head	1.3;
+access;
+symbols
+	VCHIQ-0_10:1.3
+	VCHIQ-0_09:1.2
+	VCHIQ-0_08:1.2
+	VCHIQ-0_07:1.2
+	VCHIQ-0_06:1.2
+	VCHIQ-0_05:1.2
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2017.10.15.20.40.49;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	ZghA3rTNNgyzPbbA;
+
+1.2
+date	2013.03.03.20.22.56;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	uNS7q3oyxvlpXnGw;
+
+1.1
+date	2012.08.19.23.33.04;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.3
+log
+@Fix potential memory leak on malloc failure
+Free the previous allocation should the 2nd fail.
+Ref https://www.riscosopen.org/forum/forums/4/topics/9503
+
+Version 0.10. Tagged as 'VCHIQ-0_10'
+@
+text
+@/*
+ * Copyright (c) 2012, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <stdlib.h>
+#include <errno.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "DebugLib/DebugLib.h"
+#include "AsmUtils/irqs.h"
+#include "Interface/RTSupport.h"
+#include "Global/HALEntries.h"
+
+#include "globals.h"
+
+#include "vc04_services/interface/vchiq_arm/vchiq_core.h"
+#include "vc04_services/interface/vchiq_arm/vchiq_pagelist.h"
+
+/* Implementations of all the threading and other calls that the VCHIQ code requires */
+
+static const int dummy_pollword_1 = 1;
+static const int dummy_pollword_0 = 0;
+
+/* Debug/Logging */
+
+#ifdef DEBUGLIB
+int vchiq_arm_log_level = VCHIQ_LOG_TRACE;
+
+void vcos_log_impl(const char *fmt, ...)
+{
+	va_list args;
+	va_start(args,fmt);
+	dvprintf(("",fmt,args));
+	dprintf(("","\n"));
+}
+
+void printk(const char *fmt,...)
+{
+	va_list args;
+	va_start(args,fmt);
+	dvprintf(("",fmt,args));
+}
+#endif
+
+/* Threads */
+
+static struct current_thing thecurrent = { 0 };
+struct current_thing *current = &thecurrent;
+
+#define THREAD_STACK_SIZE 16384
+
+static void thread_wrapper(struct task_struct *t)
+{
+	/* Initialise t->rt_handle */
+	_swix(RT_ReadInfo,_IN(0)|_OUT(0),RTReadInfo_Handle,&t->rt_handle);
+	if(!t->stop)
+		t->retval = t->thread_function(t->data);
+	ensure_irqs_off();
+	t->stopped = 1;
+	_swix(RT_Deregister,_INR(0,1),0,t->rt_handle);
+}
+
+struct task_struct *kthread_create(int (*func)(void *),void *param,const char *name)
+{
+	(void) name;
+
+	struct task_struct *thread = malloc(sizeof(struct task_struct));
+	if(!thread)
+	{
+		return 0;
+	}
+	memset(thread,0,sizeof(struct task_struct));
+	_kernel_stack_chunk *stack = malloc(THREAD_STACK_SIZE);
+	if(!stack)
+	{
+		free(thread);
+		return 0;
+	}
+	thread->stop = false;
+	thread->retval = NULL;
+	thread->stack = stack;
+	stack->sc_mark = 0xF60690FF;
+	stack->sc_size = THREAD_STACK_SIZE;
+	memcpy(stack+1, _kernel_current_stack_chunk()+1, 28);
+
+	thread->thread_function = func;
+	thread->data = param;
+
+	int irq = ensure_irqs_off();
+	_kernel_oserror *e = _swix(RT_Register,_INR(0,7)|_OUT(0),0,thread_wrapper,thread,our_private_word,&thread->wakeup, ((int) stack) + 560, ((int) stack) + THREAD_STACK_SIZE, "VCHIQ:128",&thread->rt_handle); /* Normal priority */
+	if(e)
+	{
+		restore_irqs(irq);
+		free(stack);
+		free(thread);
+		return 0;
+	}
+	restore_irqs(irq);
+	return thread;
+}
+
+void wake_up_process(struct task_struct *t)
+{
+	t->wakeup = 1;
+}
+
+/* Mutexes */
+
+void mutex_init(struct mutex *m)
+{
+	m->pollword = 1;
+}
+
+int mutex_lock_interruptible(struct mutex *m)
+{
+	/* Just use regular lock function? */
+	return mutex_lock(m);
+}
+
+int mutex_lock(struct mutex *m)
+{
+	uint32_t rt_handle = _swi(RT_ReadInfo,_IN(0)|_RETURN(0),RTReadInfo_Handle);
+	int irqs = ensure_irqs_off();
+	while(!m->pollword && (m->rt_handle != rt_handle))
+	{
+		if(_swix(RT_Yield,_IN(1),&m->pollword))
+		{
+			restore_irqs(irqs);
+			return -1;
+		}
+	}
+	m->pollword = 0;
+	m->rt_handle = rt_handle;
+	restore_irqs(irqs);
+	return 0;
+}
+
+void mutex_unlock(struct mutex *m)
+{
+	m->pollword = 1;
+	/* Wake up any waiting threads */
+	_swix(RT_Yield,_IN(1),&dummy_pollword_1);
+}
+
+/* Semaphores */
+
+void sema_init(struct semaphore *s,int i)
+{
+	s->pollword = i;
+}
+
+int down_interruptible(struct semaphore *s)
+{
+	int irqs = ensure_irqs_off();
+	while(!s->pollword)
+	{
+		restore_irqs(irqs);
+		/* Yield with IRQs enabled, since it could be an IRQ routine that triggers the event (and RTSupport doesn't drop to an IRQ-enabled thread if all other threads are blocked?) */
+		if(_swix(RT_Yield,_IN(1),&s->pollword))
+			return -1;
+		ensure_irqs_off();
+	}
+	s->pollword--;
+	restore_irqs(irqs);
+	return 0;
+}
+
+int down_trylock(struct semaphore *s)
+{
+	int irqs = ensure_irqs_off();
+	int ret;
+	if(s->pollword)
+	{
+		s->pollword--;
+		ret = 0;
+	}
+	else
+		ret = -1;
+	restore_irqs(irqs);
+	return ret;
+}
+
+void up(struct semaphore *s)
+{
+	int irqs = ensure_irqs_off();
+	if(!(s->pollword++))
+	{
+		_swix(RT_Yield,_IN(1),&dummy_pollword_1);
+	}
+	restore_irqs(irqs);
+}
+
+/* Page list handling */
+
+VCHIQ_STATUS_T vchiq_prepare_bulk_data(VCHIQ_BULK_T *bulk, VCHI_MEM_HANDLE_T memhandle, void *offset, int size, int dir)
+{
+	/* For the moment, assume that all bulk data is located in an area of physically contiguous uncached memory */
+	uint32_t pageblock[3];
+	pageblock[0] = ~0;
+	pageblock[1] = (uint32_t) offset;
+	pageblock[2] = ~0;
+	if(_swix(OS_Memory,_INR(0,2),0+(1<<9)+(1<<13),pageblock,1))
+		return VCHIQ_ERROR;
+
+	PAGELIST_T *pagelist;
+	uint32_t phy_pagelist;
+	if(_swix(PCI_RAMAlloc,_INR(0,2)|_OUTR(0,1),sizeof(PAGELIST_T),0,0,&pagelist,&phy_pagelist))
+		return VCHIQ_ERROR;
+
+	pagelist->length = size;
+	pagelist->type = (dir == VCHIQ_BULK_RECEIVE?PAGELIST_READ:PAGELIST_WRITE);
+	pagelist->offset = ((uint32_t) offset) & 0xfff;
+	pagelist->addrs[0] = pageblock[2] + vchiq_dev->arm_to_vc_offset;
+	/* Low 12 bits of page address indicates how many pages are at consecutive addresses */
+	uint32_t firstpage = ((uint32_t)offset)>>12;
+	uint32_t lastpage = (((uint32_t)offset)+size-1)>>12;
+	pagelist->addrs[0] += lastpage-firstpage;
+
+	bulk->handle = memhandle;
+	bulk->data = (void *) (phy_pagelist + vchiq_dev->arm_to_vc_offset);
+	/* Store pagelist address in remote_data, so we can free it later */
+	bulk->remote_data = pagelist;
+
+	return VCHIQ_SUCCESS;
+}
+
+void vchiq_complete_bulk(VCHIQ_BULK_T *bulk)
+{
+	_swix(PCI_RAMFree,_IN(0),bulk->remote_data);
+}
+
+/* Misc */
+
+void vchiq_transfer_bulk(VCHIQ_BULK_T *bulk)
+{
+	(void) bulk;
+	/* Shouldn't be called by ARM */
+}
+
+void vchiq_platform_paused(VCHIQ_STATE_T *state)
+{
+	(void) state;
+	/* Suspend/resume not supported */
+}
+
+void vchiq_platform_resumed(VCHIQ_STATE_T *state)
+{
+	(void) state;
+	/* Suspend/resume not supported */
+}
+
+VCHIQ_STATUS_T vchiq_copy_from_user(void *dst, const void *src, int size)
+{
+	memcpy(dst, src, size);
+	return VCHIQ_SUCCESS;
+}
+
+void vchiq_dump(void *dump_context, const char *str, int len)
+{
+	(void) dump_context;
+	(void) str;
+	(void) len;
+}
+
+void vchiq_dump_platform_state(void *dump_context)
+{
+	(void) dump_context;
+}
+
+void vchiq_dump_platform_instances(void *dump_context)
+{
+	(void) dump_context;
+}
+
+void vchiq_dump_platform_service_state(void *dump_context, VCHIQ_SERVICE_T *service)
+{
+	(void) dump_context;
+	(void) service;
+}
+
+void vchiq_on_remote_use(VCHIQ_STATE_T *state)
+{
+	(void) state;
+	/* Not sure if we need to do anything here */
+}
+
+void vchiq_on_remote_release(VCHIQ_STATE_T *state)
+{
+	(void) state;
+	/* Not sure if we need to do anything here */
+}
+
+void vchiq_on_remote_use_active(VCHIQ_STATE_T *state)
+{
+	(void) state;
+}
+
+VCHIQ_STATUS_T vchiq_use_service(VCHIQ_SERVICE_HANDLE_T handle)
+{
+	(void) handle;
+	/* Not sure if we need to do anything here */
+	return VCHIQ_SUCCESS;
+}
+
+VCHIQ_STATUS_T vchiq_release_service(VCHIQ_SERVICE_HANDLE_T handle)
+{
+	(void) handle;
+	/* Not sure if we need to do anything here */
+	return VCHIQ_SUCCESS;
+}
+
+VCHIQ_STATUS_T vchiq_release_service_internal(VCHIQ_SERVICE_T *service)
+{
+	(void) service;
+	/* Not sure if we need to do anything here */
+	return VCHIQ_SUCCESS;
+}
+
+VCHIQ_STATUS_T vchiq_check_service(VCHIQ_SERVICE_T *service)
+{
+	(void) service;
+	return VCHIQ_SUCCESS;
+}
+
+VCHIQ_STATUS_T vchiq_platform_init_state(VCHIQ_STATE_T *state)
+{
+	(void) state;
+	return VCHIQ_SUCCESS;
+}
+
+void vchiq_platform_conn_state_changed(VCHIQ_STATE_T *state, VCHIQ_CONNSTATE_T oldstate, VCHIQ_CONNSTATE_T newstate)
+{
+	(void) state;
+	(void) oldstate;
+	(void) newstate;
+}
+
+VCHIQ_STATUS_T vchiq_use_service_internal(VCHIQ_SERVICE_T *service)
+{
+	(void) service;
+	/* Not sure if we need to do anything here */
+	return VCHIQ_SUCCESS;
+}
+
+void vchiq_platform_check_suspend(VCHIQ_STATE_T *state)
+{
+	(void) state;
+	/* Not sure if we need to do anything here */
+}
+
+VCHIQ_STATUS_T vchiq_platform_resume(VCHIQ_STATE_T *state)
+{
+	(void) state;
+	return VCHIQ_SUCCESS;
+}
+
+void vchiq_platform_handle_timeout(VCHIQ_STATE_T *state)
+{
+	(void)state;
+}
+
+void msleep(uint32_t ms)
+{
+	uint32_t csecs = (ms+9)/10;
+	_swix(RT_TimedYield,_INR(1,2),&dummy_pollword_0,csecs+_swi(OS_ReadMonotonicTime,_RETURN(0)));
+}
+
+void udelay(uint32_t us)
+{
+	/* Only used for short delays, just call HAL */
+	_swix(OS_Hardware,_IN(0)|_INR(8,9),us,OSHW_CallHAL,EntryNo_HAL_CounterDelay);
+}
+@
+
+
+1.2
+log
+@Update to latest version of VCHIQ sources
+Detail:
+  This updates our VCHIQ sources to rev 95009dbb77 of the official sources from the Raspberry Pi Linux github repo.
+  From our perspective, the important changes are:
+  * Provides compatbility with the latest firmware
+  * Not compatible with older firmware (older than around Nov 2012?), including the firmware we've typically been using until now
+  * Clients of the module now need to specify the version number of the service they're communicating with
+  * Source is dual BSD/GPL licenced, with us opting to use the BSD license in order to allow the module to be included in ROM instead of as a softload on disc
+  * Ability to build softload version has been removed from the makefile, as it's now a redundant option
+  File changes:
+  - !MkRom - enable throwback
+  - Makefile - Update for building latest sources. Remove special softload rules. Enable ability to build ROM version.
+  - c/vchiq_riscos, s/asm - Update RISC OS compatbility layer to directly emulate the corresponding Linux calls now that the VCOS abstraction layer has been removed from the VCHIQ sources
+  - h/VCHIQ, h/VCHIQWrap, hdr/VCHIQ - Add the service version number entries to the vchiq_service_t/SERVICE_CREATION_T structs
+  - vc04_services/* - Updated to latest official sources, with relevant changes to allow compilation for RISC OS
+Admin:
+  Tested on Raspberry Pi
+  Updated GPU firmware will likely be required!
+
+
+Version 0.05. Tagged as 'VCHIQ-0_05'
+@
+text
+@d101 1
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@d30 1
+d37 1
+d51 2
+a52 5
+void vcos_log_register(const char *name, VCOS_LOG_CAT_T *category)
+{
+	(void) name;
+	(void) category;
+}
+d54 1
+a54 1
+void vcos_log_impl(const VCOS_LOG_CAT_T *cat, VCOS_LOG_LEVEL_T _level, const char *fmt, ...)
+a55 2
+	(void) cat;
+	(void) _level;
+d58 2
+a59 2
+	dvprintf(((cat?cat->name:""),fmt,args));
+	dprintf(((cat?cat->name:""),"\n"));
+d62 1
+a62 1
+void vcos_log_dump_mem_impl(const VCOS_LOG_CAT_T *cat, const char *label, uint32_t addr, const void *voidMem, size_t numBytes)
+d64 3
+a66 11
+	(void) cat;
+	(void) label;
+	(void) addr;
+	(void) voidMem;
+	(void) numBytes;
+	/* TODO */
+}
+
+void vcos_abort(void)
+{
+	dprintf(("","vcos_abort!!\n"));
+d68 1
+d72 2
+a73 1
+/* Same code as DWCDriver */
+d77 1
+a77 1
+static void thread_wrapper(VCOS_THREAD_T *t)
+d88 1
+a88 1
+VCOS_STATUS_T vcos_thread_create(VCOS_THREAD_T *thread, const char *name, VCOS_THREAD_ATTR_T *attrs, VCOS_THREAD_ENTRY_FN_T entry, void *arg)
+a89 1
+	(void) attrs;
+d92 6
+a97 1
+	memset(thread,0,sizeof(VCOS_THREAD_T));
+d101 1
+a101 1
+		return VCOS_ENOMEM;
+d110 2
+a111 2
+	thread->thread_function = entry;
+	thread->data = arg;
+d114 1
+a114 1
+	_kernel_oserror *e = _swix(RT_Register,_INR(0,7)|_OUT(0),0,thread_wrapper,thread,our_private_word,&dummy_pollword_1, ((int) stack) + 560, ((int) stack) + THREAD_STACK_SIZE, "VCHIQ:128",&thread->rt_handle); /* Normal priority */
+d119 2
+a120 1
+		return VCOS_EINVAL;
+d123 1
+a123 1
+	return VCOS_SUCCESS;
+d126 1
+a126 1
+void vcos_thread_attr_init(VCOS_THREAD_ATTR_T *attrs)
+d128 1
+a128 13
+	(void) attrs;
+}
+
+void vcos_thread_attr_setstacksize(VCOS_THREAD_ATTR_T *attrs, VCOS_UNSIGNED stacksz) {
+	(void) attrs;
+	(void) stacksz;
+	/* TODO? */
+}
+
+void vcos_thread_attr_setpriority(VCOS_THREAD_ATTR_T *attrs, VCOS_UNSIGNED pri) {
+	(void) attrs;
+	(void) pri;
+	/* TODO? */
+d133 1
+a133 3
+/* Same code as DWCDriver */
+
+VCOS_STATUS_T vcos_mutex_create(VCOS_MUTEX_T *m, const char *name)
+a134 1
+	(void) name;
+a135 1
+	return VCOS_SUCCESS;
+d138 1
+a138 1
+void vcos_mutex_delete(VCOS_MUTEX_T *m)
+d140 2
+a141 9
+	/* Ensure current holder is done with it
+	   Although this won't guarantee that the mutex is free if multiple threads are waiting */
+	uint32_t rt_handle = _swi(RT_ReadInfo,_IN(0)|_RETURN(0),RTReadInfo_Handle);
+	int irqs = ensure_irqs_off();
+	if(!m->pollword && (m->rt_handle != rt_handle))
+	{
+		_swix(RT_Yield,_IN(1),&m->pollword);
+	}
+	restore_irqs(irqs);
+d144 1
+a144 1
+VCOS_STATUS_T vcos_mutex_lock(VCOS_MUTEX_T *m)
+d153 1
+a153 1
+			return VCOS_EAGAIN;
+d159 1
+a159 1
+	return VCOS_SUCCESS;
+d162 1
+a162 1
+void vcos_mutex_unlock(VCOS_MUTEX_T *m)
+d169 3
+a171 1
+int vcos_mutex_is_locked(VCOS_MUTEX_T *m)
+d173 1
+a173 1
+	return 1-m->pollword;
+d176 1
+a176 1
+VCOS_STATUS_T vcos_mutex_trylock(VCOS_MUTEX_T *m)
+a177 1
+	uint32_t rt_handle = _swi(RT_ReadInfo,_IN(0)|_RETURN(0),RTReadInfo_Handle);
+d179 1
+a179 1
+	if(!m->pollword && (m->rt_handle != rt_handle))
+d182 4
+a185 1
+		return VCOS_EAGAIN;
+d187 1
+a187 2
+	m->pollword = 0;
+	m->rt_handle = rt_handle;
+d189 1
+a189 12
+	return VCOS_SUCCESS;
+}
+
+/* Events */
+
+/* These are essentially semaphores */
+
+VCOS_STATUS_T vcos_event_create(VCOS_EVENT_T *event, const char *name)
+{
+	(void) name;
+	event->pollword = 0;
+	return VCOS_SUCCESS;
+d192 1
+a192 1
+void vcos_event_signal(VCOS_EVENT_T *event)
+d195 2
+a196 1
+	if(!event->pollword)
+d198 2
+a199 2
+		event->pollword = 1;
+		_swix(RT_Yield,_IN(1),&dummy_pollword_1);
+d201 2
+d204 1
+d207 1
+a207 1
+VCOS_STATUS_T vcos_event_wait(VCOS_EVENT_T *event)
+d210 1
+a210 1
+	while(!event->pollword)
+d212 1
+a212 5
+		restore_irqs(irqs);
+		/* Yield with IRQs enabled, since it could be an IRQ routine that triggers the event (and RTSupport doesn't drop to an IRQ-enabled thread if all other threads are blocked?) */
+		if(_swix(RT_Yield,_IN(1),&event->pollword))
+			return VCOS_EINTR;
+		ensure_irqs_off();
+a213 10
+	event->pollword = 0;
+	restore_irqs(irqs);
+	return VCOS_SUCCESS;
+}
+
+VCOS_STATUS_T vcos_event_try(VCOS_EVENT_T *event)
+{
+	int irqs = ensure_irqs_off();
+	VCOS_STATUS_T ret = (event->pollword?VCOS_SUCCESS:VCOS_EAGAIN);
+	event->pollword = 0;
+a214 6
+	return ret;
+}
+
+void vcos_event_delete(VCOS_EVENT_T *event)
+{
+	(void) event;
+a281 18
+int vcos_snprintf(char *buf, size_t buflen, const char *fmt, ...)
+{
+	va_list args;
+	va_start(args,fmt);
+	return vsnprintf(buf,buflen,fmt,args);
+}
+
+void *vcos_malloc(VCOS_UNSIGNED size, const char *description)
+{
+	(void) description;
+	return malloc(size);
+}
+
+void vcos_free(void *ptr)
+{
+	free(ptr);
+}
+
+d305 1
+a305 1
+VCHIQ_STATUS_T vchiq_on_remote_use(VCHIQ_STATE_T *state)
+a308 1
+	return VCHIQ_SUCCESS;
+d311 1
+a311 1
+VCHIQ_STATUS_T vchiq_on_remote_release(VCHIQ_STATE_T *state)
+a314 1
+	return VCHIQ_SUCCESS;
+d362 20
+a381 1
+void *vcos_calloc(VCOS_UNSIGNED num, VCOS_UNSIGNED size, const char *description)
+d383 1
+a383 2
+	(void) description;
+	return calloc(num,size);
+d386 1
+a386 1
+void vcos_sleep(uint32_t ms)
+d391 6
+@
+

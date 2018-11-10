@@ -1,0 +1,1407 @@
+head	1.11;
+access;
+symbols
+	Browse-2_16:1.11
+	Browse-2_15:1.11
+	Browse-2_14:1.11
+	Browse-2_13:1.11
+	Browse-2_12:1.11
+	Browse-2_11:1.11
+	Browse-2_10:1.11
+	Browse-2_09:1.11
+	ahodgkin_208_i4_2:1.11
+	ahodgkin_208_i4:1.9
+	ahodgkin_208_i3:1.9
+	ahodgkin_208_i2:1.9
+	ahodgkin_208_i1:1.9
+	ahodgkin_207release:1.8
+	ahodgkin_206release:1.7
+	ahodgkin_205release:1.6
+	ahodgkin_204release:1.6
+	ahodgkin_202release:1.4
+	ahodgkin_201release:1.3
+	ahodgkin_200release:1.3
+	ahodgkin_133beta:1.3
+	ahodgkin_132beta:1.3
+	ahodgkin_131beta:1.3
+	ahodgkin_130beta:1.3
+	ahodgkin_129:1.3
+	ahodgkin_128beta:1.3
+	ahodgkin_128alpha:1.3
+	ahodgkin_127beta2:1.3
+	ahodgkin_127beta:1.3
+	ahodgkin_126beta:1.3
+	ahodgkin_AW97patch:1.3
+	ahodgkin_AW97:1.3;
+locks; strict;
+comment	@# @;
+
+
+1.11
+date	2000.11.14.08.45.06;	author ahodgkin;	state Exp;
+branches;
+next	1.10;
+
+1.10
+date	2000.05.31.15.58.32;	author ahodgkin;	state Exp;
+branches;
+next	1.9;
+
+1.9
+date	99.09.02.13.10.19;	author ahodgkin;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	98.09.07.11.46.42;	author ahodgkin;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	98.07.09.10.27.05;	author ahodgkin;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.04.16.08.14.10;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	98.03.26.14.21.03;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	98.03.20.12.12.32;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.09.12.17.19.20;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.08.28.16.07.53;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.08.18.09.23.52;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.11
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    Find.c                                            */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Functions related to the Find dialogue box.       */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 17-Apr-1997 (ADH): Created.                       */
+/*          13-Mar-1998 (ADH): Working code implemented.      */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include <tboxlibs/toolbox.h>
+#include <tboxlibs/window.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "Browser.h"
+#include "Fetch.h"
+#include "Toolbars.h"
+#include "Windows.h"
+
+#include "Find.h"
+
+/* Static function prototypes */
+
+static int  find_from_start_toggled (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+static int  find_ok                 (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+static int  find_cancel             (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+static int  find_string_has_changed (int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle);
+
+/* Local statics */
+
+static ObjectId       id     = NULL_ObjectId;
+
+static int            fs_so  = 0;
+
+static browser_data * over_b = NULL;
+static HStream      * last_t = NULL;
+static int            last_o = 0;
+
+/**************************************************************/
+/* find_to_be_shown()                                         */
+/*                                                            */
+/* Called when the EFindToBeShown event is generated,         */
+/* typically when the Find window is about to be shown.       */
+/* Handles any icon processing commands in the writable.      */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+int find_to_be_shown(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  char text[Limits_FindWrit];
+
+  id = idb->self_id;
+
+  /* Keyboard shortcut stuff - parent and ancestor the same? Then this was from */
+  /* a specific browser window and the ancestor is the underlying one; so find  */
+  /* the browser_data structure and use the selected_frame field to get the     */
+  /* browser window we should be looking at. If parent and ancestor are not the */
+  /* same this was from the toolbar (button or keyboard shortcut) or a menu     */
+  /* entry - the ancestor ID in this case is for the actual frame directly.     */
+
+  if (toolbox_get_client_handle(0, idb->ancestor_id, (void *) &over_b))
+  {
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Message;
+      strcpy(erb.errmess, "Can't find source browser in find_to_be_shown");
+      show_error_ret(&erb);
+
+    #endif
+
+    over_b = NULL;
+  }
+  else if (!is_known_browser(over_b)) over_b = NULL;
+
+  /* Can't do much if we end up with no browser! */
+
+  if (!over_b)
+  {
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Message;
+      strcpy(erb.errmess, "Ended up with a NULL browser pointer in find_to_be_shown");
+      show_error_ret(&erb);
+
+    #endif
+
+    return 0;
+  }
+
+  /* Hmm. Having said the above, a Find dialogue box can only work on visible */
+  /* entities so we should try the selected_frame field anyway!               */
+
+  else /* Was 'if (idb->parent_id == idb->ancestor_id)' */
+  {
+    browser_data * ancestor = utils_ancestor(over_b);
+    if (ancestor->selected_frame) over_b = ancestor->selected_frame;
+  }
+
+  /* Routine dialogue box stuff now */
+
+  ChkError(windows_process_component_text(idb->self_id, FindWrit, text, sizeof(text), 0, 1));
+
+  /* 'Local' event handlers */
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EFindOK,
+                                          find_ok,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EFindCancel,
+                                          find_cancel,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          EFindFromStart,
+                                          find_from_start_toggled,
+                                          NULL));
+
+  ChkError(event_register_toolbox_handler(idb->self_id,
+                                          WritableField_ValueChanged,
+                                          find_string_has_changed,
+                                          NULL));
+
+  /* Animation handler, if required */
+
+  if (
+       controls.dbox_anims &&
+       !gadget_get_type(0, idb->self_id, StatusBarAnimAnim, NULL)
+     )
+     register_null_claimant(Wimp_ENull,
+                            toolbars_animate_slow,
+                            (void *) idb->self_id);
+
+  /* Make sure the last found token / data offset stores are cleared */
+
+  last_t = NULL;
+  last_o = 0;
+
+  /* If From Start was automatically toggled off, turn it */
+  /* back on again.                                       */
+
+  if (fs_so)
+  {
+    optionbutton_set_state(0,
+                           idb->self_id,
+                           FindFromStart,
+                           1);
+  }
+
+  /* Make sure the forwards/backwards radios are up to date */
+
+  find_from_start_toggled(eventcode, event, idb, handle);
+
+  return 1;
+}
+
+/**************************************************************/
+/* find_hidden()                                              */
+/*                                                            */
+/* Called when the EFindHidden event is generated, typically  */
+/* when the Find window is closed.                            */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+int find_hidden(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  /* Remove any 'local' event handlers */
+
+  if (
+       controls.dbox_anims &&
+       !gadget_get_type(0, idb->self_id, StatusBarAnimAnim, NULL)
+     )
+     deregister_null_claimant(Wimp_ENull,
+                              toolbars_animate_slow,
+                              (void *) idb->self_id);
+
+  ChkError(event_deregister_toolbox_handlers_for_object(idb->self_id));
+
+  return 1;
+}
+
+/**************************************************************/
+/* find_close()                                               */
+/*                                                            */
+/* Closes the Find dialogue, assuming its Object ID is stored */
+/* in 'id'.                                                   */
+/**************************************************************/
+
+void find_close(void)
+{
+  if (id != NULL_ObjectId)
+  {
+    over_b = NULL;
+    last_t = NULL;
+    last_o = 0;
+
+    show_error_ret(toolbox_hide_object(0, id));
+
+    id = NULL_ObjectId;
+  }
+}
+
+/**************************************************************/
+/* find_from_start_toggled()                                  */
+/*                                                            */
+/* Called when the EFindFromStart event is generated,         */
+/* typically when the 'From start' option in the Find         */
+/* dialogue box is toggled.                                   */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int find_from_start_toggled(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  int state;
+
+  /* Clear the 'automatically switched off' flag */
+
+  fs_so = 0;
+
+  /* Get the option button state */
+
+  if (!optionbutton_get_state(0,
+                              idb->self_id,
+                              FindFromStart,
+                              &state))
+  {
+    /* If switched on, grey out the 'Forwards' and 'Backwards' radios */
+
+    if (state)
+    {
+      set_gadget_state(idb->self_id, FindForwards,  1);
+      set_gadget_state(idb->self_id, FindBackwards, 1);
+    }
+
+    /* Otherwise, ungrey them */
+
+    else
+    {
+      set_gadget_state(idb->self_id, FindForwards,  0);
+      set_gadget_state(idb->self_id, FindBackwards, 0);
+    }
+  }
+
+  return 1;
+}
+
+/**************************************************************/
+/* find_ok()                                                  */
+/*                                                            */
+/* Called when the EFindOK event is generated, typically from */
+/* the 'OK' button in the Find dialogue box.                  */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int find_ok(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  WimpGetWindowStateBlock   state;
+  reformat_cell           * cell;
+  int                       line;
+
+  HStream                 * found = NULL;
+  int                       offset;
+
+  char                      find[Limits_FindWrit];
+  int                       cs;
+  int                       forwards, from_start;
+
+  /* Get the search string */
+
+  ChkError(writablefield_get_value(0,
+                                   idb->self_id,
+                                   FindWrit,
+                                   find,
+                                   sizeof(find),
+                                   NULL));
+
+  /* Searching from the start? If we can't read the value, */
+  /* default to 'from start' for this, unless we'd turned  */
+  /* that off deliberately.                                */
+
+  if (
+       optionbutton_get_state(0,
+                              idb->self_id,
+                              FindFromStart,
+                              &from_start)
+     )
+     from_start = !fs_so;
+
+  /* If searching from the start, forwards is implicit; */
+  /* otherwise, read the 'Forwards' radio, and default  */
+  /* to 'forwards' if this can't be read.               */
+
+  if (
+       from_start ||
+       radiobutton_get_state(0,
+                             idb->self_id,
+                             FindForwards,
+                             &forwards,
+                             NULL)
+     )
+     forwards = 1;
+
+  /* Case insensitive, unless we can find out otherwise */
+
+  if (
+       optionbutton_get_state(0,
+                              idb->self_id,
+                              FindCaseSensitive,
+                              &cs)
+     )
+     cs = 0;
+
+  /* If we haven't found a token before, try to find */
+  /* one closest to the top left of the window.      */
+
+  if (!last_t)
+  {
+    state.window_handle = over_b->window_handle;
+    ChkError(wimp_get_window_state(&state));
+
+    line = browser_top_line(over_b,
+                            &cell,
+                            &state,
+                            0);
+
+    if (!cell) last_t = NULL;
+    else
+    {
+      int chunk;
+
+      if (line < 0) line = 0;
+
+      if (line > cell->nlines) last_t = NULL;
+      else
+      {
+        chunk = cell->ldata[line].chunks;
+
+        if (chunk < 0)
+        {
+          last_t = NULL;
+          last_o = 0;
+        }
+        else
+        {
+          last_t = cell->cdata[chunk].t;
+          last_o = cell->cdata[chunk].o;
+        }
+      }
+    }
+
+    /* If there's no token, must start at the top - */
+    /* otherwise, it's up to the user.              */
+
+    if (!last_t)
+    {
+      optionbutton_set_state(0,
+                             idb->self_id,
+                             FindFromStart,
+                             1);
+
+      last_t = over_b->stream;
+
+      set_gadget_state(idb->self_id, FindFromStart, 1);
+    }
+    else set_gadget_state(idb->self_id, FindFromStart, 0);
+
+    last_o = 0;
+  }
+
+  /* Try to find the search string */
+
+  if (is_known_browser(over_b) && last_t)
+  {
+    found = fetch_find_text_token(over_b,
+                                  find,
+                                  from_start ? NULL : last_t,
+                                  from_start ? 0    : last_o,
+                                  &offset,
+                                  cs,
+                                  forwards);
+  }
+
+  /* Beep if nothing is found... */
+
+  if (!found) Beep; /* (See Utils.h) */
+
+  /* Otherwise, show the item */
+
+  else
+  {
+    last_t = found;
+    last_o = offset;
+
+    if (
+         !browser_show_token(over_b,
+                             last_t,
+                             last_o,
+                             0)
+       )
+       Beep;
+
+    else
+    {
+      /* If the item is successfully shown, there may be another. */
+      /* In that case, we want to turn off 'From start', if it is */
+      /* turned on, and make sure we're continuing forwards.      */
+
+      if (from_start)
+      {
+        optionbutton_set_state(0,
+                               idb->self_id,
+                               FindFromStart,
+                               0);
+
+        find_from_start_toggled(eventcode, event, idb, handle);
+
+        /* Flag that From Start was switched off automatically */
+
+        fs_so = 1;
+
+        /* Set 'Forwards' */
+
+        radiobutton_set_state(0,
+                              idb->self_id,
+                              FindForwards,
+                              1);
+
+        /* The above button may not exist, so we still need to */
+        /* turn off 'Backwards' explicitly.                    */
+
+        radiobutton_set_state(0,
+                              idb->self_id,
+                              FindBackwards,
+                              0);
+      }
+    }
+  }
+
+  return 1;
+}
+
+/**************************************************************/
+/* find_cancel()                                              */
+/*                                                            */
+/* Called when the EFindCancel event is generated, typically  */
+/* from the 'Cancel' button in the Find dialogue box.         */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int find_cancel(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  find_close();
+
+  return 1;
+}
+
+/**************************************************************/
+/* find_string_has_changed()                                  */
+/*                                                            */
+/* Called when a WritableField_ValueChanged event is raised   */
+/* from the Find dialogue box. Invalidates the record of last */
+/* item found.                                                */
+/*                                                            */
+/* Parameters are as standard for a Toolbox event handler.    */
+/**************************************************************/
+
+static int find_string_has_changed(int eventcode, ToolboxEvent * event, IdBlock * idb, void * handle)
+{
+  last_t = NULL;
+  last_o = 0;
+
+  return 1;
+}
+@
+
+
+1.10
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a41 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.9
+log
+@Long overdue check-in of intermediate browser build, from continued "out
+of hours" work. Forgot to add a few files last time too.
+
+List dialogue box handler complete, and exclusion lists implemented
+within the main browser code. Full documentation in Choices file.
+Save routine knows all about it but is now getting very slow - must
+come up with a better scheme; for now, it puts the hourglass on...
+
+StripExtensions option controls auto stripping of filename extensions.
+
+More sensible ancestor / frame selection for keyboard shortcut items
+and the save dialogues - having selected a frame won't lock you into
+it for F3 and related shortcuts now (input focus in URL writable ->
+get ancestor details, input focus in frame -> get frame details). F4
+works in frames. F5 now generally present for 'view source' with a
+corresponding menu entry in the File menu.
+
+Odd thing in later Res files; there's no action set for Adjust clicks
+on the main ToolAction items in the button bar. Very odd. Nothing
+appears to be set in v2.07 either, yet adjust-click works. Even
+stranger. Anyway, added in the relevant event details (same as for
+Select click in all cases) and this fixes the problem.
+
+Background colours in the TABLE tag ignored the "don't print any
+backgrounds" Print Style setting. Fixed. Meanwhile, the "black
+text with no backgrounds" option wasn't getting this right either;
+fixed this also.
+
+Event logging implemented; HTTP errors and script output via.
+window.print extension. No internal error output yet.
+
+Faith:Never behaviour extended. If ever a server sends something with
+no content type or an unhandleable type, the browser will try and get a
+filetype from the URL. If it gets text or HTML, it'll render the file.
+Else it'll save it. Hacks around IIS 4's lack of a content type field
+in the Marketeye login stuff, and similar other slightly broken sites.
+@
+text
+@d15 13
+a27 11
+/***************************************************/
+/* File   : Find.c                                 */
+/*                                                 */
+/* Purpose: Functions relating to the Find         */
+/*          dialogue box.                          */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 17-Apr-97: Created.                    */
+/*          13-Mar-98: Working code implemented.   */
+/***************************************************/
+d32 2
+a33 1
+#include "swis.h"
+d35 11
+a45 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a46 4
+#include "toolbox.h"
+#include "window.h"
+
+#include "svcprint.h"
+d76 9
+a84 11
+/*************************************************/
+/* find_to_be_shown()                            */
+/*                                               */
+/* Called when the EFindToBeShown event is       */
+/* generated, typically when the Find window is  */
+/* about to be shown. Handles any icon           */
+/* processing commands in the writable.          */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d196 8
+a203 10
+/*************************************************/
+/* find_hidden()                                 */
+/*                                               */
+/* Called when the EFindHidden event is          */
+/* generated, typically when the Find window     */
+/* is closed.                                    */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d222 6
+a227 6
+/*************************************************/
+/* find_close()                                  */
+/*                                               */
+/* Closes the Find dialogue, assuming its Object */
+/* ID is stored in 'id'.                         */
+/*************************************************/
+d243 9
+a251 10
+/*************************************************/
+/* find_from_start_toggled()                     */
+/*                                               */
+/* Called when the EFindFromStart event is       */
+/* generated, typically when the 'From start'    */
+/* option in the Find dialogue box is toggled.   */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d288 8
+a295 10
+/*************************************************/
+/* find_ok()                                     */
+/*                                               */
+/* Called when the EFindOK event is generated,   */
+/* typically from the 'OK' button in the Find    */
+/* dialogue box.                                 */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d484 8
+a491 10
+/*************************************************/
+/* find_cancel()                                 */
+/*                                               */
+/* Called when the EFindCancel event is          */
+/* generated, typically from the 'Cancel' button */
+/* in the Find dialogue box.                     */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+d500 9
+a508 10
+/*************************************************/
+/* find_string_has_changed()                     */
+/*                                               */
+/* Called when a WritableField_ValueChanged      */
+/* event is raised from the Find dialogue box.   */
+/* Invalidates the record of last item found.    */
+/*                                               */
+/* Parameters are as standard for a Toolbox      */
+/* event handler.                                */
+/*************************************************/
+@
+
+
+1.8
+log
+@Everyone else seems to be checking lots of stuff in lately, so I've
+decided to join in. This is an intermediate check-in and so not all
+resources etc. will be up to date. You should be able to make Phoenix
+and a debug build out of it. As a reminder, to make a JavaScript build:
+
+ * Build JSLib and NSPRLib. Recommend you leave -DUSEMEMLIB in there (as
+   used by default) so you can watch it leak into a dynamic area... :-)
+   If you do this, you'll need to build MemLib too, of course. If you
+   do NOT use MemLib, *undefine JS_USING_MEMLIB in Main.c*!
+ * Run !MkClean. This now strips dynamic dependencies from the MakeFile
+   automatically, to save you having to do it yourself.
+ * Run one of the TaskObey files with the "J" suffix, e.g. !DeskBrwsJ -
+   this uses the same .o directory for object files and exports to the
+   same position in the Targets directory as the non-JavaScript build,
+   but it does produce a unique binary in 'abs' and symbols table in
+   'syms'.
+ * Sourcing an appropriate !Run (with increased WimpSlot value), !Boot
+   and About resource is done automatically.
+ * Some, but not all of the !xxxD (debug) TaskObey files will make
+   JavaScript versions in passing - check the JSUFFIX value on the Make
+   command line parameters in the file.
+
+This'll only work on RISC OS 3.1 due to the use of MemLib.
+
+Here's the change list:
+
+Included MNG icons in sprites files; added Sprites23 for some builds.
+Added in ANT URL file icon (b28) derived from URI file icon, because
+the Save dialogue can need it.
+
+No, you do *not* need to define the same keyboard shortcuts in each
+frame since the ancestor keeps the input focus and we've basically
+dropped non-nested Wimp support. Maintaining no less than 4 lists of
+identical shortcuts was a pain. Some Res files now only have the
+lists in the main browser window and button bar objects (these two
+are both required still).
+
+Ursula build Markers button arrangement changed from 1x3 horizontal to
+2x2 tilted, as in Phoenix, by popular demand.
+
+Couple of hotlist bugs fixed; dragging an item and deleteing it with
+Ctrl+X didn't terminate the drag, and deleteting an item underneath a
+menu opened for it didn't close the menu.
+
+'SendReferer' option added to all Choices files, all set to 'always'.
+Put just beneath 'Clone' as it refers to header items, though really,
+both Clone and SendReferer should probably be in the "Fetch controls"
+section rather than "Multiuser environments and proxying"! Front-end
+control of this is available.
+
+In image_export_original, save_save_source, save_transfer_source and
+save_save_object, flex_set_budge(0) was called to lock the heap but the
+return value wasn't stored. flex_set_budge(1) was then used to unlock
+the heap. All calls now remember and restore the old value, which is
+both safer in case one calls another and allows the flex_set_budge
+call in Main.c to have an application-wide meaning, as intended.
+
+Some restructuring to the data load and RAM transfer sections of
+Protocols.c; remote hotlist builds wouldn't allow files to be loaded
+to browser windows before, and can now drop URL, URI or text files to
+the Open URL dialogue.
+
+New option "MinimumFontSize", lets the 'size' attribute of the 'font'
+element be overridden. Default value is 1, to allow the full range of
+values for the attribute. Setting to 7, for example, would give font
+size 7 text at all times. Another new option, "ToggleOnXOnly", to
+make Toggle Size only extend the window vertically (with Ctrl then
+being used to toggle to genuine full size, rather than vice versa).
+All Choices files updated to hold both of these options; only the
+first has front-end control available (see debug build Res file).
+
+JavaScript Document object exists; frames array etc. working. Can now
+just about use "http://www.acorn.com/~ahodgkin/jschain/" but it does
+abort after a bit - problems with frames again, I suspect. Is is pretty
+slow, too. Can now press Escape to terminate a script.
+
+Main.c erroneously referred to Controls file entry "StopWebServe" as
+"StopWebProxy". Fixed.
+
+Keyboard shortcuts to raise SaveFile are now possible in a general sense;
+the code before was in the ToBeShown handler and just checked for a parent
+component of -1. It then assumed "save frame HTML source". Now there's the
+savefile_raise_from_shortcut function, which together with the seven new
+event codes in SaveFile.h allows saving of HTML source and frame location,
+export of links, images, backgrounds and the page as text or draw, to all
+be invoked by keyboard shortcuts. Some Res files have some of these defined.
+
+In reformat_check_height, the first check to see if setpara should be set
+references a field in tpLast without checking if it is NULL. Whilst the
+'line > 0' check should mean that tpLast wasn't NULL anyway, a direct
+call to the function from outside of the reformatter might have tripped
+up on this - the check for tpLast != NULL is now made.
+
+Adjust-click on close icon in window showing file: URL attempts to open
+the parent Filer window.
+
+Reformatter used to try and find a selectable token if keyboard control
+was enabled in a really stupid place - could make reformatting become
+very slow if no selectables were present, especially if the page had a
+few tables on it. Preprocessor now does this (since it goes through all
+of the tokens anyway), the reformatter just doing a last check to ensure
+no frames have obscured the selectable and if so, it tries to move it.
+Done in the reformatter as generating a line array implies the data really
+is visible.
+
+Ctrl+Tab URL completion now builds a full list of matches from the hotlist
+and history and can cycle through them (Ctrl+Shift+Tab stepping backwards).
+
+Will give a real error rather than just "Data Abort" if it goes wrong
+now. Someone somewhere is setting bit 30 of the error which confused
+the replacement signal handler. Flag bits are now masked off (as they
+should've been to start with).
+@
+text
+@d83 1
+a83 2
+  char     text[Limits_FindWrit];
+  ObjectId from;
+d87 46
+a132 2
+  if (idb->parent_id != NULL_ObjectId) from = idb->parent_id;
+  else                                 from = idb->ancestor_id;
+a166 32
+
+  /* Try to find the browser we were opened over */
+
+  if (toolbox_get_client_handle(0, from, (void *) &over_b))
+  {
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Message;
+      strcpy(erb.errmess, "Can't find source browser in find_to_be_shown");
+      show_error_ret(&erb);
+
+    #endif
+
+    over_b = last_browser;
+  }
+
+  if (!is_known_browser(over_b)) over_b = last_browser;
+
+  /* Can't do much if we end up with no browser! */
+
+  if (!over_b)
+  {
+    #ifdef TRACE
+
+      erb.errnum = Utils_Error_Custom_Message;
+      strcpy(erb.errmess, "Ended up with a NULL browser pointer in find_to_be_shown");
+      show_error_ret(&erb);
+
+    #endif
+
+    return 0;
+  }
+@
+
+
+1.7
+log
+@Check-in of Browse v2.06; using very small log file to try and avoid
+CVS crashing. Some of the Resources may well be out of date due to CVS
+locks being in place after earlier server-end core dumps, which I can't
+remove myself.
+
+I'll try and check one file in at the end with the full change log so
+people know what's happened (it's reached about 16K...) - I'll make
+that the TaskObey file '!All' in the top level directory. So for the
+full log, look for the changes on this file.
+@
+text
+@d83 2
+a84 1
+  char text[Limits_FindWrit];
+d88 3
+d127 1
+a127 1
+  if (toolbox_get_client_handle(0, idb->ancestor_id, (void *) &over_b))
+d132 1
+a132 1
+      strcpy(erb.errmess, "Can't find ancestor browser in find_to_be_shown");
+@
+
+
+1.6
+log
+@All !Run[D], Choices, Messages, Controls and Res files are up to date.
+
+RefoKeep and RefoHold options added to, respectively, try and maintain
+the line at the top of the visible area when reformatting, and not shrink
+the vertical extent at the start of a reformat to try and avoid flicker
+to the top of the page and back down again when RefoKeep is on. Choices
+front-end implemented, which also allows RefoWait and RefoTime to be set.
+Unfortunately for various reasons this doesn't help the page jumping when
+unsized images come in (but RefoHold can improve matters...) - roll on
+the image history.
+
+DragToScroll and NoScrollBars options added for frames; included new
+pointer type, Mouse_Shape_DTS, so relevant Controls file entries done
+and Sprites[22] files updated as required. Noticed some builds have
+a low-res ptr_link with a mask - mask removed.
+
+Named anchor following fixed up somewhat - anchors near the bottom of
+the page shouldn't be displayed, and then pulled down when the fetcher
+releases null polls and ensures the y extent is correct (this through
+implementing the min_height field in the browser_data structure).
+
+RefoHang was never implemented and there seems little point to it now,
+so the entry for it has been removed from the global choices structure
+and all Choices files.
+
+Markers menus should work properly now (in last check-in they would not
+update correctly if Adjust was used on the entries).
+
+URI handler usage now a lot more sensible, with configuration of how the
+browser uses the module from both a Utils menu submenu (sic) and the
+Choices dialogue.
+
+Slightly dodgy 'hang around waiting for user input' stuff for the Cookies
+dialogue box: All fetches are suspended; the fetcher remembers some info
+about its state at the time the cookie came in, and restores it later; it
+will only do this for one fetch at a time. It's necessary to single-thread
+the fetcher at this point anyway, since other fetches may have a
+dependency on the cookie that is hanging in mid-air at that point. As part
+of this, some of the fetcher code has been split out into separate
+functions (to try and 'black box' the code a bit). Anyway, Cookie Query
+dialogue box now implemented with appropriate Choices file entry and
+UI work in the Choices dialogue box.
+
+Phoenix build Choices rearranged. Can now choose when the image history
+is saved from the front end. Added also MSIE 4-style table option menu
+for JPEG support (OS only, OS if it can handle it, internal only).
+
+Should be a bit faster at loading the history - though 95% of the time
+is spent in SWI URL_ParseURL. URL descriptions are stored more
+efficiently as part of this - one malloc block instead of several
+small blocks. The minimum block size for malloc blocks typically leads
+to a significantly smaller startup wimpslot depending on the visit
+history size.
+
+Nasty bug in image system fixed. If an image size came in and a reformat
+was to take place, the line the image lies in is found and the reformat
+progresses from there. Unforunately, this didn't check to see if the
+token can't be found in the line list, so it'd reformat from the top
+of the page...! This would happen if, for example, an image halfway down
+the page came in whilst a reformat for an image higher up had just begun.
+
+In Choices.c, made choices_set_timetype_field, choices_set_uri_field,
+choices_set_plugin_field, choices_set_cookie_field, and
+choices_set_jpeg_field static (so they're not declared in Choices.h now).
+
+Two memory leaks plugged in URL comparison routines in URLutils.c
+(calling free() url_description instead of urlutils_free_descripton()).
+
+Client pull reload handler was setting the reload flag if reloading
+the same page, but forgetting to turn on reload_lock so
+fetchpage_postprocessed was clearing the reload state... Similarly,
+Ctrl+Shift+SELECT-Click on a link when the Controls file 'UseSmall'
+entry is 'no' would not have reloaded as it should. Both fixed.
+
+Frames shouldn't be so keen on acquiring horizontal scroll bars and never
+letting them go when their width is decreased now. Frames set up for
+'scrolling="yes"' will not start with no scroll bars and then gain them
+shortly afterwards, causing flicker and two reformats - they'll start
+with, and continue to hold, both scroll bars.
+
+Pointer shouldn't flicker when over a frame border whilst other fetches
+are progressing now.
+@
+text
+@d220 2
+@
+
+
+1.5
+log
+@This is NOT a 'final' version of anything in particular. I'm checking it
+in as I'm about to start playing around with low level window handling
+(as part of the thing mentioned at the bottom of this log) - this could
+screw things up quite badly if it goes wrong! =8*P
+
+Consequently, I advise you not to check this out over your working sources,
+and preferably not to check this out at all.
+
+Markers system - events defined in MiscEvents.h will make Browse remember
+where it is on the page. This position can be jumped back to later.
+Some builds will have defined keyboard shortcuts Ctrl+Shift+F5 through
+F8 to set a marker, and Ctrl+F5 through F8 to jump to a marker.
+
+The front-end for the above now has gadgets 0x80 upwards on the Toolbar or
+a set of menus (see Menus.h). Noticed an omission in copy_toolaction_info()
+(didn't copy the gadget state) in passing; fixed.
+
+browser_top_line() now works properly, as part of the above, but it'll be
+slower than before. If flagged to only find a complete line, it'll do just
+that, but whereas before this would require any tables that it looked
+inside to be wholly visible, tables can now be partially visible and have
+lines inside that are fully visible. This should help the Find function
+too. There is a new call, browser_top_line_offset, which works as
+browser_top_line but also returns a vertical scroll offset in the found
+line (used for more accurate marker position). browser_bottom_line[_r]
+turn out to never be used, even by the keyboard control routines, so they
+have been removed from Browser.c (rather than spend a lot of time and
+effort fixing them).
+
+browser_show_token erroneously subtracted 1 from a particular coordinate
+when calculating the y scroll position, which could lead to single pixel
+page creep using the markers system. Corrected.
+
+The View Resources button (see Toolbars.h) has been finally implemented,
+insofar as it fetches the resources file to the current browser page (or
+to a new window if Adjust is used, Controls file settings permitting).
+
+menus_toggle_bars did not take account of the toolbar lower window border
+edge correctly. It does now.
+
+The reformatter has a prototype system to keep the vertical page position
+when reformatting. This was coded about 5 minutes ago, and is not likely
+to be reliable...
+@
+text
+@d213 5
+a217 3
+  over_b = NULL;
+  last_t = NULL;
+  last_o = 0;
+d219 2
+a220 1
+  toolbox_hide_object(0, id);
+@
+
+
+1.4
+log
+@Programming warehouse link removed from all hotlists - the page has gone.
+
+Some compile-time hacks in place to use MemLib, a dynamic area based
+malloc replacement which shrinks its heap when possible. All builds
+have these switched off at the moment. Seemed to work with just Browse,
+though there would be problems with message blocks stored in dynamic
+areas because of the Wimp's '&3800000' check - however, it failed when
+HTMLLib was made to use it, too. Don't know why yet.
+
+ItemInfo.[c/h] source added, with Res file additions for testbed Browse
+and Phoenix.
+
+Small fetch windows now work properly regardless of toolbar settings
+in the Choices.
+
+Reload now reloads all images too, rather than only reloading them for
+as long as the main page was being fetched.
+
+Added a simple 'Find' facility.
+
+Realised that event handlers in eventlib are called in reverse order
+of registration, so the miscellaneous event handler is now registered
+first rather than last.
+
+Multiuser code added (most only active if SINGLE_USER is undefined). As
+part of this, hotlist code now knows about read-only items (done for the
+Customer-style 'Resources' file, but works generally anyway).
+handle_add_hotlist doesn't try to save the hotlist itself anymore (the
+hotlist_add function does all that through hotlist_modified anyway).
+
+Customer build Choices and Controls updated slightly (e.g. ClaimHelp
+off, hotlist to save on quit only).
+
+Customer build now uses Phoenix-style buttons. Sprites files which
+worked at the time (but will probably be out of date now) and included
+most of the original Customer-style sprites are in
+'Utils.Icons.Customer'.
+
+Choices, Messages and Res files for all builds now stripped down to only
+single user items or single plus multiuser for Customer build and testbed
+build. Before, all contained a few multiuser bits in at least the Choices
+file if not more.
+
+Grammatical error ("Fetching frames contents" (sic.)) corrected in
+default message, Toolbars.c, and all of the Messages files.
+
+Customer build brought back to a servicable level (including
+implementation of the Find dialogue box with animation and fixing
+up authorisation and 'Stop' state in the tristate). Quite a few
+missing #ifndef REMOTE_HOTLIST bits from hotlist code added...
+
+Customer build will not use <Choices$Write> or Boot:Choices for any
+file finding now. UseProxy defaults to 'yes', MaxImages to 2. Res
+file includes Proxy Address setting (save_save_choices() now writes
+the ProxyAddress line).
+@
+text
+@d348 1
+a348 1
+    if (!cell) last_t = 0;
+d355 1
+a355 1
+      if (line > cell->nlines) last_t = 0;
+d360 10
+a369 2
+        if (chunk < 0) last_t = 0;
+        else           last_t = cell->cdata[chunk].t;
+d419 2
+a420 1
+                             last_o)
+@
+
+
+1.3
+log
+@As warned in the last log, pretty much all event codes and component IDs
+have now changed along with many of the names, to provide a consistent
+name and numberspace for events and components. This also minimises
+number clashes (e.g. as was, the Save File origin when opened from a
+Hotlist menu with an already-used component ID). To get full details on
+this, please carefully read through TBEvents.h.
+
+Res files, Sprites files and Messages files have been updated again both
+due to the above, and routine additions (e.g. message support for a few
+Hotlist bits and pieces). !Run[D] files updated for FTP 0.11 and
+HTTP 0.36.
+
+In the Makefile, the Customer objects list was missing Save - must have
+moved something when I should've copied it, when adding in SaveFile or
+SaveObject in all probability. Now fixed. Couple of other bits and bobs
+fixed in the build environment (e.g. stuff saying !Argo instead of
+!Customer). Oh, and I've altered the MakeFile copy options again to the
+best compromise I can come up with. Newer is turned on for everything
+except !Run[D] and !RunImage, since both of those change between debug
+builds - otherwise if you'd built debug and non-debug versions, it was
+not possible to switch between them - one version would have the newer
+timestamp and thus never get overwritten.
+
+The default hotlist has had a few items added - that'll be about the end
+of it, I think; there's more than enough stuff in there now.
+
+Saving of the hotlist from the document menu and of URI files,
+directories and selections from the hotlist menu tree is now implemented
+- this new save system rocks... Oh, and you can save all images and
+backgrounds as sprites.
+
+Saving of items with Shift+Click to other applications directly now
+works, and is robust. Unique Scrap filenames are used, with data load
+bounces (e.g. if some pra - er, person quits the app they're sending
+to) working correctly - that is, give an error, keep the file, rename
+it to something safe, and open the directory it lies in. As opposed
+to normal app-to-app bounces, where the scrap file is deleted (see
+PRM 3-254). This means you can now look at README files in FTP
+sites, say, without using a disc intermediate. Or you can send pictures
+straight to ChangeFSI, fetch HTML links into editors, and so-on, and
+so-on - it's all very funky. Known problems include the ambiguous
+'invalid component ID' instead of 'file open' for *normal* (straight to
+disc) shift+click saves, and I think I'll introduce a unique name
+guarantee of some sort to stop 'file open' in the first place. Odd
+that the really tricky part (app-to-app) should be least likely to
+suffer from this!
+@
+text
+@d24 1
+d43 3
+d50 19
+d85 2
+d88 400
+@
+
+
+1.2
+log
+@Very long log entry alert - but hey, beats 'Bug fixed' (sorry, Richard) ;-)
+
+Open URL implementation more or less complete, though may undergo UI
+revision at a later date to allow named frames to be targetted. Hope to use
+the ideas in this code as the foundation for other general dialogues.
+
+In token stream dump for TRACE builds, table head items were not indented
+as far as they should have been - this is fixed; and manual toolbar redraw
+routines have been removed. They never worked, were commented out, and
+would never be used in that form anyway.
+
+DragBox source added, but it isn't at all complete and won't work - this is
+an 'in spare time' thing. We need custom drag boxes constrained to windows
+for the hotlist, and unconstrained for frame border resizing... Hey ho.
+
+Ancestor window extents match visible areas if there are frames (no more
+scrolling framesets...!). Frame resizing works whilst new documents fetch
+without pulling the extent down now. However, frame horizontal extents
+never shrink until a reload which is nasty, and this is all due for a
+rewrite. Frames border redrawing routine moved out of Redraw.c and into
+Frames.c. Bug regarding the mouse rectangle and frame border widths
+(rectangle was too large, so you could squash the edges) for edge-drag
+frame resizes fixed.
+
+Window width change reformat tolerance fixed; you could creep the window
+width down or up forever without any reformat, and centred objects would
+move but not be redrawn (thereby giving rise to subsequent redraw errors).
+
+Filetype on objects saved through Shift+Click correct. Save Source dialogue
+recognises if that source is plain text, rather than assuming HTML. A
+browser that fetches a file remembers the old store size it had before the
+save, so even though the data is now ditched, it reports the same amount of
+data fetched afterwards (looked awful when this could, for example,
+suddenly say '0' after a file save). Progress indicator is now fully aware
+of one or many file saves inside a frameset and reports the number of
+saves, a colon, and the cumulative saved data count, instead of reporting
+the sum total of fetched data in all frames, including non-file save stuff
+(note that for just 1 save, '1:' is not shown as a special case for the
+most common condition). A bug related to this, where you could in fact only
+do one fetch per frame*set*, has been corrected (only one fetch allowed per
+frame still, this is unlikely to ever change).
+
+Hotlist support added (D.Brown's source), with various bits of integration
+and modification still in progress there. Note additions to the Messages
+files. On the subject of Messages, the whole mucky business about what
+goes in Messages or Choices (and a few bugs where lookup_choice was used
+instead of lookup_token or vice versa) has been sorted out. Messages
+contains, more or less, just that. Choices contains user configurable
+stuff which generally can't mess things up too badly. A new file, Controls,
+is a Messages file holding the non-user configurable choices, which can
+generally make things go badly wrong if misused. A lot of these are tied
+to the Res file. StrongED users can get these to automatically fold out
+the various sections (EMail me for details). Sorry, but at the time of
+writing, Zap doesn't do folding... =8*P
+
+Two bugs with images. Asking for images to be shown in browser B when
+browser A uses the same ones and was loaded first didn't work correctly,
+and now does (a bit weird - browser A does the fetch and browser B does the
+display...). Second one occurred when the background image was also used on
+the page as a foreground image. This has been fixed by flagging background
+images in the image_info structure, and checking this before cross
+referencing. This bit also allowed the image_restart_fetches API to be
+extended, so that just background or foreground images may be fetched if
+they weren't already and the user asked the browser to show them. Before,
+the whole lot had to be fetched together (so turning on 'display
+backgrounds' will now kick off an image fetch if required, you don't
+need to reload the page anymore).
+
+Makefile copy options tweaked to be 'newer' (so if you're testing with some
+temporary Choices file or something, it won't write over it at the end of
+every export), and REMOTE_HOTLIST flag added for Customer builds - means
+the Hotlist.c functions aren't needed; the old, hotlist-by-file method is
+used. Added support for Customer build (see later), though there were very
+few additions needed in practice.
+
+Table printing fixed - in many ways it wasn't broken, it was image printing
+causing the oddities ever since the global image pool was introduced (this
+is, again, fixed). The 'reformat to fit page' option didn't work as coded
+any more; tables store cell addresses in the HStreams, so you can't then do
+a background reformat in a different browser. Hence, it now has to reformat
+to the page width, print, then put the page back again, all in the actual
+displayed browser. This doesn't feel as slow in use as it perhaps should,
+considering what is going on... Note that a line of a defined fraction (see
+Print.h) of page height will now split over page boundaries, so tall images
+or tall tables don't cause problems now (aside from the obvious problem of
+having the line split over a page at all!). There was a bug in the routine
+to print from a given start point until 'n' pages had been filled, in that
+it always filled 'n + 1' - now fixed. Finally, as part of the printing
+tweaks, a new dialogue exists - PrintStyle - with a similarly named source
+file added to deal with it.
+
+Global history auto save / load done, but only to the Choices file path -
+the whole browser is still strictly single user at present, with all the
+extra work for a multiuser Customer environment yet to be done. This has
+shown up a global history corruption problem which I haven't fixed yet.
+
+Rationalising TBEvents.h - things are migrating out of it, and into more
+appropriate sources (e.g. definitions relating to the Open URL dialogue are
+going into OpenURL.h, etc.). Event codes were at one stage deliberately
+diverged in numberspace from the component IDs of typical gadgets raising
+the events, to avoid anyone getting confused and thinking the IDs and event
+codes must match. However, this is in fact unlikely and it is much easier
+to remember the fewer numbers that result from tying the two together where
+possible. This has resulted in changes to event codes raised in the
+following objects of all Res files: Authorise, Find, OpenURL, and
+PrintStyle.
+
+And finally - !Run[D] files for all variants updated to require the latest
+toolbox and fetcher modules. All Res files updated for hotlists etc. and
+sprites files updated appropriately. All Messages, Choices and Controls
+files brought in sync., and an Customer build has been added (based on the
+Desktop build binary with different resources).
+
+That's all for now...
+@
+text
+@d49 1
+a49 1
+/* Called when the EOpenFindWindow event is      */
+@
+
+
+1.1
+log
+@Updated Makefile to work better in folding text editors. More or less rewrote
+Limits.h, and ensured consistent comment styling throughout all sources.
+Fetch.c/h split to Fetch, FetchHTML and URLveneer. URLstat.c/h produced to
+cope with this. OpenURL and Find sources created from bits in the Windows
+source file that shouldn't have been there... These will get filled out
+shortly. Note that a few functions in Fetch are due to be renamed and moved;
+probably to Tokenutils.
+@
+text
+@a39 1
+#include "TBEvents.h"
+@

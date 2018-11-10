@@ -1,0 +1,574 @@
+head	1.4;
+access;
+symbols
+	builder-0_26:1.4
+	builder-0_25:1.3
+	builder-0_24:1.3
+	builder-0_23:1.3
+	builder-0_22:1.3
+	builder-0_21:1.3
+	builder-0_20:1.3
+	builder-0_19:1.3
+	builder-0_18:1.3
+	builder-0_17:1.3
+	builder-0_16:1.3
+	builder-0_15:1.3
+	builder-0_14:1.3
+	builder-0_13:1.3
+	builder-0_12:1.3
+	builder-0_11:1.3
+	builder-0_10:1.2
+	builder-0_09:1.2
+	builder-0_08:1.2
+	builder-0_07:1.2
+	builder-0_06:1.2
+	builder-0_06-1_1_2_2:1.1.2.1
+	Spinner:1.1.0.2;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2014.10.31.19.37.39;	author srevill;	state Exp;
+branches;
+next	1.3;
+commitid	03eFpwTzNuadcoWx;
+
+1.3
+date	99.10.26.10.40.25;	author nbingham;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.09.25.11.44.49;	author rbuckley;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.09.22.12.45.19;	author rbuckley;	state dead;
+branches
+	1.1.2.1;
+next	;
+
+1.1.2.1
+date	97.09.22.12.45.19;	author rbuckley;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Added "Build directory" to the things you can do in the main window's menu.
+
+You can now open the build directory from the main window's "View" submenu,
+which complements the pre-existing functionality.
+
+Also squashed a whole slew of build warnings. This was some shoddy code...
+
+Version 0.26. Tagged as 'builder-0_26'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/************************************************************************/
+/*                  Copyright 1997 Acorn Computers Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Acorn Computers. It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Acorn Computers. All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+
+#include <stdlib.h>
+#include <string.h>
+#include "kernel.h"
+#include "gadgets.h"
+#include "constants.h"
+#include "main.h"
+#include "parse.h"
+#include "file.h"
+#include "build.h"
+#include "msg.h"
+#include "DebugLib/DebugLib.h"
+
+
+/*
+ * populate the stringset
+ */
+_kernel_oserror *
+build_populate(int window, int gadget)
+{
+  _kernel_oserror *err=NULL;
+  char *buffer=NULL;
+  build_list_t *entry;
+  int count = 0;
+
+  /* count strings to malloc a buffer */
+  entry = build_list;
+  while (entry) {
+    count += strlen(entry->name)+1;
+    entry=entry->next;
+  }
+
+  if ((buffer=malloc(count))==NULL) {
+    ERR_GOTO(err,msg_error_construct("mem"));
+  }
+  strcpy(buffer,"");
+
+  entry = build_list;
+  while (entry) {
+    if (strlen(buffer)>0)	/* more than one, add , */
+      strcat(buffer,",");
+    strcat(buffer,entry->name);
+    entry = entry->next;
+  }
+
+  ERR_GOTO(err,stringset_set_available(0,window,gadget,buffer));
+
+  if (build_tree) {
+    if (strstr(buffer,build_tree)!=NULL) {
+      ERR_GOTO(err,stringset_set_selected(0,window,gadget,build_tree));
+    }
+  }
+
+exit_gracefully:
+  if (buffer)
+    free(buffer);
+
+  return (err);
+}
+
+/*
+ * add an entry to the list of build directories
+ */
+_kernel_oserror *
+build_add_entry(char *name)
+{
+  _kernel_oserror *err=NULL;
+  build_list_t *entry;
+
+  dprintf(("", "build_add_entry %s\n",name));
+
+  /*
+   * make sure it exists
+   */
+  if (file_exists(name)!=2) {
+    ERR_RETURN(err,msg_error_construct("chk"));
+  }
+
+  /*
+   * check for duplicates
+   */
+  entry = build_list;
+  while (entry) {
+    if (cstrcmp(entry->name,name)==0) {
+      return (NULL);
+    }
+    entry=entry->next;
+  }
+
+  /*
+   * add entry
+   */
+  if ((entry=malloc(sizeof(build_list_t)))==NULL) {
+    ERR_RETURN(err,msg_error_construct("mem"));
+  }
+
+  entry->name = strdup(name);
+  if (strlen(entry->name)>STRINGSET_LIMIT) {
+    entry->name[STRINGSET_LIMIT] = 0;
+  }
+  entry->next = build_list;
+  build_list = entry;
+
+  return (err);
+}
+
+/*
+ * remove an entry from the list of build directories
+ */
+_kernel_oserror *
+build_remove_entry(char *name)
+{
+  _kernel_oserror *err=NULL;
+  build_list_t *entry,*last=NULL;
+
+  dprintf(("build_remove_entry %s\n",name));
+  entry = build_list;
+  while (entry)
+  {
+    if (cstrcmp(entry->name,name)==0)
+      break;
+
+    last=entry;
+    entry=entry->next;
+  }
+  if (entry)
+  {
+    if (last)
+      last->next = entry->next;
+    else
+      build_list = entry->next;
+
+    if (entry->name)
+      free(entry->name);
+    free(entry);
+  }
+
+  return (err);
+}
+
+/*
+ * free up all blocks
+ */
+_kernel_oserror *
+build_free(void)
+{
+  build_list_t *entry,*last;
+
+  entry = build_list;
+  while (entry)
+  {
+    if (entry->name)
+      free(entry->name);
+    last = entry;
+    entry=entry->next;
+    free(last);
+  }
+
+  return (NULL);
+}
+@
+
+
+1.3
+log
+@Summary
+  * Improvements to Builder's version handling.
+  * Improvements to debugging support.
+Detail
+  * Changed Builder to use DebugLib.
+  * Builder is now capable of using DCotton's new image naming scheme.
+    An extra set of Radio buttons for selecting the naming scheme has
+    been added to the Options window.  The versioning scheme selected is
+    saved in the defaults file.
+Admin
+  * Tested on ONC2UK build using both ImageName and NewImName scripts for
+    versioning.
+  * Assumes that NewImName will be checked into BuildSys/perl/ once
+    completed.
+
+Version 0.11. Tagged as 'builder-0_11'
+@
+text
+@d30 1
+d33 1
+a36 3
+extern build_list_t *build_list;
+extern char *build_tree;
+
+@
+
+
+1.2
+log
+@Folded Spinner sources onto TRUNK.
+
+Version 0.06. Tagged as 'builder-0_06'
+@
+text
+@d33 1
+d39 1
+a39 1
+/* 
+d49 1
+a49 1
+  
+d56 1
+a56 1
+  
+d61 1
+a61 1
+  
+d64 1
+a64 1
+    if (strlen(buffer)>0)	/* more than one, add , */ 
+d71 1
+a71 1
+  
+d77 1
+a77 1
+  
+d81 2
+a82 2
+    
+  return (err);  
+d85 1
+a85 1
+/* 
+d93 4
+a96 4
+  
+  debug db_printf("build_add_entry %s\n",name);
+  
+  /* 
+d102 2
+a103 2
+    
+  /* 
+d113 2
+a114 2
+  
+  /* 
+d120 1
+a120 1
+  
+d127 1
+a127 1
+  
+d131 1
+a131 1
+/* 
+d139 2
+a140 2
+  
+  debug db_printf("build_remove_entry %s\n",name);
+d156 1
+a156 1
+      
+d161 1
+a161 1
+  
+d165 1
+a165 1
+/* 
+d172 1
+a172 1
+  
+d182 1
+a182 1
+  
+@
+
+
+1.1
+log
+@file build was initially added on branch Spinner.
+@
+text
+@d1 183
+@
+
+
+1.1.2.1
+log
+@Major update :
+  Makefile allows application to be installed to a directory specified
+  in !MkInstall.
+  Application maintains multiple build directories.
+  Application supports the -quit command line option.
+  Updated !Help.
+@
+text
+@a0 183
+/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/************************************************************************/
+/*                  Copyright 1997 Acorn Computers Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Acorn Computers. It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Acorn Computers. All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+
+#include <stdlib.h>
+#include <string.h>
+#include "kernel.h"
+#include "gadgets.h"
+#include "constants.h"
+#include "parse.h"
+#include "file.h"
+#include "msg.h"
+
+extern build_list_t *build_list;
+extern char *build_tree;
+
+
+/* 
+ * populate the stringset
+ */
+_kernel_oserror *
+build_populate(int window, int gadget)
+{
+  _kernel_oserror *err=NULL;
+  char *buffer=NULL;
+  build_list_t *entry;
+  int count = 0;
+  
+  /* count strings to malloc a buffer */
+  entry = build_list;
+  while (entry) {
+    count += strlen(entry->name)+1;
+    entry=entry->next;
+  }
+  
+  if ((buffer=malloc(count))==NULL) {
+    ERR_GOTO(err,msg_error_construct("mem"));
+  }
+  strcpy(buffer,"");
+  
+  entry = build_list;
+  while (entry) {
+    if (strlen(buffer)>0)	/* more than one, add , */ 
+      strcat(buffer,",");
+    strcat(buffer,entry->name);
+    entry = entry->next;
+  }
+
+  ERR_GOTO(err,stringset_set_available(0,window,gadget,buffer));
+  
+  if (build_tree) {
+    if (strstr(buffer,build_tree)!=NULL) {
+      ERR_GOTO(err,stringset_set_selected(0,window,gadget,build_tree));
+    }
+  }
+  
+exit_gracefully:
+  if (buffer)
+    free(buffer);
+    
+  return (err);  
+}
+
+/* 
+ * add an entry to the list of build directories
+ */
+_kernel_oserror *
+build_add_entry(char *name)
+{
+  _kernel_oserror *err=NULL;
+  build_list_t *entry;
+  
+  debug db_printf("build_add_entry %s\n",name);
+  
+  /* 
+   * make sure it exists
+   */
+  if (file_exists(name)!=2) {
+    ERR_RETURN(err,msg_error_construct("chk"));
+  }
+    
+  /* 
+   * check for duplicates
+   */
+  entry = build_list;
+  while (entry) {
+    if (cstrcmp(entry->name,name)==0) {
+      return (NULL);
+    }
+    entry=entry->next;
+  }
+  
+  /* 
+   * add entry
+   */
+  if ((entry=malloc(sizeof(build_list_t)))==NULL) {
+    ERR_RETURN(err,msg_error_construct("mem"));
+  }
+  
+  entry->name = strdup(name);
+  if (strlen(entry->name)>STRINGSET_LIMIT) {
+    entry->name[STRINGSET_LIMIT] = 0;
+  }
+  entry->next = build_list;
+  build_list = entry;
+  
+  return (err);
+}
+
+/* 
+ * remove an entry from the list of build directories
+ */
+_kernel_oserror *
+build_remove_entry(char *name)
+{
+  _kernel_oserror *err=NULL;
+  build_list_t *entry,*last=NULL;
+  
+  debug db_printf("build_remove_entry %s\n",name);
+  entry = build_list;
+  while (entry)
+  {
+    if (cstrcmp(entry->name,name)==0)
+      break;
+
+    last=entry;
+    entry=entry->next;
+  }
+  if (entry)
+  {
+    if (last)
+      last->next = entry->next;
+    else
+      build_list = entry->next;
+      
+    if (entry->name)
+      free(entry->name);
+    free(entry);
+  }
+  
+  return (err);
+}
+
+/* 
+ * free up all blocks
+ */
+_kernel_oserror *
+build_free(void)
+{
+  build_list_t *entry,*last;
+  
+  entry = build_list;
+  while (entry)
+  {
+    if (entry->name)
+      free(entry->name);
+    last = entry;
+    entry=entry->next;
+    free(last);
+  }
+  
+  return (NULL);
+}
+@

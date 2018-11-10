@@ -1,0 +1,368 @@
+head	1.4;
+access;
+symbols
+	NetFiler-1_19:1.4
+	NetFiler-1_18:1.3
+	NetFiler-1_17:1.3
+	NetFiler-1_16:1.2
+	NetFiler-1_15:1.2
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2016.09.11.09.50.01;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	7QglAyKtQE4s3Rlz;
+
+1.3
+date	2016.09.11.09.43.11;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	gUipW5QlWRk71Rlz;
+
+1.2
+date	99.12.07.20.36.34;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.12.07.19.04.37;	author blaughto;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.12.07.19.04.37;	author blaughto;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Internationalised
+Add a Messages file, register this with the sprites from C (remove the assembler copy).
+Internationalised the date in the Omni menu, and error strings from former MakeErrors.
+Expanded the list of known machine types and look those up via Messages too.
+
+Version 1.19. Tagged as 'NetFiler-1_19'
+@
+text
+@/* Copyright 1999 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Program:	Net.c - NetFS interface module routines
+ *
+ * Project:	NetFiler Omni project
+ *
+ * Author:	Nick Smith
+ *              ANT Limited
+ *              Cambridge
+ *              Internet: nas@@ant.co.uk
+ *
+ * Date:	9 November 1994
+ * Last Edited:	5 May 1995
+ *
+ * Copyright 1994, 1995 by ANT Limited
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "DebugLib/DebugLib.h"
+
+#include "Desk/LinkList.h"
+#include "Desk/SWI.h"
+
+#include "NetFiler.h"
+#include "Lists.h"
+#include "Net.h"
+
+
+/*  Rescan network for Econet file servers.
+ */
+extern void NetServers(void)
+{
+  char buf[20];
+  char name[20];
+  char token[8], desc[32];
+  int next = 0;
+  int read = 1;
+  Desk_os_error *err = NULL;
+
+  /* Pull down current list of servers */
+  mlist_clean();
+
+  /* Loop on network scan call */
+  while ((next != -1) && (read != 0) && (!err))
+  {
+    int status = 0;
+    int server_id = 0;
+    char *s;
+    const char *machinetype;
+
+    /* Call to get basic server details */
+    /* err = Desk_SWI(2, 0, NetFS_UpdateFSList, 0, 0); */
+    err = Desk_SWI(4, 4, NetFS_EnumerateFSList, next, &buf, 20, 1, &next, NULL, NULL, &read);
+    if ((read < 1) || (err)) continue;
+    strcpy(name, (char *) &buf[3]);
+    s = strchr(name, ' ');
+    if (s) *s = '\0';
+    if (buf[1] < 128) buf[1] += 128;
+    server_id = buf[0] + (buf[1] << 8);
+
+    /* Do call to MachinePeek the server for more information */
+    err = Desk_SWI(8, 1, Econet_DoImmediate, 8, 0, buf[0], buf[1], &buf[4], 8, 40, 5, &status);
+    if (err)
+    {
+      dprintf(("", "NetFiler.NetServer: DoImmediate err '%s'\n", err->errmess));
+      continue;
+    }
+    status = buf[4] + (buf[5] << 8);
+    sprintf(token, "M%04x:", status); /* Trailing ':' ensures unknown types return empty strings */
+    machinetype = intl_lookup(token, NULL);
+    if (strlen(machinetype))
+    {
+      sprintf(desc, "%d.%d\n%s\n%x.%02x", buf[1], buf[0], machinetype, buf[7], buf[6]);
+    }
+    else
+    {
+      sprintf(desc, "%d.%d", buf[1], buf[0]);
+    }
+    MListCreate(name, name, desc, NULL, server_id);
+  }
+
+  /* Call to re-enable NetFS cache (see PRM 2-355) */
+  Desk_SWI(0, 0, NetFS_EnableCache);
+}
+
+
+/*  Register a new Mount record.
+ */
+static mount_rec *MountBuild(char *server, char *mount, char *user, char *pw, int server_id)
+{
+  mount_rec *mr = NULL;
+
+  mr = (mount_rec *) malloc(sizeof(mount_rec));
+  if (!mr) return(NULL);
+  mr->mount_id = (int) mr;
+  mr->server_id = server_id;
+  strcpy(mr->serveraddr, (server) ? server : "");
+  strcpy(mr->mount, mount ? mount : "");
+  strcpy(mr->passwd, pw ? pw : "");
+  strcpy(mr->userid, user ? user: "");
+  Desk_LinkList_AddToTail(&mount_anchor, &(mr->header));
+  return(mr);
+}
+
+
+/*  Rescan for active connections.
+ */
+extern void NetMounts(void)
+{
+  char buf[44];
+  char server[24];
+  char user[24];
+  int next = 0;
+  int read = 1;
+  Desk_os_error *err = NULL;
+  char *s = NULL;
+  int server_id = 0;
+
+  /* Pull down current list of connections */
+  mount_clean();
+
+  /* Loop on connections list call */
+  while ((next != -1) && (read != 0) && (!err))
+  {
+    /* Call to get connection details */
+    err = Desk_SWI(4, 4, NetFS_EnumerateFSContexts, next, &buf, 44, 1, &next, NULL, NULL, &read);
+    if ((read < 1) || (err)) continue;
+    strcpy(server, (char *) &buf[3]);
+    strcpy(user, (char *) &buf[20]);
+    s = strchr(server, ' ');
+    if (s) *s = '\0';
+    s = strchr(user, ' ');
+    if (s) *s = '\0';
+    server_id = buf[0] + (buf[1] << 8);
+    MountBuild(server, server, user, NULL, server_id);
+  }
+}
+
+
+/*  Register a new Printer record.
+ */
+static plist_rec *PrintBuild(char *printer)
+{
+  plist_rec *mr = NULL;
+
+  mr = (plist_rec *) malloc(sizeof(plist_rec));
+  if (!mr) return(NULL);
+  strcpy(mr->printer, (printer) ? printer : "");
+  Desk_LinkList_AddToTail(&plist_anchor, &(mr->header));
+  return(mr);
+}
+
+
+/*  Rescan network for Econet printer servers.
+ */
+extern void NetPrinters(void)
+{
+  char buf[512];
+  int read = 1;
+  int loop;
+  char *s;
+  Desk_os_error *err = NULL;
+
+  /* Pull down current list of printers */
+  plist_clean();
+
+  /* Call to get printer details */
+  err = Desk_SWI(4, 1, NetPrint_ListServers, 1, &buf, 512, 40, &read);
+  if ((read <= 0) || (err)) return;
+  s = &buf[0];
+  for (loop = 0; loop < read; loop++)
+  {
+    PrintBuild(s);
+    s += strlen(s) + 1;
+  }
+}
+@
+
+
+1.3
+log
+@Makefile recreated from fragments
+Untangle headers in the C source files.
+Expand tabs in Resources.s, 32 bit a ^, and use Push/Pull macros.
+Builds, but not tested.
+
+Version 1.17. Tagged as 'NetFiler-1_17'
+@
+text
+@d55 1
+a55 1
+  char desc[32];
+a66 1
+    char *s = NULL;
+d68 2
+d89 3
+a91 1
+    switch (status)
+d93 5
+a97 17
+      case 1: sprintf(desc, "%d.%d\nAcorn BBC Micro\n%x.%02x", buf[1], buf[0], buf[6], buf[7]);
+              break;
+      case 3: sprintf(desc, "%d.%d\nAcorn System 4\n%x.%02x", buf[1], buf[0], buf[6], buf[7]);
+              break;
+      case 4: sprintf(desc, "%d.%d\nAcorn System 5\n%x.%02x", buf[1], buf[0], buf[6], buf[7]);
+              break;
+      case 5: sprintf(desc, "%d.%d\nAcorn Master128\n%x.%02x", buf[1], buf[0], buf[6], buf[7]);
+              break;
+      case 7: sprintf(desc, "%d.%d\nAcorn RISC OS\n%x.%02x", buf[1], buf[0], buf[6], buf[7]);
+              break;
+      case 0xB:sprintf(desc, "%d.%d\nAcorn FileStore\n%x.%02x", buf[1], buf[0], buf[6], buf[7]);
+              break;
+      case 0xFFFE:sprintf(desc, "%d.%d\nSJ FileServer\n%x.%02x", buf[1], buf[0], buf[6], buf[7]);
+              break;
+      default:
+        sprintf(desc, "%d.%d", buf[1], buf[0]);
+        break;
+@
+
+
+1.2
+log
+@Summary
+  * Further rationalisations to fit into our build system.
+Detail
+  * Altered to use auto-generated or centralised declarations, constants etc.
+    wherever possible.
+  * Altered to use some library routines instead of local equivalents.
+  * Debug build uses DebugLib.
+  * Modified to use SrcCommit.
+  * Got rid of warnings.
+Admin
+  * Removed entire contents of hdr directory; macros now obtained from HdrSrc.
+  * Debug.h, ModuleWrap.h and Base.s removed.
+  * Requires AsmUtils.
+  * Both builds compiled.
+
+Version 1.15. Tagged as 'NetFiler-1_15'
+@
+text
+@d36 2
+a37 2
+#include <kernel.h>
+#include <swis.h>
+d39 1
+a39 1
+#include <DebugLib/DebugLib.h>
+d41 2
+a42 2
+#include <Desk/LinkList.h>
+#include <Desk/SWI.h>
+d44 1
+a46 1
+#include "NetFiler.h"
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d37 3
+d44 2
+a46 3
+#include "ModuleWrap.h"
+#include "Lists.h"
+#include "Debug.h"
+d84 1
+a84 1
+      TRACE1("NetFiler.NetServer: DoImmediate err '%s'\n", err->errmess);
+@
+
+
+1.1.1.1
+log
+@Summary
+  * Initial import of NetFiler.
+
+Details
+  * Revamped build structure.
+  * Modified sources to use Desk instead of ANT's proprietary version of
+    DeskLib; only uses linked list handling, SWI veneer and time code, so
+    don't expect this shouldn't cause any significant problem.
+
+Admin
+  * Compiled.
+  * Untested.
+@
+text
+@@

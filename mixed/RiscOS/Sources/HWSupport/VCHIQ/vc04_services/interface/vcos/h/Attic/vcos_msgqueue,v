@@ -1,0 +1,242 @@
+head	1.2;
+access;
+symbols
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2013.03.03.20.24.00;	author jlee;	state dead;
+branches;
+next	1.1;
+commitid	uNS7q3oyxvlpXnGw;
+
+1.1
+date	2012.08.19.23.33.46;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.2
+log
+@Update to latest version of VCHIQ sources
+Detail:
+  This updates our VCHIQ sources to rev 95009dbb77 of the official sources from the Raspberry Pi Linux github repo.
+  From our perspective, the important changes are:
+  * Provides compatbility with the latest firmware
+  * Not compatible with older firmware (older than around Nov 2012?), including the firmware we've typically been using until now
+  * Clients of the module now need to specify the version number of the service they're communicating with
+  * Source is dual BSD/GPL licenced, with us opting to use the BSD license in order to allow the module to be included in ROM instead of as a softload on disc
+  * Ability to build softload version has been removed from the makefile, as it's now a redundant option
+  File changes:
+  - !MkRom - enable throwback
+  - Makefile - Update for building latest sources. Remove special softload rules. Enable ability to build ROM version.
+  - c/vchiq_riscos, s/asm - Update RISC OS compatbility layer to directly emulate the corresponding Linux calls now that the VCOS abstraction layer has been removed from the VCHIQ sources
+  - h/VCHIQ, h/VCHIQWrap, hdr/VCHIQ - Add the service version number entries to the vchiq_service_t/SERVICE_CREATION_T structs
+  - vc04_services/* - Updated to latest official sources, with relevant changes to allow compilation for RISC OS
+Admin:
+  Tested on Raspberry Pi
+  Updated GPU firmware will likely be required!
+
+
+Version 0.05. Tagged as 'VCHIQ-0_05'
+@
+text
+@/*
+ * Copyright (c) 2010-2011 Broadcom. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ */
+
+/*=============================================================================
+VCOS - packet-like messages, based loosely on those found in TRIPOS.
+=============================================================================*/
+
+#ifndef VCOS_MSGQUEUE_H
+#define VCOS_MSGQUEUE_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "interface/vcos/vcos_types.h"
+#include "vcos_platform.h"
+
+/**
+ * \file
+ *
+ * Packet-like messages, based loosely on those found in TRIPOS and
+ * derivatives thereof.
+ *
+ * A task can send a message *pointer* to another task, where it is
+ * queued on a linked list and the task woken up. The receiving task
+ * consumes all of the messages on its input queue, and optionally
+ * sends back replies using the original message memory.
+ *
+ * A caller can wait for the reply to a specific message - any other
+ * messages that arrive in the meantime are queued separately.
+ *
+ *
+ * All messages have a standard common layout, but the payload area can
+ * be used freely to extend this.
+ */
+
+/** Map the payload portion of a message to a structure pointer.
+  */
+#define VCOS_MSG_DATA(_msg) (void*)((_msg)->data)
+
+/** Standard message ids - FIXME - these need to be done properly! */
+#define VCOS_MSG_N_QUIT            1
+#define VCOS_MSG_N_OPEN            2
+#define VCOS_MSG_N_CLOSE           3
+#define VCOS_MSG_N_PRIVATE         (1<<20)
+
+#define VCOS_MSG_REPLY_BIT         (1<<31)
+
+/** Make gnuc compiler be happy about pointer punning */
+#ifdef __GNUC__
+#define __VCOS_MAY_ALIAS __attribute__((__may_alias__))
+#else
+#define __VCOS_MAY_ALIAS
+#endif
+
+/** A single message queue.
+  */
+typedef struct VCOS_MSGQUEUE_T
+{
+   struct VCOS_MSG_T *head;            /**< head of linked list of messages waiting on this queue */
+   struct VCOS_MSG_T *tail;            /**< tail of message queue */
+   VCOS_SEMAPHORE_T sem;               /**< thread waits on this for new messages */
+   VCOS_MUTEX_T lock;                  /**< locks the messages list */
+} VCOS_MSGQUEUE_T;
+
+/** A single message
+  */
+typedef struct VCOS_MSG_T
+{
+   uint32_t code;                      /**< message code */
+   int error;                          /**< error status signalled back to caller */
+   VCOS_MSGQUEUE_T *dst;               /**< destination queue */
+   VCOS_MSGQUEUE_T *src;               /**< source; replies go back to here */
+   struct VCOS_MSG_T *next;            /**< next in queue */
+   VCOS_THREAD_T *src_thread;          /**< for debug */
+   uint32_t data[25];                  /**< payload area */
+} VCOS_MSG_T;
+   
+/** An endpoint
+  */
+typedef struct VCOS_MSG_ENDPOINT_T
+{
+   VCOS_MSGQUEUE_T primary;            /**< incoming messages */
+   VCOS_MSGQUEUE_T secondary;          /**< this is used for waitspecific */
+   char name[32];                      /**< name of this endpoint, for find() */
+   struct VCOS_MSG_ENDPOINT_T *next;   /**< next in global list of endpoints */
+} VCOS_MSG_ENDPOINT_T;
+#define MSG_REPLY_BIT (1<<31)
+
+/** Initalise the library. Normally called from vcos_init().
+  */
+extern VCOS_STATUS_T vcos_msgq_init(void);
+
+/** Find a message queue by name and get a handle to it.
+  *
+  * @@param name  the name of the queue to find
+  *
+  * @@return The message queue, or NULL if not found.
+  */
+VCOSPRE_ VCOS_MSGQUEUE_T VCOSPOST_ *vcos_msgq_find(const char *name);
+
+/** Wait for a message queue to come into existence. If it already exists,
+  * return immediately, otherwise block.
+  *
+  * On the whole, if you find yourself using this, it is probably a sign
+  * of poor design, since you should create all the server threads first,
+  * and then the client threads. But it is sometimes useful.
+  *
+  * @@param name  the name of the queue to find
+  * @@return The message queue
+  */
+VCOSPRE_ VCOS_MSGQUEUE_T VCOSPOST_ *vcos_msgq_wait(const char *name);
+
+/** Send a message.
+  */
+VCOSPRE_ void VCOSPOST_ vcos_msg_send(VCOS_MSGQUEUE_T *dest, uint32_t code, VCOS_MSG_T *msg);
+
+/** Send a message and wait for a reply.
+  */
+VCOSPRE_ void VCOSPOST_ vcos_msg_sendwait(VCOS_MSGQUEUE_T *queue, uint32_t code, VCOS_MSG_T *msg);
+
+/** Wait for a message on this thread's endpoint.
+  */
+VCOSPRE_ VCOS_MSG_T * VCOSPOST_ vcos_msg_wait(void);
+
+/** Wait for a specific message.
+  */
+VCOS_MSG_T * vcos_msg_wait_specific(VCOS_MSGQUEUE_T *queue, VCOS_MSG_T *msg);
+
+/** Peek for a message on this thread's endpoint, if a message is not available, NULL is 
+    returned. If a message is available it will be removed from the endpoint and returned.
+  */
+VCOSPRE_ VCOS_MSG_T * VCOSPOST_ vcos_msg_peek(void);
+
+/** Send a reply to a message
+  */
+VCOSPRE_ void VCOSPOST_ vcos_msg_reply(VCOS_MSG_T *msg);
+
+/** Create an endpoint. Each thread should need no more than one of these - if you 
+  * find yourself needing a second one, you've done something wrong.
+  */
+VCOSPRE_ VCOS_STATUS_T VCOSPOST_ vcos_msgq_endpoint_create(VCOS_MSG_ENDPOINT_T *ep, const char *name);
+
+/** Destroy an endpoint.
+  */
+VCOSPRE_ void  VCOSPOST_ vcos_msgq_endpoint_delete(VCOS_MSG_ENDPOINT_T *ep);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
+
+
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@@
+

@@ -1,0 +1,671 @@
+head	1.4;
+access;
+symbols
+	Clipboard-0_10:1.4
+	Clipboard-0_09:1.4
+	Clipboard-0_08:1.3
+	Clipboard-0_07:1.2
+	Clipboard-0_06:1.2
+	Clipboard-0_05:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2008.09.16.18.36.54;	author rool;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2007.11.13.01.41.06;	author srevill;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.02.25.10.57.26;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.02.22.11.57.56;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Completed the clipboard support part of the Clipboard module.
+  Drag-and-Drop support still needs to be designed and implemented.
+Detail:
+  The initial Clipboard module released by ROOL was in a state of flux due
+  to a redesign of how the module worked. The transition to the new way
+  of doing things was only done partially and needed completing to make the
+  Clipboard module support the clipboard fully. The module also contained
+  26-bit only code.
+
+  - Replaced all the 26-bit code with 32-bit (not mode neutral) code.
+
+  - Completed implementation of Clipboard_GetDataType by adding support for
+    the situation where the Clipboard module doesn't own the clipboard and
+    isn't proxying either. The required StateHandler_DataRequest2 has been
+    implemented also.
+
+  - Fully implemented Clipboard_Get including all the required statehandlers.
+      StateHandler_DataSaveAck
+      StateHandler_RAMFetch1
+      StateHandler_RAMFetch2
+      StateHandler_DataRequest1
+      StateHandler_DataRequest2
+      StateHandler_PutRequest3
+      StateHandler_Paste
+
+  - Modified CopyData routine to allow for clipboard content not being
+    word-aligned and/or its length not being a multiple of four.
+
+  - Removed all the commented out code that was left over from the initial
+    implementation of the Clipboard module.
+
+  - Added GetData to the set of test applications. It displays the clipboard
+    contents if it's of type text (It's best to use short text strings). It's
+    not very polished and it's better to use PutClip and GetClip to test the
+    Clipboard module.
+
+  - Added PutClip to the set of test applications. It can be used test
+    SWI Clipboard_Put. Details on how can be found in its Help file.
+
+  - Added GetClip to the set of test applications. It can be used test
+    SWI Clipboard_Get. Details on how can be found in its Help file.
+Admin:
+  Extensively tested on Iyonix RO 5.11 both external behaviour with PutClip
+  and GetClip as well as the internal behaviour of the statehandler (by using
+  StrongED as the clipboard owner/requester and rigging it to fail at certain
+  points during the datatransfer).
+
+  Briefly tested on RO 4.02, seems to be OK.
+
+  Briefly tested on RO 6.06, seems to be OK. Functionality may be different
+  from 5.11 and 4.02 though due to ClipboardHolder. In particular using the
+  Clipboard module as a proxy is likely to be affected.
+
+Version 0.09. Tagged as 'Clipboard-0_09'
+@
+text
+@; Copyright 1999 Element 14 Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+;  s.Buffer - routines to manage the various buffers
+;
+
+
+        MakeErrorBlock BadRead
+
+
+;-------------------------------------------------------------------
+;
+; CopyLeaf - validates a leafname string pointer, allocates RMA and copies it
+;
+; On entry:
+;   R0 -> string
+; On exit:
+;   R0 -> copy of string in RMA, or error
+
+CopyLeaf
+        Entry   "R1-R3"
+        ; Validate address
+        MOV     R1, R0          ; length unknown
+        SWI     XOS_ValidateAddress
+        ADRCS   R0, ErrorBlock_BadRead
+        MOVCS   R1, #0
+        BLCS    LookupError
+        EXIT    VS
+
+        ; First pass: count the string length
+        MOV     R1, R0
+        MOV     R2, #256
+01      LDRB    R14, [R1], #1
+        CMP     R14, #' '
+        SUBGES  R2, R2, #1
+        BGE     %BT01
+        ; R1 -> byte after terminator, or 256 bytes after R0 if unterminated
+
+        ; Claim memory
+        Push    "R0"
+        SUB     R3, R1, R0
+        MOV     R0, #ModHandReason_Claim
+        SWI     XOS_Module
+        ADDVS   SP, SP, #4*1
+        EXIT    VS
+        Pull    "R0"
+        ; R2 -> RMA block
+
+        DebugS  tmp,"leafname is: ",r0
+        Debug   tmp,"leafname at: ",r0
+        Debug   tmp,"leafend  at: ",r1
+        Debug   tmp,"leafname at: ",r2
+
+        ; Copy string
+        MOV     R3, R2          ; for safe keeping
+02      LDRB    R14, [R0], #1
+        Debug   tmp,"char = ",r14
+        CMP     R0, R1
+        STRLOB  R14, [R2], #1
+        BLO     %BT02
+        MOV     R14, #0         ; always null-terminate our copy
+        STRB    R14, [R2]
+
+        ; Return pointer to copy
+        ADDS    R0, R3, #0      ; also ensures V is clear
+        DebugS  tmp,"leafname is: ",r0
+        EXIT
+
+
+;-------------------------------------------------------------------
+;
+; CopyTypes - validates a data type list pointer, allocates RMA and copies it
+;
+; On entry:
+;   R0 -> data type list
+; On exit:
+;   R0 -> copy of list in RMA, or error
+
+CopyTypes
+        Entry   "R1-R3"
+        ; Validate address
+        MOV     R1, R0          ; length unknown
+        SWI     XOS_ValidateAddress
+        ADRCS   R0, ErrorBlock_BadRead
+        MOVCS   R1, #0
+        BLCS    LookupError
+        EXIT    VS
+
+        ; First pass: count the list length
+        MOV     R1, R0
+        MOV     R2, #256
+01      LDR     R14, [R1], #4
+        CMP     R14, #-1
+        SUBNES  R2, R2, #4
+        BNE     %BT01
+        ; R1 -> word after terminator, or 256 bytes after R0 if unterminated
+
+        ; Claim memory
+        Push    "R0"
+        SUB     R3, R1, R0
+        MOV     R0, #ModHandReason_Claim
+        SWI     XOS_Module
+        ADDVS   SP, SP, #4*1
+        EXIT    VS
+        Pull    "R0"
+        ; R2 -> RMA block
+
+        ; Copy list
+        MOV     R3, R2          ; for safe keeping
+02      LDR     R14, [R0], #4
+        CMP     R0, R1
+        STRLT   R14, [R2], #4
+        BLT     %BT02
+        MOV     R14, #-1        ; always terminate our copy
+        STR     R14, [R2]
+
+        ; Return pointer to copy
+        ADDS    R0, R3, #0      ; also ensures V is clear
+        EXIT
+
+
+;-------------------------------------------------------------------
+;
+; CopyData - validates a data block, allocates DA/RMA and copies it
+;
+; On entry:
+;   R0 -> data
+;   R3 = data length
+; On exit:
+;   R0 -> copy of string in DA/RMA, or error
+
+CopyData
+        Entry   "R1-R3"
+        ; Validate address
+        ADD     R1, R0, R3
+        SWI     XOS_ValidateAddress
+        ADRCS   R0, ErrorBlock_BadRead
+        MOVCS   R1, #0
+        BLCS    LookupError
+        EXIT    VS
+
+        ; Claim memory
+        Push    "R0"
+        MOV     R1, R3
+        BL      AllocMem
+        ADDVS   SP, SP, #4*2
+        EXIT    VS
+        MOV     R1, R0
+        Pull    "R0"
+        ; R1 -> target block
+
+        Debug   tmp,"Data at: ",r1
+        MOV     R2, R3                  ; number of bytes to copy
+        MOV     R3, R1                  ; for safe keeping
+
+        TST     R0, #3                  ; is source word aligned?
+        TSTEQ   R1, #3                  ; is target word aligned?
+        BNE     %FT02                   ; if not, can't do word transfer
+
+        ; Copy data wordwise
+01      CMP     R2, #4                  ; is number of bytes left to do > 4?
+        LDRHI   R14, [R0], #4           ; if so, get a word's worth of data
+        SUBHI   R2, R2, #4              ; .. decrease number of bytes to do
+        STRHI   R14, [R1], #4           ; .. write word to our buffer
+        BHI     %BT01                   ; .. go back for more
+
+        ; Copy data bytewise
+02      LDRB    R14, [R0], #1           ; read byte from source
+        SUBS    R2, R2, #1              ; decrease number of bytes to do
+        STRB    R14, [R1], #1           ; write byte to target
+        BNE     %BT02                   ; go back if bytes left
+
+        ; Return pointer to copy
+        ADDS    R0, R3, #0              ; also ensures V is clear
+        EXIT
+
+
+;-------------------------------------------------------------------
+;
+; FreeClipboard - frees clipboard data, data type and leafname buffers
+;
+
+FreeClipboard
+        EntryS  "R0, R2"
+        Debug   tmp,"FreeClipboard"
+        ; Do we know anything about the clipboard?
+        LDR     R0, ClipboardTask
+        TEQ     R0, #0
+        EXITS   EQ
+        ; Free clipboard, unless we're only proxying
+        LDR     R0, ClipboardFlags
+        TST     R0, #ClipboardPut_SendPutRequest
+        LDREQ   R0, ClipboardAddr
+        BLEQ    FreeMem
+        ; Free clipboard data type list, if there is one
+        LDR     R0, ClipboardFlags
+        TST     R0, #ClipboardPut_DataTypeList
+        MOVNE   R0, #ModHandReason_Free
+        LDRNE   R2, ClipboardType
+        TEQNE   R2, #0
+        SWINE   XOS_Module
+        ; Free clipboard leafname
+        MOV     R0, #ModHandReason_Free
+        LDR     R2, ClipboardName
+        TEQ     R2, #0
+        SWINE   XOS_Module
+        ; Flag clipboard as lost
+        MOV     R0, #0
+        STR     R0, ClipboardTask
+        ; Ignore errors
+        EXITS
+
+
+        [ UseDynamicAreas
+;-------------------------------------------------------------------
+;
+; AllocMem - allocates a buffer for the clipboard or a temporary file
+;
+; On entry:
+;   R1 = size required
+; On exit:
+;   R0 -> buffer
+;   R1 preserved
+
+AllocMem
+        Entry   "R1-R8"
+        ADD     R7, R1, #4      ; 4 bytes workspace for us
+        MOV     R5, R7          ; max size identical (-1 is now deprecated)
+        B       %FT01
+int_AllocMem
+        ALTENTRY
+01      ; R7 = size of dynamic area
+        ; R5 = max size of dynamic area
+        ADR     R0, MessagesBlock
+        addr    R1, clipboard_text
+        MOV     R2, #0
+        SWI     XMessageTrans_Lookup
+        EXIT    VS
+
+        DebugS  tmp,"DA name",r2
+        MOV     R8, R2          ; DA name
+        MOV     R0, #0          ; Create area
+        MOV     R1, #-1         ; any number will do
+        MOV     R2, R7          ; size
+        MOV     R3, #-1         ; any address will do
+        MOV     R4, #2_10000000 ; usual flags (cacheable, not draggable etc)
+        MOV     R6, #0          ; no handler routine
+        MOV     R7, #0          ; yawn (R6=0 => R7=0)
+        SWI     XOS_DynamicArea
+        STRVC   R1, [R3]
+        ADDVC   R0, R3, #4
+        EXIT
+
+;-------------------------------------------------------------------
+;
+; FreeMem - frees a buffer allocated using AllocMem
+;
+; On entry:
+;   R0 -> buffer
+
+FreeMem
+        EntryS  "R0, R1"
+        TEQ     R0, #0
+        EXITS   EQ
+        LDR     R1, [R0, #-4]
+        MOV     R0, #1
+        SWI     XOS_DynamicArea
+        STRVS   R0, [SP, #4*0]
+        EXIT
+
+;-------------------------------------------------------------------
+;
+; ExpandMemToR1 - ensure that buffer is at least as big as R1
+;
+; On entry:
+;   R0 -> buffer
+;   R1 = new size required
+; On exit:
+;   R0 -> buffer (may have moved)
+;   R1 preserved
+
+ExpandMemToR1
+        Entry   "R0-R11"
+        ; Get current size of area
+        LDR     R3, [R0, #-4]
+        MOV     R0, R3
+        SWI     XOS_ReadDynamicArea       ; R1 = size, R2 = max size
+                                          ; (both rounded up to page boundaries)
+        STRVS   R0, [SP, #4*0]
+        EXIT    VS
+        ; Find the size we need
+        LDR     R5, [SP, #4*1]
+        ADD     R5, R5, #4                ; 4 bytes for our workspace
+        ; Can the DA get this big?
+        CMP     R5, R2
+        BGT     %FT01
+        ; Exit if we are already big enough
+        SUBS    R1, R5, R1
+        EXIT    LE
+        ; Resize DA
+        MOV     R0, R3
+        SWI     OS_ChangeDynamicArea
+        STRVS   R0, [SP, #4*0]
+        EXIT
+
+01      ; We've been asked to expand the DA beyond its limit
+        ; R1 = current size (including workspace, rounded up)
+        ; R5 = required size (including workspace, not rounded up)
+        MOV     R7, R1
+        BL      int_AllocMem              ; create another DA of the same size,
+                                          ; but capable of being grown enough
+        STRVS   R0, [SP, #4*0]
+        EXIT    VS
+        ; Relocate data
+        LDR     R2, [SP, #4*0]            ; "from" rover
+        MOV     R3, R0                    ; "to" rover
+        SUB     R1, R1, #4                ; adjust for workspace
+        ADD     R1, R1, R2                ; top of "from"
+        LDMIA   R2!, {R5-R11}
+        STMIA   R3!, {R5-R11}
+02      LDMIA   R2!, {R4-R11}
+        STMIA   R3!, {R4-R11}
+        CMP     R2, R1
+        BLT     %BT02
+        ; Now remove the old DA, and grow the new one
+        MOV     R1, R0
+        LDR     R0, [SP, #4*0]
+        BL      FreeMem                   ; ignore errors
+        MOV     R0, R1
+        LDR     R1, [SP, #4*1]
+        BL      ExpandMemToR1
+        STR     R0, [SP, #4*0]
+        EXIT
+
+;-------------------------------------------------------------------
+;
+; ShrinkMemToR1 - ensure that buffer is at least as small as R1
+;
+; On entry:
+;   R0 -> buffer
+;   R1 = new size required
+
+ShrinkMemToR1
+        Entry   "R0-R3"
+        ; Get current size of area
+        LDR     R3, [R0, #-4]
+        MOV     R0, R3
+        SWI     XOS_ReadDynamicArea       ; R1 = size, R2 = max size
+                                          ; (both rounded up to page boundaries)
+        STRVS   R0, [SP, #4*0]
+        EXIT    VS
+        ; Exit if we are already small enough
+        LDR     R14, [SP, #4*1]
+        ADD     R14, R14, #4              ; 4 bytes for our workspace
+        SUBS    R1, R14, R1
+        EXIT    GE
+        ; Resize DA
+        MOV     R0, R3
+        SWI     XOS_ChangeDynamicArea
+        STRVS   R0, [SP, #CallerR0]
+        EXIT
+
+
+        |
+
+;-------------------------------------------------------------------
+;
+; AllocMem - allocates a buffer for the clipboard or a temporary file
+;
+; On entry:
+;   R1 = size required
+; On exit:
+;   R0 -> buffer
+;   R1 preserved
+
+AllocMem
+        Entry   "R2, R3"
+        ADD     R3, R1, #4                ; 4 bytes workspace (again)
+        MOV     R0, #ModHandReason_Claim
+        SWI     XOS_Module
+        STRVC   R3, [R2]
+        ADDVC   R0, R2, #4
+        EXIT
+
+;-------------------------------------------------------------------
+;
+; FreeMem - frees a buffer allocated using AllocMem
+;
+; On entry:
+;   R0 -> buffer
+
+FreeMem
+        EntryS  "R0, R2"
+        TEQ     R0, #0
+        EXITS   EQ
+        SUB     R2, R0, #4                ; skip the workspace
+        MOV     R0, #ModHandReason_Free
+        SWI     XOS_Module
+        STRVS   R0, [SP, #4*0]
+        EXIT
+
+;-------------------------------------------------------------------
+;
+; ExpandMemToR1 - ensure that buffer is at least as big as R1
+;
+; On entry:
+;   R0 -> buffer
+;   R1 = new size required
+; On exit:
+;   R0 -> buffer (may have moved)
+;   R1 preserved
+
+ExpandMemToR1
+        Entry   "R1-R3"
+        ADD     R1, R1, #4                ; amount needed, incl workspace
+        LDR     R2, [R0, #-4]             ; amount currently allocated
+        SUBS    R3, R1, R2                ; amount extra needed
+        EXIT    LE
+        SUB     R2, R0, #4                ; skip the workspace
+        MOV     R0, #ModHandReason_ExtendBlock
+        SWI     XOS_Module
+        ADDVC   R0, R2, #4                ; workspace again
+        STRVC   R1, [R0, #-4]
+        EXIT
+
+;-------------------------------------------------------------------
+;
+; ShrinkMemToR1 - ensure that buffer is at least as small as R1
+;
+; On entry:
+;   R0 -> buffer
+;   R1 = new size required
+
+ShrinkMemToR1
+        ; Has no meaning in the context of an RMA block
+        MOV     PC, R14
+
+        ]
+
+
+        END
+@
+
+
+1.3
+log
+@Fixed Clipboard to build and made it 32bit.
+Detail:
+  Clipboard has never been 32bitted, therefore it refused to build for
+  Tungsten. It's now been fixed to build. It's still not finished though.
+Admin:
+  Tested on RiscPC RO402. Module checked with ARMalyser.
+Notes:
+  Changes by James Lampard.
+
+Version 0.08. Tagged as 'Clipboard-0_08'
+@
+text
+@d61 5
+d69 1
+d71 2
+a72 2
+        STRLTB  R14, [R2], #1
+        BLT     %BT02
+d78 1
+d155 1
+a155 1
+        Push    "R0, R1"
+d160 3
+a162 3
+        MOV     R2, R0
+        Pull    "R0, R1"
+        ; R2 -> RMA block
+d164 20
+a183 6
+        ; Copy data
+        MOV     R3, R2          ; for safe keeping
+02      LDR     R14, [R0], #4
+        STR     R14, [R2], #4
+        CMP     R0, R1
+        BLT     %BT02
+d186 1
+a186 1
+        ADDS    R0, R3, #0      ; also ensures V is clear
+d197 1
+d251 2
+d274 1
+a274 2
+        Entry   "R0, R1"
+        CLRV
+d276 1
+a276 1
+        EXIT    EQ
+d314 1
+a314 1
+        SWI     XOS_ChangeDynamicArea
+d405 1
+a405 2
+        Entry   "R0, R2"
+        CLRV
+d407 1
+a407 1
+        EXIT    EQ
+@
+
+
+1.2
+log
+@* Standardised all error blocks to use AddError/MakeErrorBlock macros
+* Routines added for making "safe" copies of data blocks, data type lists
+  and leafnames passed in via the various mechanisms
+* SWI Clipboard_Put and Message_DataRequest handler implemented, and the
+  supporting state handlers
+    State_PutRequest1
+    State_DataSave
+    State_RAMTransmit
+    State_DataLoad
+* SWI Clipboard_GetDataType implemented, and the supporting handler
+    State_PutRequest2
+    (but not State_DataRequest2 yet)
+* Now requires that the caller is an active task
+* Fixed occasional data abort bug in MySendMessage
+* Fixed corruption of wimp event code bug
+* Implemented and added test applications
+
+Version 0.06. Tagged as 'Clipboard-0_06'
+@
+text
+@d175 1
+a175 1
+        Entry   "R0, R2"
+d251 1
+d253 1
+a253 1
+        EXITS   EQ
+d383 1
+d385 1
+a385 1
+        EXITS   EQ
+d426 1
+a426 1
+        MOVS    PC, R14
+@
+
+
+1.1
+log
+@* Task-related initialisation moved from module init to Start routine
+* State handler added, called from SWI, UserMessage, UserMessageAck handlers
+* Implemented NewAction, DeleteAction, DeleteActions, FreeClipboard and
+  FreeMsgQueue
+* DA memory allocation adapted so as not to use max-size "-1" DAs
+* RMA memory allocation functions completed to match DA functions - will now
+  assemble with DA support option turned off!
+
+Version 0.05. Tagged as 'Clipboard-0_05'
+@
+text
+@d16 1
+a16 1
+;  s.Buffer - routines to manage the Clipboard buffer and temporary file buffers
+d18 149
+@

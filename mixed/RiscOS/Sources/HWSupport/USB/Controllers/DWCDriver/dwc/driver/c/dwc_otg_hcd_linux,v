@@ -1,0 +1,1806 @@
+head	1.6;
+access;
+symbols
+	DWCDriver-0_35:1.6
+	DWCDriver-0_34:1.6
+	DWCDriver-0_33:1.6
+	DWCDriver-0_32:1.6
+	DWCDriver-0_31:1.6
+	DWCDriver-0_30:1.6
+	DWCDriver-0_29:1.6
+	DWCDriver-0_28:1.6
+	DWCDriver-0_27:1.6
+	DWCDriver-0_26:1.6
+	DWCDriver-0_24-1:1.6
+	DWCDriver-0_25:1.6
+	DWCDriver-0_24:1.6
+	DWCDriver-0_23:1.6
+	DWCDriver-0_22:1.6
+	DWCDriver-0_21:1.6
+	DWCDriver-0_20:1.5
+	DWCDriver-0_19:1.5
+	DWCDriver-0_18:1.5
+	DWCDriver-0_17:1.5
+	DWCDriver-0_16:1.5
+	DWCDriver-0_15:1.5
+	DWCDriver-0_14:1.5
+	DWCDriver-0_13:1.5
+	DWCDriver-0_12:1.5
+	DWCDriver-0_11:1.5
+	DWCDriver-0_10:1.4
+	DWCDriver-0_09:1.4
+	DWCDriver-0_08:1.3
+	DWCDriver-0_07:1.3
+	DWCDriver-0_06:1.3
+	DWCDriver-0_05:1.3
+	DWCDriver-0_04:1.2
+	DWCDriver-0_03:1.1
+	DWCDriver-0_02:1.1
+	DWCDriver-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2015.10.07.20.59.56;	author jlee;	state Exp;
+branches;
+next	1.5;
+commitid	qck3WWYzKpNMGdEy;
+
+1.5
+date	2014.04.26.18.18.05;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	3PdzN60cJJ3zNdyx;
+
+1.4
+date	2012.09.17.16.32.57;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	DXVFy2WJjyak3Ukw;
+
+1.3
+date	2012.07.21.19.22.50;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	5Kpl2qWWr4efRsdw;
+
+1.2
+date	2012.06.24.21.41.50;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	7BXP9gA386QIu0aw;
+
+1.1
+date	2012.06.03.15.13.07;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ZZ9X1FvMWAU11h7w;
+
+
+desc
+@@
+
+
+1.6
+log
+@Update to 'FIQ FSM' USB driver
+Detail:
+  Makefile, dwc/* - Updated to latest-ish code from Raspberry Pi github (rev c8baa9702c). Includes the 'FIQ FSM' USB driver, which replaces the older 'FIQ fix'. Note that many files appear to have no functional changes - just trailing whitespace removal to keep things in sync with github.
+  Makefile - add DEBUGLIBS back into the debug libs listing to fix debug builds
+  c/cmodule - Update to work with new FIQ FSM flags
+  c/dwc_otg_riscos - Update to work with new FIQ FSM flags. Update initialisation procedure. Change IRQ handling to try both the HCD & CIL interrupt handlers (HCD can claim interrupt is handled when there's still a CIL interrupt pending). Disable support for falling back to IRQ if the FIQ vector is claimed by someone else - will need new implementation to cope with starting & stopping the FIQ FSM.
+  s/regaccess - Update FIQ veneer & install routine to allow operation with either the dwc_otg_fiq_fsm or dwc_otg_fiq_nop functions.
+Admin:
+  Tested on Raspberry Pi 1 & 2
+
+
+Version 0.21. Tagged as 'DWCDriver-0_21'
+@
+text
+@
+/* ==========================================================================
+ * $File: //dwh/usb_iip/dev/software/otg/linux/drivers/dwc_otg_hcd_linux.c $
+ * $Revision: #20 $
+ * $Date: 2011/10/26 $
+ * $Change: 1872981 $
+ *
+ * Synopsys HS OTG Linux Software Driver and documentation (hereinafter,
+ * "Software") is an Unsupported proprietary work of Synopsys, Inc. unless
+ * otherwise expressly agreed to in writing between Synopsys and you.
+ *
+ * The Software IS NOT an item of Licensed Software or Licensed Product under
+ * any End User Software License Agreement or Agreement for Licensed Product
+ * with Synopsys or any supplement thereto. You are permitted to use and
+ * redistribute this Software in source and binary forms, with or without
+ * modification, provided that redistributions of source code must retain this
+ * notice. You may not view, use, disclose, copy or distribute this file or
+ * any information contained herein except pursuant to this license grant from
+ * Synopsys. If you do not agree with this notice, including the disclaimer
+ * below, then you are not authorized to use the Software.
+ *
+ * THIS SOFTWARE IS BEING DISTRIBUTED BY SYNOPSYS SOLELY ON AN "AS IS" BASIS
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE HEREBY DISCLAIMED. IN NO EVENT SHALL SYNOPSYS BE LIABLE FOR ANY DIRECT,
+ * INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
+ * DAMAGE.
+ * ========================================================================== */
+#ifndef DWC_DEVICE_ONLY
+
+/**
+ * @@file
+ *
+ * This file contains the implementation of the HCD. In Linux, the HCD
+ * implements the hc_driver API.
+ */
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/init.h>
+#include <linux/device.h>
+#include <linux/errno.h>
+#include <linux/list.h>
+#include <linux/interrupt.h>
+#include <linux/string.h>
+#include <linux/dma-mapping.h>
+#include <linux/version.h>
+#include <asm/io.h>
+#include <asm/fiq.h>
+#include <linux/usb.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35)
+#include <../drivers/usb/core/hcd.h>
+#else
+#include <linux/usb/hcd.h>
+#endif
+#include <asm/bug.h>
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+#define USB_URB_EP_LINKING 1
+#else
+#define USB_URB_EP_LINKING 0
+#endif
+
+#include "dwc_otg_hcd_if.h"
+#include "dwc_otg_dbg.h"
+#include "dwc_otg_driver.h"
+#include "dwc_otg_hcd.h"
+
+extern unsigned char  _dwc_otg_fiq_stub, _dwc_otg_fiq_stub_end;
+
+/**
+ * Gets the endpoint number from a _bEndpointAddress argument. The endpoint is
+ * qualified with its direction (possible 32 endpoints per device).
+ */
+#define dwc_ep_addr_to_endpoint(_bEndpointAddress_) ((_bEndpointAddress_ & USB_ENDPOINT_NUMBER_MASK) | \
+						     ((_bEndpointAddress_ & USB_DIR_IN) != 0) << 4)
+
+static const char dwc_otg_hcd_name[] = "dwc_otg_hcd";
+
+extern bool fiq_enable;
+
+/** @@name Linux HC Driver API Functions */
+/** @@{ */
+/* manage i/o requests, device state */
+static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+		       struct usb_host_endpoint *ep,
+#endif
+		       struct urb *urb, gfp_t mem_flags);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+static int dwc_otg_urb_dequeue(struct usb_hcd *hcd, struct urb *urb);
+#endif
+#else /* kernels at or post 2.6.30 */
+static int dwc_otg_urb_dequeue(struct usb_hcd *hcd,
+                               struct urb *urb, int status);
+#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30) */
+
+static void endpoint_disable(struct usb_hcd *hcd, struct usb_host_endpoint *ep);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30)
+static void endpoint_reset(struct usb_hcd *hcd, struct usb_host_endpoint *ep);
+#endif
+static irqreturn_t dwc_otg_hcd_irq(struct usb_hcd *hcd);
+extern int hcd_start(struct usb_hcd *hcd);
+extern void hcd_stop(struct usb_hcd *hcd);
+static int get_frame_number(struct usb_hcd *hcd);
+extern int hub_status_data(struct usb_hcd *hcd, char *buf);
+extern int hub_control(struct usb_hcd *hcd,
+		       u16 typeReq,
+		       u16 wValue, u16 wIndex, char *buf, u16 wLength);
+
+struct wrapper_priv_data {
+	dwc_otg_hcd_t *dwc_otg_hcd;
+};
+
+/** @@} */
+
+static struct hc_driver dwc_otg_hc_driver = {
+
+	.description = dwc_otg_hcd_name,
+	.product_desc = "DWC OTG Controller",
+	.hcd_priv_size = sizeof(struct wrapper_priv_data),
+
+	.irq = dwc_otg_hcd_irq,
+
+	.flags = HCD_MEMORY | HCD_USB2,
+
+	//.reset =
+	.start = hcd_start,
+	//.suspend =
+	//.resume =
+	.stop = hcd_stop,
+
+	.urb_enqueue = dwc_otg_urb_enqueue,
+	.urb_dequeue = dwc_otg_urb_dequeue,
+	.endpoint_disable = endpoint_disable,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30)
+	.endpoint_reset = endpoint_reset,
+#endif
+	.get_frame_number = get_frame_number,
+
+	.hub_status_data = hub_status_data,
+	.hub_control = hub_control,
+	//.bus_suspend =
+	//.bus_resume =
+};
+
+/** Gets the dwc_otg_hcd from a struct usb_hcd */
+static inline dwc_otg_hcd_t *hcd_to_dwc_otg_hcd(struct usb_hcd *hcd)
+{
+	struct wrapper_priv_data *p;
+	p = (struct wrapper_priv_data *)(hcd->hcd_priv);
+	return p->dwc_otg_hcd;
+}
+
+/** Gets the struct usb_hcd that contains a dwc_otg_hcd_t. */
+static inline struct usb_hcd *dwc_otg_hcd_to_hcd(dwc_otg_hcd_t * dwc_otg_hcd)
+{
+	return dwc_otg_hcd_get_priv_data(dwc_otg_hcd);
+}
+
+/** Gets the usb_host_endpoint associated with an URB. */
+inline struct usb_host_endpoint *dwc_urb_to_endpoint(struct urb *urb)
+{
+	struct usb_device *dev = urb->dev;
+	int ep_num = usb_pipeendpoint(urb->pipe);
+
+	if (usb_pipein(urb->pipe))
+		return dev->ep_in[ep_num];
+	else
+		return dev->ep_out[ep_num];
+}
+
+static int _disconnect(dwc_otg_hcd_t * hcd)
+{
+	struct usb_hcd *usb_hcd = dwc_otg_hcd_to_hcd(hcd);
+
+	usb_hcd->self.is_b_host = 0;
+	return 0;
+}
+
+static int _start(dwc_otg_hcd_t * hcd)
+{
+	struct usb_hcd *usb_hcd = dwc_otg_hcd_to_hcd(hcd);
+
+	usb_hcd->self.is_b_host = dwc_otg_hcd_is_b_host(hcd);
+	hcd_start(usb_hcd);
+
+	return 0;
+}
+
+static int _hub_info(dwc_otg_hcd_t * hcd, void *urb_handle, uint32_t * hub_addr,
+		     uint32_t * port_addr)
+{
+   struct urb *urb = (struct urb *)urb_handle;
+   struct usb_bus *bus;
+#if 1 //GRAYG - temporary
+   if (NULL == urb_handle)
+      DWC_ERROR("**** %s - NULL URB handle\n", __func__);//GRAYG
+   if (NULL == urb->dev)
+      DWC_ERROR("**** %s - URB has no device\n", __func__);//GRAYG
+   if (NULL == port_addr)
+      DWC_ERROR("**** %s - NULL port_address\n", __func__);//GRAYG
+#endif
+   if (urb->dev->tt) {
+        if (NULL == urb->dev->tt->hub) {
+                DWC_ERROR("**** %s - (URB's transactor has no TT - giving no hub)\n",
+                           __func__); //GRAYG
+                //*hub_addr = (u8)usb_pipedevice(urb->pipe); //GRAYG
+                *hub_addr = 0; //GRAYG
+                // we probably shouldn't have a transaction translator if
+                // there's no associated hub?
+        } else {
+		bus = hcd_to_bus(dwc_otg_hcd_to_hcd(hcd));
+		if (urb->dev->tt->hub == bus->root_hub)
+			*hub_addr = 0;
+		else
+			*hub_addr = urb->dev->tt->hub->devnum;
+	}
+	*port_addr = urb->dev->tt->multi ? urb->dev->ttport : 1;
+   } else {
+        *hub_addr = 0;
+	*port_addr = urb->dev->ttport;
+   }
+   return 0;
+}
+
+static int _speed(dwc_otg_hcd_t * hcd, void *urb_handle)
+{
+	struct urb *urb = (struct urb *)urb_handle;
+	return urb->dev->speed;
+}
+
+static int _get_b_hnp_enable(dwc_otg_hcd_t * hcd)
+{
+	struct usb_hcd *usb_hcd = dwc_otg_hcd_to_hcd(hcd);
+	return usb_hcd->self.b_hnp_enable;
+}
+
+static void allocate_bus_bandwidth(struct usb_hcd *hcd, uint32_t bw,
+				   struct urb *urb)
+{
+	hcd_to_bus(hcd)->bandwidth_allocated += bw / urb->interval;
+	if (usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS) {
+		hcd_to_bus(hcd)->bandwidth_isoc_reqs++;
+	} else {
+		hcd_to_bus(hcd)->bandwidth_int_reqs++;
+	}
+}
+
+static void free_bus_bandwidth(struct usb_hcd *hcd, uint32_t bw,
+			       struct urb *urb)
+{
+	hcd_to_bus(hcd)->bandwidth_allocated -= bw / urb->interval;
+	if (usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS) {
+		hcd_to_bus(hcd)->bandwidth_isoc_reqs--;
+	} else {
+		hcd_to_bus(hcd)->bandwidth_int_reqs--;
+	}
+}
+
+/**
+ * Sets the final status of an URB and returns it to the device driver. Any
+ * required cleanup of the URB is performed.  The HCD lock should be held on
+ * entry.
+ */
+static int _complete(dwc_otg_hcd_t * hcd, void *urb_handle,
+		     dwc_otg_hcd_urb_t * dwc_otg_urb, int32_t status)
+{
+	struct urb *urb = (struct urb *)urb_handle;
+	urb_tq_entry_t *new_entry;
+	int rc = 0;
+	if (CHK_DEBUG_LEVEL(DBG_HCDV | DBG_HCD_URB)) {
+		DWC_PRINTF("%s: urb %p, device %d, ep %d %s, status=%d\n",
+			   __func__, urb, usb_pipedevice(urb->pipe),
+			   usb_pipeendpoint(urb->pipe),
+			   usb_pipein(urb->pipe) ? "IN" : "OUT", status);
+		if (usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS) {
+			int i;
+			for (i = 0; i < urb->number_of_packets; i++) {
+				DWC_PRINTF("  ISO Desc %d status: %d\n",
+					   i, urb->iso_frame_desc[i].status);
+			}
+		}
+	}
+	new_entry = DWC_ALLOC_ATOMIC(sizeof(urb_tq_entry_t));
+	urb->actual_length = dwc_otg_hcd_urb_get_actual_length(dwc_otg_urb);
+	/* Convert status value. */
+	switch (status) {
+	case -DWC_E_PROTOCOL:
+		status = -EPROTO;
+		break;
+	case -DWC_E_IN_PROGRESS:
+		status = -EINPROGRESS;
+		break;
+	case -DWC_E_PIPE:
+		status = -EPIPE;
+		break;
+	case -DWC_E_IO:
+		status = -EIO;
+		break;
+	case -DWC_E_TIMEOUT:
+		status = -ETIMEDOUT;
+		break;
+	case -DWC_E_OVERFLOW:
+		status = -EOVERFLOW;
+		break;
+	case -DWC_E_SHUTDOWN:
+		status = -ESHUTDOWN;
+		break;
+	default:
+		if (status) {
+			DWC_PRINTF("Uknown urb status %d\n", status);
+
+		}
+	}
+
+	if (usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS) {
+		int i;
+
+		urb->error_count = dwc_otg_hcd_urb_get_error_count(dwc_otg_urb);
+		for (i = 0; i < urb->number_of_packets; ++i) {
+			urb->iso_frame_desc[i].actual_length =
+			    dwc_otg_hcd_urb_get_iso_desc_actual_length
+			    (dwc_otg_urb, i);
+			urb->iso_frame_desc[i].status =
+			    dwc_otg_hcd_urb_get_iso_desc_status(dwc_otg_urb, i);
+		}
+	}
+
+	urb->status = status;
+	urb->hcpriv = NULL;
+	if (!status) {
+		if ((urb->transfer_flags & URB_SHORT_NOT_OK) &&
+		    (urb->actual_length < urb->transfer_buffer_length)) {
+			urb->status = -EREMOTEIO;
+		}
+	}
+
+	if ((usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS) ||
+	    (usb_pipetype(urb->pipe) == PIPE_INTERRUPT)) {
+		struct usb_host_endpoint *ep = dwc_urb_to_endpoint(urb);
+		if (ep) {
+			free_bus_bandwidth(dwc_otg_hcd_to_hcd(hcd),
+					   dwc_otg_hcd_get_ep_bandwidth(hcd,
+									ep->hcpriv),
+					   urb);
+		}
+	}
+	DWC_FREE(dwc_otg_urb);
+	if (!new_entry) {
+		DWC_ERROR("dwc_otg_hcd: complete: cannot allocate URB TQ entry\n");
+		urb->status = -EPROTO;
+		/* don't schedule the tasklet -
+		 * directly return the packet here with error. */
+#if USB_URB_EP_LINKING
+		usb_hcd_unlink_urb_from_ep(dwc_otg_hcd_to_hcd(hcd), urb);
+#endif
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+		usb_hcd_giveback_urb(dwc_otg_hcd_to_hcd(hcd), urb);
+#else
+		usb_hcd_giveback_urb(dwc_otg_hcd_to_hcd(hcd), urb, urb->status);
+#endif
+	} else {
+		new_entry->urb = urb;
+#if USB_URB_EP_LINKING
+		rc = usb_hcd_check_unlink_urb(dwc_otg_hcd_to_hcd(hcd), urb, urb->status);
+		if(0 == rc) {
+			usb_hcd_unlink_urb_from_ep(dwc_otg_hcd_to_hcd(hcd), urb);
+		}
+#endif
+		if(0 == rc) {
+			DWC_TAILQ_INSERT_TAIL(&hcd->completed_urb_list, new_entry,
+						urb_tq_entries);
+			DWC_TASK_HI_SCHEDULE(hcd->completion_tasklet);
+		}
+	}
+	return 0;
+}
+
+static struct dwc_otg_hcd_function_ops hcd_fops = {
+	.start = _start,
+	.disconnect = _disconnect,
+	.hub_info = _hub_info,
+	.speed = _speed,
+	.complete = _complete,
+	.get_b_hnp_enable = _get_b_hnp_enable,
+};
+
+static struct fiq_handler fh = {
+  .name = "usb_fiq",
+};
+
+static void hcd_init_fiq(void *cookie)
+{
+	dwc_otg_device_t *otg_dev = cookie;
+	dwc_otg_hcd_t *dwc_otg_hcd = otg_dev->hcd;
+	struct pt_regs regs;
+
+	if (claim_fiq(&fh)) {
+		DWC_ERROR("Can't claim FIQ");
+		BUG();
+	}
+	DWC_WARN("FIQ on core %d at 0x%08x",
+				smp_processor_id(),
+				(fiq_fsm_enable ? (int)&dwc_otg_fiq_fsm : (int)&dwc_otg_fiq_nop));
+	DWC_WARN("FIQ ASM at 0x%08x length %d", (int)&_dwc_otg_fiq_stub, (int)(&_dwc_otg_fiq_stub_end - &_dwc_otg_fiq_stub));
+		set_fiq_handler((void *) &_dwc_otg_fiq_stub, &_dwc_otg_fiq_stub_end - &_dwc_otg_fiq_stub);
+	memset(&regs,0,sizeof(regs));
+
+	regs.ARM_r8 = (long) dwc_otg_hcd->fiq_state;
+	if (fiq_fsm_enable) {
+		regs.ARM_r9 = dwc_otg_hcd->core_if->core_params->host_channels;
+		//regs.ARM_r10 = dwc_otg_hcd->dma;
+		regs.ARM_fp = (long) dwc_otg_fiq_fsm;
+	} else {
+		regs.ARM_fp = (long) dwc_otg_fiq_nop;
+	}
+
+	regs.ARM_sp = (long) dwc_otg_hcd->fiq_stack + (sizeof(struct fiq_stack) - 4);
+
+//		__show_regs(&regs);
+	set_fiq_regs(&regs);
+
+	//Set the mphi periph to  the required registers
+	dwc_otg_hcd->fiq_state->mphi_regs.base    = otg_dev->os_dep.mphi_base;
+	dwc_otg_hcd->fiq_state->mphi_regs.ctrl    = otg_dev->os_dep.mphi_base + 0x4c;
+	dwc_otg_hcd->fiq_state->mphi_regs.outdda  = otg_dev->os_dep.mphi_base + 0x28;
+	dwc_otg_hcd->fiq_state->mphi_regs.outddb  = otg_dev->os_dep.mphi_base + 0x2c;
+	dwc_otg_hcd->fiq_state->mphi_regs.intstat = otg_dev->os_dep.mphi_base + 0x50;
+	dwc_otg_hcd->fiq_state->dwc_regs_base = otg_dev->os_dep.base;
+	DWC_WARN("MPHI regs_base at 0x%08x", (int)dwc_otg_hcd->fiq_state->mphi_regs.base);
+	//Enable mphi peripheral
+	writel((1<<31),dwc_otg_hcd->fiq_state->mphi_regs.ctrl);
+#ifdef DEBUG
+	if (readl(dwc_otg_hcd->fiq_state->mphi_regs.ctrl) & 0x80000000)
+		DWC_WARN("MPHI periph has been enabled");
+	else
+		DWC_WARN("MPHI periph has NOT been enabled");
+#endif
+	// Enable FIQ interrupt from USB peripheral
+#ifdef CONFIG_ARCH_BCM2835
+	enable_fiq(platform_get_irq(otg_dev->os_dep.platformdev, 1));
+#else
+	enable_fiq(INTERRUPT_VC_USB);
+#endif
+	local_fiq_enable();
+}
+
+/**
+ * Initializes the HCD. This function allocates memory for and initializes the
+ * static parts of the usb_hcd and dwc_otg_hcd structures. It also registers the
+ * USB bus with the core and calls the hc_driver->start() function. It returns
+ * a negative error on failure.
+ */
+int hcd_init(dwc_bus_dev_t *_dev)
+{
+	struct usb_hcd *hcd = NULL;
+	dwc_otg_hcd_t *dwc_otg_hcd = NULL;
+	dwc_otg_device_t *otg_dev = DWC_OTG_BUSDRVDATA(_dev);
+	int retval = 0;
+        u64 dmamask;
+
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD INIT otg_dev=%p\n", otg_dev);
+
+	/* Set device flags indicating whether the HCD supports DMA. */
+	if (dwc_otg_is_dma_enable(otg_dev->core_if))
+                dmamask = DMA_BIT_MASK(32);
+        else
+                dmamask = 0;
+
+#if    defined(LM_INTERFACE) || defined(PLATFORM_INTERFACE)
+        dma_set_mask(&_dev->dev, dmamask);
+        dma_set_coherent_mask(&_dev->dev, dmamask);
+#elif  defined(PCI_INTERFACE)
+        pci_set_dma_mask(_dev, dmamask);
+        pci_set_consistent_dma_mask(_dev, dmamask);
+#endif
+
+	/*
+	 * Allocate memory for the base HCD plus the DWC OTG HCD.
+	 * Initialize the base HCD.
+	 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30)
+	hcd = usb_create_hcd(&dwc_otg_hc_driver, &_dev->dev, _dev->dev.bus_id);
+#else
+	hcd = usb_create_hcd(&dwc_otg_hc_driver, &_dev->dev, dev_name(&_dev->dev));
+	hcd->has_tt = 1;
+//      hcd->uses_new_polling = 1;
+//      hcd->poll_rh = 0;
+#endif
+	if (!hcd) {
+		retval = -ENOMEM;
+		goto error1;
+	}
+
+	hcd->regs = otg_dev->os_dep.base;
+
+
+	/* Initialize the DWC OTG HCD. */
+	dwc_otg_hcd = dwc_otg_hcd_alloc_hcd();
+	if (!dwc_otg_hcd) {
+		goto error2;
+	}
+	((struct wrapper_priv_data *)(hcd->hcd_priv))->dwc_otg_hcd =
+	    dwc_otg_hcd;
+	otg_dev->hcd = dwc_otg_hcd;
+
+	if (dwc_otg_hcd_init(dwc_otg_hcd, otg_dev->core_if)) {
+		goto error2;
+	}
+
+	if (fiq_enable) {
+		if (num_online_cpus() > 1) {
+			/* bcm2709: can run the FIQ on a separate core to IRQs */
+			smp_call_function_single(1, hcd_init_fiq, otg_dev, 1);
+		} else {
+			smp_call_function_single(0, hcd_init_fiq, otg_dev, 1);
+		}
+	}
+
+	otg_dev->hcd->otg_dev = otg_dev;
+	hcd->self.otg_port = dwc_otg_hcd_otg_port(dwc_otg_hcd);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,33) //don't support for LM(with 2.6.20.1 kernel)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,35) //version field absent later
+	hcd->self.otg_version = dwc_otg_get_otg_version(otg_dev->core_if);
+#endif
+	/* Don't support SG list at this point */
+	hcd->self.sg_tablesize = 0;
+#endif
+	/*
+	 * Finish generic HCD initialization and start the HCD. This function
+	 * allocates the DMA buffer pool, registers the USB bus, requests the
+	 * IRQ line, and calls hcd_start method.
+	 */
+#ifdef PLATFORM_INTERFACE
+	retval = usb_add_hcd(hcd, platform_get_irq(_dev, fiq_enable ? 0 : 1), IRQF_SHARED);
+#else
+	retval = usb_add_hcd(hcd, _dev->irq, IRQF_SHARED);
+#endif
+	if (retval < 0) {
+		goto error2;
+	}
+
+	dwc_otg_hcd_set_priv_data(dwc_otg_hcd, hcd);
+	return 0;
+
+error2:
+	usb_put_hcd(hcd);
+error1:
+	return retval;
+}
+
+/**
+ * Removes the HCD.
+ * Frees memory and resources associated with the HCD and deregisters the bus.
+ */
+void hcd_remove(dwc_bus_dev_t *_dev)
+{
+	dwc_otg_device_t *otg_dev = DWC_OTG_BUSDRVDATA(_dev);
+	dwc_otg_hcd_t *dwc_otg_hcd;
+	struct usb_hcd *hcd;
+
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD REMOVE otg_dev=%p\n", otg_dev);
+
+	if (!otg_dev) {
+		DWC_DEBUGPL(DBG_ANY, "%s: otg_dev NULL!\n", __func__);
+		return;
+	}
+
+	dwc_otg_hcd = otg_dev->hcd;
+
+	if (!dwc_otg_hcd) {
+		DWC_DEBUGPL(DBG_ANY, "%s: otg_dev->hcd NULL!\n", __func__);
+		return;
+	}
+
+	hcd = dwc_otg_hcd_to_hcd(dwc_otg_hcd);
+
+	if (!hcd) {
+		DWC_DEBUGPL(DBG_ANY,
+			    "%s: dwc_otg_hcd_to_hcd(dwc_otg_hcd) NULL!\n",
+			    __func__);
+		return;
+	}
+	usb_remove_hcd(hcd);
+	dwc_otg_hcd_set_priv_data(dwc_otg_hcd, NULL);
+	dwc_otg_hcd_remove(dwc_otg_hcd);
+	usb_put_hcd(hcd);
+}
+
+/* =========================================================================
+ *  Linux HC Driver Functions
+ * ========================================================================= */
+
+/** Initializes the DWC_otg controller and its root hub and prepares it for host
+ * mode operation. Activates the root port. Returns 0 on success and a negative
+ * error code on failure. */
+int hcd_start(struct usb_hcd *hcd)
+{
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+	struct usb_bus *bus;
+
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD START\n");
+	bus = hcd_to_bus(hcd);
+
+	hcd->state = HC_STATE_RUNNING;
+	if (dwc_otg_hcd_start(dwc_otg_hcd, &hcd_fops)) {
+		return 0;
+	}
+
+	/* Initialize and connect root hub if one is not already attached */
+	if (bus->root_hub) {
+		DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD Has Root Hub\n");
+		/* Inform the HUB driver to resume. */
+		usb_hcd_resume_root_hub(hcd);
+	}
+
+	return 0;
+}
+
+/**
+ * Halts the DWC_otg host mode operations in a clean manner. USB transfers are
+ * stopped.
+ */
+void hcd_stop(struct usb_hcd *hcd)
+{
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+
+	dwc_otg_hcd_stop(dwc_otg_hcd);
+}
+
+/** Returns the current frame number. */
+static int get_frame_number(struct usb_hcd *hcd)
+{
+	hprt0_data_t hprt0;
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+	hprt0.d32 = DWC_READ_REG32(dwc_otg_hcd->core_if->host_if->hprt0);
+	if (hprt0.b.prtspd == DWC_HPRT0_PRTSPD_HIGH_SPEED)
+		return dwc_otg_hcd_get_frame_number(dwc_otg_hcd) >> 3;
+	else
+		return dwc_otg_hcd_get_frame_number(dwc_otg_hcd);
+}
+
+#ifdef DEBUG
+static void dump_urb_info(struct urb *urb, char *fn_name)
+{
+	DWC_PRINTF("%s, urb %p\n", fn_name, urb);
+	DWC_PRINTF("  Device address: %d\n", usb_pipedevice(urb->pipe));
+	DWC_PRINTF("  Endpoint: %d, %s\n", usb_pipeendpoint(urb->pipe),
+		   (usb_pipein(urb->pipe) ? "IN" : "OUT"));
+	DWC_PRINTF("  Endpoint type: %s\n", ( {
+					     char *pipetype;
+					     switch (usb_pipetype(urb->pipe)) {
+case PIPE_CONTROL:
+pipetype = "CONTROL"; break; case PIPE_BULK:
+pipetype = "BULK"; break; case PIPE_INTERRUPT:
+pipetype = "INTERRUPT"; break; case PIPE_ISOCHRONOUS:
+pipetype = "ISOCHRONOUS"; break; default:
+					     pipetype = "UNKNOWN"; break;};
+					     pipetype;}
+		   )) ;
+	DWC_PRINTF("  Speed: %s\n", ( {
+				     char *speed; switch (urb->dev->speed) {
+case USB_SPEED_HIGH:
+speed = "HIGH"; break; case USB_SPEED_FULL:
+speed = "FULL"; break; case USB_SPEED_LOW:
+speed = "LOW"; break; default:
+				     speed = "UNKNOWN"; break;};
+				     speed;}
+		   )) ;
+	DWC_PRINTF("  Max packet size: %d\n",
+		   usb_maxpacket(urb->dev, urb->pipe, usb_pipeout(urb->pipe)));
+	DWC_PRINTF("  Data buffer length: %d\n", urb->transfer_buffer_length);
+	DWC_PRINTF("  Transfer buffer: %p, Transfer DMA: %p\n",
+		   urb->transfer_buffer, (void *)urb->transfer_dma);
+	DWC_PRINTF("  Setup buffer: %p, Setup DMA: %p\n",
+		   urb->setup_packet, (void *)urb->setup_dma);
+	DWC_PRINTF("  Interval: %d\n", urb->interval);
+	if (usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS) {
+		int i;
+		for (i = 0; i < urb->number_of_packets; i++) {
+			DWC_PRINTF("  ISO Desc %d:\n", i);
+			DWC_PRINTF("    offset: %d, length %d\n",
+				   urb->iso_frame_desc[i].offset,
+				   urb->iso_frame_desc[i].length);
+		}
+	}
+}
+#endif
+
+/** Starts processing a USB transfer request specified by a USB Request Block
+ * (URB). mem_flags indicates the type of memory allocation to use while
+ * processing this URB. */
+static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+		       struct usb_host_endpoint *ep,
+#endif
+		       struct urb *urb, gfp_t mem_flags)
+{
+	int retval = 0;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,28)
+	struct usb_host_endpoint *ep = urb->ep;
+#endif
+	dwc_irqflags_t irqflags;
+        void **ref_ep_hcpriv = &ep->hcpriv;
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+	dwc_otg_hcd_urb_t *dwc_otg_urb;
+	int i;
+	int alloc_bandwidth = 0;
+	uint8_t ep_type = 0;
+	uint32_t flags = 0;
+	void *buf;
+
+#ifdef DEBUG
+	if (CHK_DEBUG_LEVEL(DBG_HCDV | DBG_HCD_URB)) {
+		dump_urb_info(urb, "dwc_otg_urb_enqueue");
+	}
+#endif
+
+	if (!urb->transfer_buffer && urb->transfer_buffer_length)
+		return -EINVAL;
+
+	if ((usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS)
+	    || (usb_pipetype(urb->pipe) == PIPE_INTERRUPT)) {
+		if (!dwc_otg_hcd_is_bandwidth_allocated
+		    (dwc_otg_hcd, ref_ep_hcpriv)) {
+			alloc_bandwidth = 1;
+		}
+	}
+
+	switch (usb_pipetype(urb->pipe)) {
+	case PIPE_CONTROL:
+		ep_type = USB_ENDPOINT_XFER_CONTROL;
+		break;
+	case PIPE_ISOCHRONOUS:
+		ep_type = USB_ENDPOINT_XFER_ISOC;
+		break;
+	case PIPE_BULK:
+		ep_type = USB_ENDPOINT_XFER_BULK;
+		break;
+	case PIPE_INTERRUPT:
+		ep_type = USB_ENDPOINT_XFER_INT;
+		break;
+	default:
+                DWC_WARN("Wrong EP type - %d\n", usb_pipetype(urb->pipe));
+	}
+
+        /* # of packets is often 0 - do we really need to call this then? */
+	dwc_otg_urb = dwc_otg_hcd_urb_alloc(dwc_otg_hcd,
+					    urb->number_of_packets,
+					    mem_flags == GFP_ATOMIC ? 1 : 0);
+
+	if(dwc_otg_urb == NULL)
+		return -ENOMEM;
+
+	if (!dwc_otg_urb && urb->number_of_packets)
+		return -ENOMEM;
+
+	dwc_otg_hcd_urb_set_pipeinfo(dwc_otg_urb, usb_pipedevice(urb->pipe),
+				     usb_pipeendpoint(urb->pipe), ep_type,
+				     usb_pipein(urb->pipe),
+				     usb_maxpacket(urb->dev, urb->pipe,
+						   !(usb_pipein(urb->pipe))));
+
+	buf = urb->transfer_buffer;
+	if (hcd->self.uses_dma && !buf && urb->transfer_buffer_length) {
+		/*
+		 * Calculate virtual address from physical address,
+		 * because some class driver may not fill transfer_buffer.
+		 * In Buffer DMA mode virual address is used,
+		 * when handling non DWORD aligned buffers.
+		 */
+		buf = (void *)__bus_to_virt((unsigned long)urb->transfer_dma);
+		dev_warn_once(&urb->dev->dev,
+			      "USB transfer_buffer was NULL, will use __bus_to_virt(%pad)=%p\n",
+			      &urb->transfer_dma, buf);
+	}
+
+	if (!(urb->transfer_flags & URB_NO_INTERRUPT))
+		flags |= URB_GIVEBACK_ASAP;
+	if (urb->transfer_flags & URB_ZERO_PACKET)
+		flags |= URB_SEND_ZERO_PACKET;
+
+	dwc_otg_hcd_urb_set_params(dwc_otg_urb, urb, buf,
+				   urb->transfer_dma,
+				   urb->transfer_buffer_length,
+				   urb->setup_packet,
+				   urb->setup_dma, flags, urb->interval);
+
+	for (i = 0; i < urb->number_of_packets; ++i) {
+		dwc_otg_hcd_urb_set_iso_desc_params(dwc_otg_urb, i,
+						    urb->
+						    iso_frame_desc[i].offset,
+						    urb->
+						    iso_frame_desc[i].length);
+	}
+
+	DWC_SPINLOCK_IRQSAVE(dwc_otg_hcd->lock, &irqflags);
+	urb->hcpriv = dwc_otg_urb;
+#if USB_URB_EP_LINKING
+	retval = usb_hcd_link_urb_to_ep(hcd, urb);
+	if (0 == retval)
+#endif
+	{
+		retval = dwc_otg_hcd_urb_enqueue(dwc_otg_hcd, dwc_otg_urb,
+						/*(dwc_otg_qh_t **)*/
+						ref_ep_hcpriv, 1);
+		if (0 == retval) {
+			if (alloc_bandwidth) {
+				allocate_bus_bandwidth(hcd,
+						dwc_otg_hcd_get_ep_bandwidth(
+							dwc_otg_hcd, *ref_ep_hcpriv),
+						urb);
+			}
+		} else {
+			DWC_DEBUGPL(DBG_HCD, "DWC OTG dwc_otg_hcd_urb_enqueue failed rc %d\n", retval);
+#if USB_URB_EP_LINKING
+			usb_hcd_unlink_urb_from_ep(hcd, urb);
+#endif
+			DWC_FREE(dwc_otg_urb);
+			urb->hcpriv = NULL;
+			if (retval == -DWC_E_NO_DEVICE)
+				retval = -ENODEV;
+		}
+	}
+#if USB_URB_EP_LINKING
+	else
+	{
+		DWC_FREE(dwc_otg_urb);
+		urb->hcpriv = NULL;
+	}
+#endif
+	DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, irqflags);
+	return retval;
+}
+
+/** Aborts/cancels a USB transfer request. Always returns 0 to indicate
+ * success.  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+static int dwc_otg_urb_dequeue(struct usb_hcd *hcd, struct urb *urb)
+#else
+static int dwc_otg_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
+#endif
+{
+	dwc_irqflags_t flags;
+	dwc_otg_hcd_t *dwc_otg_hcd;
+        int rc;
+
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD URB Dequeue\n");
+
+	dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+
+#ifdef DEBUG
+	if (CHK_DEBUG_LEVEL(DBG_HCDV | DBG_HCD_URB)) {
+		dump_urb_info(urb, "dwc_otg_urb_dequeue");
+	}
+#endif
+
+	DWC_SPINLOCK_IRQSAVE(dwc_otg_hcd->lock, &flags);
+	rc = usb_hcd_check_unlink_urb(hcd, urb, status);
+	if (0 == rc) {
+		if(urb->hcpriv != NULL) {
+	                dwc_otg_hcd_urb_dequeue(dwc_otg_hcd,
+	                                    (dwc_otg_hcd_urb_t *)urb->hcpriv);
+
+		        DWC_FREE(urb->hcpriv);
+			urb->hcpriv = NULL;
+		}
+        }
+
+        if (0 == rc) {
+		/* Higher layer software sets URB status. */
+#if USB_URB_EP_LINKING
+                usb_hcd_unlink_urb_from_ep(hcd, urb);
+#endif
+		DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, flags);
+
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,28)
+                usb_hcd_giveback_urb(hcd, urb);
+#else
+                usb_hcd_giveback_urb(hcd, urb, status);
+#endif
+                if (CHK_DEBUG_LEVEL(DBG_HCDV | DBG_HCD_URB)) {
+                        DWC_PRINTF("Called usb_hcd_giveback_urb() \n");
+                        DWC_PRINTF("  1urb->status = %d\n", urb->status);
+                }
+                DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD URB Dequeue OK\n");
+        } else {
+		DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, flags);
+                DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD URB Dequeue failed - rc %d\n",
+                            rc);
+        }
+
+	return rc;
+}
+
+/* Frees resources in the DWC_otg controller related to a given endpoint. Also
+ * clears state in the HCD related to the endpoint. Any URBs for the endpoint
+ * must already be dequeued. */
+static void endpoint_disable(struct usb_hcd *hcd, struct usb_host_endpoint *ep)
+{
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+
+	DWC_DEBUGPL(DBG_HCD,
+		    "DWC OTG HCD EP DISABLE: _bEndpointAddress=0x%02x, "
+		    "endpoint=%d\n", ep->desc.bEndpointAddress,
+		    dwc_ep_addr_to_endpoint(ep->desc.bEndpointAddress));
+	dwc_otg_hcd_endpoint_disable(dwc_otg_hcd, ep->hcpriv, 250);
+	ep->hcpriv = NULL;
+}
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30)
+/* Resets endpoint specific parameter values, in current version used to reset
+ * the data toggle(as a WA). This function can be called from usb_clear_halt routine */
+static void endpoint_reset(struct usb_hcd *hcd, struct usb_host_endpoint *ep)
+{
+	dwc_irqflags_t flags;
+	struct usb_device *udev = NULL;
+	int epnum = usb_endpoint_num(&ep->desc);
+	int is_out = usb_endpoint_dir_out(&ep->desc);
+	int is_control = usb_endpoint_xfer_control(&ep->desc);
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+        struct device *dev = DWC_OTG_OS_GETDEV(dwc_otg_hcd->otg_dev->os_dep);
+
+	if (dev)
+		udev = to_usb_device(dev);
+	else
+		return;
+
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD EP RESET: Endpoint Num=0x%02d\n", epnum);
+
+	DWC_SPINLOCK_IRQSAVE(dwc_otg_hcd->lock, &flags);
+	usb_settoggle(udev, epnum, is_out, 0);
+	if (is_control)
+		usb_settoggle(udev, epnum, !is_out, 0);
+
+	if (ep->hcpriv) {
+		dwc_otg_hcd_endpoint_reset(dwc_otg_hcd, ep->hcpriv);
+	}
+	DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, flags);
+}
+#endif
+
+/** Handles host mode interrupts for the DWC_otg controller. Returns IRQ_NONE if
+ * there was no interrupt to handle. Returns IRQ_HANDLED if there was a valid
+ * interrupt.
+ *
+ * This function is called by the USB core when an interrupt occurs */
+static irqreturn_t dwc_otg_hcd_irq(struct usb_hcd *hcd)
+{
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+	int32_t retval = dwc_otg_hcd_handle_intr(dwc_otg_hcd);
+	if (retval != 0) {
+		S3C2410X_CLEAR_EINTPEND();
+	}
+	return IRQ_RETVAL(retval);
+}
+
+/** Creates Status Change bitmap for the root hub and root port. The bitmap is
+ * returned in buf. Bit 0 is the status change indicator for the root hub. Bit 1
+ * is the status change indicator for the single root port. Returns 1 if either
+ * change indicator is 1, otherwise returns 0. */
+int hub_status_data(struct usb_hcd *hcd, char *buf)
+{
+	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
+
+	buf[0] = 0;
+	buf[0] |= (dwc_otg_hcd_is_status_changed(dwc_otg_hcd, 1)) << 1;
+
+	return (buf[0] != 0);
+}
+
+/** Handles hub class-specific requests. */
+int hub_control(struct usb_hcd *hcd,
+		u16 typeReq, u16 wValue, u16 wIndex, char *buf, u16 wLength)
+{
+	int retval;
+
+	retval = dwc_otg_hcd_hub_control(hcd_to_dwc_otg_hcd(hcd),
+					 typeReq, wValue, wIndex, buf, wLength);
+
+	switch (retval) {
+	case -DWC_E_INVALID:
+		retval = -EINVAL;
+		break;
+	}
+
+	return retval;
+}
+
+#endif /* DWC_DEVICE_ONLY */
+@
+
+
+1.5
+log
+@Update to latest code from Raspberry Pi github
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github (rev e0001dd59d). Includes the fabled 'FIQ fix' code, although the code isn't yet enabled in the RISC OS version of the driver.
+  c/cmodule - Add extra flags for controlling driver behaviour, as required by the new core code
+  c/dwc_otg_riscos - Add some missing driver parameters (although we leave them at default). Handle DWC_E_SHUTDOWN xfer errors, which will now be produced when the driver is shutting down
+  c/softc_device - Disable interrupts around dwc_otg_hcd_urb_enqueue, to mirror behaviour of Linux code (previously, it was the responsibility of the DWC code to disable interrupts for the appropriate part of the operation)
+  s/regaccess - Add some extra IRQ/memory barrier functions required by the new code (mainly the FIQ fix). Make DWC_MODIFY_REG32 operate atomicly (mirrors change in Linux version)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.11. Tagged as 'DWCDriver-0_11'
+@
+text
+@d61 1
+d73 2
+a74 1
+#include "dwc_otg_mphi_fix.h"
+d85 1
+a85 1
+extern bool fiq_fix_enable;
+d134 1
+a134 1
+	//.reset =              
+d136 2
+a137 2
+	//.suspend =            
+	//.resume =             
+d150 2
+a151 2
+	//.bus_suspend =                
+	//.bus_resume =         
+a355 1
+
+a398 5
+struct fiq_stack_s {
+	int magic1;
+	uint8_t stack[2048];
+	int magic2;
+} fiq_stack;
+d400 56
+a455 1
+extern mphi_regs_t c_mphi_regs;
+a468 1
+	struct pt_regs regs;
+d477 1
+a477 1
+              
+a485 14
+	if (fiq_fix_enable)
+	{
+		// Set up fiq
+		claim_fiq(&fh);
+		set_fiq_handler(__FIQ_Branch, 4);
+		memset(&regs,0,sizeof(regs));
+		regs.ARM_r8 = (long)dwc_otg_hcd_handle_fiq;
+		regs.ARM_r9 = (long)0;
+		regs.ARM_sp = (long)fiq_stack.stack + sizeof(fiq_stack.stack) - 4;
+		set_fiq_regs(&regs);
+		fiq_stack.magic1 = 0xdeadbeef;
+		fiq_stack.magic2 = 0xaa995566;
+	}
+
+a504 10
+	if (fiq_fix_enable)
+	{
+		volatile extern void *dwc_regs_base;
+
+		//Set the mphi periph to  the required registers
+		c_mphi_regs.base    = otg_dev->os_dep.mphi_base;
+		c_mphi_regs.ctrl    = otg_dev->os_dep.mphi_base + 0x4c;
+		c_mphi_regs.outdda  = otg_dev->os_dep.mphi_base + 0x28;
+		c_mphi_regs.outddb  = otg_dev->os_dep.mphi_base + 0x2c;
+		c_mphi_regs.intstat = otg_dev->os_dep.mphi_base + 0x50;
+a505 13
+		dwc_regs_base = otg_dev->os_dep.base;
+
+		//Enable mphi peripheral
+		writel((1<<31),c_mphi_regs.ctrl);
+#ifdef DEBUG
+		if (readl(c_mphi_regs.ctrl) & 0x80000000)
+			DWC_DEBUGPL(DBG_USER, "MPHI periph has been enabled\n");
+		else
+			DWC_DEBUGPL(DBG_USER, "MPHI periph has NOT been enabled\n");
+#endif
+		// Enable FIQ interrupt from USB peripheral
+		enable_fiq(INTERRUPT_VC_USB);
+	}
+d519 9
+d543 1
+a543 1
+        retval = usb_add_hcd(hcd, platform_get_irq(_dev, 0), IRQF_SHARED | IRQF_DISABLED);
+d545 1
+a545 1
+        retval = usb_add_hcd(hcd, _dev->irq, IRQF_SHARED | IRQF_DISABLED);	
+d642 1
+d644 5
+a648 2
+
+	return dwc_otg_hcd_get_frame_number(dwc_otg_hcd);
+d711 1
+a711 1
+      	dwc_irqflags_t irqflags;
+d773 1
+a773 1
+	if (hcd->self.uses_dma) {
+d780 4
+a783 3
+		//buf = phys_to_virt(urb->transfer_dma);
+                // DMA addresses are bus addresses not physical addresses!
+                buf = dma_to_virt(&urb->dev->dev, urb->transfer_dma);
+d871 1
+a871 1
+    	                                    (dwc_otg_hcd_urb_t *)urb->hcpriv);
+d873 3
+a875 3
+        	        DWC_FREE(urb->hcpriv);
+            		urb->hcpriv = NULL;
+            	}
+d879 1
+a879 1
+        	/* Higher layer software sets URB status. */
+d883 1
+a883 1
+        	DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, flags);
+d897 1
+a897 1
+        	DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, flags);
+d901 1
+a901 1
+           
+d921 1
+a921 1
+/* Resets endpoint specific parameter values, in current version used to reset 
+@
+
+
+1.4
+log
+@Update to version 3.00 of DWC_otg
+Detail:
+  This big batch of changes brings us in line with rev 70428950df of the Raspberry Pi Linux github.
+  Briefly:
+  * Deleted HTML docs as they're a waste of space
+  * Dropped the SOF fix (which we never used anyway)
+  * Dropped our implementation of the microframe scheduling patch, in favour of their implementation
+  * Updated to version 3.00 of the DWC sources. Hard to tell what useful changes this brings, due to API tweaks resulting in pretty much every file being littered with changes.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  This new version seems like it might be a bit more sensitive to insufficient power supplies. Beware!
+
+
+Version 0.09. Tagged as 'DWCDriver-0_09'
+@
+text
+@d1 1
+d54 1
+d72 2
+d83 2
+d268 2
+a269 1
+ * required cleanup of the URB is performed.
+d275 2
+a276 1
+
+d290 1
+a290 1
+
+d312 3
+d356 5
+a360 1
+
+d362 1
+a362 1
+        usb_hcd_unlink_urb_from_ep(dwc_otg_hcd_to_hcd(hcd), urb);
+a363 1
+	DWC_SPINUNLOCK(hcd->lock);
+d365 1
+a365 1
+	usb_hcd_giveback_urb(dwc_otg_hcd_to_hcd(hcd), urb);
+d367 9
+a375 1
+	usb_hcd_giveback_urb(dwc_otg_hcd_to_hcd(hcd), urb, status);
+d377 6
+a382 2
+	DWC_SPINLOCK(hcd->lock);
+
+d395 10
+d418 1
+d436 14
+d469 24
+a684 1
+#if USB_URB_EP_LINKING
+a685 1
+#endif
+d737 3
+a739 4
+        urb->hcpriv = dwc_otg_urb;
+        if (!dwc_otg_urb && urb->number_of_packets)
+                return -ENOMEM;
+        
+d778 2
+a780 1
+        DWC_SPINLOCK_IRQSAVE(dwc_otg_hcd->lock, &irqflags);
+d782 17
+a798 2
+        DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, irqflags);
+	if (0 == retval) 
+d800 6
+a805 13
+        {
+                retval = dwc_otg_hcd_urb_enqueue(dwc_otg_hcd, dwc_otg_urb,
+                                                 /*(dwc_otg_qh_t **)*/
+                                                 ref_ep_hcpriv, 
+                                                 mem_flags == GFP_ATOMIC ? 1 : 0);
+                if (0 == retval) {
+                        if (alloc_bandwidth) {
+                                allocate_bus_bandwidth(hcd,
+                                        dwc_otg_hcd_get_ep_bandwidth(
+                                                dwc_otg_hcd, *ref_ep_hcpriv),
+                                                       urb);
+                        }
+                } else {
+d807 7
+a813 11
+                	dwc_irqflags_t irqflags;
+                        DWC_DEBUGPL(DBG_HCD, "DWC OTG dwc_otg_hcd_urb_enqueue failed rc %d\n", retval);
+                        DWC_SPINLOCK_IRQSAVE(dwc_otg_hcd->lock, &irqflags);
+                        usb_hcd_unlink_urb_from_ep(hcd, urb);
+                        DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, irqflags);
+#endif
+                        if (retval == -DWC_E_NO_DEVICE) {
+                                retval = -ENODEV;
+                        }
+                }
+        }
+d857 2
+@
+
+
+1.3
+log
+@Track latest developments on Raspberry Pi github
+Detail:
+  Makefile, c/cmodule, h/module, dwc/driver/c/dwc_otg_driver, dwc/driver/c/dwc_otg_hcd, dwc/driver/c/dwc_otg_hcd_ddma, dwc/driver/c/dwc_otg_hcd_intr, dwc/driver/c/dwc_otg_hcd_linex, dwc/driver/h/dwc_otg_hcd, dwc/dwc_common_port/c/dwc_common_linux - Track latest developments on Raspberry Pi github. Includes fixes for buffer overruns when unexpectedly receiving too much data, and changes to allow SOF interrupt spam to be reduced.
+  c/dwc_common_riscos - Make sure we always round up delay values when converting from msec to csec. Avoids issues with high frequency timers (e.g. SOF re-enable timer) hogging all the CPU time. May be the cause of some other bad behaviour that I've experienced in the past?
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Note - SOF fix is currently disabled, as it was causing too many interrupt packets (e.g. mouse clicks) to be lost. Probable cause is that we're running the SOF re-enable timer at 100Hz instead of 1kHz. May be worth investigating moving all timer/thread scheduling over to a HAL timer which can provide us a 1kHz ticker interrupt.
+
+
+Version 0.05. Tagged as 'DWCDriver-0_05'
+@
+text
+@d3 3
+a5 3
+ * $Revision: #11 $
+ * $Date: 2009/04/21 $
+ * $Change: 1237476 $
+d53 6
+d60 2
+a61 5
+#ifdef LM_INTERFACE
+//#include <asm/arch/regs-irq.h>
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+#include <asm/arch/lm.h>
+#include <asm/arch/irqs.h>
+d63 1
+a63 5
+#include <mach/lm.h>
+#include <mach/irqs.h>
+#endif
+#elif defined(PLATFORM_INTERFACE)
+#include <linux/platform_device.h>
+a65 3
+#include <linux/usb.h>
+#include <linux/usb/hcd.h>
+
+a69 1
+
+d82 2
+a83 2
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+static int urb_enqueue(struct usb_hcd *hcd,
+d85 1
+d88 8
+a95 4
+static int urb_dequeue(struct usb_hcd *hcd, struct urb *urb);
+#else
+static int urb_enqueue(struct usb_hcd *hcd,
+		       struct urb *urb, gfp_t mem_flags);
+d97 3
+a99 2
+static int urb_dequeue(struct usb_hcd *hcd,
+		       struct urb *urb, int status);
+a100 3
+
+static void endpoint_disable(struct usb_hcd *hcd, struct usb_host_endpoint *ep);
+
+d132 2
+a133 2
+	.urb_enqueue = urb_enqueue,
+	.urb_dequeue = urb_dequeue,
+d135 3
+a137 1
+
+a263 4
+#ifdef DEBUG_SOF_FIX
+extern unsigned int g_dwc_otg_interrupt_counts[10];
+#endif
+
+a266 1
+	uint64_t flags;
+a268 5
+#ifdef DEBUG_SOF_FIX
+	g_dwc_otg_interrupt_counts[7]++;
+#endif
+
+#ifdef DEBUG
+a281 1
+#endif
+d320 1
+a320 2
+			    dwc_otg_hcd_urb_get_iso_desc_status
+			    (dwc_otg_urb, i);
+d339 1
+a339 2
+									ep->
+									hcpriv),
+d344 7
+a350 2
+	dwc_free(dwc_otg_urb);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+a352 3
+	DWC_SPINLOCK_IRQSAVE(hcd->lock, &flags);
+	usb_hcd_unlink_urb_from_ep(dwc_otg_hcd_to_hcd(hcd), urb);
+	DWC_SPINUNLOCK_IRQRESTORE(hcd->lock, flags);
+d355 2
+d375 1
+a375 9
+int hcd_init(
+#ifdef LM_INTERFACE
+	struct lm_device *_dev
+#elif  defined(PCI_INTERFACE)
+	struct pci_dev *_dev
+#elif  defined(PLATFORM_INTERFACE)
+	struct platform_device *_dev
+#endif
+	)
+d379 1
+a379 8
+#ifdef LM_INTERFACE
+	dwc_otg_device_t *otg_dev = lm_get_drvdata(_dev);
+#elif  defined(PCI_INTERFACE)
+	dwc_otg_device_t *otg_dev = pci_get_drvdata(_dev);
+#elif  defined(PLATFORM_INTERFACE)
+	dwc_otg_device_t *otg_dev = platform_get_drvdata(_dev);
+#endif
+
+d403 2
+a404 3
+	hcd = usb_create_hcd(&dwc_otg_hc_driver, &_dev->dev,
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+                             _dev->dev.bus_id);
+d406 4
+a409 1
+                             dev_name(&_dev->dev));
+d416 1
+a416 4
+	hcd->regs = otg_dev->base;
+
+	/* Integrate TT in root hub */
+	hcd->has_tt = 1;
+d431 1
+d433 7
+a439 1
+
+d446 1
+a446 1
+	retval = usb_add_hcd(hcd, platform_get_irq(_dev, 0), IRQF_SHARED);
+d448 1
+a448 1
+	retval = usb_add_hcd(hcd, _dev->irq, IRQF_SHARED);
+d457 1
+a457 1
+      error2:
+d459 1
+a459 1
+      error1:
+d467 1
+a467 9
+void hcd_remove(
+#ifdef LM_INTERFACE
+	struct lm_device *_dev
+#elif  defined(PCI_INTERFACE)
+	struct pci_dev *_dev
+#elif  defined(PLATFORM_INTERFACE)
+	struct platform_device *_dev
+#endif
+	)
+d469 1
+a469 8
+#ifdef LM_INTERFACE
+	dwc_otg_device_t *otg_dev = lm_get_drvdata(_dev);
+#elif  defined(PCI_INTERFACE)
+	dwc_otg_device_t *otg_dev = pci_get_drvdata(_dev);
+#elif  defined(PLATFORM_INTERFACE)
+	dwc_otg_device_t *otg_dev = platform_get_drvdata(_dev);
+#endif
+
+a594 1
+
+d600 2
+a601 2
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+static int urb_enqueue(struct usb_hcd *hcd,
+d603 1
+d606 6
+a611 6
+#else
+static int urb_enqueue(struct usb_hcd *hcd,
+		       struct urb *urb,
+                       gfp_t mem_flags)
+{
+        struct usb_host_endpoint *ep = urb->ep;
+a613 1
+	int retval = 0;
+d624 1
+a624 1
+		dump_urb_info(urb, "urb_enqueue");
+d653 1
+a653 1
+		DWC_WARN("Wrong ep type\n");
+d656 1
+d665 2
+d686 1
+a686 1
+	
+d695 2
+a696 4
+				   urb->setup_packet, 
+				   urb->setup_dma,
+				   flags,
+				   urb->interval);
+d700 4
+a703 4
+						    urb->iso_frame_desc[i].
+						    offset,
+						    urb->iso_frame_desc[i].
+						    length);
+d706 2
+a707 1
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+d709 1
+d715 2
+a716 1
+                                                 ref_ep_hcpriv);
+d725 4
+a728 1
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+d730 1
+d742 2
+a743 2
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+static int urb_dequeue(struct usb_hcd *hcd, struct urb *urb)
+d745 1
+a745 1
+static int urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
+d748 1
+a748 2
+	int rc;
+	uint64_t flags;
+d750 2
+d758 1
+a758 1
+		dump_urb_info(urb, "urb_dequeue");
+a760 6
+	if(urb->hcpriv != NULL) {
+		dwc_otg_hcd_urb_dequeue(dwc_otg_hcd, (dwc_otg_hcd_urb_t *)urb->hcpriv);
+
+		dwc_free(urb->hcpriv);
+		urb->hcpriv = NULL;
+	}
+a761 4
+	/* Higher layer software sets URB status. */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,30))
+	usb_hcd_giveback_urb(hcd, urb);
+#else
+d764 9
+a772 4
+	if(!rc)
+	{
+		usb_hcd_unlink_urb_from_ep(hcd, urb);
+	}
+d774 10
+a783 5
+	DWC_SPINUNLOCK_IRQRESTORE(dwc_otg_hcd->lock, flags);
+	if (!rc)
+	{
+		usb_hcd_giveback_urb(hcd, urb, status);
+	}
+d785 12
+a796 6
+	if (CHK_DEBUG_LEVEL(DBG_HCDV | DBG_HCD_URB)) {
+		DWC_PRINTF("Called usb_hcd_giveback_urb()\n");
+		DWC_PRINTF("  urb->status = %d\n", urb->status);
+	}
+
+	return 0;
+d814 32
+a850 4
+
+#ifdef DEBUG_SOF_FIX
+unsigned int g_dwc_otg_hcd_irq_count = 0;
+#endif
+a857 6
+
+#ifdef DEBUG_SOF_FIX
+	++g_dwc_otg_hcd_irq_count;
+	if ((++g_dwc_otg_hcd_irq_count %10000) == 0)
+		printk(KERN_ERR "dwc_otg_hcd_irq: %u completions.\n", g_dwc_otg_hcd_irq_count);
+#endif
+d893 1
+a893 1
+#endif				/* DWC_DEVICE_ONLY */
+@
+
+
+1.2
+log
+@Update to latest code from Raspberry Pi github. Improve debugging. Fix race condition that could lead to timeout callbacks inappropriately firing.
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github. Tweaks specific to Broadcom hardware have been placed in BCM2835 #ifdef's to allow them to easily be identified/controlled if we need the driver to support different SoCs in future
+  c/cmodule, c/dwc_common_riscos, c/port, c/softc_device, h/cmodule - Improved debugging code
+  c/softc_device - Schedule timeout before starting transfer instead of after. Fixes issue where a transfer that completes inbetween dwc_otg_hcd_urb_enqueue() and callout_reset() would result in the timeout being enabled even though the transfer is already complete
+  s/triggercbs - Synced with latest USBDriver version for consistency
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Fixes some, if not all, stability issues
+
+
+Version 0.04. Tagged as 'DWCDriver-0_04'
+@
+text
+@d73 1
+d194 1
+d211 8
+a218 2
+        } else
+                *hub_addr = urb->dev->tt->hub->devnum;
+d221 1
+a222 1
+   *port_addr = urb->dev->ttport;
+d264 4
+d271 1
+d273 5
+d361 1
+d363 1
+d774 2
+d797 12
+a808 2
+	usb_hcd_unlink_urb_from_ep(hcd, urb);
+	usb_hcd_giveback_urb(hcd, urb, status);
+d838 4
+d849 6
+@
+
+
+1.1
+log
+@Add initial version of DWCDriver - USB driver for Synopsys DWC OTG controllers
+Detail:
+  A fairly simple wrapper for Synopsys's open source "DWC_otg" Linux driver, based around a GPL-free version of the DWC_otg 2.90a sources received from the Raspberry Pi foundation.
+  Instead of interfacing with the Linux USB stack a new host interface layer has been implemented to allow it to talk to the standard BSD-derived RISC OS stack.
+  RTSupport is used to provide the threading functionality that the DWC driver relies upon.
+  Interesting files:
+  - c/cmodule, h/cmodule - Main module frontend
+  - c/dwc_common_riscos, h/dwc_common_riscos - Implementation of the OS support layer required by the DWC driver
+  - c/dwc_otg_riscos, h/dwc_otg_riscos - Core code for the BSD driver implementation, driver init/shutdown, and for handling calls from the DWC host driver to us
+  - c/port - Some support functions required by BSD-style code inherited from the other USB drivers
+  - c/softc_device - Code to handle requests from the BSD layer to attached USB devices
+  - c/softc_root - Code to handle requests from the BSD layer to the controller root hub
+  - dwc/doc/* - Original Synopsys release notes & user guide pdfs
+  - dwc/driver/*, dwc/dwc_common_port/* - Synopsys code and documentation. A few tweaks were required to allow it to compile under Norcroft, but otherwise it's functionally equivalent to the original sources.
+Admin:
+  Tested in BCM2835 ROM
+  There are a few loose ends still to tidy up (search for "DWCTODO"), mainly regarding implementation of Isochronous support, but otherwise the driver seems stable enough for daily use.
+
+
+Version 0.01. Tagged as 'DWCDriver-0_01'
+@
+text
+@d55 2
+a56 1
+#include <asm/arch/regs-irq.h>
+d59 6
+d68 1
+a68 1
+#include <../drivers/usb/core/hcd.h>
+d85 2
+d92 7
+d192 24
+a215 8
+	struct urb *urb = (struct urb *)urb_handle;
+	if (urb->dev->tt) {
+		*hub_addr = urb->dev->tt->hub->devnum;
+	} else {
+		*hub_addr = 0;
+	}
+	*port_addr = urb->dev->ttport;
+	return 0;
+d340 1
+d342 4
+d367 1
+a367 1
+#elif  PCI_INTERFACE
+d369 2
+d378 1
+a378 1
+#elif  PCI_INTERFACE
+d380 2
+d385 1
+d387 1
+a387 1
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD INIT\n");
+d390 11
+a400 16
+	if (dwc_otg_is_dma_enable(otg_dev->core_if)) {
+#ifdef LM_INTERFACE
+		_dev->dev.dma_mask = (void *)~0;
+		_dev->dev.coherent_dma_mask = ~0;
+#elif  PCI_INTERFACE
+		pci_set_dma_mask(_dev,DMA_32BIT_MASK);		
+		pci_set_consistent_dma_mask(_dev,DMA_32BIT_MASK);
+#endif
+
+	} else {
+#ifdef LM_INTERFACE
+		_dev->dev.dma_mask = (void *)0;
+		_dev->dev.coherent_dma_mask = 0;
+#elif  PCI_INTERFACE
+		pci_set_dma_mask(_dev,0);		
+		pci_set_consistent_dma_mask(_dev,0);
+a401 1
+	}
+d407 6
+a412 1
+	hcd = usb_create_hcd(&dwc_otg_hc_driver, &_dev->dev, _dev->dev.bus_id);
+d420 3
+d443 5
+a447 1
+	retval = usb_add_hcd(hcd, _dev->irq, SA_SHIRQ);
+d468 1
+a468 1
+#elif  PCI_INTERFACE
+d470 2
+d477 1
+a477 1
+#elif  PCI_INTERFACE
+d479 2
+d486 1
+a486 1
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD REMOVE\n");
+d614 1
+d619 8
+d642 3
+d648 1
+a648 1
+		    (dwc_otg_hcd, &ep->hcpriv)) {
+d674 5
+d693 3
+a695 1
+		buf = phys_to_virt(urb->transfer_dma);
+d719 24
+a742 14
+	urb->hcpriv = dwc_otg_urb;
+	retval = dwc_otg_hcd_urb_enqueue(dwc_otg_hcd, dwc_otg_urb, &ep->hcpriv);
+	if (!retval) {
+		if (alloc_bandwidth) {
+			allocate_bus_bandwidth(hcd,
+					       dwc_otg_hcd_get_ep_bandwidth
+					       (dwc_otg_hcd, ep->hcpriv), urb);
+		}
+	} else {
+		if (retval == -DWC_E_NO_DEVICE) {
+			retval = -ENODEV;
+		}
+	}
+
+d748 1
+d750 3
+d764 2
+a765 1
+	dwc_otg_hcd_urb_dequeue(dwc_otg_hcd, urb->hcpriv);
+d767 3
+a769 2
+	dwc_free(urb->hcpriv);
+	urb->hcpriv = NULL;
+d772 1
+d774 4
+@
+

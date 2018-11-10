@@ -1,0 +1,463 @@
+head	1.6;
+access;
+symbols
+	ZeroPain-0_08:1.6
+	ZeroPain-0_07:1.5
+	ZeroPain-0_06:1.4
+	ZeroPain-0_05:1.3
+	ZeroPain-0_04:1.3
+	ZeroPain-0_03:1.3
+	ZeroPain-0_02:1.2
+	ZeroPain-0_01:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.6
+date	2018.04.18.20.34.32;	author rsprowson;	state Exp;
+branches;
+next	1.5;
+commitid	vk4lmWXjxJtKQXyA;
+
+1.5
+date	2017.08.19.17.10.56;	author jlee;	state Exp;
+branches;
+next	1.4;
+commitid	KsmZ8i6eVVXavQ3A;
+
+1.4
+date	2016.04.05.20.58.03;	author jlee;	state Exp;
+branches;
+next	1.3;
+commitid	fP6GuTPKZj3wRt1z;
+
+1.3
+date	2015.07.05.09.56.35;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	qRhlXCNGfe8E25sy;
+
+1.2
+date	2015.07.04.16.29.46;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	kwYeTDLe4CnwfZry;
+
+1.1
+date	2015.07.01.21.44.02;	author jlee;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	a7idPnOv6AQc3Dry;
+
+1.1.1.1
+date	2015.07.01.21.44.02;	author jlee;	state Exp;
+branches;
+next	;
+commitid	a7idPnOv6AQc3Dry;
+
+
+desc
+@@
+
+
+1.6
+log
+@Enter logging only role
+With the advent of the kernel's compatibility page in Kernel-5_87 and later, much of the utility of ZeroPain allowing buggy apps to plod on is redundant.
+However, developers still find its logging useful, since it's easier to read than letting an abort happen (with the compatibility page turned off).
+Move the kill switch to 5.26 and remove the emulation of kernel workspace values, leaving two states
+a) you have the compatibility page for now, and silence for reads
+b) you have ZeroPain loaded, and get logs for reads
+and all writes in any mode aborts.
+
+Version 0.08. Tagged as 'ZeroPain-0_08'
+@
+text
+@/*
+ * Copyright (c) 2015, RISC OS Open Ltd
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+ *       may be used to endorse or promote products derived from this software
+ *       without specific prior written permission.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+#include "modhead.h"
+#include "swis.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+
+#include "Global/RISCOS.h"
+#include "Global/NewErrors.h"
+#include "Global/OSRSI6.h"
+#include "Global/OSMem.h"
+#include "Global/ModHand.h"
+#include "Global/Services.h"
+
+#include "config.h"
+#include "errors.h"
+#include "handler.h"
+#include "log.h"
+
+void *private_word;
+
+#ifdef DEBUG
+extern void (*dadwritec)(void);
+#endif
+
+static bool restore_compat_page = false;
+
+static void disable_compatibility(void)
+{
+	int state;
+	_kernel_oserror *e = _swix(OS_Memory,_INR(0,1)|_OUT(1),OSMemReason_Compatibility,-1,&state);
+	if (!e && (state == 1))
+	{
+		restore_compat_page = !_swix(OS_Memory,_INR(0,1),OSMemReason_Compatibility,0);
+	}
+}
+
+_kernel_oserror* module_init (const char *cmd_tail, int podule_base, void *pw)
+{
+	(void) podule_base;
+
+	_kernel_oserror *e = NULL;
+
+	private_word = pw;
+
+#ifdef DEBUG
+	if (_swix(0x531c0,_OUT(0),&dadwritec))
+		dadwritec = NULL;
+#endif
+
+	/* Check if zero page relocation is in effect
+	   There's no SWI for this, so check if anything is mapped in at page 0
+	*/
+	int flags;
+	e = _swix(OS_Memory,_INR(0,2)|_OUT(1),OSMemReason_CheckMemoryAccess,0,0x4000,&flags);
+	if (e)
+	{
+		/* Old kernel without OS_Memory 24 support? */
+		return error_get(E_Unsupported);
+	}
+	if (flags & 1)
+	{
+		/* Zero page is fully readable in user mode. We aren't needed. */
+		return error_get(E_NotRequired);
+	}
+
+#ifndef ROM_MODULE /* Inclusion in ROM implies that we do want the code active */
+	/* Only support up to the next stable OS release (5.24)
+	*/
+	int osver;
+	e = _swix(OS_Module,_INR(0,2)|_OUT(6),ModHandReason_EnumerateROM_ModulesWithInfo,0,-1,&osver);
+	if (e || (osver >= 0x52600))
+	{
+		return error_get(E_Unsupported);
+	}
+#endif
+
+	/* Get the locations of the zero page areas we emulate */
+	int vals[RSI6Count+1];
+	vals[DomainId] = OSRSI6_DomainId;
+	vals[MetroGnome] = OSRSI6_MetroGnome;
+	vals[VecPtrTab] = OSRSI6_VecPtrTab;
+	vals[RSI6Count] = -1;
+	e = _swix(OS_ReadSysInfo,_INR(0,2),6,vals,rsi6vals);
+	if (e)
+	{
+		goto err0;
+	} 
+
+	/* Read our config file */
+	e = config_read(cmd_tail);
+	if (e)
+	{
+		goto err0;
+	}
+
+#ifndef ROM_MODULE /* Log path will be initialised later */
+	/* Do we have a log path? */
+	if (!log_file[0])
+	{
+		e = error_get(E_NoLog);
+		goto err1;
+	}
+#endif
+
+	/* Install CallEvery */
+	e = _swix(OS_CallEvery,_INR(0,2),100,log_flush_entry,pw);
+	if (e)
+	{
+		goto err1;
+	}
+
+	/* Install abort handler */
+	e = handler_install(handler_do);
+	if (e)
+	{
+		goto err2;
+	}
+
+	/* Make sure the Debugger module is at least collecting exception dumps via SeriousErrorV */
+	const char *val = getenv("Debugger$DumpOptions");
+	if (!val || !val[0])
+	{
+		_kernel_setenv("Debugger$DumpOptions","-none");
+	}
+
+	/* For us to be fully effective, we must disable the compatibility page, if present */
+	disable_compatibility();
+
+	return NULL;
+
+err2:
+	_swix(OS_RemoveTickerEvent,_INR(0,1),log_flush_entry,pw);
+err1:
+	config_free();
+err0:
+
+	return e;
+}
+
+_kernel_oserror *module_final(int fatal, int podule, void *pw)
+{
+	(void) podule;
+	(void) fatal;
+
+	/* Restore compatibility page before removing handler, just in case something is regularly reading page zero */
+	if (restore_compat_page)
+	{
+		_swix(OS_Memory,_INR(0,1),OSMemReason_Compatibility,1);
+	}
+
+	_kernel_oserror* e = handler_remove();
+	if (e)
+	{
+		/* Can't die! */
+		return e;
+	}
+
+	_swix(OS_RemoveTickerEvent,_INR(0,1),log_flush_entry,pw);
+	_swix(OS_RemoveCallBack,_INR(0,1),log_callback_entry,pw);
+
+	/* Write any pending items */
+	log_flush();
+
+	config_free();
+
+	return NULL;
+}
+
+void module_services(int service_number, _kernel_swi_regs *r, void *pw)
+{
+	(void) r;
+	(void) pw;
+	switch (service_number)
+	{
+	case Service_NewApplication:
+		log_new_application();
+		break;
+	case Service_PostInit:
+		/* The kernel enables the compatibility page just before Service_PostInit
+		   Make sure it stays disabled */
+		disable_compatibility();
+		break;
+	}
+}
+@
+
+
+1.5
+log
+@Automatically disable the kernel's compatibility page
+Detail:
+  In order for ZeroPain to be useful for logging page zero accesses or emulating old zero page locations, it needs to be able to trap page zero reads. The new compatibility page introduced in Kernel-5_87 prevents this, so make sure the page is disabled whenever we're active.
+  c/cmodule - Detect & disable the compatibility page on startup and on Service_PostInit (for when ZeroPain is in ROM). Re-enable the page on exit if necessary.
+  c/handler_c - Emulate the same pattern that the kernel includes in the compatibility page for locations &0-&2f
+  c/log, h/log - Root service call handler moved to c/module
+  cmhg/modhead - Listen out for Service_PostInit
+Admin:
+  Tested on BB-xM
+
+
+Version 0.07. Tagged as 'ZeroPain-0_07'
+@
+text
+@d99 1
+a99 1
+	if (e || (osver >= 0x52400))
+a107 1
+	vals[IRQsema] = OSRSI6_IRQsema;
+a108 4
+	vals[CLibCounter] = OSRSI6_CLibCounter;
+	vals[RISCOSLibWord] = OSRSI6_RISCOSLibWord;
+	vals[CLibWord] = OSRSI6_CLibWord;
+	vals[ESC_Status] = OSRSI6_ESC_Status;
+@
+
+
+1.4
+log
+@Leverage SeriousErrorV for producing more detailed log entries. Extend kill switch deadline to the release of RISC OS 5.24.
+Detail:
+  c/cmodule - Extend kill switch deadline to the release of RISC OS 5.24. Look up VecPtrTab so we can make a manual call to SeriousErrorV from ABT mode. Make sure the Debugger module is listening to SeriousErrorV.
+  c/handler_c - Don't perform address translation for null pointers (zeroapgeaddrs currently has a null legacy address for VecPtrTab)
+  c/log, h/log - Update log buffer handling to add support for detailed logs produced by SeriousErrorV/Debugger. Since the logs can be large we currently only allow one to be stored in memory at a time.
+  s/handler_asm - Implement log_detailed function to decide (a) whether it's safe to call SeriousErrorV, and (b) deal with the fact that SeriousErrorV_Collect must be called in ABT mode in order to avoid overwriting any important SVC stack content
+  h/handler - Adding VecPtrTab to rsi6val enum & log_detailed prototype
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.06. Tagged as 'ZeroPain-0_06'
+@
+text
+@d38 3
+d53 12
+d82 1
+a82 1
+	e = _swix(OS_Memory,_INR(0,2)|_OUT(1),24,0,0x4000,&flags);
+d98 1
+a98 1
+	e = _swix(OS_Module,_INR(0,2)|_OUT(6),20,0,-1,&osver);
+d119 1
+a119 1
+		return e;
+d126 1
+a126 1
+		return e;
+d133 2
+a134 1
+		return error_get(E_NoLog);
+d159 3
+d168 1
+d178 6
+d201 17
+@
+
+
+1.3
+log
+@Modify to allow inclusion in ROM builds
+Detail:
+  Makefile - Define ROM_MODULE when being built for ROM
+  h/handler, s/handler_asm - Ensure abort handler stub is running from RAM (so it can use PC-relative LDR to get workspace values)
+  c/cmodule - Disable ROM date check when running from ROM. Allow log configuration to fail when running from ROM.
+  c/log - When running from ROM, wait until log configuration succeeds before outputing any logs
+Admin:
+  Tested on Iyonix
+
+
+Version 0.03. Tagged as 'ZeroPain-0_03'
+@
+text
+@d80 1
+a80 10
+	/* Don't support ROMs built after 2015. This built-in kill switch
+	   ensures that we'll get some testing period where zero page is
+	   relocated but there's no ZeroPain as a safety net (avoids relying
+	   on users to remember to uninstall the module). We could check the
+	   current time here, but (a) that wouldn't work for people without
+	   battery backed RTCs, and (b) breaking people's machines on an
+	   arbitrary date isn't very nice. If we check the ROM date then the
+	   only way it will break is as the result of a user-initiated action.
+	   Of course, this also means that the only way we'll get a testing
+	   period where ZeroPain is inactive is if people do update their ROMs!
+d82 3
+a84 3
+	const char* date = NULL;
+	e = _swix(OS_ReadSysInfo,_INR(0,1)|_OUT(0),9,2,&date);
+	if (e || !date || !strstr(date,"2015")) /* Simple strstr is sufficient, and avoids us having to worry about territory-specific date formats */
+d99 1
+d136 7
+@
+
+
+1.2
+log
+@Change kill switch to be based around OS build date, rather than version number. Improve log output when code isn't in application space or a module.
+Detail:
+  c/cmodule - The built-in kill switch now checks the OS build date rather than the version number. This will give us a period of testing prior to the next stable OS release where zero page is relocated but ZeroPain is inactive. The kill switch is set to the end of 2015, which should be a reasonable amount of time for developers to respond.
+  c/log - Use the new OS_DynamicArea 20 call to help identify the location of code if it's not in application space or not in a module.
+Admin:
+  Tested on Iyonix with zero page relocation
+
+
+Version 0.02. Tagged as 'ZeroPain-0_02'
+@
+text
+@d79 1
+d97 1
+d122 1
+d128 1
+d138 1
+a138 1
+	e = handler_install();
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a62 15
+	/* Check we're running on <= RISC OS 5.23
+	   We want to try and avoid people continuing to use this module once
+	   5.24 is released
+	*/
+	int ver;
+	e = _swix(OS_Module,_INR(0,2)|_OUT(6),20,0,-1,&ver);
+	if (e)
+	{
+		return e;
+	}
+	if (ver >= 0x52400)
+	{
+		return error_get(E_Unsupported);
+	}
+
+d79 18
+@
+
+
+1.1.1.1
+log
+@Initial import of ZeroPain module
+Detail:
+  This is a compatibility/logging module designed to work with zero page
+  relocation. It will trap any emulate LDR/LDRB/LDM which reads from the first
+  16K of the logical address space. Attempts to access some known kernel
+  workspace locations will cause the correct value to be returned, while all
+  other locations will return zero. Whenever an instruction is trapped and
+  emulated an entry will be added to a log file so that the user is aware of
+  the issue.
+Admin:
+  Tested on Iyonix with zero page relocation
+
+@
+text
+@@

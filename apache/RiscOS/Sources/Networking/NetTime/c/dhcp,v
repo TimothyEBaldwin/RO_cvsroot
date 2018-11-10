@@ -1,0 +1,207 @@
+head	4.3;
+access;
+symbols
+	NetTime-0_43:4.3
+	NetTime-0_42:4.3
+	NetTime-0_41:4.3
+	NetTime-0_40:4.3
+	NetTime-0_39:4.3
+	NetTime-0_38:4.2
+	NetTime-0_37:4.2
+	NetTime-0_36:4.2
+	NetTime-0_35:4.2
+	NetTime-0_34:4.2
+	NetTime-0_33:4.2
+	NetTime-0_32:4.1
+	NetTime-0_31:4.1
+	NetTime-0_30:4.1
+	NetTime-0_29:4.1
+	dellis_autobuild_BaseSW:4.1
+	NetTime-0_28:4.1
+	NetTime-0_26:4.1
+	NetTime-0_25:4.1
+	NetTime-0_24:4.1
+	NetTime-0_23:4.1
+	sbrodie_sedwards_16Mar2000:4.1
+	NetTime-0_22:4.1
+	NetTime-0_21:4.1
+	dcotton_autobuild_BaseSW:4.1
+	NetTime-0_20:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.3
+date	2012.02.25.08.18.16;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	7cQZQe1cYi4cUvUv;
+
+4.2
+date	2004.06.14.12.26.44;	author kbracey;	state Exp;
+branches;
+next	4.1;
+
+4.1
+date	2000.03.07.10.44.46;	author kbracey;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.3
+log
+@Remove DST CMOS fiddling code.
+Shortly to be handled by TerritoryManager, but the DST fiddling in this module was already broken. Aside from only knowing about Europe and Australia, the Australia rules were wrong too (since they've been changed again).
+dhcp.c: use names for timezone CMOS rather than magic numbers.
+Rework read_os_var() to remove the 'read length when buff = NULL' which is never used, but also wouldn't have worked because the read length call to OS_ReadVarVal returns an error which is caught by the _swix() hence you always got -1.
+Put resolver variable name into a define in the header file.
+
+Version 0.39. Tagged as 'NetTime-0_39'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <protocols/dhcp.h>
+
+#include <swis.h>
+#include <DHCP.h>
+#include "Global/CMOS.h"
+#include "nettime.h"
+
+void handle_dhcp(_kernel_swi_regs *r)
+{
+    BOOTP *dhcp;
+    size_t len, free, optlen;
+    char buffer[32];
+    int offset;
+
+    if (r->r[0] == 4) /* DHCP/BOOTP response to dynamic boot */
+    {
+        dhcp = (BOOTP *) r->r[4];
+        len = r->r[5];
+    }
+    else if (r->r[0] == 7) /* DHCPACK response to DHCPINFORM */
+    {
+        dhcp = (BOOTP *) r->r[2];
+        len = r->r[3];
+    }
+    else
+        return;
+
+    /* Check it's a DHCPACK */
+    if (_swix(DHCP_GetOption, _INR(0,4)|_OUT(4), 1, dhcp, OPTION_DHCPMESSAGETYPE,
+                                                    buffer, sizeof buffer, &free))
+        return;
+
+    optlen = sizeof buffer - free;
+    if (optlen != 1 || buffer[0] != DHCPACK)
+        return;
+
+    /* Extract the time offset option */
+    if (_swix(DHCP_GetOption, _INR(0,4)|_OUT(4), 1, dhcp, OPTION_TIMEOFFSET,
+                                                    buffer, sizeof buffer, &free))
+        return;
+
+    optlen = sizeof buffer - free;
+    if (optlen != 4)
+        return;
+
+    offset = (int) ntohl(*(int *) buffer);
+
+    /* Offset is in seconds - convert to 15 minute units */
+    if (offset >= 0)
+        offset = (offset + 450) / 900;
+    else
+        offset = (offset - 450) / 900;
+    if (offset < -128 || offset > 127)
+        return;
+
+    _swix(OS_Byte, _INR(0,2), WriteCMOS, TimeZoneCMOS, offset);
+}
+@
+
+
+4.2
+log
+@Negative timezone offsets received from DHCP were incorrectly rounded,
+resulting in -5:45 being set instead of -6:00.
+
+Version 0.33. Tagged as 'NetTime-0_33'
+@
+text
+@a20 1
+
+d22 1
+a22 1
+
+d73 1
+a73 1
+    _swix(OS_Byte, _INR(0,2), 162, 139, offset);
+@
+
+
+4.1
+log
+@  Added support for NTP, gradual time adjustment, configurable DST,
+  and DHCP timezone.
+
+Detail:
+  If Inet$NTPServer is set, NetTime will use NTP (unicast SNTP, as per RFC2030).
+  Otherwise it will use the UDP time protocol (it used to use TCP).
+
+  NetTime will use the RTCAdjust algorithms to adjust the centisecond clock
+  rate by +/-10% to get in step with the time server. By polling every 30
+  minutes on a LAN, time will not deviate by more than 0.1 seconds once
+  synchronised. It interoperates with RTCAdjust and the hardware RTC to ensure
+  correct operation on a machine with RTC.
+
+  NetTime has returned to polling every 30 minutes. This may defeat PPP
+  timeouts - a suggested fix is to change PPP to only have TCP traffic keep the
+  link up, or to have a separate user inactivity timeout (like Lazarus).
+
+  The system variable NetTime$DST controls DST behaviour. Set to "European"
+  (the default) to use European rules. Set it to something like
+  "03-May-2000.01:00:00; 14-Sep-2000.01:00:00" to specify this year's start
+  and end dates (in UTC). Set to "No" to make it leave DST alone.
+
+  If a DHCP reply arrives while NetTime is loaded, it will check for the time
+  offset option - if present, the timezone will be configured.
+
+  New command *NetTime_Status gives information about the clock adjustments.
+
+  NetTime attempts to start operation immediately on a non-dialup machine -
+  removes the need for a *NetTime_Kick after softloading. *NetTime_Kick will
+  still be required after, say, setting Inet$NTPServer manually.
+
+Admin:
+  Tested on desktop systems and STBs. NTP operation on an NC will require a
+  way of finding out an NTP server - possibly redefining TIME_SERVER smartcard
+  tag to be NTP? Anycast operation may also be worth adding.
+
+Version 0.20. Tagged as 'NetTime-0_20'
+@
+text
+@d67 4
+a70 1
+    offset = (offset + 450) / 900;
+@
+

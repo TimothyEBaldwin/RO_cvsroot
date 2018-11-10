@@ -1,0 +1,533 @@
+head	1.4;
+access;
+symbols
+	SrcEdit-1_34:1.4
+	SrcEdit-1_33:1.4
+	SrcEdit-1_32:1.4
+	SrcEdit-1_31:1.4
+	SrcEdit-1_30:1.4
+	SrcEdit-1_29:1.4
+	SrcEdit-1_28:1.4
+	SrcEdit-1_27:1.4
+	SrcEdit-1_26:1.4
+	SrcEdit-1_25:1.4
+	SrcEdit-1_24:1.3
+	SrcEdit-1_23:1.3
+	SrcEdit-0_02:1.2
+	SrcEdit-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2007.11.13.01.38.59;	author srevill;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2007.06.10.12.29.42;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2007.05.24.18.29.56;	author srevill;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2007.05.24.17.50.40;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2007.05.24.17.50.40;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@Throwback and selectload names canonicalised
+Detail:
+  Changes made to c.throwback and c.selectload to make throwback always use
+  a full path name.
+Admin:
+  Tested on Iyonix RO510
+Changed by:
+  Colin Granville
+
+Version 1.25. Tagged as 'SrcEdit-1_25'
+@
+text
+@/* Copyright 2007 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* File:    selectload.c
+ * Purpose: loading a file from a selection
+ * Author:  IDJ
+ * History: 28-Feb-90: IDJ: created
+ *          21-Feb-91: IDJ: major hack to filename munging,
+ *                          this is all very dodgy
+ *
+ *          Re-release
+ *          13-Nov-91: IDJ: allow filenames with non alphanums to be loaded from selection
+ *                          (bug fix DDE-0823)
+ *
+ *          Aquarius
+ *          15-Dec-94: IDJ: bug-fix AQU-00507 (ctrl-l for non-existant file)
+ */
+
+
+#include <string.h>
+#include <stdio.h>
+#include <ctype.h>
+
+#include "txtedit.h"
+#include "txtscrap.h"
+#include "werr.h"
+#include "msgs.h"
+#include "os.h"
+
+#include "multiedit.h"
+#include "languages.h"
+#include "options.h"
+#include "selectload.h"
+#include "canonise.h"
+
+#define min(a,b) (((a)<(b))?a:b)
+
+static char *selectload__searchpath = "";
+
+#define isseparator(c)  (((c) == '.') || ((c) == ':'))
+
+static BOOL selectload__tryfile(char *root, char *main, char *extn)
+{
+   char filename[256];
+   os_filestr f;
+   os_error *e;
+
+   /* assertion:  if there are dots in the filename then main != 0
+                  and extn != 0
+   */
+
+   filename[0] = 0;
+
+   if (main == 0)
+      strncpy(filename, root, 256);
+   else
+   {
+      char *p = root;
+      int i = 0;
+      while (p < min(main,extn) && i < 255)
+      {
+         filename[i++] = *p++;
+         filename[i] = 0;
+      }
+   }
+
+   /* --- stick on main and extn dot-separated --- */
+   if (main != 0 && extn != 0)
+   {
+      char *pp = &filename[strlen(filename)];
+      while (*main != '.' && *main != 0) *pp++ = *main++;
+      *pp++ = '.';
+      while (*extn != '.' && *extn != 0) *pp++ = *extn++;
+      *pp = 0;
+   }
+
+   f.action = 5;  /* see if file exists */
+   f.name = filename;
+   e = os_file(&f);
+   if (e == 0 && f.action == 1 /*file found*/)
+   {
+      canonise_filenamebuffer(filename,sizeof(filename),0);
+      txtedit_state *s = txtedit_new(filename, 0xfff);
+      if (multiedit_closeit()) txtedit_dispose(s);
+      return TRUE;
+   }
+   else
+      return FALSE;
+}
+
+
+
+static void selectload__split_name(char *filename, char **main, char **extn)
+{
+   int l = strlen(filename);
+   char *p = filename;
+   int ndots = 0;
+
+   /* assertion:
+    *     if no dots then set main == extn == 0
+    *     else extn points after "last" dot
+    *     "last" dot gets set to zero
+    *     main points at alphanumerics immediately preceding "last" dot
+   */
+
+   *main = *extn = 0;
+
+   /* --- count dots (yuk) --- */
+   while (*p != 0)
+   {
+      if (*p == '.') ndots++;
+      p++;
+   }
+   if (ndots == 0)
+   {
+      return;
+   }
+
+   /* --- set up extn pointer --- */
+   while (l > 0)
+   {
+      l--;
+      if (filename[l] == '.')
+      {
+         *extn = &filename[l+1];
+         break;
+      }
+   }
+
+   /* --- set up main pointer --- */
+   while (l > 0)
+   {
+      l--;
+      if (isseparator(filename[l]))
+      {
+         *main = &filename[l+1];
+         return;
+      }
+   }
+   *main = &filename[l];
+   return;
+}
+
+
+
+static void selectload__doload(char *selection, char *filename)
+    /* loads a file from a selection
+     * filename refers to the file in which the selection is made
+     */
+{
+   char try_root[256];
+   char *main = 0, *extn = 0, *user_path, *p;
+   int i, j;
+
+   /* try filenames in this order:
+          <selection>
+          <reversed_selection>
+          root<selection>
+          root<reversed_selection>
+          for each element of user search path
+              element<selection>
+              element<reversed_selection>
+          for each element of default search path
+              element<selection>
+              element<reversed_selection>
+    */
+
+   /* --- selection and reverse_selection --- */
+   strncpy(try_root, selection, 256);
+   selectload__split_name(try_root, &main, &extn);
+   if (selectload__tryfile(try_root, main, extn)) return;
+   if (selectload__tryfile(try_root, extn, main)) return;
+
+   /* --- directory containing filename --- */
+   strncpy(try_root, filename, 256);
+   p = &try_root[strlen(try_root)-1];
+   while (p > try_root)
+   {
+      if (isseparator(*p)) break;
+      p--;
+   }
+   if (p == try_root) p--;
+   strcpy(p+1, selection);
+   selectload__split_name(try_root, &main, &extn);
+   if (selectload__tryfile(try_root, main, extn)) return;
+   if (selectload__tryfile(try_root, extn, main)) return;
+
+   /* --- assuming language extn filenames --- */
+   strncpy(try_root, filename, 256);
+   selectload__split_name(try_root, &main, &extn);
+   if (main != 0)
+   {
+      strcpy(main, selection);
+      selectload__split_name(try_root, &main, &extn);
+      if (selectload__tryfile(try_root, main, extn)) return;
+      if (selectload__tryfile(try_root, extn, main)) return;
+   }
+
+   user_path = options_own_search_path();
+   if (user_path[0] != 0)
+   {
+      i = 0; j= 0;
+      while (user_path[i] != 0)
+      {
+          j = 0;
+          while (user_path[i] != 0 && user_path[i] != ',')
+                try_root[j++] = user_path[i++];
+          try_root[j] = '\0';
+          strncat(try_root, selection, 256);
+          main = 0; extn = 0;
+          selectload__split_name(try_root, &main, &extn);
+          if (selectload__tryfile(try_root, main, extn)) return;
+          if (selectload__tryfile(try_root, extn, main)) return;
+          if (user_path[i] != 0) i++;
+      }
+   }
+
+   i = 0; j= 0;
+   while (selectload__searchpath[i] != 0)
+   {
+
+       j = 0;
+       /*
+        *          15-Dec-94: IDJ: bug-fix AQU-00507 (ctrl-l for non-existant file)
+        */
+       while (selectload__searchpath[i] == ' ') i++;
+       while (selectload__searchpath[i] != ',' && selectload__searchpath[i] != 0)
+             try_root[j++] = selectload__searchpath[i++];
+       try_root[j] = '\0';
+       strncat(try_root, selection, 256);
+       main = 0; extn = 0;
+       selectload__split_name(try_root, &main, &extn);
+       if (selectload__tryfile(try_root, main, extn)) return;
+       if (selectload__tryfile(try_root, extn, main)) return;
+       if (selectload__searchpath[i] != 0) i++;
+   }
+
+   /* if we get here no file has been found */
+   werr(FALSE, msgs_lookup("sload1:No file found to match selection"));
+}
+
+
+
+extern void selectload_set_dft_searchpath(char *searchpath)
+    /* sets default search path to be used */
+{
+   if (searchpath != 0)
+       selectload__searchpath = searchpath;
+}
+
+
+
+extern void selectload_load(txtedit_state *s)
+{
+   txt owner;
+
+   /* get selection into a buffer */
+   if ((owner = txtscrap_selectowner()) != 0)
+   {
+      char select[256];
+      char *buffer;
+      int segsize;
+      int n = 0;
+      int size;
+
+      if ((size = txt_selectend(owner) - txt_selectstart(owner)) >= 256)
+           return;
+
+      while (n < size)
+      {
+          txt_arrayseg(owner, txt_selectstart(owner) + n, &buffer, &segsize);
+          segsize = (segsize < size -n) ? segsize : size - n;
+          memcpy(&select[n], buffer, segsize);
+          n += segsize;
+      }
+
+      select[n] = 0;
+
+      /* load from file */
+      selectload__doload(select, s->filename);
+  }
+}
+
+
+/*extern void selectload_init(void)*/
+    /* gets default search path for current language */
+@
+
+
+1.3
+log
+@  Import of SrcEdit 1.23.
+Detail:
+  Appears to be substantially more complete than the version previously
+  imported. Thanks to Rob Sprowson for bringing this to our attention.
+Admin:
+  Builds, and tested briefly - seems to fix the more obvious bugs that were
+  present in the previous version.
+
+Version 1.23. Tagged as 'SrcEdit-1_23'
+@
+text
+@d45 1
+d93 1
+@
+
+
+1.2
+log
+@  Put a quick fix in for compiler problem.
+Detail:
+  The Norcroft compiler (v 5.65) barfs with an internal inconsistency if
+  you don't have the line I bodged into c.selectload (line 133).
+Admin:
+  Builds, runs but iconbar menu (options submenu) doesn't look right.
+
+Version 0.02. Tagged as 'SrcEdit-0_02'
+@
+text
+@d19 2
+d22 6
+d33 2
+d46 1
+d50 1
+d53 1
+a53 1
+{  
+d58 9
+a66 2
+   strncpy(filename, root, 256);
+   if (main != 0)
+d68 7
+a74 2
+       strncat(filename, ".", 256);
+       strncat(filename, main, 256);
+d76 3
+a78 1
+   if (extn != 0)
+d80 5
+a84 2
+       strncat(filename, ".", 256);
+       strncat(filename, extn, 256); 
+d91 2
+a92 2
+   { 
+      txtedit_state *s = txtedit_new(filename,0xfff);
+d99 2
+a100 2
+  
+ 
+d105 24
+d133 3
+a135 3
+      { 
+          if (*extn == 0) { *extn = &filename[l+1]; filename[l] = 0; }
+          else if (*main == 0) { *main = &filename[l+1]; filename[l] = 0; }
+d138 13
+d156 1
+a156 1
+    /* loads a file from a selection 
+d159 1
+a159 1
+{                                             
+d161 1
+a161 1
+   char *main = 0, *extn = 0, *dummy1 = 0, *dummy2 = 0,  *user_path;
+d165 4
+a168 2
+          root.<selection>
+          root.<reversed_selection>
+d170 2
+a171 2
+              element.<selection>
+              element.<reversed_selection>
+d173 2
+a174 2
+              element.<selection>
+              element.<reversed_selection>
+d177 7
+a183 1
+   /* first try "current" directory */
+d185 11
+a195 3
+   selectload__split_name(try_root, &dummy1, &dummy2); 
+   strncat(try_root, ".", 256);  
+   strncat(try_root, selection, 256);
+d197 2
+d200 7
+a206 5
+   
+   if (selectload__tryfile(try_root, main, extn))
+       return;
+   if (selectload__tryfile(try_root, extn, main))
+       return;
+a217 1
+          strncat(try_root, ".", 256);
+d230 1
+d232 5
+a236 3
+       while (selectload__searchpath[i] == ' ' && selectload__searchpath[i] == 0) i++;
+       try_root[j] = try_root[j]; /* Bodge: stops Norcroft from barfing */
+       while ((selectload__searchpath[i] != ',') && (selectload__searchpath[i] != 0))
+a238 1
+       strncat(try_root, ".", 256);
+d248 1
+a248 1
+   werr(FALSE, msgs_lookup("sload1:No file found to match selection"));      
+d258 1
+a258 1
+}   
+d263 1
+a263 1
+{  
+d265 2
+a266 2
+   
+   /* get selection into a buffer */               
+d282 1
+a282 1
+          memcpy(&select[n], buffer, segsize);     
+d293 1
+a293 1
+    
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d147 2
+a148 1
+       while (selectload__searchpath[i] != 0 && selectload__searchpath[i] != ',')
+@
+
+
+1.1.1.1
+log
+@  Initial import of !SrcEdit, exported from the old SrcFiler repository
+  and given a modern build structure.
+Detail:
+  I'm not convinced these are actually the most recent sources. They didn't
+  build as-is against a "modern" RISC_OSLib, and I had to substitute the
+  !Run/!Boot/Messages etc from the C/C++ tools release to make it work.
+  There are still some issues - some menus are incorrectly created, and one
+  source file invokes a compiler bug.
+Admin:
+  Not particularly thoroughly tested.
+
+Version 0.01. Tagged as 'SrcEdit-0_01'
+@
+text
+@@

@@ -1,0 +1,632 @@
+head	4.4;
+access;
+symbols
+	T1ToFont-1_37:4.4
+	T1ToFont-1_36:4.3
+	T1ToFont-1_35:4.3
+	T1ToFont-1_34:4.3
+	T1ToFont-1_33:4.2
+	T1ToFont-1_32:4.1.1.1
+	T1ToFont-1_31:4.1.1.1
+	T1ToFont-1_30:4.1.1.1
+	T1ToFont-1_29:4.1.1.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.1.7.1
+	Ursula_RiscPC:4.1.7.1.0.4
+	rthornb_UrsulaBuild-19Aug1998:4.1.7.1
+	UrsulaBuild_FinalSoftload:4.1.7.1
+	rthornb_UrsulaBuild-12Aug1998:4.1.7.1
+	aglover_UrsulaBuild-05Aug1998:4.1.7.1
+	rthornb_UrsulaBuild-29Jul1998:4.1.7.1
+	rthornb_UrsulaBuild-22Jul1998:4.1.7.1
+	rthornb_UrsulaBuild-15Jul1998:4.1.7.1
+	rthornb_UrsulaBuild-07Jul1998:4.1.7.1
+	rthornb_UrsulaBuild-17Jun1998:4.1.7.1
+	rthornb_UrsulaBuild-03Jun1998:4.1.7.1
+	rthornb_UrsulaBuild-27May1998:4.1.7.1
+	rthornb_UrsulaBuild-21May1998:4.1.7.1
+	rthornb_UrsulaBuild_01May1998:4.1.7.1
+	Ursula:4.1.7.1.0.2
+	Ursula_bp:4.1.7.1
+	Spinner_RCA116:4.1.7.1
+	Spinner_B20_2:4.1.7.1
+	Spinner_19_3:4.1.7.1
+	Spinner_B18:4.1.7.1
+	Spinner_B17:4.1.7.1
+	Spinner_B15:4.1.7.1
+	Spinner_B14:4.1.7.1
+	Spinner_B13:4.1.7.1
+	Spinner_B12:4.1.7.1
+	Spinner_B10:4.1.7.1
+	RO_3_71:4.1.3.1
+	Spin_merge:4.1.7.1
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	NC_1_06:4.1.7.1
+	Spinner:4.1.7
+	Spin_xx:4.1.5
+	NC_xx:4.1.5.1
+	RO_3_60:4.1.1.1
+	StrongARM:4.1.3
+	Black:4.1.1;
+locks; strict;
+comment	@# @;
+
+
+4.4
+date	2018.08.11.15.16.02;	author rsprowson;	state Exp;
+branches;
+next	4.3;
+commitid	OTGphC2SMAlioINA;
+
+4.3
+date	2014.05.08.14.29.59;	author rsprowson;	state Exp;
+branches;
+next	4.2;
+commitid	hTCcu9vnEgMq9Kzx;
+
+4.2
+date	2014.05.08.14.14.32;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+commitid	nLW0LHk5F9d94Kzx;
+
+4.1
+date	96.11.05.09.49.34;	author nturton;	state Exp;
+branches
+	4.1.1.1
+	4.1.3.1
+	4.1.5.1
+	4.1.7.1;
+next	;
+
+4.1.1.1
+date	96.11.05.09.49.34;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.3.1
+date	96.11.06.03.14.52;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.5.1
+date	96.11.21.13.32.30;	author nturton;	state Exp;
+branches;
+next	;
+
+4.1.7.1
+date	96.11.29.21.35.34;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.4
+log
+@Fix for potential buffer overrun and never finding EOF
+convert.c: fgetc() needs ints for its return value in order to spot EOF.
+metrics.c: The hashtable itterator ran from 0-1023 (MAX_CHARS) but only contains 256 entries, so if the character can't be found the loop continued checking 768 garbage entries.
+Found by cppcheck static analysis.
+encoding.h/encoding.c: Define a symbol to describe the hashtable size. Use new define for MAX_HASHS where applicable.
+
+Version 1.37. Tagged as 'T1ToFont-1_37'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*-*-c-*- Title  : > c.encoding
+ * Author : Neil Raine
+ * Purpose: Read the names in an encoding file into a data structure
+ *          This is then used in 'checkmetrics' and 'convertfile'
+ */
+
+#include "kernel.h"
+
+#include "main.h"
+#include "encoding.h"
+#include "metrics.h"
+#include "msgs.h"
+
+/*
+ * Read encoding from file specified
+ * If checkflag true, check that duplicated entries in encoding vector have same values
+ * If readmetrics() not called, data is bound to correspond
+ * Note that metrics==NULL is valid as long as checkflag==0
+ */
+
+#define RISCOS_Alphabet "%%RISCOS_Alphabet"
+#define RISCOS_BasedOn  "%%RISCOS_BasedOn"
+
+/*
+ * This variable can be redefined by programs that use this
+ * module, so that their own encodings directory is used.
+ */
+char *encoding_dir = "<FontConv$Dir>.Encodings.";
+
+
+os_error *startencoding(encstr *encoding)
+{
+    static const nameblk undefined = {NULL, 0, "<undefined>"};
+    int i;
+
+    block
+    {
+	for (i = 0; i < MAX_HASHS; i++)
+	{
+	    encoding->hashtable[i] = NULL;
+	}
+	for (i = 0; i < MAX_CHARS; i++)
+	{
+	    encoding->nameof[i] = (nameblk *)&undefined;
+	    encoding->matchtable[i] = ENC_NOEXIST; /* assume .notdef */
+	}
+    }
+    encoding->alphabet = -1;	/* none found yet */
+    encoding->nchars = 0;	/* none added yet */
+    encoding->name[0] = '\0';
+    
+    return NULL;
+}
+
+/* Write a simple encoding file */
+
+os_error *writeencoding(encstr * encoding, const char *filename)
+{
+    int i;
+    FILE *f;
+    ER(fopen_err(filename, "w", &f));
+    
+    for (i = 0; i < encoding->nchars; i++)
+    {
+	if (encoding->matchtable[i] == ENC_NOEXIST)
+	    fprintf(f, "/.notdef\n");
+	else
+	    fprintf(f, "/%s\n", encoding->nameof[i]->name);
+    }
+    fclose(f);
+    return NULL;
+}
+
+/*
+ * Set 'useBase' to TRUE if you want the function to follow
+ * %%RISCOS_BasedOn directives for you.
+ */
+
+/* XXX never called with Check */
+
+os_error *readencoding(encstr * encoding, metricsstr * metrics,
+		       const char *encname,
+		       CheckEncoding checkflag, BOOL useBase)
+{
+    char name[MAXNAMELEN + 1];
+    char filebuffer[256];
+    char basename[20];
+    int i, npars;
+    FILE *infile = NULL;
+    os_error *lasterr = NULL;
+
+ again:
+    startencoding(encoding);
+    strcpy(encoding->name, encname);
+
+    sprintf(filebuffer, "%s%s", encoding_dir, encname);
+
+    EG(error, fopen_err(filebuffer, "r", &infile));
+
+    for (i = 0; i < MAX_CHARS && !feof(infile); i++)
+    {
+	do
+	{
+	    npars = fscanf(infile, "%s ", name);
+	    if (npars == EOF)
+		goto fail;
+	    if (npars == 1 && *name == '%')
+	    {
+		if (strcmp(name, RISCOS_Alphabet) == 0)
+		{
+		    if (fscanf(infile, "%d\n", &encoding->alphabet) != 1)
+			goto fail;
+		}
+		else if (useBase && strcmp(name, RISCOS_BasedOn) == 0)
+		{
+		    int base;
+		    if (encname == basename)
+			goto fail;
+		    if (fscanf(infile, "%d\n", &base) != 1)
+			goto fail;
+
+		    fclose(infile);
+
+		    /* The %% comments should appear before the first identifier,
+		     * so we don't have to undo anything.
+		     */
+		    
+		    sprintf(basename, "/Base%d", base);
+		    encoding->alphabet = base;
+		    encname = basename;
+		    goto again;
+		}
+		else
+		{
+		    int ch;
+		    do
+		    {
+			ch = fgetc(infile);
+		    } while (ch != 0x0A && ch != EOF);
+		}
+		npars = 0;
+	    }
+	} while (npars != 1);
+	if (strcmp("/.notdef", name) == 0 || strcmp("/.NotDef", name) == 0)
+	{
+	    encoding->matchtable[i] = ENC_NOEXIST; /* char does not exist in
+						    * encoding vector */
+	    encoding->nchars = i + 1;
+	}
+	else
+	{
+	    int ch2 = matchname(encoding, name);
+
+	    encoding->matchtable[i] = ENC_EXIST; /* char exists in encoding vector */
+	    if (ch2 >= 0)
+	    {
+		encoding->matchtable[i] = ENC_CHECKED; /* quick check that data
+							* corresponds */
+	    }
+
+	    if (*name != '/')
+		goto fail;
+
+	    EG(error, addname(encoding, i, name + 1)); /* add name even if
+							* duplicate */
+	    encoding->nchars = i + 1;
+	}
+    }
+    if (fscanf(infile, "%s ", name) != EOF)
+	goto fail;
+	
+    for (; i < MAX_CHARS; i++)
+	encoding->matchtable[i] = ENC_NOEXIST; /* chars beyond encoding do not exist */
+	
+    fclose(infile);
+    return (NULL);
+
+ fail:
+    lasterr = make_oserror(214, msgs_lookup("EncError"));
+    /*FALLTHROUGH*/
+
+ error:
+    if (infile) fclose(infile);
+    return lasterr;
+}
+
+
+/*
+ * Add name,code pair to the list already known
+ * Duplicate names are allowed, if the char codes are different
+ */
+
+os_error *addname(encstr * encoding, int code, const char *name)
+{
+    nameblk *newname, *check;
+    const char *nm2 = name;
+
+    if (*nm2 == '/')
+	name++;
+    while (*nm2)
+	if (*nm2++ == '.')
+	    name = nm2;		       /* use 'leafname' only */
+
+    /* NB: duplicate names are allowed (if the char codes are different) */
+
+    for (check = encoding->hashtable[*name]; check; check = check->link)
+    {
+	if (strcmp(check->name, name) == 0)
+	{
+	    if (check->code == code)
+		return make_oserror(214, msgs_lookup("EncError2"));
+	}
+    }
+
+    newname = malloc_abort(sizeof(nameblk));	/* allocate memory */
+
+    newname->code = code;	       /* fill in structure */
+    strcpy(newname->name, name);
+    newname->base.code =
+	newname->accent.code = -1;     /* not a composite character */
+    newname->width = 0;		       /* width not known */
+
+    /* put new name at end, so matchname() returns the first occurrence */
+#if 1
+    {
+	nameblk **backlink;
+
+	for (backlink = &encoding->hashtable[*name]; *backlink; backlink = &(*backlink)->link)
+	{
+	};
+	newname->link = NULL;
+	*backlink = newname;
+    }
+#else
+    newname->link = encoding->hashtable[*name];	/* link it in */
+    encoding->hashtable[*name] = newname;
+#endif
+
+    if (code >= 0 && code < MAX_CHARS)
+	encoding->nameof[code] = newname;	/* reverse mapping */
+
+    return (NULL);
+}
+
+/* Free an encoding and all its names */
+
+void freeEncoding (encstr *encoding)
+{
+    int i;
+    for (i = 0; i < MAX_HASHS; i++)
+    {
+	nameblk *names = encoding->hashtable[i];
+	while (names)
+	{
+	    nameblk *link = names->link;
+	    free((char *)names);
+	    names = link;
+	}
+	encoding->hashtable[i] = NULL;
+    }
+}					       
+
+
+/* Return char code of first match with name
+ * Not normally used, as all occurrences are required (for kerning etc.)
+ * OK for checking that all occurrences of a char have the same info
+ */
+
+int matchname(encstr * encoding, const char *name)
+{
+    nameblk *result = matchnameblk(encoding, name);
+
+    return (result ? result->code : -1);
+}
+
+
+/* Return nameblk ptr of first match with name */
+
+nameblk *matchnameblk(encstr * encoding, const char *name)
+{
+    nameblk *check;
+    const char *nm2 = name;
+
+    if (*nm2 == '/')
+	name++;
+    while (*nm2)
+	if (*nm2++ == '.')
+	    name = nm2;		       /* use 'leafname' only */
+
+    for (check = encoding->hashtable[*name]; check; check = check->link)
+    {
+	if (strcmp(check->name, name) == 0)
+	    return (check);
+    }
+
+    return (NULL);
+}
+
+
+#ifdef XXDELETED
+/* Return nameblk ptr of first match with name.
+ * If char does not exist, it will be created.
+ */
+
+nameblk *matchnameblk_adding(encstr * encoding, const char *name)
+{
+    nameblk *result = matchnameblk(encoding, name);
+
+    if (!result)
+    {
+	os_error *err = addname(encoding, -1, name);
+
+	if (err)
+	    finish(err->errmess);
+	result = matchnameblk(encoding, name);
+    }
+
+    return (result);
+}
+#endif
+
+/*------------------------ sundry routines ------------------------------- */
+
+/* claim a block of memory, aborting if there's no room */
+
+void *malloc_abort(int size)
+{
+    void *temp = malloc(size);
+
+    if (!temp)
+    {
+	os_error *error = make_oserror(1, msgs_lookup("OutOfMem"));
+	_kernel_raise_error((_kernel_oserror *) error);
+    }
+    memset((void *) temp, 0, (size_t)size);
+    return (temp);
+}
+
+
+/* make an os_error from a format string and parameters */
+
+os_error *make_oserror(int errnum, const char *format,...)
+{
+    static os_error errblk;
+    va_list args;
+
+    va_start(args, format);
+    errblk.errnum = errnum;
+    vsprintf(errblk.errmess, format, args);
+    va_end(args);
+
+    return (&errblk);
+}
+
+os_error *fopen_err(const char *filename, const char *access, FILE ** result)
+{
+    *result = fopen(filename, access);
+    if (*result != NULL)
+	return NULL;
+    else
+	return
+	    make_oserror(214, msgs_lookup(*access == 'r' ? "FileOpenR" : "FileOpenW"),
+			 filename);
+}
+
+
+#ifdef XXDELETED
+os_error *fread_err(void *buffer, int itemsize, int itemcount, FILE * file)
+{
+    if (fread(buffer, itemsize, itemcount, file) < itemcount)
+    {
+	 returnerr("Error while reading file");
+    }
+    else
+    {
+	return (NULL);
+    }
+}
+
+
+os_error *fwrite_err(void *buffer, int itemsize, int itemcount, FILE * file)
+{
+    if (fwrite(buffer, itemsize, itemcount, file) < itemcount)
+    {
+	 returnerr("Error while writing file");
+    }
+    else
+    {
+	return (NULL);
+    }
+}
+#endif
+@
+
+
+4.3
+log
+@Application clean up
+frontend.c: make the 2 popup menus appear in the style guide approved place next to the gright icons, delete non POPUP code, squash a few compiler warnings, no longer opens the proginfo box when selecting 'Info' from the icon bar menu
+type1.c: 1 letter macros renamed, includes change to Unix style naming, false/true changed to RISC_OSLib case
+metrics.c: 1 letter macros renamed, includes changed to Unix style naming
+encoding.c: const'd a constant, 1 letter macro renamed, includes changed to Unix style naming
+utils.c: includes changed to Unix style naming
+main.h: delete some dead macros, renamed 1 letter macros to a whole 2 generous letters (so you've some hope of finding them in a search dialogue)
+Templates: Shrunk bounding box around gright popup
+Messages: Removed 2x unused messages
+
+Tested with Arial font, same as 1.33.
+
+Version 1.34. Tagged as 'T1ToFont-1_34'
+@
+text
+@d52 1
+a52 1
+	for (i = 0; i < 256; i++)
+a102 1
+    char ch;
+d149 1
+a262 1
+    int n = sizeof(encoding->hashtable)/sizeof(encoding->hashtable[0]);
+d264 1
+a264 1
+    for (i = 0; i < n; i++)
+@
+
+
+4.2
+log
+@Fix for stiffing machine during font conversion
+The memset() in startencoding gets inlined with more recent versions of the C compiler, but inspection of the generated code shows it loses track of the structure pointer which is then used in the loops that follow, meaning ~6k of RAM gets splatted somewhere bad in memory.
+Since the loops actually initialise all but one of the things in the struct anyway the memset() is a bit of a waste of time, and deleting it sidesteps the compiler fault too.
+
+Additionally, the build fixes in T1ToFont-1_30 had missed some macros in main.h, which were instead calling the erf() function in <maths.h>.
+
+Fixes ticket #384.
+Tested with Arial Type 1 font from font pack A030 from LaTeX.
+
+Version 1.33. Tagged as 'T1ToFont-1_33'
+@
+text
+@d21 5
+a25 4
+#include "h.main"
+#include "h.encoding"
+#include "h.metrics"
+#include "h.kernel"
+a44 2
+static nameblk undefined = {NULL, 0, "<undefined>"};
+
+d47 1
+d58 1
+a58 1
+	    encoding->nameof[i] = &undefined;
+d75 1
+a75 1
+    E(fopen_err(filename, "w", &f));
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d49 1
+a49 1
+    memset((void *) encoding, 0, sizeof(encstr));
+d64 2
+@
+
+
+4.1.7.1
+log
+@NCOS 1.06 Imported from Zip drive
+@
+text
+@@
+
+
+4.1.5.1
+log
+@Import from SrcFiler
+@
+text
+@@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@@
+
+
+4.1.1.1
+log
+@Import from cleaned 360 CD
+@
+text
+@@

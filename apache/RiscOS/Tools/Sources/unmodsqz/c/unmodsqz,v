@@ -1,0 +1,489 @@
+head	1.3;
+access;
+symbols
+	unmodsqz-0_06:1.3
+	unmodsqz-0_05:1.3
+	unmodsqz-0_04-2:1.3
+	unmodsqz-0_04:1.2
+	unmodsqz-0_03:1.2
+	unmodsqz-0_02:1.2
+	unmodsqz-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2010.05.19.16.30.35;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.08.19.14.38.22;	author sbrodie;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.11.05.16.40.36;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.11.05.16.40.36;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  Changes to facilitate platform independence.
+Detail:
+  * Added shell-script make wrapper
+  * Uses shared makefile fragments and one master makefile for all variants
+  * #includes use CLX path explicitly
+Admin:
+   No functional change, so version not incremented
+
+Tagged as 'unmodsqz-0_04-2'
+
+Version 0.04. Not tagged
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * unmodsqz - reverses the effect of modsqz
+ *
+ * Copyright (C) Acorn Computers Ltd. 1998
+ */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#include "VersionNum"
+#include "CLX/bytesex.h"
+#include "CLX/err.h"
+#include "CLX/prgname.h"
+#include "CLX/wholefls.h"
+#include "unmodsqz.h"
+
+#ifdef __riscos
+#define TARGET_IS_RISCOS
+#endif
+
+#ifdef TARGET_IS_RISCOS
+#include "kernel.h"
+#include "swis.h"
+#endif
+
+#define Program_Title "unmodsqz"
+
+static int verbose = 0;
+
+/* Error messages */
+static char *errors[] = {
+  "",
+  "This module is not squeezed",
+  "Out of memory",
+  "internal error: decode failed",
+  "missing filename",
+  "unrecognised option '%c'",
+  "too many parameters",
+  "not a relocatable module",
+  "Unable to load input file %s",
+  "Unable to save output file %s",
+  "missing filenames"
+};
+
+static void banner(const char *prog)
+{
+  fprintf(stderr,
+    "Module Unsqueeze Utility version " Module_MajorVersion " ["
+     Module_Date "] " Module_MinorVersion "\n\n"
+    "Usage: %s [options] infile [outfile]\n\n"
+    "Options:\n"
+    "  -o output    Writes unsqueezed module to output\n"
+    "  -v           Verbose\n"
+    "  -h -?        Display help message\n",
+    prog);
+   exit(EXIT_FAILURE);
+}
+
+static int32 file_length(char *filename, int32 *load, int32 *exec, int32 *attr)
+{
+#ifdef TARGET_IS_RISCOS
+        _kernel_oserror *e;
+        int size;
+        int objtype, filetype;
+        e = _swix(OS_File, _INR(0,1)|_OUT(0)|_OUTR(2,6), 20, filename,
+                &objtype, load, exec, &size, attr, &filetype);
+        if (e != NULL) {
+                err_fail("%s", e->errmess);
+        }
+        else {
+                if (!(objtype & 1) ||  filetype != 0xFFA) {
+                        err_fail(errors[errcode_NOT_MODULE]);
+                }
+        }
+        return size;
+#else
+        int32 size = wf_filesize(filename);
+        *load = *exec = *attr = 0;
+        if (size == -1) {
+          err_fail(errors[errcode_NO_LOAD], filename);
+        }
+        return size;
+#endif
+}
+
+#ifdef TARGET_IS_RISCOS
+static void restamp(const char *filename, int32 load, int32 exec, int32 attr)
+{
+        load |= 0xFFFFFA00;
+        (void) _swix(OS_File, _INR(0,3)|_IN(5), 1, filename, load, exec, attr);
+}
+#endif
+
+static void unmodsqz_bytesex_init(void)
+{
+  union {
+    char b;
+    unsigned int i;
+  } b;
+  b.i = 1;
+  bytesex_reverse(b.b == 0);
+}
+
+int main(int argc, char *argv[])
+{
+  int32 load, exec, attr, size, realsize;
+  void  *realdata;
+  void  *data;
+  char *outfile = 0, *infile = 0;
+  int ac;
+  char *arg;
+  error_code e;
+  char program[32];
+
+  err_init(program_name(argv[0], program, sizeof(program)));
+
+  for (arg=argv[ac=1]; ac<argc; arg=argv[++ac]) if (arg[0] == '-') {
+    while (*++arg) switch (*arg) {
+      case 'v':
+        ++verbose;
+        break;
+      case 'o':
+        if ((ac+1)>=argc) err_fail(errors[errcode_NO_FILENAME]);
+        if (outfile) err_fail(errors[errcode_BAD_PARAMETERS]);
+        outfile = argv[++ac];
+        break;
+      case 'h':
+      case '?':
+        banner(program);
+        break;
+      default:
+        err_fail(errors[errcode_BAD_OPTION], *arg);
+        break;
+    }
+  }
+  else {
+    if (!infile) infile = arg;
+    else if (!outfile) outfile = arg;
+    else err_fail(errors[errcode_BAD_PARAMETERS]);
+  }
+
+  if (!infile) err_fail(errors[errcode_NO_PARAMS]);
+  if (!outfile) outfile = infile;
+
+  size = file_length(infile, &load, &exec, &attr);
+  if (verbose) err_report("-- original file is %ld bytes", size);
+
+  data = malloc((size_t) size);
+  if (data == NULL) err_fail(errors[errcode_NO_MEM]);
+  if (-1 == wf_load(infile, data, size)) err_fail(errors[errcode_NO_LOAD], infile);
+
+  unmodsqz_bytesex_init();
+  e = unsqueeze_module((void *)data, &realdata, (size_t *) &realsize);
+  if (e == errcode_NOT_SQUEEZED) {
+    if (verbose && outfile != infile) {
+      err_report("-- source was not squeezed - module copied");
+    }
+    realdata = data;
+    realsize = size;
+  }
+  else if (e != ok) {
+    err_fail(errors[e]);
+  }
+  else {
+    free(data);
+  }
+
+  if (-1 == wf_save(outfile, realdata, realsize)) {
+    err_fail(errors[errcode_NO_SAVE], outfile);
+  }
+
+#ifdef TARGET_IS_RISCOS
+  restamp(outfile, load, exec, attr);
+#endif
+
+  if (verbose) err_report("-- output size %ld bytes", realsize);
+
+  return EXIT_SUCCESS;
+}
+@
+
+
+1.2
+log
+@  Completely rewritten version of unmodsqz.
+Detail:
+  Rewritten the main desqueeze code in C so that this tool can
+    be used on Solaris (required for STB-400 baseline)
+  The new unsqueezec.c file was reverse engineered from the
+    old assembler code.
+Admin:
+  Tested on RISC OS, x86 Solaris and SPARC Solaris.
+
+Version 0.02. Tagged as 'unmodsqz-0_02'
+@
+text
+@d25 4
+a28 4
+#include "bytesex.h"
+#include "err.h"
+#include "prgname.h"
+#include "wholefls.h"
+d31 4
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d23 9
+a31 1
+#include <stdarg.h>
+d34 1
+a34 1
+#include "VersionNum"
+a39 16
+/*
+ * This structure mimics that which the kernel uses to remember module
+ * details.  We pass this to the assembler code we pinched from the kernel
+ * to avoid having to change any of the main parts of the unsqueezing code.
+ */
+typedef struct modchain {
+        struct modchain *next;
+        int *code;
+        int podule_base;
+        void *incarn_list;
+        int rommodule_node;
+} modchain;
+
+/* The assembler entry point */
+extern void CheckModule(modchain *);
+
+d41 26
+a66 23
+static const char err_NO_FILENAME[] = "missing filename";
+static const char err_HELP[] =
+	"\nUsage:         " Program_Title " [options] infile [outfile]\n\n"
+	"Options:\n"
+	"  -o output    Writes unsqueezed module to output\n"
+	"  -v           Verbose\n"
+	"  -h -?        Display help message\n";
+static const char err_BAD_OPTION[] = "unrecognised option '%c'";
+static const char err_BAD_PARAMETERS[] = "too many parameters";
+static const char err_NO_OPEN[] = "unable to open `%s' for %sing";
+static const char err_NOT_MODULE[] = "not a relocatable module";
+static const char err_NO_RMA[] = "Unable to allocate RAM for module";
+static const char err_NO_LOAD[] = "Unable to load input file";
+static const char err_NO_PARAMS[] = "missing filenames";
+
+
+static void banner(void)
+{
+        static int shown = 0;
+        if (shown) return;
+        ++shown;
+	fputs("Acorn Module Unsqueeze Utility version " Module_MajorVersion " ["
+		Module_Date "] " Module_MinorVersion "\n", stderr);
+d69 1
+a69 23
+/* Print error message - does not return */
+static void err(const char *errstring, ...)
+{
+        va_list ap;
+	banner();
+        if (errstring != err_HELP) fprintf(stderr, Program_Title ": ");
+	va_start(ap, errstring);
+	vfprintf(stderr, errstring, ap);
+	va_end(ap);
+	fputc('\n', stderr);
+        exit(EXIT_FAILURE);
+}
+
+static void info(const char *info, ...)
+{
+        va_list ap;
+	banner();
+	va_start(ap, info);
+	vfprintf(stderr, info, ap);
+	va_end(ap);
+}
+
+static int file_length(const char *filename, int *load, int *exec, int *attr)
+d71 1
+d78 1
+a78 1
+                err("%s", e->errmess);
+d82 1
+a82 1
+                        err(err_NOT_MODULE);
+d86 8
+d96 2
+a97 1
+static void restamp(const char *filename, int load, int exec, int attr)
+d102 11
+d116 69
+a184 101
+        modchain chn;
+        int load, exec, attr, size;
+        int realsize;
+        int *orig;
+	FILE *f = 0;
+	char *outfile = 0, *infile = 0;
+	int ac;
+
+	for (ac=1; ac<argc; ++ac) {
+	        char *arg = argv[ac];
+	        if (arg[0] == '-') {
+	                while (*++arg) switch (*arg) {
+	                        case 'v': ++verbose; break;
+	                        case 'o':
+	                                if ((ac+1)<argc) {
+	                                        if (outfile) {
+	                                                err(err_BAD_PARAMETERS);
+	                                        }
+	                                        outfile = argv[++ac];
+	                                }
+	                                else {
+	                                        err(err_NO_FILENAME);
+	                                }
+	                                break;
+	                        case 'h': case '?':
+	                               	err(err_HELP);
+	                               	break;
+	                        default:
+	                        	err(err_BAD_OPTION, *arg);
+	                               	break;
+
+	                }
+	                continue;
+	        }
+	        if (!infile) infile = arg;
+	        else if (!outfile) outfile = arg;
+	        else err(err_BAD_PARAMETERS);
+	}
+
+	if (!infile) err(err_NO_PARAMS);
+	if (!outfile) outfile = infile;
+
+	size = file_length(infile, &load, &exec, &attr);
+
+	if (verbose) info("-- original file is %d bytes\n", size);
+
+        f = fopen(infile, "rb+");
+        if (f == NULL) {
+                err(err_NO_OPEN, infile, "read");
+	}
+
+	memset(&chn, 0, sizeof(chn));
+
+	/* Need to do this in the RMA because the assembler code assumes
+	 * that the squeezed module is living somewhere where it can
+	 * OS_Module 7 it.
+	 */
+	if (_swix(OS_Module, _IN(0)|_IN(3)|_OUT(2), 6, size, &chn.code)) {
+		err(err_NO_RMA);
+	}
+
+	if (fread(chn.code, size, 1, f) != 1) {
+	        err(err_NO_LOAD);
+	}
+
+	orig = chn.code;
+
+	/* may include extra zero bytes to pad out original to even number
+	 * of complete words
+	 */
+	realsize = chn.code[1];
+
+	/* Was the top bit set in the initialise entry? */
+	if (realsize < 0) {
+	        realsize = (chn.code + ((realsize ^ 0x80000000) >> 2))[-5];
+	}
+	else {
+	        free(chn.code);
+	        if (verbose) info("-- source was not squeezed - module copied\n");
+	        exit(EXIT_SUCCESS);
+	}
+	CheckModule(&chn);
+	if (chn.code != orig) {
+	        /* Clear invincible bit - if set, stops *RMClear killing it!! */
+	        chn.code[2] &= ~0x80000000;
+	        if (infile != outfile) {
+			f = freopen(outfile, "wb", f);
+	        }
+	        else {
+	                rewind(f);
+	        }
+		if (f) fwrite(chn.code, realsize, 1, f);
+		else err(err_NO_OPEN, outfile, "writ");
+		fclose(f);
+		restamp(outfile, load, exec, attr);
+	}
+	else {
+	        if (verbose) info("-- not squeezed with modsqz\n");
+	}
+
+	free(chn.code);
+d186 1
+a186 1
+	if (verbose) info("-- output size %d bytes\n", realsize);
+d188 1
+a188 1
+        return EXIT_SUCCESS;
+@
+
+
+1.1.1.1
+log
+@
+Import of new tool "unmodsqz".  This tool contains the module unsqueeze
+code, shamelessly lifted from the kernel sources, together with a small
+C wrapper to enable you to reverse the effects of modsqz.
+
+@
+text
+@@

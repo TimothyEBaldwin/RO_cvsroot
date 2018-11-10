@@ -1,0 +1,189 @@
+head	1.2;
+access;
+symbols
+	rompress-0_04:1.2
+	rompress-0_03:1.2
+	rompress-0_02:1.2
+	rompress-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2012.02.25.17.35.55;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	wIBsgVNCSMcxZyUv;
+
+1.1
+date	2012.02.04.21.43.14;	author jlee;	state Exp;
+branches;
+next	;
+commitid	rebjpVdUVMZc2TRv;
+
+
+desc
+@@
+
+
+1.2
+log
+@Multiple improvements
+Detail:
+  Makefile - Ensure additional files get cleaned now that CLEAN_DEPEND is no longer supported
+  s/patchable, Makefile, c/rompress - Add new option -p/--patchable for creating patchable compressed ROMs. Currently it's impossible for a ROM patching tool (e.g. the Iyonix softload or ROM flash tools) to update the negative checksum of the uncompressed image, because the ROM footer will have been compressed. As a workaround for this, asking rompress to produce a patchable ROM will cause it to append a small section of code that manually recalculates the uncompressed image negative checksum and writes it to the ROM footer once decompression is complete.
+  c/romcrc, c/rompress, h/romcrc - Update romcrc code to allow reading/writing of the extended ROM footer. This is used to insert the new 'compressed ROM softload hint' tag into the footer of the compressed ROM, to allow the softload tool to easily identify compressed ROMs and locate the OS header.
+  c/rompress - Add new option -s/--size for specifying that the compressed ROM must be an exact size. E.g. for padding Tungsten ROMs to 4MB.
+  c/zlib, zinflate/s/zinflate - Update zlib decompression stub to only copy the necessary amount of data to the decompression workspace, instead of blindly copying everything up to the end of the image. Remove broken, over-optimised memcpy implementation and replace with a simple loop, since memcpy is rarely (if ever) used.
+  s/asm - Don't rely on OS_LeaveOS for returning to user mode.
+Admin:
+  Tested with compressing/decompressing OMAP3, OMAP3Live, IOMD & Tungsten ROMs
+  Tool should now be ready for use, and will build from source if you have Kernel-5_35-4_79_2_138 or newer
+
+
+Version 0.02. Tagged as 'rompress-0_02'
+@
+text
+@/* Copyright 2012 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+#include "zlib/zlib.h"
+#include "CLX/err.h"
+
+#include "rompress.h"
+#include "zlib.h"
+
+extern char rompress_zinflate__base[], rompress_zinflate__limit[];
+
+static uint32_t test_ws;
+
+static voidpf test_alloc(voidpf opaque,uInt items,uInt size)
+{
+  (void)opaque;
+  uint32_t sz = items*size;
+  test_ws += (sz+3)&~3;
+  return calloc(items,size);
+}
+
+static void test_free(voidpf opaque,voidpf address)
+{
+  (void)opaque;
+  free(address);
+}
+
+static uint32_t test_inflate(void *dest,uint32_t destlen,void *source,uint32_t sourcelen)
+{
+  int error;
+  test_ws = 0;
+  /* Set up stream structure */
+  z_stream stream;
+  stream.zalloc = test_alloc;
+  stream.zfree = test_free;
+  stream.opaque = Z_NULL;
+  error = inflateInit(&stream);
+  if (error)
+  {
+    err_report("Error code %d received from inflate engine",error);
+    return 0;
+  }
+  stream.next_in = source;
+  stream.avail_in = sourcelen;
+  stream.next_out = dest;
+  stream.avail_out = destlen;
+  error = inflate(&stream,Z_FINISH);
+  inflateEnd(&stream);
+  if(error != Z_STREAM_END)
+  {
+    err_report("Error code %d received from inflate engine",error);
+    return 0;
+  }
+  return test_ws;
+}
+
+void do_zlib(OSHdr *hdr,char *data,uint32_t len)
+{
+  char *outbuf = safemalloc(len);
+  uLong outsize = len;
+  /* Take the easy route and compress into a temp buffer */
+  int error = compress2((Bytef *) outbuf,&outsize,(Bytef *) data,len,Z_BEST_COMPRESSION);
+  if ((error == Z_BUF_ERROR) || (((outsize+3)&~3) >= len))
+  {
+    /* Failed to compress; don't complain */
+    if(outsize > len) err_fail("zlib library overflowed compression buffer!");
+    free(outbuf);
+    return;
+  }
+  else if (error)
+  {
+    /* Unexpected error - complain! */
+    err_report("Error code %d received from deflate engine",error);
+    free(outbuf);
+    return;
+  }
+  /* Test decompression to find out how much workspace is needed */
+  uint32_t ws = test_inflate(data,len,outbuf,(uint32_t) outsize);
+  /* Copy compressed data back to source buffer */
+  memcpy(data,outbuf,(size_t) outsize);
+  free(outbuf);
+  if(!ws)
+    return;
+  /* Align */
+  uint32_t zsize = (uint32_t) outsize;
+  while(outsize & 3)
+    data[outsize++] = 'z';
+  /* Copy in decompression stub */
+  uint32_t stubsize = rompress_zinflate__limit-rompress_zinflate__base;
+  if(len-outsize <= stubsize)
+    return;
+  memcpy(data+outsize,rompress_zinflate__base,stubsize);
+  /* Patch up the OS header */
+  hdr->DecompressHdr = (uint32_t) outsize+((uint32_t) data)-((uint32_t) hdr);
+  hdr->CompressedSize = hdr->DecompressHdr+stubsize;
+  /* Patch up the decompression stub */
+  ws += hdr->CompressedSize-hdr->CompressOffset;
+  ws = (ws+4095)&~4095;
+  uint32_t *stub = (uint32_t *) (outsize+data);
+  stub[0] = ws;
+  stub[2] = zsize;
+  stub[3] = outsize+stubsize;
+}
+@
+
+
+1.1
+log
+@Add initial version of ROM compression tool
+Detail:
+  Tool to compress & decompress RISC OS 5 ROM images.
+  Currently images can be compressed using either the squeeze or zlib algorithms, but more algorithms can easily be added in the future
+  When decompressing images the decompression stub that was appended to the image will be executed directly; this may need changing in future if CPU compatability issues arise.
+  Can only be used with ROM images that have the 'supports compression' flag set in their OS header
+  Currently uses lots of memory when compressing images (especially with zlib) due to everything being done in RAM
+Admin:
+  Tested with compressing/decompressing OMAP3 & OMAP3Live images
+  Note: Won't build until the kernel changes are checked in
+
+
+Version 0.01. Tagged as 'rompress-0_01'
+@
+text
+@d119 1
+@
+

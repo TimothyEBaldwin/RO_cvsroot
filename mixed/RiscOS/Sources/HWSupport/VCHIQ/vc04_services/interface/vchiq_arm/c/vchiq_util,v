@@ -1,0 +1,298 @@
+head	1.2;
+access;
+symbols
+	VCHIQ-0_10:1.2
+	VCHIQ-0_09:1.2
+	VCHIQ-0_08:1.2
+	VCHIQ-0_07:1.2
+	VCHIQ-0_06:1.2
+	VCHIQ-0_05:1.2
+	VCHIQ-0_04:1.1
+	VCHIQ-0_03:1.1
+	VCHIQ-0_02:1.1
+	VCHIQ-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.2
+date	2013.03.03.20.23.29;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	uNS7q3oyxvlpXnGw;
+
+1.1
+date	2012.08.19.23.33.29;	author jlee;	state Exp;
+branches;
+next	;
+commitid	QqbCOQ1O2rQgjdhw;
+
+
+desc
+@@
+
+
+1.2
+log
+@Update to latest version of VCHIQ sources
+Detail:
+  This updates our VCHIQ sources to rev 95009dbb77 of the official sources from the Raspberry Pi Linux github repo.
+  From our perspective, the important changes are:
+  * Provides compatbility with the latest firmware
+  * Not compatible with older firmware (older than around Nov 2012?), including the firmware we've typically been using until now
+  * Clients of the module now need to specify the version number of the service they're communicating with
+  * Source is dual BSD/GPL licenced, with us opting to use the BSD license in order to allow the module to be included in ROM instead of as a softload on disc
+  * Ability to build softload version has been removed from the makefile, as it's now a redundant option
+  File changes:
+  - !MkRom - enable throwback
+  - Makefile - Update for building latest sources. Remove special softload rules. Enable ability to build ROM version.
+  - c/vchiq_riscos, s/asm - Update RISC OS compatbility layer to directly emulate the corresponding Linux calls now that the VCOS abstraction layer has been removed from the VCHIQ sources
+  - h/VCHIQ, h/VCHIQWrap, hdr/VCHIQ - Add the service version number entries to the vchiq_service_t/SERVICE_CREATION_T structs
+  - vc04_services/* - Updated to latest official sources, with relevant changes to allow compilation for RISC OS
+Admin:
+  Tested on Raspberry Pi
+  Updated GPU firmware will likely be required!
+
+
+Version 0.05. Tagged as 'VCHIQ-0_05'
+@
+text
+@/**
+ * Copyright (c) 2010-2012 Broadcom. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. The names of the above-listed copyright holders may not be used
+ *    to endorse or promote products derived from this software without
+ *    specific prior written permission.
+ *
+ * ALTERNATIVELY, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2, as published by the Free
+ * Software Foundation.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+ * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include "vchiq_util.h"
+
+static inline int is_pow2(int i)
+{
+	return i && !(i & (i - 1));
+}
+
+int vchiu_queue_init(VCHIU_QUEUE_T *queue, int size)
+{
+	WARN_ON(!is_pow2(size));
+
+	queue->size = size;
+	queue->read = 0;
+	queue->write = 0;
+
+	sema_init(&queue->pop, 0);
+	sema_init(&queue->push, 0);
+
+	queue->storage = kzalloc(size * sizeof(VCHIQ_HEADER_T *), GFP_KERNEL);
+	if (queue->storage == NULL) {
+		vchiu_queue_delete(queue);
+		return 0;
+	}
+	return 1;
+}
+
+void vchiu_queue_delete(VCHIU_QUEUE_T *queue)
+{
+	if (queue->storage != NULL)
+		kfree(queue->storage);
+}
+
+int vchiu_queue_is_empty(VCHIU_QUEUE_T *queue)
+{
+	return queue->read == queue->write;
+}
+
+int vchiu_queue_is_full(VCHIU_QUEUE_T *queue)
+{
+	return queue->write == queue->read + queue->size;
+}
+
+void vchiu_queue_push(VCHIU_QUEUE_T *queue, VCHIQ_HEADER_T *header)
+{
+	while (queue->write == queue->read + queue->size) {
+		if (down_interruptible(&queue->pop) != 0) {
+			flush_signals(current);
+		}
+	}
+
+	queue->storage[queue->write & (queue->size - 1)] = header;
+
+	queue->write++;
+
+	up(&queue->push);
+}
+
+VCHIQ_HEADER_T *vchiu_queue_peek(VCHIU_QUEUE_T *queue)
+{
+	while (queue->write == queue->read) {
+		if (down_interruptible(&queue->push) != 0) {
+			flush_signals(current);
+		}
+	}
+
+	up(&queue->push); // We haven't removed anything from the queue.
+	return queue->storage[queue->read & (queue->size - 1)];
+}
+
+VCHIQ_HEADER_T *vchiu_queue_pop(VCHIU_QUEUE_T *queue)
+{
+	VCHIQ_HEADER_T *header;
+
+	while (queue->write == queue->read) {
+		if (down_interruptible(&queue->push) != 0) {
+			flush_signals(current);
+		}
+	}
+
+	header = queue->storage[queue->read & (queue->size - 1)];
+
+	queue->read++;
+
+	up(&queue->pop);
+
+	return header;
+}
+@
+
+
+1.1
+log
+@Add initial version of VCHIQ driver
+Detail:
+  This is a port of the VCHIQ Linux driver, using sources from the Raspberry Pi github
+  The Linux version of the driver compiles to two seperate libraries - the kernel library/module and a user-space library for linking with programs. Communication between the two involves ioctl calls to a file in /dev/
+  The RISC OS version takes a slightly different route, omitting the ioctl interface and instead using the 'vchiq_shim' code to talk directly to the kernel code, using an API identical to the Linux user space one.
+  Programs are able to communicate with the module via SWIs which provide a close match for the C APIs. The module also exports a C header containing wrapper functions to convert the SWIs back to the C API, aiding porting of existing code.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  Code is currently dual licensed BSD+GPL, with the GPL code (in vc04_services) being the dominant licence.
+
+
+Version 0.01. Tagged as 'VCHIQ-0_01'
+@
+text
+@d1 2
+a2 2
+/*
+ * Copyright (c) 2010-2011 Broadcom Corporation. All rights reserved.
+d4 12
+a15 4
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+d17 3
+a19 4
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+d21 11
+a31 3
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+d36 1
+a36 5
+#if !defined(__KERNEL__)
+#include <stdlib.h>
+#endif
+
+static __inline int is_pow2(int i)
+d38 1
+a38 1
+  return i && !(i & (i - 1));
+d43 1
+a43 1
+   vcos_assert(is_pow2(size));
+d45 13
+a57 14
+   queue->size = size;
+   queue->read = 0;
+   queue->write = 0;
+
+   vcos_event_create(&queue->pop, "vchiu");
+   vcos_event_create(&queue->push, "vchiu");
+
+   queue->storage = vcos_malloc(size * sizeof(VCHIQ_HEADER_T *), VCOS_FUNCTION);
+   if (queue->storage == NULL)
+   {
+      vchiu_queue_delete(queue);
+      return 0;
+   }
+   return 1;
+d62 2
+a63 4
+   vcos_event_delete(&queue->pop);
+   vcos_event_delete(&queue->push);
+   if (queue->storage != NULL)
+      vcos_free(queue->storage);
+d68 6
+a73 1
+   return queue->read == queue->write;
+d78 5
+a82 2
+   while (queue->write == queue->read + queue->size)
+      vcos_event_wait(&queue->pop);
+d84 1
+a84 1
+   queue->storage[queue->write & (queue->size - 1)] = header;
+d86 1
+a86 1
+   queue->write++;
+d88 1
+a88 1
+   vcos_event_signal(&queue->push);
+d93 5
+a97 2
+   while (queue->write == queue->read)
+      vcos_event_wait(&queue->push);
+d99 2
+a100 1
+   return queue->storage[queue->read & (queue->size - 1)];
+d105 1
+a105 1
+   VCHIQ_HEADER_T *header;
+d107 5
+a111 2
+   while (queue->write == queue->read)
+      vcos_event_wait(&queue->push);
+d113 1
+a113 1
+   header = queue->storage[queue->read & (queue->size - 1)];
+d115 1
+a115 1
+   queue->read++;
+d117 1
+a117 1
+   vcos_event_signal(&queue->pop);
+d119 1
+a119 1
+   return header;
+@
+

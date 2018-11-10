@@ -1,0 +1,256 @@
+head	1.1;
+access;
+symbols
+	ChangeFSI-1_62:1.1
+	ChangeFSI-1_61:1.1
+	ChangeFSI-1_60:1.1
+	ChangeFSI-1_59:1.1
+	ChangeFSI-1_58:1.1
+	ChangeFSI-1_57:1.1
+	ChangeFSI-Import-IJG8d:1.1
+	ChangeFSI-1_56:1.1
+	ChangeFSI-1_55:1.1
+	ChangeFSI-1_54:1.1
+	ChangeFSI-1_53:1.1
+	ChangeFSI-1_52:1.1
+	ChangeFSI-1_51:1.1
+	ChangeFSI-1_50:1.1
+	ChangeFSI-1_49:1.1
+	ChangeFSI-1_48:1.1
+	ChangeFSI-1_47:1.1
+	ChangeFSI-1_46:1.1
+	ChangeFSI-1_45:1.1
+	ChangeFSI-1_44:1.1
+	ChangeFSI-1_43:1.1
+	ChangeFSI-1_42:1.1
+	ChangeFSI-1_41:1.1
+	ChangeFSI-1_40:1.1
+	ChangeFSI-1_39:1.1
+	ChangeFSI-1_38:1.1
+	ChangeFSI-1_37:1.1
+	ChangeFSI-1_36:1.1
+	ChangeFSI-1_35:1.1
+	ChangeFSI-1_34:1.1
+	ChangeFSI-1_33:1.1
+	ChangeFSI-1_32:1.1
+	ChangeFSI-1_31:1.1
+	ChangeFSI-1_30:1.1
+	ChangeFSI-1_29:1.1
+	ChangeFSI-1_28:1.1
+	ChangeFSI-1_27:1.1
+	ChangeFSI-1_26:1.1
+	ChangeFSI-1_25:1.1
+	ChangeFSI-1_24:1.1
+	ChangeFSI-1_23:1.1
+	ChangeFSI-1_22:1.1
+	ChangeFSI-1_21:1.1
+	ChangeFSI-1_20:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.1
+date	2003.01.20.10.21.57;	author rsprowson;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.1
+log
+@Added btpc 4.1 support,though the detection in the main program has
+always been there the binary vanished sometime round 1995.
+Added abridged info on BTPC to the appropriate docs,plus docs updates
+to reflect interesting information which seems to have been
+progressively removed with time.
+Yucky sprites added,Sprites23 deleted.
+The output window now remembers where it was last opened instead of
+always jumping to the middle of the screen.
+You no longer need to be in a specific screen depth for any operation,
+before (particularly using special mode "r") it needed to read the
+palette in a particular mode - now if it realises it cannot it will look
+for a default palette in its Palettes directory and only then give an
+error.
+Reinstated 256 colour special mode "t",this has always been missing the
+4096 colour lookup table and most of the support for it was removed in
+about 1992 though the assembler remained leading to a "No such variable"
+error when trying to use it.GenCFSIict produces the table.
+
+Version 1.20. Tagged as 'ChangeFSI-1_20'
+@
+text
+@//
+// Eight+one-band binary tree predictive decoder
+//
+// Version 4.
+//
+// Copyright (c) John Robinson. 1994, 1995, 1997.
+//
+#include <stdlib.h>
+#include <string.h>
+#include "compact.h"
+unsigned char *initclip(const int& topval);
+void ycc_rgb(unsigned char ***components, const int& rows, const int& cols,
+const unsigned char *clip, const char& expand);
+void btpc_dec_plane(unsigned char **out,const int& XMAX, const int& YMAX,
+const int& fromlevel, const int& tolevel, const int *spacing,
+compactor *codein, const int& clipval);
+
+
+int writepnm(const char *pgmname, const unsigned char ***pbuf, 
+const int& rows, const int& cols, const int& maxval, const int& pnmtype)
+// Write picture to "P5" pgm or "P6" ppm format
+	{
+	FILE *out = fopen(pgmname, "wb");
+	if (!out) {
+		fprintf(stderr,"Cannot open %s\n", pgmname);
+		exit (0);
+		}
+	if (pnmtype == 1) {	// PGM
+	    fprintf(out,"P5\n%d %d\n%d\n", cols, rows, maxval);
+	    for (int i = 0; i < rows; i++)
+		fwrite(pbuf[0][i],1,cols,out);
+	    }
+	else { // PPM
+	    fprintf(out,"P6\n%d %d\n%d\n", cols, rows, maxval);
+	    unsigned char *temp = new unsigned char[3*cols];
+	    for (int i = 0; i < rows; i++) {
+		unsigned char *ptemp = temp;
+		const unsigned char *pg = pbuf[0][i];
+		const unsigned char *pr = pbuf[1][i];
+		const unsigned char *pb = pbuf[2][i];
+		for (int j = 0; j < cols; j++) {
+			*ptemp++ = *pr++;
+			*ptemp++ = *pg++;
+			*ptemp++ = *pb++;
+			}
+		fwrite(temp,1,cols*3,out);
+		}
+	    delete [] temp;
+	    }
+	fclose(out);
+	return 0;
+	}
+
+int btpc_read_header(FILE *cfp, int& pnmtype, int& rows, int& cols, 
+int& maxval, int& numlevels, char& coltype, char& uvfilter, int *spacing) {
+	char cbuf[12];
+	char newline;
+	int n_coders;
+	fread(cbuf,1,7,cfp);
+	cbuf[7] = 0;
+	if (strcmp(cbuf,"btpc 4.")) {
+		fprintf(stderr, "This is not a valid btpc 4 file\n");
+		return -1;
+		}
+	fscanf(cfp,"%s %d %d%c",cbuf, &rows,&cols,&newline);
+	if (cbuf[0] == 'a') {
+		fprintf(stderr, "This picture is coded with an old version ");
+		fprintf(stderr, "of btpc 4.\nIn some (rare) cases, the ");
+		fprintf(stderr, "decoding will fail because of bugs in the\n");
+		fprintf(stderr, "earlier version. Carrying on anyway...\n");
+		cbuf[0] = 'b';
+		}
+	if (cbuf[0] == 'b') {
+		pnmtype = cbuf[1] - '0';// 1 for PGM, 3 for PPM
+		numlevels = cbuf[2] - '0';
+		n_coders = cbuf[3] - '0';
+		coltype = cbuf[4];	// 'G'=GRB, 'Y'=YUV
+		uvfilter = cbuf[5];	// 'B'=box, '0'=none
+		if (n_coders != numcoders) {
+			fprintf(stderr, "Sorry. This picture is coded with ");
+			fprintf(stderr, "%d coders. I can handle ", n_coders);
+			fprintf(stderr, "%d coders only\n",numcoders);
+			return -1;
+			}
+		}
+	else {
+		fprintf(stderr, "This is a version of btpc 4 that I don't ");
+		fprintf(stderr, "recognize.\nI'm going to guess some ");
+		fprintf(stderr, "parameters to try\n");
+		fprintf(stderr, "to recover the monochrome component.\n");
+		pnmtype = 1;
+		numlevels = 4;
+		coltype = 'G';
+		uvfilter = '0';
+		}
+	for (int i = 1; i <= numlevels*2; i++)
+		spacing[i] = fgetc(cfp);
+	maxval = fgetc(cfp);
+	return 0;
+	}
+
+int main(int argc, const char *argv[])
+	{
+	if (argc != 3) {
+#ifdef RISCOS_TWEAK
+		fprintf(stderr, "Usage:   btpc <btpcfile> <pbmoutput>\n");
+		fprintf(stderr, "         converts a btpc image to a pbm image\n");
+		fprintf(stderr, "Version: 4.1 (C)1994, 1995, 1997 John A. Robinson\n");
+#else
+		fprintf(stderr, "Usage: dbtpc code_file pgm_outpic\n");
+#endif
+		return -1;
+		}
+	// Use old stdlib for input because it seems to be more efficient
+	FILE *cfp = fopen(argv[1],"rb");
+	if (!cfp) {
+		fprintf(stderr, "Can't open %s\n", argv[1]);
+		return -1;
+		}
+	int pnmtype, truerows, truecols, maxval, numlevels;
+	char coltype, uvfilter;
+	int spacing[65];
+	int i;
+	int compnum;
+	if (btpc_read_header(cfp, pnmtype, truerows, truecols,  maxval, 
+	    numlevels, coltype, uvfilter, spacing))
+		return - 1;
+	// Make XMAX and YMAX equal to next highest multiple of 16
+	int YMAX = ((truerows+(1<<numlevels)-1)>>numlevels)<<numlevels;
+	int XMAX = ((truecols+(1<<(numlevels+1))-1)>>(numlevels+1))<<(numlevels+1);
+	// Set up coders
+	cfileio fio(cfp);
+	compactor codein[numcoders];
+	for (i = 0; i < numcoders; i++)
+		codein[i].attach(&fio);
+	// Allocate space for decoded picture
+	// If decoding into an existing array (e.g. for immediate display)
+	// create line pointers out[i], and point at rows of array.
+	unsigned char **components[3];
+	unsigned char **out;
+	for (compnum = 0; compnum < pnmtype; compnum++)
+	    {
+	    components[compnum] = out = new unsigned char*[YMAX];
+            for (i = 0; i < YMAX; i++) {
+                out[i] = new unsigned char[XMAX];
+            	memset(out[i],0,XMAX);
+		}
+	    }
+	// Decode each plane of the picture
+	for (compnum = 0; compnum < pnmtype; compnum++){
+	    int tolevel = (compnum && (uvfilter != '0'));
+	    int clipval = tolevel ? 255 : maxval;
+	    // Above line ensures that UV components are correctly clipped
+	    btpc_dec_plane(components[compnum],XMAX,YMAX,numlevels,
+		tolevel, spacing, codein, clipval);
+	    }
+	// Convert colourspace back if necessary
+	if (coltype == 'Y') {
+		unsigned char *clip = initclip(maxval);
+		ycc_rgb(components,truerows,truecols,clip,uvfilter);
+		}
+	writepnm(argv[2], (const unsigned char ***) components, 
+		truerows, truecols, maxval,pnmtype);
+	for (compnum = 0; compnum < pnmtype; compnum++) {
+		out = components[compnum];
+		for (i = 0; i < YMAX; i++) 
+			delete [] out[i];
+		delete [] out;
+		}
+	return 1;
+	}
+@

@@ -1,0 +1,431 @@
+head	1.3;
+access;
+symbols
+	EtherTH-0_25:1.2
+	EtherTH-0_24:1.1.1.1
+	EtherTH-0_23:1.1.1.1
+	Vendor:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2017.03.11.00.12.56;	author jballance;	state dead;
+branches;
+next	1.2;
+commitid	EKCvCR7DacKJ24Jz;
+
+1.2
+date	2017.01.20.01.38.42;	author jballance;	state Exp;
+branches;
+next	1.1;
+commitid	3lTPDaiEJQlR7ECz;
+
+1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+1.1.1.1
+date	2016.11.28.22.57.40;	author jballance;	state Exp;
+branches;
+next	;
+commitid	O4jKLeG7FCv9UWvz;
+
+
+desc
+@@
+
+
+1.3
+log
+@    Convert to C based component with import of re-written module form Colin Granville
+Detail:
+Admin:
+    tested in iMx6
+
+Version 0.26. Tagged as 'EtherTH-0_26'
+@
+text
+@; Copyright 2016 Castle Technology Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;/*
+; * Copyright (c) 2012, Freescale Semiconductor, Inc.
+; * All rights reserved.
+; *
+; * THIS SOFTWARE IS PROVIDED BY FREESCALE "AS IS" AND ANY EXPRESS OR IMPLIED
+; * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+; * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT
+; * SHALL FREESCALE BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+; * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+; * OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+; * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
+; * OF SUCH DAMAGE.
+; */
+;/*
+;
+PhyRstOffset    *       &20a4000-&2188000
+PhyResetBit     *       (1<<29)
+
+EtherTHPhyNum   *       1       ; in wandboard we have phy 1.. could be 0
+;
+; Ethernet Legacy Buffer Decriptor structure .. there are 2 linked descriptor
+; circular chains, one rx, the other tx
+; set ENET_ECR bit 8 to 1 for littleendian
+; struct below for littleended addressing
+                ^       0
+EnetBDLen       #       2       ; unsigned short int pkt len
+EnetBDStat      #       2       ; unsigned short int control/status
+EnetBDPtr       #       4       ; buffer address
+; flags for rx descriptor control/status
+EnetBDrxMty     *       (1<<15)
+EnetBDr01       *       (1<<14)
+EnetBDrxWrap    *       (1<<13)
+EnetBDr02       *       (1<<12)
+EnetBDrxLast    *       (1<<11)
+EnetBDrxErrs    *       &0037
+EnetBDrxMiss    *       (1<<8)
+EnetBDrxBC      *       (1<<7)
+EnetBDrxMC      *       (1<<6)
+EnetBDrxLG      *       (1<<5)
+EnetBDrxNO      *       (1<<4)
+EnetBDrxCRCErr  *       (1<<2)
+EnetBDrxOvrn    *       (1<<1)
+EnetBDrxTrunc   *       (1<<0)
+; flags for tx descriptor control/status
+EnetBDtxRdy     *       &8000
+EnetBDt01       *       &4000
+EnetBDtxWrap    *       &2000
+EnetBDt02       *       &1000
+EnetBDtxLast    *       &0800
+EnetBDtxTC      *       &0400
+EnetBDtxABC     *       &0200
+;
+; size of transmit and receive buffer descriptor rings
+EnetBufDescSize         *       8               ; size of a buffer descriptor
+EnetTXBufs              *       16              ; number of tx descs in use
+EnetRXBufs              *       16              ; number of rx descs in use
+ENET_FrameLen           *       (1540 + 4)
+ENET_MTU                *       1500            ; payload max
+ENET_Max_FL             *       (ENET_MTU+18)
+ENET_TxBufMax           *       &600            ; max size any tx buffer (1536)
+ENET_RxBufMax           *       &600            ; max size any Rx buffer
+RxDataAlign             *       16              ; what to align rx buf start to
+;
+; packet header structure used for TX
+                ^       0
+EnetPktHdr      #       0                       ; all bits BigEndian
+EnetDestAddr    #       6                       ; 6 byte destination addr
+EnetSrceAddr    #       6                       ; 6 byte srce addr
+EnetFrameType   #       2                       ; 2 byte frame type
+EnetPktHdrSize  #       0
+EnetPktPad      #       2                       ; make it word aligned
+EnetPktBufSize  #       0;
+
+; RX Header structure prepended to packet passed to a handler
+; as the first mbuf of the chain
+                ^       0
+RXHdr           #       0
+RXHPtr          #       4       ; stack internal use
+RXHTag          #       4       ; set to 0
+RXHSrce         #       6+2     ; srce address + 0 pad to 8
+RXHDest         #       6+2     ; Dest address + 0 pad to 8
+RXHFrame        #       4       ; IEEE length or frame type
+RXHErrl         #       4       ; 0 or driver specific err code
+RXHCkSum        #       4       ; 0 or checksum
+RXHdrSize       #       0
+
+
+; Handler err level stuff.. ok to pass errored pkts?
+RXHNoErrors     *       0
+RXHOkErrors     *       1
+; Handler address level
+RXHAddrSpecific         *       0       ; pass fully addressed frames
+RXHAddrNormal           *       1       ; pass fully addressed + broadcase
+RXHAddrMultiCast        *       2       ; Normal, + Multicast, possibly filtered
+RXHAddrPromisc          *       3       ; pass all frames of type
+; Handler Frame type (claimable)
+RXHFrmE2Specific        *       1       ; Ethernet2 type 'address level'
+RXHFrmE2Sink            *       2       ; pass All non claimed E2 frames
+RXHFrmE2Monitor         *       3       ; pass all E2 frames
+RXHFrmIEEE              *       4       ; pass IEEE frames
+
+; rx mbuf forward and back links
+; 1 structure per rx descriptor
+                ^       0
+EnetRxBThis     #       4                       ; mbuf for this
+EnetRxBLast     #       4                       ; mbuf linking to this, or null
+EnetRxBNext     #       4                       ; mbuf this links to, or null
+EnetRxBSize     #       0                       ; size of this
+
+; Flow control values
+EnetPauseLen   *        1000*24                 ; 1000 full packets
+                                                ; 0xffff max * 512bit times
+                                                ; hence 1536 byte packet is
+                                                ; (1536 * 8) / 512 = 24 (0x18)
+EnetInterPkt   *        27                      ; 8 to 27 byte times(64-217bits)
+; next 2 control fifo -> ram dma
+EnetRxSecFull  *        0x10                    ; 8 byte lumps .. flag data in
+                                                ; fifo above this so start dma
+                                                ; MUST be > EnetRxAmty
+                                                ; if 0, then only transfr when
+                                                ; frame is completely received
+EnetRxAmty     *        0x8                     ; (min 6)stop rx dma below this
+; next 2 control chip -> fifo dma
+EnetRxSecMty   *        0x84                    ; flag to remote that fifo is
+                                                ; getting full, send pause frame
+                                                ; till it gets below this, then
+                                                ; send continue
+EnetRxAfull    *        0x4                     ; (min 4) min free space for MAC
+                                                ; to leave in FIFO
+
+;
+; Ethernet chip register address offsets from chip base
+; also any register bits nubers
+; registers start HW_
+; bits in register start BIT_
+HW_ENET_EIR_ADDR      *   (0x4)
+BIT_ENET_EIR_BABR     *   (1<<30)
+BIT_ENET_EIR_BABT     *   (1<<29)
+BIT_ENET_EIR_GRA      *   (1<<28)
+BIT_ENET_EIR_TXF      *   (1<<27)
+BIT_ENET_EIR_TXB      *   (1<<26)
+BIT_ENET_EIR_RXF      *   (1<<25)
+BIT_ENET_EIR_RXB      *   (1<<24)
+BIT_ENET_EIR_MII      *   (1<<23)
+BIT_ENET_EIR_EBERR    *   (1<<22)
+BIT_ENET_EIR_LC       *   (1<<21)
+BIT_ENET_EIR_RL       *   (1<<20)
+BIT_ENET_EIR_UN       *   (1<<19)
+BIT_ENET_EIR_PLR      *   (1<<18)
+BIT_ENET_EIR_WAKEUP   *   (1<<17)
+BIT_ENET_EIR_TS_AVAIL *   (1<<16)
+BIT_ENET_EIR_TS_TIMER *   (1<<15)
+;
+HW_ENET_EIMR_ADDR     *   (0x8)
+HW_ENET_RDAR_ADDR     *   (0x10)
+HW_ENET_RDAR_GO       *   (1<<24)
+HW_ENET_TDAR_ADDR     *   (0x14)
+HW_ENET_TDAR_GO       *   (1<<24)
+HW_ENET_ECR_ADDR      *   (0x24)
+BIT_ENET_ECR_RESET    *   (1<<0)
+BIT_ENET_ECR_ETHEREN  *   (1<<1)
+BIT_ENET_ECR_MAGICEN  *   (1<<2)
+BIT_ENET_ECR_SLEEP    *   (1<<3)
+BIT_ENET_ECR_EN1588   *   (1<<4)
+BIT_ENET_ECR_GBEN     *   (1<<5)
+BIT_ENET_ECR_DBGEN    *   (1<<6)
+BIT_ENET_ECR_STOPEN   *   (1<<7)
+BIT_ENET_ECR_BYTESWP  *   (1<<8)
+;
+HW_ENET_MMFR_ADDR     *   (0x40)
+BIT_ENET_MMFR_ST      *   (30)
+BIT_ENET_MMFR_OP      *   (28)
+BIT_ENET_MMFR_PA      *   (23)
+BIT_ENET_MMFR_RA      *   (18)
+BIT_ENET_MMFR_TA      *   (16)
+;
+HW_ENET_MSCR_ADDR     *   (0x44)
+HW_ENET_MIBC_ADDR     *   (0x64)
+BIT_ENET_MIBC_CLEAR   *   (29)
+BIT_ENET_MIBC_IDLE    *   (30)
+BIT_ENET_MIBC_DIS     *   (31)
+;
+HW_ENET_RCR_ADDR      *   (0x84)
+BIT_ENET_RCR_LOOP     *   (1<<0)
+BIT_ENET_RCR_DRT      *   (1<<1)
+BIT_ENET_RCR_MII      *   (1<<2)
+BIT_ENET_RCR_PROM     *   (1<<3)
+BIT_ENET_RCR_BC_REJ   *   (1<<4)
+BIT_ENET_RCR_FCE      *   (1<<5)
+BIT_ENET_RCR_RGMII_EN *   (1<<6)
+BIT_ENET_RCR_RMII_MODE *  (1<<8)
+BIT_ENET_RCR_RMII_10T *   (1<<9)
+BIT_ENET_RCR_PADEN    *   (1<<12)
+BIT_ENET_RCR_PAUFWD   *   (1<<13)
+BIT_ENET_RCR_CRCFWD   *   (1<<14)
+BIT_ENET_RCR_CFEN     *   (1<<15)
+BIT_ENET_RCR_MAX_FL   *   (1<<16)
+BIT_ENET_RCR_NLC      *   (1<<30)
+BIT_ENET_RCR_FLS      *   (1<<31)
+;
+HW_ENET_TCR_ADDR      *   (0xc4)
+BIT_ENET_TCR_GTS      *   (1<<0)
+BIT_ENET_TCR_FDEN     *   (1<<2)
+BIT_ENET_TCR_TFC_PAUSE *  (1<<3)
+BIT_ENET_TCR_RFC_PAUSE *  (1<<4)
+BIT_ENET_TCR_ADDSEL   *   (7<<5)
+BIT_ENET_TCR_ADDINS   *   (1<<8)
+BIT_ENET_TCR_CRCFWD   *   (1<<9)
+;
+HW_ENET_PALR_ADDR     *   (0xe4)
+HW_ENET_PAUR_ADDR     *   (0xe8)
+HW_ENET_OPD_ADDR      *   (0xec)
+HW_ENET_IAUR_ADDR     *   (0x118)
+HW_ENET_IALR_ADDR     *   (0x11c)
+HW_ENET_GAUR_ADDR     *   (0x120)
+HW_ENET_GALR_ADDR     *   (0x124)
+HW_ENET_TFWR_ADDR     *   (0x144)
+HW_ENET_RDSR_ADDR     *   (0x180)
+HW_ENET_TDSR_ADDR     *   (0x184)
+HW_ENET_MRBR_ADDR     *   (0x188)
+HW_ENET_RSFL_ADDR     *   (0x190)
+HW_ENET_RSEM_ADDR     *   (0x194)
+HW_ENET_RAEM_ADDR     *   (0x198)
+HW_ENET_RAFL_ADDR     *   (0x19c)
+HW_ENET_TSEM_ADDR     *   (0x1a0)
+HW_ENET_TAEM_ADDR     *   (0x1a4)
+HW_ENET_TAFL_ADDR     *   (0x1a8)
+HW_ENET_TIPG_ADDR     *   (0x1ac)
+HW_ENET_FTRL_ADDR     *   (0x1b0)
+HW_ENET_TACC_ADDR     *   (0x1c0)
+HW_ENET_RACC_ADDR     *   (0x1c4)
+BIT_ENET_RACC_SHIFT16 *   (0x80)
+BIT_ENET_RACC_LINEDIS *   (0x40)
+BIT_ENET_RACC_PRODIS  *   (0x04)
+BIT_ENET_RACC_IPDIS   *   (0x02)
+BIT_ENET_RACC_PADREM  *   (0x01)
+HW_ENET_ATCR_ADDR     *   (0x400)
+HW_ENET_ATVR_ADDR     *   (0x404)
+HW_ENET_ATOFF_ADDR    *   (0x408)
+HW_ENET_ATPER_ADDR    *   (0x40c)
+HW_ENET_ATCOR_ADDR    *   (0x410)
+HW_ENET_ATINC_ADDR    *   (0x414)
+HW_ENET_ATSTMP_ADDR   *   (0x418)
+
+
+; Phy register addresses and Phy types
+PHY_CTRL_REG            * 0x00
+PHY_CTRL_RESET          * (0x8000)
+PHY_CTRL_LOOPBACK       * (0x4000)
+PHY_CTRL_AUTO_NEG       * (0x1000)
+PHY_CTRL_DO_AUTO_NEG    * (0x0200)
+PHY_CTRL_PWRDOWN        * (0x0800)
+PHY_CTRL_FULL_DPLX      * (0x0100)
+PHY_CTRL_10M            * (0x0000)
+PHY_CTRL_100M           * (0x2000)
+PHY_CTRL_1000M          * (0x0040)
+PHY_STATUS_REG          * 0x01
+PHY_STATUS_LINK_ST      * 0x0004
+PHY_IDENTIFY_1          * 0x02
+PHY_IDENTIFY_2          * 0x03
+PHY_ID1_SHIFT           * 16
+PHY_ID1_MASK            * 0xFFFF
+PHY_ID2_SHIFT           * 0
+PHY_ID2_MASK            * 0xFFFF
+PHY_MODE_NUM            * 0x03F0
+PHY_REV_NUM             * 0x000F
+PHY_DIAG_REG            * 0x12
+PHY_DIAG_DPLX           * 0x0800
+PHY_DIAG_RATE           * 0x0400
+PHY_MODE_REG            * 0x15
+PHY_LED_SEL             * 0x200
+PHY_AUTONEGADV_REG      * 0x4
+PHY_AUTONEGLP_REG       * 0x5
+PHY_AUTO_10BASET        * 0x20
+PHY_AUTO_10BASET_DPLX   * 0x40
+PHY_AUTO_100BASET       * 0x80
+PHY_AUTO_100BASET_DPLX  * 0x100
+PHY_AUTONEGEXP_REG      * 0x6
+PHY_NEXTPAGETX_REG      * 0x7
+PHY_LPNEXTPAGE_REG      * 0x8
+PHY_GB_CTRL_REG         * 0x9
+PHY_GB_STATUS_REG       * 0xa
+PHY_MMD_ACC_CTRL_REG    * 0xd
+PHY_MMD_ACC_DATA_REG    * 0xe
+PHY_SP_CTRL_REG         * 0x10
+PHY_SP_STATUS_REG       * 0x11
+PHY_SP_STATUS_SPSET     * (0x0800)
+PHY_SP_STATUS_SPMASK    * (0xc800)
+PHY_SP_STATUS_1GB       * (0x8800)
+PHY_SP_STATUS_100MB     * (0x4800)
+PHY_SP_STATUS_10MB      * (0x0800)
+PHY_SP_STATUS_DUPMASK   * (0x2800)
+PHY_SP_STATUS_FullD     * (0x2800)
+PHY_SP_STATUS_HalfD     * (0x0800)
+PHY_SP_STATUS_MDIMask   * (0x0840)
+PHY_SP_STATUS_MDIX      * (0x0840)
+PHY_SP_STATUS_MDI       * (0x0800)
+PHY_SP_STATUS_LINKUP    * (0x0400)
+PHY_INT_EN_REG          * 0x12
+PHY_INT_SRC_REG         * 0x13
+PHY_INT_AUTO_NEG        * 0x40
+PHY_DBG_OFFSET          * 0x1d
+PHY_DBG_DATA            * 0x1e
+PHY_CHIP_CONF           * 0x1f
+PHY_DBG_SERDES_REG      * 5
+
+PHY_LAN8700_ID          * 0x0007c0c0
+PHY_LAN8720_ID          * 0x0007c0f0
+PHY_AR8031_ID           * 0x004dd070
+PHY_KSZ9021RN_ID        * 0x00221610
+
+
+ENET_COMMON_TICK        * 2
+ENET_COMMON_TIMEOUT     * (1000*1000)
+ENET_MII_TICK           * 2
+ENET_MII_TIMEOUT        * (1000*1000)
+
+
+; PCIRAM space allocations
+                        ^ 0
+; space for buffer descriptors
+TXBDesc                 # (EnetBufDescSize * EnetTXBufs)
+RXBDesc                 # (EnetBufDescSize * EnetRXBufs)
+; space for tx packet data
+TXPktStore              # (ENET_TxBufMax * EnetTXBufs)
+; space for rx packet data  immediately after
+RXPktStore              # (ENET_RxBufMax * EnetRXBufs)
+;
+PCIRAMSize              # 0             ; end of pci space claimed
+
+
+        END
+
+@
+
+
+1.2
+log
+@  Added SWI to expose receive fifo thresholds and flow control parameters
+Detail:
+Admin:
+
+
+Version 0.25. Tagged as 'EtherTH-0_25'
+@
+text
+@@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d126 20
+@
+
+
+1.1.1.1
+log
+@   Initial import of EtherTH module
+@
+text
+@@

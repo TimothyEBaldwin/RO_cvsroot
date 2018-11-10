@@ -1,0 +1,653 @@
+head	1.5;
+access;
+symbols
+	CheckURL-0_17:1.5
+	CheckURL-0_16:1.5
+	CheckURL-0_15:1.5
+	CheckURL-0_14:1.5
+	CheckURL-0_13:1.5
+	CheckURL-0_12:1.5
+	CheckURL-0_11:1.5
+	CheckURL-0_10:1.5
+	CheckURL-0_09:1.5
+	CheckURL-0_08:1.4
+	CheckURL-0_07:1.3
+	CheckURL-0_06:1.3
+	CheckURL-0_05:1.3
+	CheckURL-0_04:1.2
+	CheckURL-0_03:1.1.1.1
+	CheckURL-0_02:1.1.1.1
+	CheckURL-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2001.07.06.16.47.34;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	2001.06.26.10.51.57;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.03.28.11.33.28;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.03.28.10.06.58;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2000.03.16.15.04.54;	author ahodgkin;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	2000.03.16.15.04.54;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@  Tidied Utils.c. Better atexit code.
+Detail:
+  Better ordering - e.g. close messages file before deleting areas, so
+  if there is e.g. list corruption and the area freeing fails, it won't
+  leave a stray messages file open and stuff the box later.
+Admin:
+  Built and run.
+
+Version 0.09. Tagged as 'CheckURL-0_09'
+@
+text
+@/* Copyright 2000 Pace Micro Technology plc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File   : Module.c                                          */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: The CheckURL module matches full URLs against     */
+/*          URL fragments. See 2501,846/FS for details.       */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 08-Mar-2000: Created.                             */
+/**************************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+#include <swis.h>
+
+#ifdef TRACE2
+  #define TRACE
+#endif
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+#include "Area.h"
+#include "Check.h"
+#include "CheckURL.h"
+#include "CUHdr.h"
+#include "File.h"
+#include "Utils.h"
+
+#include "Module.h"
+
+/*
+ * This macro, when defined, includes the code for the two debugging *-commands
+ * You need to enable the commands in the CMHG header file too.
+ */
+
+#if CMHG_VERSION < 516
+
+  #define CMHG_CONST
+
+#else
+
+  #define CMHG_CONST const
+
+#endif
+
+/*
+ * Turn on to include extra debugging via. *-commands; you will
+ * need to modify VCHdr.cmhg too.
+ */
+
+#undef TRACE2
+
+/*
+ * TinySupport SWIs. This does not work if any library static data
+ * is used within the module. This means errno (__errno) and __ctype
+ * (as used by any macro call to is.... functions). If you re-enable
+ * this SWI call, this module will fail to work at all.
+ */
+
+#define NO_TINYSTUBS
+
+#ifdef ROM
+  #ifndef NO_TINYSTUBS
+    static _kernel_oserror *__ROM;
+    #define TinySupport_Share   (0x82c43)
+    #define TinySupport_Die     (0x82c41)
+  #endif
+#endif
+
+#ifndef ROM
+  extern int messages_file(void);
+#endif
+
+#ifndef ROM
+  #ifdef DEFINE_ERRNO
+    int __errno;
+  #endif
+#endif
+
+/* Local variables */
+
+static void * module_wsp                        = NULL;
+static bool   clibrary_realloc_routine_is_buggy = false;
+
+#ifdef ROM
+  static bool retry_config_load = false;
+#endif
+
+/* Local functions */
+
+static void module_check_os_version (void);
+static void module_atexit           (void);
+
+/**************************************************************/
+/* module_check_os_version()                                  */
+/*                                                            */
+/* Set clibrary_realloc_routine_is_buggy non zero if the OS   */
+/* version is sufficiently old, else set it to zero.          */
+/*                                                            */
+/* See also module_realloc.                                   */
+/**************************************************************/
+
+static void module_check_os_version(void)
+{
+  int os;
+
+  (void) _swix(OS_Byte,
+               _INR(0,2) | _OUT(1),
+
+               129,
+               0,
+               255,
+
+               &os);
+
+  clibrary_realloc_routine_is_buggy = os <= 0xA4 ? true : false;
+}
+
+/**************************************************************/
+/* module_init()                                              */
+/*                                                            */
+/* Startup code, usual initialisation entry point stuff.      */
+/*                                                            */
+/* Parameters: As normal for a CMHG initialisation function.  */
+/**************************************************************/
+
+_kernel_oserror * module_init(CMHG_CONST char * cmd_fail, int podule_base, void * pw)
+{
+  _kernel_oserror * e;
+
+  module_wsp = pw;
+
+  (void) cmd_fail;
+  (void) podule_base;
+
+  #ifdef ROM
+    #ifndef NO_TINYSTUBS
+
+      __ROM = _swix(TinySupport_Share,
+                    _IN(0),
+
+                    pw);
+
+    #endif
+  #endif
+
+  #ifdef TRACE
+    {
+      debug_device dev = TML_OUTPUT;
+
+      debug_initialise("CheckURL", "ADFS::4.$.CUdebug", NULL);
+      debug_atexit();
+      debug_set_screen_cornering(FALSE);
+      debug_set_unbuffered_files(TRUE);
+      debug_set_device(dev);
+    }
+  #endif
+
+  dprintf(("", "\nHello\n\n"));
+
+  /* Keep this after debuglib initialisation or you won't */
+  /* see any debug output from within the atexit handler. */
+
+  atexit(module_atexit);
+  module_check_os_version();
+
+  #ifndef ROM
+
+    e = _swix(ResourceFS_RegisterFiles,
+              _IN(0),
+
+              messages_file());
+
+    if (e != NULL) return e;
+
+  #endif
+
+  if (getenv(Module_Title "$Path"))
+  {
+    e = messages_file_open(Module_Title ":Messages");
+  }
+  else
+  {
+    e = messages_file_open("Resources:$.Resources.CheckURL.Messages");
+  }
+
+  #if CMHG_VERSION < 530
+
+    /*
+     * Earlier CMHGs won't call the atexit() handler if we return an
+     * error here 'cos its bust. Could work around it but since there
+     * is a fixed version available, insist on it.
+     */
+
+    #error You need CMHG 5.30 or later to build RTSPMB.
+
+  #else
+
+    if (e != NULL) return e;
+
+  #endif
+
+  /* Read the config file; suppress "can't open" errors, allow */
+  /* others (e.g. no memory, bad format)                       */
+
+  e = file_read_configuration(NULL, ConfigFile, true);
+
+  if (
+       e != NULL &&
+       e->errnum == cu_ERROR_CANNOT_OPEN_CONFIG
+     )
+  {
+    e = NULL;
+
+    #ifdef ROM
+      retry_config_load = true;
+    #endif
+  }
+
+  return e;
+}
+
+/**************************************************************/
+/* module_atexit()                                            */
+/*                                                            */
+/* atexit() handler for the module. Note that this is only    */
+/* correctly called if the module is built with CMHG 5.30 or  */
+/* later.                                                     */
+/**************************************************************/
+
+static void module_atexit(void)
+{
+  dprintf(("", "module_atexit: Called\n"));
+
+  messages_file_close();
+
+  #ifndef ROM
+
+    (void) _swix(ResourceFS_DeregisterFiles,
+                 _IN(0),
+
+                 messages_file());
+
+  #endif
+
+  area_delete_all();
+
+  #ifdef ROM
+    #ifndef NO_TINYSTUBS
+      if(!__ROM) _swix(TinySupport_Die, 0);
+    #endif
+  #endif
+}
+
+/**************************************************************/
+/* swi_handler()                                              */
+/*                                                            */
+/* Simple SWI dispatch table.                                 */
+/*                                                            */
+/* Parameters: As normal for a CMHG SWI handler.              */
+/**************************************************************/
+
+_kernel_oserror * swi_handler(int swi_no, _kernel_swi_regs * r, void * pw)
+{
+  (void) pw;
+
+  #ifdef ROM
+    if (retry_config_load)
+    {
+      retry_config_load = false;
+      file_read_configuration(NULL, ConfigFile, true);
+    }
+  #endif
+
+  switch(swi_no)
+  {
+    case CheckURL_Check                  - CheckURL_00: /* CheckURL_Check          */
+      return (check_check(r));                          /* Check.c                 */
+
+    case CheckURL_ReadAreaID             - CheckURL_00: /* CheckURL_ReadAreaID     */
+      return (area_read_area_id(r));                    /* Area.c                  */
+
+    case CheckURL_ReadFile               - CheckURL_00: /* CheckURL_ReadFile       */
+      return (file_read_file(r));                       /* File.c                  */
+
+    case CheckURL_AddArea                - CheckURL_00: /* CheckURL_AddArea        */
+      return (area_add_area(r));                        /* Area.c                  */
+
+    case CheckURL_DeleteArea             - CheckURL_00: /* CheckURL_DeleteArea     */
+      return (area_delete_area(r));                     /* Area.c                  */
+
+    default:
+      return error_BAD_SWI;
+  }
+}
+
+/**************************************************************/
+/* command_line_handler()                                     */
+/*                                                            */
+/* Straightforward command handler.                           */
+/*                                                            */
+/* Parameters: As normal for a CMHG command line handler.     */
+/**************************************************************/
+
+_kernel_oserror * command_line_handler(CMHG_CONST char * a, int ac, int cmd_no, void * pw)
+{
+  (void) a;
+  (void) ac;
+  (void) pw;
+
+  switch (cmd_no)
+  {
+    case CMD_CheckURLAreas:
+      return area_list();
+
+    default:
+      break;
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* module_realloc()                                           */
+/*                                                            */
+/* RISC OS 3.1's SVC mode realloc is broken, so here's our    */
+/* own version. Use it if clibrary_realloc_routine_is_buggy   */
+/* is set after calling module_check_os_version.              */
+/*                                                            */
+/* Parameters: As realloc.                                    */
+/*                                                            */
+/* Returns:    As realloc.                                    */
+/**************************************************************/
+
+void * module_realloc(void * ptr, size_t size)
+{
+  dprintf(("", "module_realloc: Called (&%08X, %d)\n", (int) ptr, size));
+
+  if (clibrary_realloc_routine_is_buggy == false) return realloc(ptr, size);
+
+  if (ptr == NULL)
+  {
+    return malloc(size);
+  }
+
+  if (size == 0)
+  {
+    free(ptr);
+    return NULL;
+  }
+  else
+  {
+    const int    * rma_block = ptr;
+    const size_t   newsize   = size - (rma_block[-1] - 4);
+    char         * newptr;
+
+    if (
+         _swix(OS_Module,
+               _IN(0) | _INR(2,3) | _OUT(2),
+
+               0xD,
+               ptr,
+               newsize,
+
+               &newptr)
+
+         != NULL
+       )
+       return NULL;
+
+    return newptr;
+  }
+}
+@
+
+
+1.4
+log
+@  New * command, tidying up.
+Detail:
+  *CheckURLAreas added; lists defined areas. Allocation pending. Tidied
+  up module init code based on RTSP MB; removes need for module_kill
+  finalisation code by using an atexit handler instead. Corrected typo
+  in preamble text printed out by test program.
+Admin:
+  All tests still pass. Star command output is as expected for various
+  area definitions or no areas at all. CMHG 5.30 or later required
+  (enforced by Module.c).
+
+Version 0.08. Tagged as 'CheckURL-0_08'
+@
+text
+@a254 1
+  area_delete_all();
+d265 2
+@
+
+
+1.3
+log
+@  ROM build bug fix, API extension.
+Detail:
+  ROM builds can't open the central config file on initialisation usually,
+  so when can they do it? Video Control faced a similar problem but had a
+  specific point in a SWI where it could transparently try again. Check
+  URL really needs to do this whenever a SWI is called, so in ROM builds
+  a flag is set if the config file load fails during initialisation. When
+  any SWI is next called it'll quietly try again, clearing the retry flag
+  in passing. This attempt may fail silently. If it works, the behaviour
+  of the SWI will appear to be exactly as if the config file was loaded at
+  initialisation time. The only penalty is the overhead of accessing the
+  flag value on each SWI call in ROM builds.
+  SWI CheckURL_AddArea has been extended to return the area ID of a new
+  area in R1 on exit.
+Admin:
+  Ensured that the API extension works and added a simple check in the
+  test harness. Tested the config file reload in a RAM build before
+  wrapping the code in #ifdef ROM and ensuring that ROM, RAM and trace
+  variants all build.
+
+Version 0.05. Tagged as 'CheckURL-0_05'
+@
+text
+@d100 1
+a100 1
+/* Local statics */
+d112 1
+d181 4
+d207 7
+a213 4
+  if (e == NULL)
+  {
+    /* Read the config file; suppress "can't open" errors, allow */
+    /* others (e.g. no memory, bad format)                       */
+d215 1
+a215 1
+    e = file_read_configuration(NULL, ConfigFile, true);
+d217 1
+a217 6
+    if (
+         e != NULL &&
+         e->errnum == cu_ERROR_CANNOT_OPEN_CONFIG
+       )
+    {
+      e = NULL;
+d219 1
+a219 5
+      #ifdef ROM
+        retry_config_load = true;
+      #endif
+    }
+  }
+d221 1
+a221 3
+  if (e != NULL)
+  {
+    messages_file_close();
+d223 2
+a224 1
+    #ifndef ROM
+d226 1
+a226 2
+      (void) _swix(ResourceFS_DeregisterFiles,
+                   _IN(0),
+d228 6
+a233 1
+                   messages_file());
+d235 2
+a237 2
+
+    return e;
+d240 1
+a240 1
+  return NULL;
+d244 1
+a244 3
+/* module_kill()                                              */
+/*                                                            */
+/* Closedown code, usual finalisation entry point stuff.      */
+d246 3
+a248 1
+/* Parameters: As normal for a CMHG finalisation function.    */
+d251 1
+a251 1
+_kernel_oserror * module_kill(int fatal, int podule, void * pw)
+d253 1
+a253 3
+  (void) fatal;
+  (void) podule;
+  (void) pw;
+a271 2
+
+  return NULL;
+d317 26
+d356 1
+a356 1
+  dprintf(("", "module_realloc(%p, %d)\n", ptr, size));
+d390 1
+a390 1
+     return newptr;
+@
+
+
+1.2
+log
+@  Bug fix in URL matching, two character error in source file header comments
+  corrected.
+Detail:
+  Paths with colons in had those colons interpreted as port separators; the
+  URL_Fetcher module only escapes chars 0-32 and 127 and I'd been relying on
+  it doing other characters too. Whilst I was at it, I made the legacy
+  support for a comma separated list of the match strings a compile-time
+  option and compiled it out as CheckURL never uses this. In addition, every
+  source file had a cut-and-paste propagated two character error in the
+  source file header comments, which has been corrected.
+Admin:
+  Confirmed that ROM, RAM and debug builds compile. Tested various port
+  and path combinations and modified test suite slightly to ensure that
+  whilst ports work, colons in paths will work too.
+
+Version 0.04. Tagged as 'CheckURL-0_04'
+@
+text
+@d105 4
+d213 7
+a219 1
+       e = NULL;
+d287 8
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d23 1
+a23 1
+/* Author : A.D.Hodgkinson.                                   */
+d214 2
+@
+
+
+1.1.1.1
+log
+@  First complete version of Check URL.
+Detail:
+  Check URL allows applications to match URLs against URL fragments to
+  perform domain, port and/or path specific activities. This could be
+  used in a browser to block advert loading, in Video Control to select
+  a protocol module, or in JavaScript to enable or disable the Pace VOD
+  extensions, for example. See 2501,846 for details.
+Admin:
+  This has only been lightly tested, but I believe it's functionally
+  complete according to issue 1 of the specification.
+@
+text
+@@

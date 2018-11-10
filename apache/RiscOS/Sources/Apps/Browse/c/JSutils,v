@@ -1,0 +1,522 @@
+head	1.4;
+access;
+symbols
+	Browse-2_16:1.4
+	Browse-2_15:1.4
+	Browse-2_14:1.4
+	Browse-2_13:1.4
+	Browse-2_12:1.4
+	Browse-2_11:1.4
+	Browse-2_10:1.4
+	Browse-2_09:1.4
+	ahodgkin_208_i4_2:1.4
+	ahodgkin_208_i4:1.2
+	ahodgkin_208_i3:1.2
+	ahodgkin_208_i2:1.2
+	ahodgkin_208_i1:1.2
+	ahodgkin_207release:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2000.11.14.08.45.06;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.05.31.15.58.39;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	99.03.30.15.51.50;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.09.07.11.46.52;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    JSUtils.c                                         */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: JavaScript support - various utility functions    */
+/*          (which libmocha had in generally silly places).   */
+/*                                                            */
+/*          Based in part on source in libmocha from the      */
+/*          Mozilla browser sources.                          */
+/*                                                            */
+/* Author:  A.D.Hodgkinson.                                   */
+/*                                                            */
+/* History: 07-Aug-1998 (ADH): Created.                       */
+/*          24-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <string.h>
+
+#include <kernel.h>
+#include <swis.h>
+
+#include <HTMLLib/HTMLLib.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include "Global.h"
+#include "Utils.h"
+
+#include "JavaScript.h"
+
+#ifdef JAVASCRIPT
+
+  #include "JSconsts.h"
+
+  #include "JSutils.h"
+
+  /**************************************************************/
+  /* jsutils_rgb_to_string()                                    */
+  /*                                                            */
+  /* Take a given RISC OS colour number and return a pointer to */
+  /* '#RRGGBB' as a JS string.                                  */
+  /*                                                            */
+  /* Parameters: JS execution context to allocate the string    */
+  /*             in;                                            */
+  /*                                                            */
+  /*             The RISC OS colour number, i.e. 0xBBGGRR00.    */
+  /*                                                            */
+  /* Returns:    Pointer to a JS string holding the colour as   */
+  /*             '#RRGGBB', or NULL if memory can't be          */
+  /*             allocated for that string.                     */
+  /**************************************************************/
+
+  JSString * jsutils_rgb_to_string(JSContext * cx, int rgb)
+  {
+    char buf[8];
+
+    sprintf(buf, "#%06x", jsutils_bgr0_to_rgb(rgb));
+    return JS_NewStringCopyZ(cx, buf);
+  }
+
+  /**************************************************************/
+  /* jsutils_jsval_to_rgb()                                     */
+  /*                                                            */
+  /* Convert a jsval to a RGB value, assuming the jsval holds a */
+  /* string with a colour specifier in it.                      */
+  /*                                                            */
+  /* Parameters: Pointer to a JSContext structure giving the    */
+  /*             execution context for the current script;      */
+  /*                                                            */
+  /*             Pointer to the jsval to convert to an RGB      */
+  /*             value.                                         */
+  /*                                                            */
+  /* Returns:    A 32-bit colour number in the form BBGGRRcc    */
+  /*             where cc = GCOL, or BBGGRR are blue, green and */
+  /*             red components. In this context, GCOL will     */
+  /*             always be zero, so a return value of 1 is used */
+  /*             to mean the jsval couldn't be converted, and 2 */
+  /*             means 'transparent'.                           */
+  /**************************************************************/
+
+  int jsutils_jsval_to_rgb(JSContext * cx, jsval * vp)
+  {
+    int   rgb = 1;
+    int   red, green, blue;
+    int32 colour;
+
+    if (JSVAL_IS_NUMBER(*vp))
+    {
+      /* If given a number directly, check it is a 24 bit quantity */
+
+      if (!JS_ValueToInt32(cx, *vp, &colour)) return 1;
+      if ((colour >> 24) != 0)                return 1;
+
+      /* Extract the colour components */
+
+      red   = (uint8) (colour >> 16);
+      green = (uint8) ((colour >> 8) & 0xff);
+      blue  = (uint8) (colour & 0xff);
+
+      /* Build the colour number */
+
+      rgb = (blue << 24) | (green << 16) | (red << 8);
+    }
+    else
+    {
+      /* Not given a number */
+
+      switch(JS_TypeOfValue(cx, *vp))
+      {
+        case JSTYPE_OBJECT:
+        {
+          /* Check for null (transparent) bgcolour */
+
+          if (JSVAL_IS_NULL(*vp))
+          {
+            rgb = 2;
+            break;
+          }
+        }
+
+        /* Fall through from above case... */
+
+        default:
+        {
+          if (!JS_ConvertValue(cx, *vp, JSTYPE_STRING, vp)) return 1;
+        }
+
+        /* Again, fall through...*/
+
+        case JSTYPE_STRING:
+        {
+          const char * cs = JS_GetStringBytes(JSVAL_TO_STRING(*vp));
+
+          if (!cs) return 1;
+
+          rgb = (int) HtmlParseColour(cs);
+
+          if (rgb == 1)
+          {
+            JS_ReportError(cx,
+                           lookup_token("JSColo:Invalid colour specification %%s",0,0),
+                           (char *) JS_GetStringBytes(JSVAL_TO_STRING(*vp)));
+
+            return 1;
+          }
+        }
+        break;
+      }
+    }
+
+    return rgb;
+  }
+
+  /**************************************************************/
+  /* jsutils_bgr0_to_rgb                                        */
+  /*                                                            */
+  /* Convert a RISC OS-style colour word of the form 0xBBGGRR00 */
+  /* to the form 0x00RRGGBB.                                    */
+  /*                                                            */
+  /* Parameters: RISC OS colour number of the form 0xBBGGRR00.  */
+  /*                                                            */
+  /* Returns:    Colour value of the form 0x00RRGGBB.           */
+  /**************************************************************/
+
+  int jsutils_bgr0_to_rgb(int bgr0)
+  {
+    return ((bgr0  >> 24) & 0xff)         |
+           (((bgr0 >> 16) & 0xff) << 8)   |
+           (((bgr0 >> 8)  & 0xff) << 16);
+  }
+
+#endif
+@
+
+
+1.3
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a43 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.2
+log
+@Intermediate check-in; building a browser from this gives you something
+between 2.07 and 2.08. Only the Phoenix JavaScript resources are fully
+up to date.
+
+I *think* these are the changes since the last check-in:
+
+When saved as a Draw file, horizontal rules were plotted one page width
+too far to the right (wonder when that started happening?!). Fixed. In
+addition, DrawFiles now accepted as OBJECTs - they weren't in the
+recognised filetype list before. Doh.
+
+Table size calculator tables_count_table would overestimate the number
+of cells where ROWSPAN was present and there were other rows below the
+one spanned. Fixed. In certain odd cases (e.g. optimised image exports
+as HTML tables (!!) from the Gimp) this can save vast amounts of RAM.
+
+Fixed problem where printing stops in the middle of a document. Redraw
+engine pagination code was written in the days where lines couldn't
+have gaps between them; they can now. If a gap fell at the bottom of
+a page the engine would look down, see no line straddling or touching
+the page edge, and assume there was nothing more. This case is now
+correctly handled.
+
+Made sure desktop and testbed Browse Res files had up-to-date Encoding
+menus (v2.07 Phoenix has different menus from v2.07 Browse by oversight).
+
+URL auto-completion piggy-backed onto manual completion code; any string
+without '.', '/' or ':' in it gets run through completion to see if a
+more meaningful item can be produced - "www" special cased out though.
+
+New List dialogue box handler, used for proxy exclusions etc.
+(incomplete), complete with appropriate Res file objects.
+@
+text
+@d15 16
+a30 14
+/***************************************************/
+/* File   : JSutils.c                              */
+/*                                                 */
+/* Purpose: JavaScript support - various utility   */
+/*          functions (which libmocha had in silly */
+/*          places, on the whole).                 */
+/*                                                 */
+/*          Based in part on source in libmocha    */
+/*          from the Mozilla browser sources.      */
+/*                                                 */
+/* Author : A.D.Hodgkinson                         */
+/*                                                 */
+/* History: 07-Aug-98: Created.                    */
+/***************************************************/
+d35 2
+a36 1
+#include "swis.h"
+d38 1
+a38 1
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+d40 8
+a47 3
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+a48 1
+#include "svcprint.h"
+d60 15
+a74 17
+  /*************************************************/
+  /* jsutils_rgb_to_string()                       */
+  /*                                               */
+  /* Take a given RISC OS colour number and return */
+  /* a pointer to '#RRGGBB' as a JS string.        */
+  /*                                               */
+  /* Parameters: JS execution context to allocate  */
+  /*             the string in;                    */
+  /*                                               */
+  /*             The RISC OS colour number, i.e.   */
+  /*             0xBBGGRR00.                       */
+  /*                                               */
+  /* Returns:    Pointer to a JS string holding    */
+  /*             the colour as '#RRGGBB', or NULL  */
+  /*             if memory can't be allocated for  */
+  /*             that string.                      */
+  /*************************************************/
+d84 19
+a102 23
+  /*************************************************/
+  /* jsutils_jsval_to_rgb()                        */
+  /*                                               */
+  /* Convert a jsval to a RGB value, assuming the  */
+  /* jsval holds a string with a colour specifier  */
+  /* in it.                                        */
+  /*                                               */
+  /* Parameters: Pointer to a JSContext structure  */
+  /*             giving the execution context for  */
+  /*             the current script;               */
+  /*                                               */
+  /*             Pointer to the jsval to convert   */
+  /*             to an RGB value.                  */
+  /*                                               */
+  /* Returns:    A 32-bit colour number in the     */
+  /*             form BBGGRRcc where cc = GCOL,    */
+  /*             or BBGGRR are blue, green and     */
+  /*             red components. In this context,  */
+  /*             GCOL will always be zero, so a    */
+  /*             return value of 1 is used to mean */
+  /*             the jsval couldn't be converted,  */
+  /*             and 2 means 'transparent'.        */
+  /*************************************************/
+d177 10
+a186 12
+  /*************************************************/
+  /* jsutils_bgr0_to_rgb                           */
+  /*                                               */
+  /* Convert a RISC OS-style colour word of the    */
+  /* form 0xBBGGRR00 to the form 0x00RRGGBB.       */
+  /*                                               */
+  /* Parameters: RISC OS colour number of the form */
+  /*             0xBBGGRR00.                       */
+  /*                                               */
+  /* Returns:    Colour value of the form          */
+  /*             0x00RRGGBB.                       */
+  /*************************************************/
+@
+
+
+1.1
+log
+@Everyone else seems to be checking lots of stuff in lately, so I've
+decided to join in. This is an intermediate check-in and so not all
+resources etc. will be up to date. You should be able to make Phoenix
+and a debug build out of it. As a reminder, to make a JavaScript build:
+
+ * Build JSLib and NSPRLib. Recommend you leave -DUSEMEMLIB in there (as
+   used by default) so you can watch it leak into a dynamic area... :-)
+   If you do this, you'll need to build MemLib too, of course. If you
+   do NOT use MemLib, *undefine JS_USING_MEMLIB in Main.c*!
+ * Run !MkClean. This now strips dynamic dependencies from the MakeFile
+   automatically, to save you having to do it yourself.
+ * Run one of the TaskObey files with the "J" suffix, e.g. !DeskBrwsJ -
+   this uses the same .o directory for object files and exports to the
+   same position in the Targets directory as the non-JavaScript build,
+   but it does produce a unique binary in 'abs' and symbols table in
+   'syms'.
+ * Sourcing an appropriate !Run (with increased WimpSlot value), !Boot
+   and About resource is done automatically.
+ * Some, but not all of the !xxxD (debug) TaskObey files will make
+   JavaScript versions in passing - check the JSUFFIX value on the Make
+   command line parameters in the file.
+
+This'll only work on RISC OS 3.1 due to the use of MemLib.
+
+Here's the change list:
+
+Included MNG icons in sprites files; added Sprites23 for some builds.
+Added in ANT URL file icon (b28) derived from URI file icon, because
+the Save dialogue can need it.
+
+No, you do *not* need to define the same keyboard shortcuts in each
+frame since the ancestor keeps the input focus and we've basically
+dropped non-nested Wimp support. Maintaining no less than 4 lists of
+identical shortcuts was a pain. Some Res files now only have the
+lists in the main browser window and button bar objects (these two
+are both required still).
+
+Ursula build Markers button arrangement changed from 1x3 horizontal to
+2x2 tilted, as in Phoenix, by popular demand.
+
+Couple of hotlist bugs fixed; dragging an item and deleteing it with
+Ctrl+X didn't terminate the drag, and deleteting an item underneath a
+menu opened for it didn't close the menu.
+
+'SendReferer' option added to all Choices files, all set to 'always'.
+Put just beneath 'Clone' as it refers to header items, though really,
+both Clone and SendReferer should probably be in the "Fetch controls"
+section rather than "Multiuser environments and proxying"! Front-end
+control of this is available.
+
+In image_export_original, save_save_source, save_transfer_source and
+save_save_object, flex_set_budge(0) was called to lock the heap but the
+return value wasn't stored. flex_set_budge(1) was then used to unlock
+the heap. All calls now remember and restore the old value, which is
+both safer in case one calls another and allows the flex_set_budge
+call in Main.c to have an application-wide meaning, as intended.
+
+Some restructuring to the data load and RAM transfer sections of
+Protocols.c; remote hotlist builds wouldn't allow files to be loaded
+to browser windows before, and can now drop URL, URI or text files to
+the Open URL dialogue.
+
+New option "MinimumFontSize", lets the 'size' attribute of the 'font'
+element be overridden. Default value is 1, to allow the full range of
+values for the attribute. Setting to 7, for example, would give font
+size 7 text at all times. Another new option, "ToggleOnXOnly", to
+make Toggle Size only extend the window vertically (with Ctrl then
+being used to toggle to genuine full size, rather than vice versa).
+All Choices files updated to hold both of these options; only the
+first has front-end control available (see debug build Res file).
+
+JavaScript Document object exists; frames array etc. working. Can now
+just about use "http://www.acorn.com/~ahodgkin/jschain/" but it does
+abort after a bit - problems with frames again, I suspect. Is is pretty
+slow, too. Can now press Escape to terminate a script.
+
+Main.c erroneously referred to Controls file entry "StopWebServe" as
+"StopWebProxy". Fixed.
+
+Keyboard shortcuts to raise SaveFile are now possible in a general sense;
+the code before was in the ToBeShown handler and just checked for a parent
+component of -1. It then assumed "save frame HTML source". Now there's the
+savefile_raise_from_shortcut function, which together with the seven new
+event codes in SaveFile.h allows saving of HTML source and frame location,
+export of links, images, backgrounds and the page as text or draw, to all
+be invoked by keyboard shortcuts. Some Res files have some of these defined.
+
+In reformat_check_height, the first check to see if setpara should be set
+references a field in tpLast without checking if it is NULL. Whilst the
+'line > 0' check should mean that tpLast wasn't NULL anyway, a direct
+call to the function from outside of the reformatter might have tripped
+up on this - the check for tpLast != NULL is now made.
+
+Adjust-click on close icon in window showing file: URL attempts to open
+the parent Filer window.
+
+Reformatter used to try and find a selectable token if keyboard control
+was enabled in a really stupid place - could make reformatting become
+very slow if no selectables were present, especially if the page had a
+few tables on it. Preprocessor now does this (since it goes through all
+of the tokens anyway), the reformatter just doing a last check to ensure
+no frames have obscured the selectable and if so, it tries to move it.
+Done in the reformatter as generating a line array implies the data really
+is visible.
+
+Ctrl+Tab URL completion now builds a full list of matches from the hotlist
+and history and can cycle through them (Ctrl+Shift+Tab stepping backwards).
+
+Will give a real error rather than just "Data Abort" if it goes wrong
+now. Someone somewhere is setting bit 30 of the error which confused
+the replacement signal handler. Flag bits are now masked off (as they
+should've been to start with).
+@
+text
+@d54 26
+@

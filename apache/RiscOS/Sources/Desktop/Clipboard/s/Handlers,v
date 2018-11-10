@@ -1,0 +1,538 @@
+head	1.7;
+access;
+symbols
+	Clipboard-0_10:1.7
+	Clipboard-0_09:1.7
+	Clipboard-0_08:1.6
+	Clipboard-0_07:1.5
+	Clipboard-0_06:1.5
+	Clipboard-0_05:1.5
+	Clipboard-0_04:1.4
+	Clipboard-0_03:1.3
+	Clipboard-0_02:1.2
+	Clipboard-0_01:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.7
+date	2008.09.16.18.36.54;	author rool;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2007.11.13.01.41.06;	author srevill;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	99.02.22.11.57.58;	author bavison;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.02.19.11.22.05;	author bavison;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	99.02.12.20.01.54;	author bavison;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	98.11.10.18.02.02;	author bavison;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	98.11.10.17.28.24;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.11.10.17.28.24;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.7
+log
+@  Completed the clipboard support part of the Clipboard module.
+  Drag-and-Drop support still needs to be designed and implemented.
+Detail:
+  The initial Clipboard module released by ROOL was in a state of flux due
+  to a redesign of how the module worked. The transition to the new way
+  of doing things was only done partially and needed completing to make the
+  Clipboard module support the clipboard fully. The module also contained
+  26-bit only code.
+
+  - Replaced all the 26-bit code with 32-bit (not mode neutral) code.
+
+  - Completed implementation of Clipboard_GetDataType by adding support for
+    the situation where the Clipboard module doesn't own the clipboard and
+    isn't proxying either. The required StateHandler_DataRequest2 has been
+    implemented also.
+
+  - Fully implemented Clipboard_Get including all the required statehandlers.
+      StateHandler_DataSaveAck
+      StateHandler_RAMFetch1
+      StateHandler_RAMFetch2
+      StateHandler_DataRequest1
+      StateHandler_DataRequest2
+      StateHandler_PutRequest3
+      StateHandler_Paste
+
+  - Modified CopyData routine to allow for clipboard content not being
+    word-aligned and/or its length not being a multiple of four.
+
+  - Removed all the commented out code that was left over from the initial
+    implementation of the Clipboard module.
+
+  - Added GetData to the set of test applications. It displays the clipboard
+    contents if it's of type text (It's best to use short text strings). It's
+    not very polished and it's better to use PutClip and GetClip to test the
+    Clipboard module.
+
+  - Added PutClip to the set of test applications. It can be used test
+    SWI Clipboard_Put. Details on how can be found in its Help file.
+
+  - Added GetClip to the set of test applications. It can be used test
+    SWI Clipboard_Get. Details on how can be found in its Help file.
+Admin:
+  Extensively tested on Iyonix RO 5.11 both external behaviour with PutClip
+  and GetClip as well as the internal behaviour of the statehandler (by using
+  StrongED as the clipboard owner/requester and rigging it to fail at certain
+  points during the datatransfer).
+
+  Briefly tested on RO 4.02, seems to be OK.
+
+  Briefly tested on RO 6.06, seems to be OK. Functionality may be different
+  from 5.11 and 4.02 though due to ClipboardHolder. In particular using the
+  Clipboard module as a proxy is likely to be affected.
+
+Version 0.09. Tagged as 'Clipboard-0_09'
+@
+text
+@; Copyright 1998 Acorn Computers Ltd
+;
+; Licensed under the Apache License, Version 2.0 (the "License");
+; you may not use this file except in compliance with the License.
+; You may obtain a copy of the License at
+;
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS,
+; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+; See the License for the specific language governing permissions and
+; limitations under the License.
+;
+;
+;  s.Handlers - routines to handle environment handlers
+;
+
+
+;
+; All I wanted was an Error handler, but page 1-294 of the PRMs says
+; we need an Upcall and Exit handler as well to remove the error
+; handler...
+;
+
+        ASSERT  OldExitHandler-OldUpcallHandler = 12
+        ASSERT  OldErrorHandler-OldExitHandler = 12
+
+InstallHandlers
+        Entry   "R0-R4"
+        ADR     R4, OldUpcallHandler
+        ; Install an Upcall handler (see 1-294)
+        MOV     R0, #16
+        ADR     R1, UpcallHandler
+        MOV     R2, R12
+        SWI     OS_ChangeEnvironment
+        STMIA   R4!, {R1-R3}
+        ; and an Exit handler
+        MOV     R0, #11
+        ADR     R1, ExitHandler
+        MOV     R2, R12
+        SWI     OS_ChangeEnvironment
+        STMIA   R4!, {R1-R3}
+        ; and an Error handler
+        MOV     R0, #6
+        ADR     R1, ErrorHandler
+        MOV     R2, R12
+        LDR     R3, mystack
+        SWI     OS_ChangeEnvironment
+        STMIA   R4!, {R1-R3}
+        EXIT
+
+RestoreHandlers
+        Entry   "R0-R4"
+        ADR     R4, OldUpcallHandler
+        MOV     R0, #16
+        LDMIA   R4!, {R1-R3}
+        SWI     XOS_ChangeEnvironment
+        MOV     R0, #11
+        LDMIA   R4!, {R1-R3}
+        SWI     XOS_ChangeEnvironment
+        MOV     R0, #6
+        LDMIA   R4!, {R1-R3}
+        SWI     XOS_ChangeEnvironment
+        EXIT
+
+ErrorHandler
+        MOV     R12, R0
+        LDR     R13, mystack
+        ADD     R13, R13, #UserStackSize
+        ADR     R0, MessagesBlock
+        addr    R1, clipboard_text
+        ADR     R2, PollBlock
+        MOV     R3, #?PollBlock
+        SWI     XMessageTrans_Lookup            ; R2->task name
+      [ Debug
+        LDR     R1, mystack
+        LDR     R0, [R1], #8
+01      LDRB    R2, [R1], #1
+        CMP     R2, #' '
+        BGE     %BT01
+        MOV     R2, #' '
+        STRB    R2, [R1, #-1]   ; separating space
+        SWI     XOS_ConvertHex8 ; append error's PC to message
+      ]
+        ADR     R0, MessagesBlock
+        ADR     R1, quit_text
+        MOV     R2, #0
+        SWI     XMessageTrans_Lookup
+        MOV     R5, R2          ; Quit button instead of Cancel
+        LDR     R0, mystack
+        ADD     R0, R0, #4
+        LDR     R1, =&101:OR:(2<<9):OR:(3<<28)
+        ADR     R2, PollBlock
+        MOV     R3, #0
+        MOV     R4, #0
+        SWI     XWimp_ReportError
+        TEQ     R1, #1
+        SWINE   XOS_Exit
+        B       PollLoop
+
+quit_text
+        =       "Quit", 0
+        ALIGN
+
+ExitHandler
+        LDR     R13, mystack
+        ADD     R13, R13, #UserStackSize
+        BL      CloseDown
+        SWI     OS_Exit
+
+UpcallHandler
+        EntryS
+        TEQ     R0, #256                 ; UpCall_NewApplication?
+        BLEQ    CloseDown
+        EXITS
+
+        LTORG
+        END
+@
+
+
+1.6
+log
+@Fixed Clipboard to build and made it 32bit.
+Detail:
+  Clipboard has never been 32bitted, therefore it refused to build for
+  Tungsten. It's now been fixed to build. It's still not finished though.
+Admin:
+  Tested on RiscPC RO402. Module checked with ARMalyser.
+Notes:
+  Changes by James Lampard.
+
+Version 0.08. Tagged as 'Clipboard-0_08'
+@
+text
+@d118 1
+@
+
+
+1.5
+log
+@* Task-related initialisation moved from module init to Start routine
+* State handler added, called from SWI, UserMessage, UserMessageAck handlers
+* Implemented NewAction, DeleteAction, DeleteActions, FreeClipboard and
+  FreeMsgQueue
+* DA memory allocation adapted so as not to use max-size "-1" DAs
+* RMA memory allocation functions completed to match DA functions - will now
+  assemble with DA support option turned off!
+
+Version 0.05. Tagged as 'Clipboard-0_05'
+@
+text
+@d113 1
+a113 1
+        Entry
+@
+
+
+1.4
+log
+@* Updated API to match that from the spec 1309,419/FS
+* Added symbols for all flag bits in SWIs and messages
+* Major reorganisation of workspace layout, primarily to facilitate multiple
+  concurrent data transfer transactions - because of this, most of the
+  useful functionality is currently commented out, pending updating to use
+  the new structures
+* Replaced "event" queue with a simple queue of ready-to-send Wimp message
+  blocks - this way, event handling can be handled in the same place in the
+  code, irrespective of whether we're in the foreground or background
+* Reorganised finalisation code so that task and module operations are
+  performed in separate routines and (mostly) in strictly the reverse order
+  to at initialisation. This allows code sharing between module finalisation,
+  the exit handler, the UpCall_NewApplication handler, and the task quit
+  code, as well as eradicating several memory leaks in the process
+
+Version 0.04. Tagged as 'Clipboard-0_04'
+@
+text
+@d16 5
+d72 1
+a72 1
+        addr    R1, ClipboardText
+d87 1
+a87 1
+        ADR     R1, QuitText
+d102 1
+a102 1
+QuitText
+@
+
+
+1.3
+log
+@* Makefile altered to build separate targets for RAM and ROM builds
+* Makefile supports LocalRes$Path
+* General tidying up of source
+* Drag-and-Drop features optioned out (implementation unlikely in first release)
+* R0 passed to Wimp_Initialise now a recognised value
+* Ursula fast service call table added
+* Now launches task when module is RMRun
+* Error handler modified to have a Quit button instead of Cancel
+* Debug builds append error PC to error message in error handler error box
+
+Version 0.03. Tagged as 'Clipboard-0_03'
+@
+text
+@d104 1
+a104 8
+        BL      RestoreHandlers
+        BL      FreeClipboard
+        BL      FreeGetBuffer
+        MOV     R0, #ModHandReason_Free
+        MOV     R2, R13
+        SWI     XOS_Module
+        MOV     R0, #0
+        STR     R0, mystack
+d108 1
+d110 2
+a111 4
+        MOVNES  PC, R14
+        Entry
+        BL      RestoreHandlers
+        EXIT
+@
+
+
+1.2
+log
+@Expanded tabs.
+
+Version 0.01. Not tagged
+@
+text
+@d26 1
+a26 1
+        ADR     R4,OldUpcallHandler
+d28 3
+a30 3
+        MOV     R0,#16
+        ADR     R1,UpcallHandler
+        MOV     R2,R12
+d32 1
+a32 1
+        STMIA   R4!,{R1-R3}
+d34 3
+a36 3
+        MOV     R0,#11
+        ADR     R1,ExitHandler
+        MOV     R2,R12
+d38 1
+a38 1
+        STMIA   R4!,{R1-R3}
+d40 4
+a43 4
+        MOV     R0,#6
+        ADR     R1,ErrorHandler
+        MOV     R2,R12
+        LDR     R3,mystack
+d45 1
+a45 1
+        STMIA   R4!,{R1-R3}
+d50 3
+a52 3
+        ADR     R4,OldUpcallHandler
+        MOV     R0,#16
+        LDMIA   R4!,{R1-R3}
+d54 2
+a55 2
+        MOV     R0,#11
+        LDMIA   R4!,{R1-R3}
+d57 2
+a58 2
+        MOV     R0,#6
+        LDMIA   R4!,{R1-R3}
+d63 7
+a69 7
+        MOV     R12,R0
+        LDR     R13,mystack
+        ADD     R13,R13,#UserStackSize
+        ADR     R0,MessagesBlock
+        addr    R1,ClipboardText
+        ADR     R2,PollBlock
+        MOV     R3,#?PollBlock
+d71 21
+a91 6
+        LDR     R0,mystack
+        ADD     R0,R0,#4
+        LDR     R1,=&103:OR:(2<<9)
+        MOV     R3,#0
+        MOV     R4,#0
+        MOV     R5,#0
+d93 2
+a94 2
+        TEQS    R1,#2
+        SWIEQ   XOS_Exit
+d97 4
+d102 2
+a103 2
+        LDR     R13,mystack
+        ADD     R13,R13,#UserStackSize
+d107 2
+a108 2
+        MOV     R0,#ModHandReason_Free
+        MOV     R2,R13
+d110 2
+a111 2
+        MOV     R0,#0
+        STR     R0,mystack
+d115 2
+a116 2
+        TEQS    R0,#256                 ; UpCall_NewApplication?
+        MOVNES  PC,LR
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d21 2
+a22 2
+	ASSERT	OldExitHandler-OldUpcallHandler = 12
+	ASSERT	OldErrorHandler-OldExitHandler = 12
+d25 22
+a46 22
+	Entry	"R0-R4"
+	ADR	R4,OldUpcallHandler
+	; Install an Upcall handler (see 1-294)
+	MOV	R0,#16
+	ADR	R1,UpcallHandler
+	MOV	R2,R12
+	SWI	OS_ChangeEnvironment
+	STMIA	R4!,{R1-R3}
+	; and an Exit handler
+	MOV	R0,#11
+	ADR	R1,ExitHandler
+	MOV	R2,R12
+	SWI	OS_ChangeEnvironment
+	STMIA	R4!,{R1-R3}
+	; and an Error handler
+	MOV	R0,#6
+	ADR	R1,ErrorHandler
+	MOV	R2,R12
+	LDR	R3,mystack
+	SWI	OS_ChangeEnvironment
+	STMIA	R4!,{R1-R3}
+	EXIT
+d49 12
+a60 12
+	Entry	"R0-R4"
+	ADR	R4,OldUpcallHandler
+	MOV	R0,#16
+	LDMIA	R4!,{R1-R3}
+	SWI	XOS_ChangeEnvironment
+	MOV	R0,#11
+	LDMIA	R4!,{R1-R3}
+	SWI	XOS_ChangeEnvironment
+	MOV	R0,#6
+	LDMIA	R4!,{R1-R3}
+	SWI	XOS_ChangeEnvironment
+	EXIT
+d63 18
+a80 18
+	MOV	R12,R0
+	LDR	R13,mystack
+	ADD	R13,R13,#UserStackSize
+	ADR	R0,MessagesBlock
+	addr	R1,ClipboardText
+	ADR	R2,PollBlock
+	MOV	R3,#?PollBlock
+	SWI	XMessageTrans_Lookup		; R2->task name
+	LDR	R0,mystack
+	ADD	R0,R0,#4
+	LDR	R1,=&103:OR:(2<<9)
+	MOV	R3,#0
+	MOV	R4,#0
+	MOV	R5,#0
+	SWI	XWimp_ReportError
+	TEQS	R1,#2
+	SWIEQ	XOS_Exit
+	B	PollLoop
+d83 11
+a93 11
+	LDR	R13,mystack
+	ADD	R13,R13,#UserStackSize
+	BL	RestoreHandlers
+	BL	FreeClipboard
+	BL	FreeGetBuffer
+	MOV	R0,#ModHandReason_Free
+	MOV	R2,R13
+	SWI	XOS_Module
+	MOV	R0,#0
+	STR	R0,mystack
+	SWI	OS_Exit
+d96 5
+a100 5
+	TEQS	R0,#256			; UpCall_NewApplication?
+	MOVNES	PC,LR
+	Entry
+	BL	RestoreHandlers
+	EXIT
+d102 1
+a102 1
+	END
+@
+
+
+1.1.1.1
+log
+@Initial import: Kevin's original version.
+@
+text
+@@

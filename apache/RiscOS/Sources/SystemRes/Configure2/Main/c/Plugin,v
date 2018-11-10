@@ -1,0 +1,495 @@
+head	1.5;
+access;
+symbols
+	Main-2_12:1.5
+	Main-2_11:1.4
+	Main-2_10:1.4
+	Main-2_09:1.3
+	Main-2_08:1.2
+	Main-2_07:1.2
+	Main-2_06:1.2
+	Main-2_05:1.1.1.1
+	Main-2_04:1.1.1.1
+	Main-2_03:1.1.1.1
+	Main-2_02:1.1.1.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:1.1.1.1
+	Ursula_RiscPC:1.1.1.1.0.2
+	rthornb_UrsulaBuild-19Aug1998:1.1.1.1
+	UrsulaBuild_FinalSoftload:1.1.1.1
+	rthornb_UrsulaBuild-12Aug1998:1.1.1.1
+	aglover_UrsulaBuild-05Aug1998:1.1.1.1
+	bavison_Configure-2_01:1.1.1.1
+	rthornb_UrsulaBuild-29Jul1998:1.1.1.1
+	bavison_Configure-2_00:1.1.1.1
+	rthornb_UrsulaBuild-22Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-15Jul1998:1.1.1.1
+	rthornb_UrsulaBuild-07Jul1998:1.1.1.1
+	bavison_Configure-0_17:1.1.1.1
+	rthornb_UrsulaBuild-17Jun1998:1.1.1.1
+	rthornb_UrsulaBuild-03Jun1998:1.1.1.1
+	rthornb_UrsulaBuild-27May1998:1.1.1.1
+	rthornb_UrsulaBuild-21May1998:1.1.1.1
+	bavison_Configure-0_16:1.1.1.1
+	rthornb_UrsulaBuild_01May1998:1.1.1.1
+	initial:1.1.1.1
+	Ursula:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2016.07.28.21.40.36;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	V0phLURig2XVq8gz;
+
+1.4
+date	2013.12.07.09.29.46;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	u6q2m3hAZLgmnbgx;
+
+1.3
+date	2013.11.24.15.09.54;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	W0eYHX4PpQhXFxex;
+
+1.2
+date	2012.06.24.16.53.41;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	qPHF04L1v1rTTY9w;
+
+1.1
+date	98.04.06.13.21.39;	author bavison;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	98.04.06.13.21.39;	author bavison;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.5
+log
+@Offer CMOS defaults when the kernel knows what they are
+Since 2013 (ref ticket #316) we stopped including a ResetCMOS file in the ROxxxHook directory because the numerous HAL based targets meant it wasn't possible to define a safe set of defaults for all hardware.
+However, the result of that is the the 'CMOS/Default' menu entry in !Configure is never enabled (unless the OEM provides an overriding ResetCMOS themselves).
+Query the kernel, and is the OS_NVMemory reason code to read the defaults from the OS is available, reenable the 'CMOS/Default' menu entry, and when the time comes simply transfer those defaults by writing them back.
+Main.c/Main.h:
+  New flag for OS_NVMemory 6 being available
+Plugin.c:
+  Use symbols for OS_File & OS_GBPB
+ToolboxE.c:
+  Offer defaults, and copy them, if ResetCMOS isn't found
+
+Problem spotted while reviewing the User Guide's configure chapter.
+
+Version 2.12. Tagged as 'Main-2_12'
+@
+text
+@/* Copyright 1998 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/******	Plugin.c **********************************************************\
+
+Project:	Ursula (RISC OS for Risc PC II)
+Component:	Configure central application
+This file:	Plug-in data management
+
+History:
+Date		Who	Change
+----------------------------------------------------------------------------
+10/12/1997	BJGA	Split from Main
+			Added these headers
+27/03/1998	BJGA	Now scans every BootResources:Configure directory
+			  when BootResources$Path is a multi-directory path
+
+\**************************************************************************/
+
+/* CLib */
+#include <stdlib.h>
+#include <string.h>
+#include "swis.h"
+/* Exports */
+#include "Interface/HighFSI.h"
+/* Toolbox */
+#include "toolbox.h"
+#include "menu.h"
+/* Common */
+#include "message.h"
+#include "misc.h"
+#include "str.h"
+/* local headers */
+#include "Main.h"
+#include "Calc.h"
+#include "Plugin.h"  /* includes prototypes for this file */
+#include "Selector.h"
+#include "State.h"
+
+#define menu_item_to_be_deleted 0x1001
+
+typedef struct
+{
+  unsigned int load_addr;
+  unsigned int exec_addr;
+  unsigned int length;
+  unsigned int attr;
+  unsigned int object_type;
+  unsigned int file_type;
+  char         name[256];
+} osgbpb_file;
+
+selector_id plugin_selector;
+char *plugin_text =		NULL;
+plugin_spec *plugin_list =	NULL;
+int plugin_no =			0;
+
+static int textsize =		0;
+
+/******	plugin_scan() *****************************************************\
+
+Purpose:	The Configure-specific selector-related routine.
+		Scans BootResources:Configure for plug-ins, reads their
+		messages files, and initialises the selector as necessary.
+		Also checks the initial FSLock state, and acts upon it.
+
+\**************************************************************************/
+
+void plugin_scan (void)
+{
+  const char *path_ro;
+  char *path_rw, *path_element;
+  int offset, nread;
+  int plugin, territory;
+  int boot_remote, vartype = -1;
+  osgbpb_file gbpb_buf;
+  MessagesFD localmess;
+  
+  plugin_selector = selector_create ("Window", 108, 108, 16, 28, calc_width, calc_height);
+
+  territory = _swi (Territory_Number, _RETURN(0));
+  path_ro = getenv ("BootResources$Path"); /* We need to scan each directory on the path individually */
+  path_rw = malloc (str_len (path_ro) + 1);
+  if (path_rw == NULL) message_error(messages,err_alloc);
+  str_cpy (path_rw, path_ro);
+  
+  path_element = strtok (path_rw, ",");
+  while (path_element != NULL) {
+    char *scandir;
+    
+    scandir = malloc (str_len (path_element) + 10);
+    if (scandir == NULL) message_error(messages,err_alloc);
+    sprintf (scandir, "%sConfigure", path_element);
+    
+    /* Check the directory exists before we go enumerating it */
+    if (2 == (_swi (OS_File, _INR(0,1)|_RETURN(0), OSFile_ReadNoPath, (int) scandir) & 2)) {
+      
+      offset = 0;
+      nread = -1;
+      /* Enumerate directory */
+      do {
+        offset = _swi (OS_GBPB, _INR(0,6)|_OUT(3)|_RETURN(4),
+              OSGBPB_ReadDirEntriesFileType, (int) scandir, (int) &gbpb_buf, 1, offset, sizeof (gbpb_buf), (int) "!*", &nread);
+        if (nread && gbpb_buf.object_type == 2) {
+          /* Also check we haven't already found this plug-in in a higher priority directory */
+          BOOL found = FALSE;
+          int old_plugin;
+          
+          for (old_plugin = 0; old_plugin < plugin_no; old_plugin++)
+          {
+            if (0 == _swi (Territory_Collate, _INR(0,3)|_RETURN(0), -1, plugin_text + (plugin_list + old_plugin) -> app_name,
+                                                                        gbpb_buf.name, 1 /* ignore case */))
+              found = TRUE;
+          }
+          
+          if (!found)
+          {
+            char *ptr = NULL;
+            char *scratch;
+            char mess_text [41], mess_sprite [13];
+            _kernel_oserror *err;
+            plugin = plugin_no;
+            
+            scratch = malloc (12 + str_len (scandir) + 1 + 256 + 10); /* space for 'IconSprites <directory>.<maxlenleaf>.CoSprite' */
+            if (scratch == NULL) message_error(messages,err_alloc);
+            
+            plugin_list = realloc (plugin_list, ++plugin_no * sizeof (plugin_spec));
+            if (plugin_list == NULL) message_error(messages,err_alloc);
+            
+            plugin_text = realloc (plugin_text, textsize += str_len (gbpb_buf.name) + 1);
+            if (plugin_text == NULL) message_error(messages,err_alloc);
+            str_ncpy (plugin_text + textsize - str_len (gbpb_buf.name) - 1, gbpb_buf.name, str_len (gbpb_buf.name) + 1);
+            
+            (plugin_list + plugin) -> alive = FALSE;
+            (plugin_list + plugin) -> task_handle = -1;
+            (plugin_list + plugin) -> app_name = textsize - str_len (gbpb_buf.name) - 1;
+            (plugin_list + plugin) -> help = -1;				/* Fallback: flag as nonexistent */
+            (plugin_list + plugin) -> info_name = -1;				/* Fallback: flag as nonexistent */
+            (plugin_list + plugin) -> info_purpose = -1;			/* Fallback: flag as nonexistent */
+            (plugin_list + plugin) -> info_author =-1;				/* Fallback: flag as nonexistent */
+            (plugin_list + plugin) -> info_version =-1;				/* Fallback: flag as nonexistent */
+            str_ncpy (mess_text, gbpb_buf.name + 1, sizeof (mess_text));	/* Fallback: appname without ! */
+            str_ncpy (mess_sprite, gbpb_buf.name, sizeof (mess_sprite));	/* Fallback: appname with ! */
+            
+            sprintf (scratch, "%s.%s.Message%d", scandir, gbpb_buf.name, territory);
+            err = _swix (MessageTrans_OpenFile, _INR(0,2), &localmess, scratch, 0);
+            if (err != NULL) {
+              /* No territory specific messages, try default ones */
+              sprintf (scratch, "%s.%s.Messages", scandir, gbpb_buf.name);
+              err = _swix (MessageTrans_OpenFile, _INR(0,2), &localmess, scratch, 0); 
+            }
+            if (err == NULL) {
+              if (_swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_ConfigText", 0, &ptr) == NULL)
+                str_ncpy (mess_text, ptr, sizeof (mess_text));
+              if (_swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_ConfigSprite", 0, &ptr) == NULL)
+                str_ncpy (mess_sprite, ptr, sizeof (mess_sprite));
+              if (_swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_ConfigHelp", 0, &ptr) == NULL) {
+                int mess_len = str_len (ptr) + 1; /* including the terminator */
+                if ((plugin_text = realloc (plugin_text, textsize += mess_len)) == NULL) message_error(messages,err_alloc);
+                str_ncpy (plugin_text + textsize - mess_len, ptr, mess_len);
+                (plugin_list + plugin) -> help = textsize - mess_len;
+              }
+              if (_swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_TaskName", 0, &ptr) == NULL) {
+                int mess_len = str_len (ptr) + 1; /* including the terminator */
+                if ((plugin_text = realloc (plugin_text, textsize += mess_len)) == NULL) message_error(messages,err_alloc);
+                str_ncpy (plugin_text + textsize - mess_len, ptr, mess_len);
+                (plugin_list + plugin) -> info_name = textsize - mess_len;
+              }
+              if (_swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_Purpose", 0, &ptr) == NULL) {
+                int mess_len = str_len (ptr) + 1; /* including the terminator */
+                if ((plugin_text = realloc (plugin_text, textsize += mess_len)) == NULL) message_error(messages,err_alloc);
+                str_ncpy (plugin_text + textsize - mess_len, ptr, mess_len);
+                (plugin_list + plugin) -> info_purpose = textsize - mess_len;
+              }
+              if (_swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_Author", 0, &ptr) == NULL) {
+                int mess_len = str_len (ptr) + 1; /* including the terminator */
+                if ((plugin_text = realloc (plugin_text, textsize += mess_len)) == NULL) message_error(messages,err_alloc);
+                str_ncpy (plugin_text + textsize - mess_len, ptr, mess_len);
+                (plugin_list + plugin) -> info_author = textsize - mess_len;
+              }
+              if (_swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_Version", 0, &ptr) == NULL) {
+                int mess_len = str_len (ptr) + 1; /* including the terminator */
+                if ((plugin_text = realloc (plugin_text, textsize += mess_len)) == NULL) message_error(messages,err_alloc);
+                str_ncpy (plugin_text + textsize - mess_len, ptr, mess_len);
+                (plugin_list + plugin) -> info_version = textsize - mess_len;
+              }
+              _swi (MessageTrans_CloseFile, _IN(0), &localmess);
+            }
+            
+            if (!configure_seen) {
+              sprintf (scratch, "IconSprites %s.%s.CoSprite", scandir, gbpb_buf.name);
+              _swix (OS_CLI, _IN(0), (int) scratch);
+            }
+            
+            (plugin_list + plugin) -> item = selector_add_icon (plugin_selector, mess_text, mess_sprite);
+            free (scratch);
+          }
+        }
+      } while (offset != -1);
+    }
+    path_element = strtok (NULL, ",");
+    free (scandir);
+  }
+  free (path_rw);
+  
+                /* Now fade icons if necessary */
+  state_locked = 0;
+  if (_swi (FSLock_Status, _RETURN(0)) >= 2) state_locked = 1;
+  if (_swix (OS_ReadVarVal, _INR(0,4)|_OUT(2)|_OUT(4), (int) "Boot$Remote", (int) &boot_remote, 4, 0, 0, &nread, &vartype) == NULL &&
+      nread != 0 && (vartype != 1 || boot_remote != 0)) {
+    int obtype, attribs;
+    if (_swix (OS_File, _INR(0,1)|_OUT(0)|_OUT(5), OSFile_ReadWithTypeNoPath, (int) "<Choices$Write>", &obtype, &attribs) == NULL) {
+      if (obtype == 2 && !(attribs & 0x20)) state_locked = 2; /* Option save location is on a read-only server */
+    }
+  }
+  /*   Note: remote-choice write-protection overrides FSLock, so Lock window will be unavailable on remotely-booted
+   *   machines where the choices directory is locked. In such cases, we probably don't want people locking or
+   *   unlocking the hard disc anyway - but determined technical users will be able to do it anyway by running the
+   *   Lock plug-in directly.
+   */
+  if (state_locked) {
+    char lockapp [40];
+    message_lookup_buffer(lockapp,messages,"LockApp");
+    for (plugin = 0; plugin < plugin_no; plugin++) {
+      if (state_locked == 2 || 0 != _swi (Territory_Collate, _INR(0,3)|_RETURN(0), -1,
+                                            plugin_text + (plugin_list + plugin) -> app_name, lockapp, 1 /* ignore case */))
+        /* don't do lock window if due to FSLock - it's needed for unlocking */
+        selector_set_fade (plugin_selector, (plugin_list + plugin) -> item, TRUE);
+    }
+  }
+  
+  selector_open (plugin_selector, NULL);
+}
+@
+
+
+1.4
+log
+@Minor !Configure changes
+The load/save/default CMOS options are now placed in a submenu.
+Submission from William Harden.
+While the bonnet is up, add search for international messages files for plugin.
+Fixes ticket #367.
+
+Built, and tested briefly in UK territory.
+
+Version 2.10. Tagged as 'Main-2_10'
+@
+text
+@d35 2
+d107 1
+a107 1
+    if (2 == (_swi (OS_File, _INR(0,1)|_RETURN(0), 17, (int) scandir) & 2)) {
+d114 1
+a114 1
+              12, (int) scandir, (int) &gbpb_buf, 1, offset, sizeof (gbpb_buf), (int) "!*", &nread);
+d223 1
+a223 1
+    if (_swix (OS_File, _INR(0,1)|_OUT(0)|_OUT(5), 23, (int) "<Choices$Write>", &obtype, &attribs) == NULL) {
+@
+
+
+1.3
+log
+@Make plugin help context sensitive
+Rather than present a large menu of info boxes, act like the filer and just offer the one info box over which the mouse click was.
+Add support for "-openat" switch like the plugins themselves.
+Submission from William Harden.
+
+Version 2.09. Tagged as 'Main-2_09'
+@
+text
+@d83 1
+a83 1
+  int plugin;
+d89 2
+a90 1
+  
+d130 1
+d154 9
+a162 3
+            sprintf (scratch, "%s.%s.Messages", scandir, gbpb_buf.name);
+            if (_swix (MessageTrans_OpenFile, _INR(0,2), &localmess, scratch, 0) == NULL) {
+              if ((char *) _swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_ConfigText", 0, &ptr) == NULL)
+d164 1
+a164 1
+              if ((char *) _swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_ConfigSprite", 0, &ptr) == NULL)
+d166 1
+a166 1
+              if ((char *) _swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_ConfigHelp", 0, &ptr) == NULL) {
+d172 1
+a172 1
+              if ((char *) _swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_TaskName", 0, &ptr) == NULL) {
+d178 1
+a178 1
+              if ((char *) _swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_Purpose", 0, &ptr) == NULL) {
+d184 1
+a184 1
+              if ((char *) _swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_Author", 0, &ptr) == NULL) {
+d190 1
+a190 1
+              if ((char *) _swix (MessageTrans_Lookup, _INR(0,2)|_OUT(2), (int) &localmess, (int) "_Version", 0, &ptr) == NULL) {
+@
+
+
+1.2
+log
+@Don't give up if the CoSprites aren't there
+_swi -> _swix
+
+Version 2.06. Tagged as 'Main-2_06'
+@
+text
+@a234 53
+
+/******	plugin_buildmenu() ************************************************\
+
+Purpose:	Builds the info menu (after it's been autocreated)
+
+\**************************************************************************/
+
+void plugin_buildmenu (void)
+{
+  static char infohelp [100];
+  static MenuTemplateEntry menuitem = { (3 << 10),         /* flags: has a submenu, submenu event enabled */
+					(ComponentId) -1,  /* component - filled in later */
+					NULL,              /* text ptr  - filled in later */
+					-1,                /* text len  - filled in later */
+					0,                 /* no click action */
+					0,                 /* we'll handle opening the submenu */
+					0,                 /* use default submenu event */
+					0,                 /* use default click event (irrelevant) */
+					infohelp,          /* one message to rule them all */
+					sizeof (infohelp) } ;
+  char **textsorted, **textunsorted;
+  int plugin, item;
+
+  message_lookup_buffer(infohelp,messages,"InfoItemHelp");
+  
+  textsorted = malloc (plugin_no * sizeof (char *));
+  textunsorted = malloc (plugin_no * sizeof (char *));
+  
+  for (plugin = 0; plugin < plugin_no; plugin++) {
+    *(textsorted + plugin) = *(textunsorted + plugin)
+      = selector_get_text (plugin_selector, (selector_item) ((plugin_list + plugin) -> item));
+  }
+  _swi (OS_HeapSort, _INR(0,2), plugin_no, (int) textsorted, 4);
+  
+  for (item = 0; item < plugin_no; item++) {
+    for (plugin = 0; plugin < plugin_no; plugin++) {
+      if (*(textsorted + item) == *(textunsorted + plugin)) {
+        menuitem.component_id = (ComponentId) ((plugin_list + plugin) -> item);
+        menuitem.text = *(textsorted + item);
+        menuitem.max_text = str_len (menuitem.text) + 1;
+        throw (menu_add_entry (0, infomenu_id, Menu_AddEntryAtEnd, (char *) &menuitem, NULL));
+      }
+    }
+  }
+
+  free (textunsorted);
+  free (textsorted);
+
+  throw (menu_remove_entry (0, infomenu_id, menu_item_to_be_deleted));
+  /*   The above bizarreness is because the Toolbox seems to remove the (otherwise trailing) separator
+   *   when adding a new menu item at the end of the menu...
+   */
+}
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d193 1
+a193 1
+              _swi (OS_CLI, _IN(0), (int) scratch);
+@
+
+
+1.1.1.1
+log
+@Initial checkin of main Configure application to CVS.
+@
+text
+@@

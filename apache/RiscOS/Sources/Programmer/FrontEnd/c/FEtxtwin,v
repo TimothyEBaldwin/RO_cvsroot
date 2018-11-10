@@ -1,0 +1,569 @@
+head	1.4;
+access;
+symbols
+	FrontEnd-1_34:1.4
+	FrontEnd-1_33:1.4
+	FrontEnd-1_32:1.4
+	FrontEnd-1_31:1.4
+	FrontEnd-1_30-2:1.4
+	FrontEnd-1_30:1.4
+	FrontEnd-1_29:1.4
+	FrontEnd-1_28:1.4
+	FrontEnd-1_27:1.4
+	FrontEnd-1_26:1.4
+	FrontEnd-1_25:1.4
+	FrontEnd-1_24:1.4
+	FrontEnd-1_23:1.4
+	FrontEnd-1_22:1.4
+	FrontEnd-1_21:1.3
+	FrontEnd-1_20:1.3
+	FrontEnd-1_19:1.3
+	FrontEnd-1_18:1.3
+	FrontEnd-1_17:1.2
+	FrontEnd-1_16:1.1.1.1
+	FrontEnd-Aquarius-1_16:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2001.05.11.15.37.34;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2000.10.12.14.14.51;	author sbrodie;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2000.04.10.17.45.27;	author blaughto;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.18.10.30.26;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.03.18.10.30.26;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Improved redraw strategy; added 'quoted_string' option for icons, plus
+  'ctrl_chars' and 'tab_width' for metaoptions.
+Detail:
+  Previously the redraw engine stayed one line behind current output as it
+  did not know where to terminate redraw of the current line. At task exit
+  it forced \n\r into the output to flush the last line. Now, the incoming
+  data buffer is oversized by 1 byte and a \0 written in to give the redraw
+  engine something to stop at. This allows it to redraw the current line,
+  meaning e.g. "....[...]" progress indicators and so-on will work. It also
+  means the \r\n hack isn't needed so saved output doesn't have a spurious
+  blank line.
+
+  For 'icn <n> maps_to ...' you can now say 'quoted_string' where you used
+  to say 'string'. This encloses the relevant writable field's text in
+  double quotes, escaping any double quotes from the writable with '\'. If
+  you use 'prefix_by', all of the prefixes and strings are within the
+  double quotes (rather than e.g. enclosing each item individually).
+
+  Previously, control characters were output more or less directly. This
+  could cause a crash for some nasty ones (e.g. send output to printer)
+  or just cause redraw corruptions and the bell to ring. Now, any control
+  characters are replaced with "?" by default, including &7F, except for
+  tab (&09), which is replaced with a single space. Behaviour is chosen by
+  the "ctrl_chars" metaoption, which takes parameters "text" for the usual
+  behaviour as described, "escape" for !Edit-style "[aa]" escaping, or
+  "hide" to not draw anything at all (so e.g. put "ctrl_chars escape" in
+  your metaoptions section of the Desc file). Another new option is
+  "tab_width"; tabs are now understood for all three output types. To
+  avoid unduly changing existing output the default tab width is 1, but it
+  can be 0 to hide tabs, or up to 32. The limit is arbitrary and only in
+  place to stop the redraw engine trying to do silly things if given a
+  very large value.
+
+  Finally, lexer.c's list of text items was mirrored in lexer.h by a list
+  of numbered items - all done by #define, so you had to manually renumber
+  them all! This has been changed to an enum, with compiled output checked
+  against the previous version - identical as expected.
+Admin:
+  Remember, you MUST NOT soft load this if you have any FrontEnd apps
+  running already! Either quit them all (check there are no instantiations
+  with *Modules) and then run it, or put it in !System and reboot. The new
+  features have been tested with a work-in-progress !UpgCreate utility,
+  and the usual set of DDE apps run to ensure they don't give any syntax
+  errors. GNUDiff and Find tested fairly heavily. Builds ROM and RAM
+  variants from clean.
+
+
+Version 1.22. Tagged as 'FrontEnd-1_22'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* Title:   FEtxtwin.c
+ * Purpose: to display a text window
+ * Author:  IDJ
+ * History: 24-Apr-90: IDJ: created
+ *          04-Apr-91: IDJ: made running out of memory safer
+ *          11-May-01: ADH: redraws lines as they are written, rather than
+ *                          afterwards; [xx]-style escaping, hiding, or substitution
+ *                          with a '?' for control characters; supports tabs now
+ *
+ */
+
+#include <stdio.h>
+
+#include "swis.h"
+
+#include "wimpt.h"
+#include "wimp.h"
+#include "os.h"
+#include "bbc.h"
+#include "flex.h"
+#include "werr.h"
+#include "msgs.h"
+
+#include "global.h"
+#include "types.h"
+#include "FrontEnd.h"
+#include "FEinterr.h"
+
+#include "FEtxtwin.h"
+
+#define  LINEBUFSIZ  256
+
+static void FEtxtwin__printtext(unsigned char *text, int leftmost, int rightmost, int atx, int aty)
+{
+   unsigned char * i;
+   unsigned char   c;
+   unsigned int    len = 0;
+   unsigned int    col = 0;
+   char            esc [5];
+
+   /* Count how many characters there are on this line */
+
+   while (text[len] != '\n' && text[len] != '\r' && text[len] != '\0') len++;
+
+   /* In modes where there's a 1:1 mapping between input bytes and redrawn
+    * bytes we can use the leftmost/rightmost indicators. Otherwise, draw
+    * the entire line - it's faster than trying to work out where to start
+    * and end based on counting control characters and so-on...
+    */
+
+   if ((application.flags & AF_ESCAPE_CTRL_CHARS) != 0)
+   {
+      /* Escape control characters, support 8 column tabs */
+
+      bbc_move(atx - leftmost * sysfont_width, aty);
+
+      for (i = text; i < text + len; i++)
+      {
+         c = *i;
+         if (c >= ' ' && c != 127) _swix(OS_WriteI + c, 0), col++;
+         else if (c != '\t' || application.tab_width == 0)
+         {
+            sprintf(esc, "[%02x]", c);
+            col += 4;
+
+            _swix(OS_Write0,
+                  _IN(0),
+
+                  esc);
+         }
+         else
+         {
+            do
+            {
+              _swix(OS_WriteI + ' ', 0);
+              col++;
+            }
+            while (col % application.tab_width != 0);
+         }
+      }
+   }
+
+   else if ((application.flags & AF_HIDE_CTRL_CHARS) != 0)
+   {
+     /* Hide control characters completely */
+
+      bbc_move(atx - leftmost * sysfont_width, aty);
+
+      for (i = text; i < text + len; i++)
+      {
+         c = *i;
+         if (c >= ' ' && c != 127) _swix(OS_WriteI + c, 0), col++;
+         else if (c == 9 && application.tab_width != 0)
+         {
+            do
+            {
+              _swix(OS_WriteI + ' ', 0);
+              col++;
+            }
+            while ((col % application.tab_width) != 0);
+         }
+      }
+   }
+
+   else if (len > leftmost)
+   {
+     /* Otherwise, default mode - show control chars as "?" */
+
+      bbc_move(atx, aty);
+
+      if (len > rightmost)
+          len = rightmost + 1;
+
+      for (i = text + leftmost; i < text + len; i++)
+      {
+         c = *i;
+         if (c >= ' ' && c != 127) _swix(OS_WriteI + c, 0), col++;
+         else if (c != 9 || application.tab_width == 0) _swix(OS_WriteI + '?', 0), col++;
+         else
+         {
+            do
+            {
+              _swix(OS_WriteI + ' ', 0);
+              col++;
+            }
+            while (col % application.tab_width != 0);
+         }
+      }
+   }
+}
+
+
+extern void FEtxtwin_open(wimp_openstr *o)
+{
+   wimpt_noerr(wimp_open_wind(o));
+}
+
+
+extern void FEtxtwin_refresh(wimp_redrawstr *r, BOOL more,
+                                  char *buffer, int *line_offsets, int nlines)
+{
+   int topspot, leftspot, topline, bottomline, leftmost, rightmost, plotx, ploty, j;
+   int cheight = sysfont_height, cwidth = sysfont_width;
+
+   /* variables are:
+      topspot ---- > topmost point in work area to be redrawn
+      leftspot --- >    "      "    "   "   "    "  "    "
+      topline  --- > index of first line of work area to redraw
+      bottomline - >   "   "  last   "    "   "    "  "    "
+      leftmost --- > index of leftmost character to redraw
+      rightmost -- >   "   "  rightmost   "      "    "
+      plotx ------ > x screen-coord to plot at
+      ploty ------ > y   "      "   "    "   "
+   */
+
+   while (more)
+   {
+      topspot = r->box.y1 - r->g.y1 - r->scy;
+      leftspot = r->scx + r->g.x0 - r->box.x0;
+      topline = topspot/cheight;
+      leftmost = leftspot/cwidth;
+      bottomline = (r->box.y1 - r->g.y0 - r->scy - 1)/cheight;
+      rightmost = (r->scx + r->g.x1 - r->box.x0)/cwidth;
+      plotx = r->g.x0 - (leftspot & (cwidth-1));
+      ploty = r->g.y1 + (topspot & (cheight-1)) - 1;
+
+      /* now do the redrawing line by line */
+      for (j = topline; j <= bottomline && j < nlines; j++)
+      {
+          FEtxtwin__printtext((unsigned char *) &buffer[line_offsets[j]], leftmost, rightmost, plotx, ploty);
+          ploty -= cheight;
+      }
+      wimp_get_rectangle(r, &more);
+   }
+}
+
+
+extern void FEtxtwin_scroll(wimp_openstr *o, int x, int y)
+{
+   int offset;
+
+   if (x & 1)   /* char left or char right */
+   {
+       offset = sysfont_width;
+       if (x < 0) offset = -offset;
+       o->x += offset;
+   }
+   else if (x)   /* page left or page right */
+   {
+       offset = o->box.x1 - o->box.x0;
+       if (x < 0) offset = -offset;
+       o->x += offset;
+   }
+
+   if (y & 1)   /* line up or line down */
+   {
+      if (y < 0)
+          offset = ((o->box.y1 - o->box.y0 - o->y) & (sysfont_height-1)) - sysfont_height;
+      else
+          offset = sysfont_height - (o->y & (sysfont_height-1));
+      o->y += offset;
+   }
+   else if (y)   /* page up or page down */
+   {
+      offset = o->box.y1 - o->box.y0;
+      if (y < 0) offset = -offset;
+      o->y += offset;
+   }
+
+   FEtxtwin_open(o);
+}
+
+extern BOOL FEtxtwin_linecount(int len, char *msg, int *nlines, int **line_offsets, int bufsize, int *lastchar)
+{
+   int pos = 0;
+   BOOL rc = TRUE;
+
+   /* Make sure we allocate line 0 to start with */
+
+   if (len == bufsize)
+   {
+      rc = flex_alloc((flex_ptr)line_offsets, LINEBUFSIZ * sizeof(int));
+      if (rc)
+      {
+         (*nlines)++;
+         (*line_offsets)[*nlines-1] = 0;
+      }
+      else
+      {
+         werr(FALSE, msgs_lookup("FEoutput1:No more memory for output display - requesting %d bytes"), LINEBUFSIZ);
+         return FALSE;
+      }
+   }
+
+   /* The last buffer ending with a singular \r or \n, and this buffer starting with the
+    * other line terminator, so this is NOT an extra blank line!
+    */
+   if (len > 0 && (msg[pos] == '\r' && *lastchar == '\n' || msg[pos] == '\n' && *lastchar == '\r'))
+   {
+     pos++;
+     ++((*line_offsets)[*nlines-1]);
+   }
+
+   if (pos < len)
+   {
+     *lastchar = msg[len-1];
+   }
+
+   /* --- here, we keep pointers to line posn's, as well as a count of \n's --- */
+   while (pos < len)
+   {
+      if (msg[pos] == '\n' || msg[pos] == '\r')
+      {
+         if ((pos + 1) < len)
+         {
+            if ( (msg[pos] == '\n' && msg[pos + 1] == '\r') ||
+                 (msg[pos] == '\r' && msg[pos + 1] == '\n') )
+            {
+               pos++;
+            }
+            if ((pos + 1) == len)
+            {
+               *lastchar = 0;
+            }
+         }
+
+         if ((*nlines+1) * sizeof(int) >= flex_size((flex_ptr)line_offsets))
+         {
+            rc = flex_extend((flex_ptr)line_offsets, flex_size((flex_ptr)line_offsets) + LINEBUFSIZ * sizeof(int));
+         }
+
+         if (rc)
+         {
+            (*nlines)++;
+            (*line_offsets)[*nlines-1] = bufsize - len + pos + 1;
+         }
+         else
+         {
+            werr(FALSE, msgs_lookup("FEoutput1:No more memory for output display - requesting %d bytes"), LINEBUFSIZ);
+            return FALSE;
+         }
+      }
+
+      pos++;
+   }
+
+   return TRUE;
+}
+@
+
+
+1.3
+log
+@  Fixed the "spurious blank line" problem.
+  Builds completely cleanly now.
+Detail:
+  The extra blank line problem has been solved.  This was caused by
+    multicharacter lineend character sequences (\r\n or \n\r) being
+    delivered split across different TaskWindow messages.
+Admin:
+  Tested by getting DecAOF to disassemble a large file.  No more spurious
+    blank lines appeared.
+
+Version 1.18. Tagged as 'FrontEnd-1_18'
+@
+text
+@d20 3
+d26 2
+d47 1
+a47 1
+static void FEtxtwin__printtext(char *text, int leftmost, int rightmost, int atx, int aty)
+d49 7
+a55 1
+   int len=0;
+d59 7
+a65 2
+   bbc_move(atx, aty);
+   if (len > leftmost)
+d67 58
+a124 1
+      os_regset r;
+d127 16
+a142 3
+      r.r[0] = (int)(text + leftmost);
+      r.r[1] = len - leftmost;
+      wimpt_noerr(os_swix(OS_WriteN, &r));
+d182 1
+a182 1
+      for (j = topline; j<=bottomline && j<nlines; j++)
+d184 1
+a184 1
+          FEtxtwin__printtext(&buffer[(j==0)?0:line_offsets[j-1]], leftmost, rightmost, plotx, ploty);
+a226 1
+
+d232 17
+d281 1
+a281 1
+         if ((*nlines+1) == 1)
+d283 1
+a283 8
+            rc = flex_alloc((flex_ptr)line_offsets, LINEBUFSIZ * sizeof(int));
+         }
+         else
+         {
+            if ((*nlines+1) * sizeof(int) >= flex_size((flex_ptr)line_offsets))
+            {
+               rc = flex_extend((flex_ptr)line_offsets, flex_size((flex_ptr)line_offsets) + LINEBUFSIZ * sizeof(int));
+            }
+d285 1
+@
+
+
+1.2
+log
+@  Fixed a redraw bug/assumption and a crash bug.
+Detail:
+  * A recent C library change which altered line endings from CR LF to LF CR (as
+    common throughout the rest of RISC OS) exposed an assumption that caused
+    redraw problems (in some circumstances the text in the output window would
+    be redrawn offset one character to the right).  It should now cope with any
+    line ending.  You'll probably only have seen this if you run a relatively
+    recent Usrula softload.
+  * The code to tidy-up when a text output window is closed was trying to free
+    a pointer that was never malloc'd to start with, which made the task
+    instantiation silently quit.  On investigation, it seems likely that when
+    FrontEnd was built for Aquarius, it was done so using a version of
+    RISC_OSLib that has never been anywhere near CVS.  The version of
+    RISC_OSLib on the Developer CD ROM (circa 1998) looks as though it would
+    have worked - this is described as a "StrongARM-compatible RISC_OSLib
+    (as shipped with C Release 4)".  This would also explain why Stewart had
+    to modify the flex stuff to get it building in 'modern' environments to
+    start with.
+Admin:
+  Tested with a recent Ursula build (C library LF CR line endings) and with
+  RISC OS 3.7 (C library CR LF line endings).
+
+Version 1.17. Tagged as 'FrontEnd-1_17'
+@
+text
+@d142 1
+a142 1
+extern BOOL FEtxtwin_linecount(int len, char *msg, int *nlines, int **line_offsets, int bufsize)
+d147 14
+d172 4
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d21 1
+a21 1
+ */ 
+d46 1
+a46 1
+   while (text[len] != '\n' && text[len] != '\0') len++;
+d67 1
+a67 1
+extern void FEtxtwin_refresh(wimp_redrawstr *r, BOOL more, 
+d80 1
+a80 1
+      plotx ------ > x screen-coord to plot at 
+d83 1
+a83 1
+   
+d90 1
+a90 1
+      bottomline = (r->box.y1 - r->g.y0 - r->scy -1)/cheight;
+d100 1
+a100 1
+      }  
+d150 1
+a150 1
+      if (msg[pos] == '\n') 
+d152 11
+a162 1
+         if ((*nlines+1) == 1) 
+d164 1
+d166 1
+d171 1
+@
+
+
+1.1.1.1
+log
+@  Initial import of FrontEnd module to CVS from Aquarius.
+Detail:
+  Code claims to build FrontEnd 1.16 (11 Jan 1995), but will not
+    build in current build environment.
+Admin:
+  Does not compile - checked in for reference purposes only.
+  Tagged appropriately.  Use tag FrontEnd-1_16 to extract version
+    which builds in the current build environment.
+
+Tagged as FrontEnd-Aquarius-1_16
+
+
+@
+text
+@@

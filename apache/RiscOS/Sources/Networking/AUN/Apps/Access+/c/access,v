@@ -1,0 +1,2645 @@
+head	1.5;
+access;
+symbols
+	Access+-1_05:1.5
+	Access+-1_04:1.4
+	Access+-1_03:1.3
+	Access+-1_02-Res:1.2
+	Access+-1_02:1.2
+	Access+-1_01:1.2
+	acorn:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2018.08.11.15.25.10;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	sCGPgCqlDjEprINA;
+
+1.4
+date	2017.09.27.20.19.56;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	tsIsaQNDscDhiS8A;
+
+1.3
+date	2017.09.27.20.18.01;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	OvJqBeEdtfCzhS8A;
+
+1.2
+date	2017.09.27.20.08.38;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	k1VmF5nHSwOUdS8A;
+
+1.1
+date	2017.09.27.20.04.36;	author rsprowson;	state Exp;
+branches
+	1.1.1.1;
+next	;
+commitid	wroqZvo4RBOxcS8A;
+
+1.1.1.1
+date	2017.09.27.20.04.36;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	wroqZvo4RBOxcS8A;
+
+
+desc
+@@
+
+
+1.5
+log
+@Fix for potential NULL pointer dereference and buffer overflow
+Line 1015,1025: Fix path parsing logic to handle malformed paths better.
+Line 1279: Enlarge 'struc' so it's big enough to fit "-protected" without overflowing.
+Line 1673: Fix path parsing logic to handle malformed paths better. Error if the drive can't be parsed at all.
+Found by cppcheck static analysis.
+
+Version 1.05. Tagged as 'Access+-1_05'
+@
+text
+@/* Copyright 2017 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* -*-C-*-
+ *
+ * Copyright (c) 1994 Acorn Computers Ltd., Cambridge, England
+ *
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <setjmp.h>
+#include <stddef.h>
+#include <ctype.h>
+
+#include "kernel.h"
+#include "swis.h"
+#include "wimp.h"
+
+#include "Interface/HighFSI.h"
+#include "Global/Variables.h"
+#include "Global/FileTypes.h"
+#include "Global/VduExt.h"
+
+char access_drive[20];
+
+/*
+ * Define ICON_POS as -2 if icon is
+ * to appear on LHS of icon bar
+ */
+#define ICON_POS -1
+#define MAX_PATH_LENGTH 256
+
+#ifndef ShareFS_CreateShare
+# define ShareFS_CreateShare     0x047ac0
+# define ShareFS_StopShare       0x047ac1
+# define ShareFS_EnumerateShares 0x047ac2
+#endif
+
+#define ShareFS_Protected       1
+#define ShareFS_ReadOnly        2
+#define ShareFS_NoIcon          4
+#define ShareFS_Subdir         010
+#define ShareFS_Auth           040
+
+#define PROGI_NAME      1
+#define PROGI_PURPOSE   2
+#define PROGI_AUTHOR    3
+#define PROGI_VERSION   4
+
+#define SH_NAME         0
+#define SH_DIR          2
+#define SH_TYPE         4
+
+#define DI_OK           0
+#define DI_DIR          3
+#define DI_PIN          4
+#define DI_CANCEL       5
+#define DI_PROTECTED    6
+
+#define QUIT_OK         1
+#define QUIT_CANCEL     2
+#define QUIT_EXIT       3
+
+#define OVR_OVR 1
+#define OVR_APP 3
+#define OVR_CAN 2
+
+typedef struct Rect
+{
+    int minx, miny, maxx, maxy;
+} Rect;
+
+#define E_NULL                  0
+#define E_REDRAW                1
+#define E_OPEN                  2
+#define E_CLOSE                 3
+#define E_LEAVING_WINDOW        4
+#define E_ENTERING_WINDOW       5
+#define E_CLICK                 6
+#define E_DRAG_BOX              7
+#define E_KEY                   8
+#define E_MENU                  9
+#define E_SCROLL                10
+#define E_LOSE_CARET            11
+#define E_GAIN_CARET            12
+#define E_USER_MESSAGE          17
+#define E_USER_MESSAGE_RECORDED 18
+#define E_USER_MESSAGE_ACK      19
+
+typedef struct EventOpen
+{
+    int window_handle;
+    Rect vis_rect;
+    int scx, scy;
+    int behind_handle;
+} EventOpen;
+
+#define MB_ADJUST 1
+#define MB_MENU   2
+#define MB_SELECT 4
+
+typedef struct EventClick
+{
+    int screen_x, screen_y;
+    int buttons;
+    int window_handle;
+    int icon_handle;
+} EventClick;
+
+typedef struct EventKey
+{
+    int window_handle;
+    int icon_handle;
+    int dx, dy;
+    int flags;
+    int index;
+    int ch;
+} EventKey;
+
+typedef struct EventScroll
+{
+    int window_handle;
+    Rect vis_rect;
+    int scx, scy;
+    int behind_handle;
+    int dx, dy;
+} EventScroll;
+
+typedef struct EventCaret
+{
+    int window_handle;
+    int icon_handle;
+    int dx, dy;
+    int flags;
+    int index;
+} EventCaret;
+
+#define MESSAGE_QUIT            0
+#define MESSAGE_DATASAVE        1
+#define MESSAGE_DATASAVEACK     2
+#define MESSAGE_DATALOAD        3
+#define MESSAGE_DATALOADACK     4
+#define MESSAGE_SAVEDESKTOP     10
+#define MESSAGE_HELPREQUEST     0x502
+#define MESSAGE_HELPREPLY       0x503
+
+typedef struct EventMessage
+{
+    int size;
+    int sender_handle;
+    int my_ref;
+    int your_ref;
+    int action;
+    int data[1];
+} EventMessage;
+
+typedef union WimpEvent
+{
+    int          window_handle; /* E_REDRAW, E_CLOSE,
+				 * E_LEAVING_WINDOW, E_ENTERING_WINDOW */
+    EventOpen    open;          /* E_OPEN */
+    EventClick   click;         /* E_CLICK */
+    Rect         drag;          /* E_DRAG_BOX */
+    EventKey     key;           /* E_KEY */
+    int          menu[10];      /* E_MENU */
+    EventScroll  scroll;        /* E_SCROLL */
+    EventCaret   caret;         /* E_LOSE_CARET, E_GAIN_CARET */
+    EventMessage msg;           /* E_USER_MESSAGE, E_USER_MESSAGE_RECORDED
+				 * E_USER_MESSAGE_ACK */
+    char         generic[256];
+} WimpEvent;
+
+int messages[] =
+{
+    MESSAGE_DATASAVE,
+    MESSAGE_DATALOAD,
+    MESSAGE_HELPREQUEST,
+    MESSAGE_SAVEDESKTOP,
+    0
+};
+
+int *m_descr;
+int m_descr_block[4];
+
+char pindrag[MAX_PATH_LENGTH];
+int pindralign[256/sizeof(int)];
+
+#define MF_WRITEABLE       4
+#define MF_LAST          128
+#define MF_INDIRECTTITLE 256
+
+#define IF_TEXT          (1 << 0)
+#define IF_SPRITE        (1 << 1)
+#define IF_BORDER        (1 << 2)
+#define IF_HCENTRED      (1 << 3)
+#define IF_VCENTRED      (1 << 4)
+#define IF_FILLED        (1 << 5)
+#define IF_INDIRECTED    (1 << 8)
+#define IF_RJUSTIFY      (1 << 9)
+#define IF_HALFSIZE      (1 << 11)
+#define IF_INVERTED      (1 << 21)
+#define IF_SHADED        (1 << 22)
+#define IF_DELETED       (1 << 23)
+
+#define B_CLICKONCE      3
+#define B_MENU           9
+#define B_RADIO          11
+#define B_WRITEABLE      15
+
+#define IF_MENUITEM (IF_INDIRECTED | IF_TEXT | IF_FILLED | IF_VCENTRED | (7 << 24))
+
+typedef struct Menu_Item
+{
+    unsigned menu_flags;
+    int submenu;
+    unsigned icon_flags;
+    char *text;
+    char *validstr;
+    int bufflen;
+} Menu_Item;
+
+typedef struct Acc_Menu
+{
+    char *title;
+    char *validstr;
+    int bufflen;
+    char title_fgrnd, title_bgrnd;
+    char work_fgrnd, work_bgrnd;
+    int width, height;
+    int gap;
+    Menu_Item items[5];
+} Acc_Menu;
+
+Acc_Menu icon_menu =
+{
+    0, 0, 0, 7, 2, 7, 0, 0, 44, 0,
+    {
+        { MF_INDIRECTTITLE, -1, IF_MENUITEM, 0 },
+        { 0,                -1, IF_MENUITEM, 0 },
+        { 0,                -1, IF_MENUITEM, 0 },
+        { 0,                -1, IF_MENUITEM, 0 },
+        { MF_LAST,          -1, IF_MENUITEM, 0 }
+    }
+};
+
+typedef struct Remove_Menu
+{
+    char *title;
+    char *validstr;
+    int bufflen;
+    char title_fgrnd, title_bgrnd;
+    char work_fgrnd, work_bgrnd;
+    int width, height;
+    int gap;
+    Menu_Item items[1];
+} Remove_Menu;
+
+Remove_Menu *remove_menu;
+char *remove_menu_title;
+
+typedef struct Show_Menu
+{
+    char *title;
+    char *validstr;
+    int bufflen;
+    char title_fgrnd, title_bgrnd;
+    char work_fgrnd, work_bgrnd;
+    int width, height;
+    int gap;
+    Menu_Item items[1];
+} Show_Menu;
+
+Remove_Menu *show_menu;
+char *show_menu_title;
+
+#define MI_INFO         0
+#define MI_SHOW         1
+#define MI_SAVE         2
+#define MI_REMOVE       3
+#define MI_QUIT         4
+
+#define N_MENU_ITEMS    5
+
+#define MENU_HEIGHT     (N_MENU_ITEMS * 44)
+
+typedef struct Icon
+{
+    Rect r;
+    int flags;
+    char *buffer;
+    char *validstring;
+    int bufflen;
+} Icon;
+
+Icon Acc_icon =
+{
+    { 0, 0, 100, 76 },
+    IF_SPRITE + IF_INDIRECTED + IF_HCENTRED + (B_CLICKONCE << 12),
+    "!Access+",
+    (char *)1,
+    1
+};
+
+int icon_handle;
+
+int task;
+
+typedef struct Window
+{
+    Rect r;
+    int scx, scy;
+    int behind;
+    int flags;
+    char frame;
+    char title_bgrnd;
+    char work_fgrnd;
+    char work_bgrnd;
+    char scroll_bgrnd;
+    char scroll_fgrnd;
+    char title_input_bgrnd;
+    char unused;
+    Rect ex;
+    int title_flags;
+    int work_flags;
+    int sprite_area;
+    short min_width;
+    short min_height;
+    char *buffer;
+    char *validstring;
+    int bufflen;
+    int nicons;
+    Icon icons[1];
+} Window;
+
+#define ERROR_OK        1
+#define ERROR_CANCEL    2
+
+int initialised;
+const char *progname = "Access+";
+jmp_buf cont;
+
+int proginfo_w, serve_w, quit_w, show_w, ovr_w;
+Window *proginfo_window, *serve_window, *quit_window;
+Window *show_window, *ovr_window;
+char bootname[64];
+char appsname[64];
+
+/**********************************************************************/
+
+static int encode_psw_char(char c)
+{
+    int i;
+
+    c = toupper(c);
+    if (isdigit(c))
+	i = ((int)c - (int)'0') + 1;
+    else if (isalpha(c))
+	i = ((int)c - (int)'A') + 11;
+    else
+	i = 0;
+
+    return(i);
+}
+
+/**********************************************************************/
+
+static int password_to_pin(const char *buf)
+{
+    int pin = 0;
+
+    for ( ; *buf; buf++)
+    {
+	pin *= 37;
+	pin += encode_psw_char(*buf);
+    }
+
+    return(pin);
+}
+
+/**********************************************************************/
+
+int caseless_strcmp(const char *a, const char *b)
+{
+    int d;
+
+    while ( *a || *b )
+    {
+        d = toupper( *(a++) ) - toupper( *(b++) );
+        if ( d )
+            return d;
+    }
+
+    return 0;
+}
+
+/**********************************************************************/
+
+#define PINFILE_RO   "Choices:Access+.!Shares"
+#define PINFILE_WDIR "<Choices$Write>.Access+"
+#define PINFILE_W    PINFILE_WDIR ".!Shares"
+FILE *pinfd = 0;
+int is_structured = 0;
+
+int openpins(void)
+{
+    if (pinfd == NULL)
+        pinfd  = fopen(PINFILE_RO, "r");
+
+    return(pinfd ? 1 : 0);
+}
+
+/**********************************************************************/
+
+void closepins(void)
+{
+    if (pinfd != NULL)
+    {
+        fclose(pinfd);
+        pinfd = NULL;
+    }
+}
+
+/**********************************************************************/
+
+int read_pin(const char *name)
+{
+    char line[128], user[32], pinstr[32], struc[4];
+
+    if (pinfd == NULL)
+        return (0);
+
+    rewind(pinfd);
+    for (;;)
+    {
+        if (fgets(line, sizeof(line), pinfd) == NULL)
+            break;
+
+        if (sscanf(line, "%s%s%s", struc, user, pinstr) != 2)
+            break;
+
+        if (struc[0] == 'S' && caseless_strcmp(name, user) == 0)
+            return(password_to_pin(pinstr));
+    }
+
+    return(0);
+}
+
+/**********************************************************************/
+
+int strlen_ctrl(const char *s)
+{
+    const char *t;
+
+    t = s;
+    while (*t >= ' ') t++;
+    return t - s;
+}
+
+/**********************************************************************/
+
+void zero_terminate(char *s)
+{
+    *(s + strlen_ctrl(s)) = 0;
+}
+
+/**********************************************************************/
+
+char *strcpy_ctrl(char *s, const char *t)
+{
+    int l;
+
+    l = strlen_ctrl(t);
+    memmove(s, t, l);
+    s[l] = 0;
+    return s;
+}
+
+/**********************************************************************/
+
+char *strcat_ctrl(char *s, const char *t)
+{
+    strcpy_ctrl(s + strlen_ctrl(s), t);
+    return s;
+}
+
+/**********************************************************************/
+
+void error(const char *s)
+{
+    _kernel_oserror e;
+
+    e.errnum = 0;
+    strcpy_ctrl(e.errmess, s);
+    _swi(MessageTrans_ErrorLookup, _IN(0)|_IN(1)|_IN(2), &e, m_descr, 0);
+}
+
+/**********************************************************************/
+
+char *msg_lookup(char *s)
+{
+    return (char *)_swi(MessageTrans_Lookup,
+                        _IN(0)|_IN(1)|_IN(2)|_RETURN(2),
+                        m_descr, s, 0);
+}
+
+/**********************************************************************/
+
+void make_title(Acc_Menu *m, const char *t)
+{
+    if (strlen_ctrl(t) > 12)
+    {
+        m->title = (char *)t;
+    }
+    else
+    {
+        memcpy(&m->title, t, 12);
+        m->items[0].menu_flags &= ~MF_INDIRECTTITLE;
+    }
+}
+
+/**********************************************************************/
+
+void build_icon_menu(void)
+{
+    int i;
+    int l, maxlen;
+    const char *s;
+
+    make_title(&icon_menu, s = msg_lookup("Title"));
+    maxlen = strlen_ctrl(s);
+    icon_menu.items[MI_INFO].text = msg_lookup("Info");
+    icon_menu.items[MI_SHOW].text = msg_lookup("Show");
+    icon_menu.items[MI_REMOVE].text = msg_lookup("Remove");
+    icon_menu.items[MI_SAVE].text = msg_lookup("Save");
+    icon_menu.items[MI_QUIT].text = msg_lookup("Quit");
+    remove_menu_title = msg_lookup("RemTitl");
+    show_menu_title = msg_lookup("ShwTitl");
+
+    for (i = 0; i < N_MENU_ITEMS; i++)
+    {
+        l = strlen_ctrl(icon_menu.items[i].text);
+        if (l > maxlen) maxlen = l;
+    }
+
+    maxlen++;
+    icon_menu.width = maxlen * 16;
+}
+
+/**********************************************************************/
+
+int create_window(const char *s, Window **wind)
+{
+    int b_size, w_size;
+    Window *buffer;
+    char *workspace;
+    int w;
+
+    _swi(Wimp_LoadTemplate, _IN(1)|_IN(4)|_IN(5)|_IN(6)|_OUT(1)|_OUT(2),
+         0, -1, s, 0, &b_size, &w_size);
+    buffer = malloc(b_size);
+    workspace = malloc(w_size);
+
+    if (!buffer || !workspace)
+	error("NoMem");
+
+    _swi(Wimp_LoadTemplate, _IN(1)|_IN(2)|_IN(3)|_IN(4)|_IN(5)|_IN(6),
+         buffer, workspace, workspace + w_size, -1, s, 0);
+    w = _swi(Wimp_CreateWindow, _IN(1), buffer);
+    *wind = buffer;
+    return(w);
+}
+
+/**********************************************************************/
+
+/*
+ * This routine must not generate an error
+ */
+static void Acc_exit(int subdirs)
+{
+    char *s;
+
+    if (subdirs)
+    {
+	while (_swi(ShareFS_EnumerateShares,
+		    _IN(0)|_IN(4)|_OUT(1)|_RETURN(4), 010, 0, &s) != -1)
+	{
+	    if (_swix(ShareFS_StopShare, _IN(0)|_IN(1), 0, s))
+		break;
+	}
+
+	if (appsname[0])
+	  (void)_swix(ShareFS_StopShare, _IN(0)|_IN(1), 0, appsname);
+
+	if (bootname[0])
+	    (void)_swix(ShareFS_StopShare, _IN(0)|_IN(1), 0, bootname);
+    }
+
+    /*_swix(Wimp_CloseDown, _IN(0)|_IN(1), task, *(int *)"TASK");*/
+    _swix(OS_SetVarVal, _IN(0)|_IN(2), "Access+$Running", -1);
+    exit(0);
+}
+
+/**********************************************************************/
+
+int current_menu_x, current_menu_y;
+int maxshares = 0;
+
+static void create_menu(Acc_Menu *m, int x, int y)
+{
+    int shares;
+    Menu_Item *item;
+    int maxlen;
+    int i, l;
+    char *s;
+
+    shares = 0;
+    i = 0;
+    /*
+     * 941129 KWelton
+     *
+     * this was removed by GWillmott, do it slightly more gracefully
+     */
+#if 0
+    if (!is_structured)
+    {
+#endif
+        while ((i = _swi(ShareFS_EnumerateShares,
+			 _IN(0)|_IN(4)|_RETURN(4), 010, i)) != -1)
+            shares++;
+
+        if (shares > maxshares)
+	{
+	    maxshares = shares;
+
+            if (remove_menu)
+	    {
+                item = remove_menu->items;
+                while (!(item->menu_flags & MF_LAST))
+		{
+                    free(item->text);
+                    item++;
+                }
+
+                free(remove_menu);
+                remove_menu = 0;
+            }
+
+            if (show_menu)
+	    {
+                item = show_menu->items;
+                while (!(item->menu_flags & MF_LAST))
+		{
+                    free(item->text);
+                    item++;
+                }
+                free(show_menu);
+                show_menu = 0;
+            }
+        }
+    /*
+     * 941129 KWelton
+     *
+     * this was removed by GWillmott, do it slightly more gracefully
+     */
+#if 0
+    }
+    else
+        icon_menu.items[MI_SAVE].icon_flags |= IF_SHADED;
+#endif
+
+    icon_menu.items[MI_REMOVE].submenu = 1;
+    icon_menu.items[MI_REMOVE].icon_flags |= IF_SHADED;
+    icon_menu.items[MI_SHOW].submenu = 1;
+    icon_menu.items[MI_SHOW].icon_flags |= IF_SHADED;
+
+    if (shares)
+    {
+        icon_menu.items[MI_REMOVE].icon_flags &= ~IF_SHADED;
+        if (!remove_menu)
+	{
+            remove_menu = calloc(offsetof(Remove_Menu, items)
+				 + shares * sizeof(Menu_Item), 1);
+            if (!remove_menu)
+		error("NoMem");
+        }
+
+        icon_menu.items[MI_REMOVE].submenu = (int)remove_menu;
+        remove_menu->title_fgrnd = 7;
+        remove_menu->title_bgrnd = 2;
+        remove_menu->work_fgrnd = 7;
+        remove_menu->height = 44;
+        item = remove_menu->items;
+        item->menu_flags = MF_INDIRECTTITLE;
+        make_title((Acc_Menu *)remove_menu, remove_menu_title);
+        maxlen = strlen(remove_menu_title);
+
+        for (i = 0; i < shares; i++)
+	{
+            item->submenu = -1;
+            item->icon_flags = IF_MENUITEM;
+            s = (char *)_swi(ShareFS_EnumerateShares,
+			     _IN(0)|_IN(4)|_RETURN(1), 010, i);
+            l = strlen(s);
+            if (item->text)
+		free(item->text);
+            item->text = malloc(l + 1);
+
+            if (!item->text)
+		error("NoMem");
+
+            strcpy(item->text, s);
+
+            if (l > maxlen)
+		maxlen = l;
+
+            item++;
+        }
+
+        item--;
+        item->menu_flags |= MF_LAST;
+        maxlen++;
+        remove_menu->width = maxlen * 16;
+
+        icon_menu.items[MI_SHOW].icon_flags &= ~IF_SHADED;
+
+        if (!show_menu)
+	{
+            show_menu = calloc(offsetof(Show_Menu, items)
+			       + shares * sizeof(Menu_Item), 1);
+            if (!show_menu)
+		error("NoMem");
+        }
+
+        icon_menu.items[MI_SHOW].submenu = (int)show_menu;
+        show_menu->title_fgrnd = 7;
+        show_menu->title_bgrnd = 2;
+        show_menu->work_fgrnd = 7;
+        show_menu->height = 44;
+        item = show_menu->items;
+        item->menu_flags = MF_INDIRECTTITLE;
+        make_title((Acc_Menu *)show_menu, show_menu_title);
+        maxlen = strlen(show_menu_title);
+
+        for (i = 0; i < shares; i++)
+	{
+            item->submenu = -1;
+            item->icon_flags = IF_MENUITEM;
+            s = (char *)_swi(ShareFS_EnumerateShares,
+			     _IN(0)|_IN(4)|_RETURN(1), 010, i);
+
+            l = strlen(s);
+            if (item->text) free(item->text);
+            item->text = malloc(l + 1);
+            if (!item->text) error("NoMem");
+            strcpy(item->text, s);
+            if (l > maxlen) maxlen = l;
+            item++;
+        }
+
+        item--;
+        item->menu_flags |= MF_LAST;
+        maxlen++;
+        show_menu->width = maxlen * 16;
+    }
+
+    current_menu_x = x;
+    current_menu_y = y;
+    _swi(Wimp_CreateMenu, _IN(1)|_IN(2)|_IN(3), m, x, y);
+}
+
+/**********************************************************************/
+
+static void open_show(const char *name, const char *dir, const char *type, int minx, int miny)
+{
+    /*
+     * use an Icon pointer to avoid warnings from the compiler
+     */
+    Icon *ip = show_window->icons;
+
+    strcpy((ip + SH_NAME)->buffer, name);
+    strcpy((ip + SH_DIR)->buffer, dir);
+    strcpy((ip + SH_TYPE)->buffer, type);
+
+    _swix(Wimp_CloseWindow, _BLOCK(1), show_w);
+    _swi(Wimp_OpenWindow, _BLOCK(1),
+         show_w,
+         minx,
+         miny,
+         minx + show_window->r.maxx - show_window->r.minx,
+         miny + show_window->r.maxy - show_window->r.miny,
+         0,
+         0,
+         -1);
+}
+
+/**********************************************************************/
+
+static void open_dialog(int minx, int miny)
+{
+    /*
+     * use an Icon pointer to avoid warnings from the compiler
+     */
+    Icon *ip = serve_window->icons;
+
+    _swix(Wimp_CloseWindow, _BLOCK(1), serve_w);
+
+    (ip + DI_DIR)->buffer[0] = 0;
+    (ip + DI_PIN)->buffer[0] = 0;
+
+    _swi(Wimp_OpenWindow, _BLOCK(1),
+         serve_w,
+         minx,
+         miny,
+         minx + serve_window->r.maxx - serve_window->r.minx,
+         miny + serve_window->r.maxy - serve_window->r.miny,
+         0,
+         0,
+         -1);
+
+    _swi(Wimp_SetCaretPosition, _IN(0)|_IN(1)|_IN(4)|_IN(5),
+	 serve_w, DI_DIR, -1, strlen_ctrl((ip + DI_DIR)->buffer));
+}
+
+/**********************************************************************/
+
+static void open_quit_dialog(void)
+{
+    int sizex, sizey;
+    int minx, miny;
+
+    sizex = quit_window->r.maxx - quit_window->r.minx;
+    sizey = quit_window->r.maxy - quit_window->r.miny;
+    minx = _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2), -1, VduExt_XWindLimit);
+    miny = _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2), -1, VduExt_YWindLimit);
+    minx <<= _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2),
+		  -1, VduExt_XEigFactor);
+    miny <<= _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2),
+		  -1, VduExt_YEigFactor);
+    minx = (minx - sizex) >> 1;
+    miny = (miny - sizey) >> 1;
+    _swi(Wimp_OpenWindow, _BLOCK(1),
+         quit_w,
+         minx,
+         miny,
+         minx + sizex,
+         miny + sizey,
+         0,
+         0,
+         -1);
+}
+
+/**********************************************************************/
+
+static _kernel_oserror *start_serve(char *dir, char *pinstr, char *export,
+				    int attrs, int ipin)
+{
+    _kernel_oserror *e;
+    int r0, pin;
+    char *c;
+
+    zero_terminate(export);
+    if (pinstr)
+        zero_terminate(pinstr);
+    zero_terminate(dir);
+
+    if ( pinstr && (strlen(pinstr) == 0))
+	pin=1;
+    else
+	pin = pinstr ? password_to_pin(pinstr) : ipin;
+    c = strchr(export, '@@');
+
+    if(  (c != NULL) && strchr(++c, '@@') != 0 )
+    {
+        e = _swix(MessageTrans_ErrorLookup, _IN(0)|_IN(1)|_IN(2),
+                  "\0\0\0\0Inv0", m_descr, 0);
+    }
+    else if (*dir == 0)
+    {
+        e = _swix(MessageTrans_ErrorLookup, _IN(0)|_IN(1)|_IN(2),
+                  "\0\0\0\0Dir0", m_descr, 0);
+    }
+    else if (*export == 0)
+    {
+        e = _swix(MessageTrans_ErrorLookup, _IN(0)|_IN(1)|_IN(2),
+                  "\0\0\0\0ExpAs0", m_descr, 0);
+    }
+    else
+    {
+        e = _swix(OS_File, _IN(0)|_IN(1)|_OUT(0), OSFile_ReadNoPath, dir, &r0);
+
+        if (!e)
+	{
+            if (r0 != 2 && r0 != 3)
+	    {
+		if (r0 == 0)
+		    r0 = 0x100;
+
+		e = _swix(OS_File, _IN(0)|_IN(1)|_IN(2), OSFile_MakeError, dir, r0);
+            }
+	    else
+	    {
+                e = _swix(ShareFS_CreateShare, _IN(0)|_IN(1)|_IN(2)|_IN(3),
+                          attrs, export, dir, pin);
+            }
+        }
+    }
+
+    if (e)
+	_swi(Wimp_ReportError, _IN(0)|_IN(1)|_IN(2), e, 0, progname);
+
+    return(e);
+}
+
+/**********************************************************************/
+
+static void show_show(const char *export, int x, int y)
+{
+    char *name, *dir;
+    int s, n=0;
+
+    while ((n = _swi(ShareFS_EnumerateShares,
+		     _IN(0)|_IN(4)|_OUT(1)|_OUT(2)|_OUT(3)|_RETURN(4),
+		     010, n, &name, &dir, &s)) != -1)
+    {
+        if (strcmp(export, name) == 0)
+	{
+            open_show(name, dir, s&01 ? "Protected" : "Unprotected", x, y);
+            break;
+        }
+    }
+}
+
+/**********************************************************************/
+
+static void stop_serve(char *export)
+{
+    _kernel_oserror *e;
+
+    zero_terminate(export);
+    e = _swix(ShareFS_StopShare, _IN(0)|_IN(1), 0, export);
+
+    if (e)
+	_swi(Wimp_ReportError, _IN(0)|_IN(1)|_IN(2), e, 0, progname);
+}
+
+/**********************************************************************/
+
+typedef struct GetIconBlock
+{
+    int window_handle;
+    int icon_handle;
+    Icon icon;
+} GetIconBlock;
+
+static void process_dialog(void)
+{
+    int attrs;
+    unsigned int pin;
+    GetIconBlock block;
+    char accpath[128], mountname[32];
+    char *cc , *leaf, *vol;
+    _kernel_oserror *e;
+
+    /*
+     * 941129 KWelton
+     *
+     * use an Icon pointer to avoid warnings from the compiler
+     */
+    Icon *ip = serve_window->icons;
+
+    attrs = ShareFS_Subdir|ShareFS_Auth;
+    block.window_handle = serve_w;
+    block.icon_handle = DI_PROTECTED;
+    _swi(Wimp_GetIconState, _IN(1), &block);
+
+    if (block.icon.flags & IF_INVERTED)
+        attrs |= ShareFS_Protected;
+
+    zero_terminate((ip + DI_DIR)->buffer);
+    zero_terminate((ip + DI_PIN)->buffer);
+
+    if (strlen((ip + DI_PIN)->buffer) &&
+	((pin = password_to_pin((ip + DI_PIN)->buffer)) < 9))
+    {
+	e = _swix(MessageTrans_ErrorLookup, _IN(0)|_IN(1)|_IN(2),
+		  "\0\0\0\0Pin0", m_descr, 0);
+	_swi(Wimp_ReportError, _IN(0)|_IN(1)|_IN(2), e, 0, progname);
+	return;
+    }
+
+    strcpy(accpath, (ip + DI_DIR)->buffer);
+
+    leaf = strrchr(accpath, '.');
+    if( leaf )
+	*leaf++ = 0;
+
+    vol = strrchr(accpath, ':');
+    if( vol )
+    {
+        cc = strchr(++vol, '.');
+        if( cc )
+            *cc = 0;
+    }
+
+    if( leaf && vol )
+    {
+	if (strcmp(leaf, "$") == 0)
+		leaf = vol;
+
+	sprintf(mountname, "%s@@%s", leaf, vol);
+
+	if (!start_serve((ip + DI_DIR)->buffer,
+			 (ip + DI_PIN)->buffer,
+			 mountname, attrs, 0))
+	    _swi(Wimp_CloseWindow, _IN(1), &serve_w);
+    }
+    else
+    {
+	e = _swix(MessageTrans_ErrorLookup, _IN(0)|_IN(1)|_IN(2),
+		  "\0\0\0\0BadNam", m_descr, 0);
+	_swi(Wimp_ReportError, _IN(0)|_IN(1)|_IN(2), e, 0, progname);
+    }
+}
+
+/**********************************************************************/
+
+static void read_shares(void)
+{
+    char fullpath[MAX_PATH_LENGTH], *avol;
+    char line[128], mountname[32], pinstr[32], accpath[MAX_PATH_LENGTH];
+    char *cc, struc[4], junk[64];
+    int k, pin, o = 0, objtype;
+    _kernel_oserror *err;
+    int matched;
+
+
+    err = _swix(OS_ReadVarVal, _INR(0,3)|_OUT(2),
+		"Access+$Dir", accpath, sizeof(accpath), VarType_String, &k);
+
+    if (err || k <= 0 || !openpins())
+        return;
+    accpath[k] = 0;
+
+    avol = strrchr(accpath, ':');
+    if (!avol || *avol==0)
+	return;
+
+    cc = strchr(++avol, '.');
+    if (cc)
+	*cc = 0;
+
+    for (;;)
+    {
+        if (fgets(line, sizeof(line), pinfd) == NULL)
+            break;
+
+        matched=sscanf(line, "%s%s%s%s%s%s%s", junk, fullpath, mountname,
+           		 		  junk, junk, pinstr, junk);
+
+        if ((matched < 6) || (matched > 7)) break;
+        if (matched == 7) {
+            sprintf(pinstr,"%s",junk);
+            struc[1]='P';
+            }
+        else struc[1]='U';
+
+        if (mountname)
+	{
+	    _swi(OS_File, _INR(0,1)|_OUT(0), OSFile_ReadNoPath, fullpath, &objtype);
+	    if (objtype == 2 || objtype == 3)
+	    {
+	        /*
+	         * Altered since ShareFS no longer
+	         * encrypts PINs if -spin is used in a
+	         * *shares command.
+		pin = decrypt_pin(pinstr);
+		 */
+		zero_terminate(pinstr);
+		pin=atoi(pinstr);
+        	if (pin==0)
+        	{
+         	 if( *pinstr != '0')
+           	     break;
+         	 else
+          	     pin = 1;
+        	}
+
+		(void)start_serve(fullpath, (char *)0, mountname,
+				  ShareFS_Subdir | ShareFS_Auth |
+				  (struc[1] == 'P' ? ShareFS_Protected : 0),
+				 pin);
+	    }
+        }
+    }
+
+    closepins();
+
+    appsname[0] = 0;
+    bootname[0] = 0;
+    sprintf(fullpath, "<Access+$Dir>.^.Apps");
+    err = _swix(OS_File, _INR(0,1)|_OUT(0), OSFile_ReadInfo, fullpath, &o);
+
+    if (o == object_directory && !err)
+    {
+        sprintf(mountname, "Apps@@%s", avol);
+        (void)start_serve(fullpath, (char *)0, mountname,
+			  ShareFS_ReadOnly, 0);
+        strcpy(appsname, mountname);
+    }
+
+    sprintf(fullpath, "<Access+$Dir>.^.Boot");
+    err = _swix(OS_File, _INR(0,1)|_OUT(0), OSFile_ReadInfo, fullpath, &o);
+
+    if (o == object_directory && !err)
+    {
+        sprintf(mountname, "Boot@@%s", avol);
+        (void)start_serve(fullpath, (char *)0, mountname,
+			  ShareFS_Protected | ShareFS_NoIcon, 0);
+        strcpy(bootname, mountname);
+    }
+}
+
+/**********************************************************************/
+
+static void pinfile_loadack(WimpEvent *event)
+{
+    /*
+     * use a pointer to avoid warnings from the compiler
+     */
+    int *msgdata = event->msg.data;
+
+    event->msg.action = MESSAGE_DATALOADACK;
+    event->msg.your_ref = event->msg.my_ref;
+    event->msg.size = 48 + (strlen((char *)(msgdata + 6)) >> 2 ) << 2;
+
+    _swi(Wimp_SendMessage, _IN(0)|_IN(1)|_IN(2),
+	 17, &event->msg, event->msg.sender_handle);
+}
+
+/**********************************************************************/
+
+static void read_new_pins(WimpEvent *event, const char *name)
+{
+    FILE *fh, *ph;
+    char line[128], user[32], pinstr[32], epin[32], struc[32];
+    int minx, miny, sizex, sizey, s, pin;
+
+    ph = fopen(PINFILE_RO,"r");
+
+    if (ph == NULL)
+    {
+	_swix(OS_File, _INR(0,1)|_IN(4), OSFile_CreateDir, PINFILE_WDIR, 0);
+	ph = fopen(PINFILE_W,"w");
+	if (ph != NULL)
+	{
+	    fh = fopen(name,"r");
+
+	    if (fh != NULL)
+	    {
+		for (;;)
+		{
+		    if (fgets(line, sizeof(line), fh) == NULL)
+			break;
+
+		    if ((s = sscanf(line, "%s%s%s", struc,user, pinstr)) < 2)
+			break;
+		    if ((struc[0] = toupper(struc[0])) == 'P')
+		        strcpy(struc,"-protected");
+		    else
+		        strcpy(struc,"");
+
+		    pin=password_to_pin(pinstr);
+		    if (pin==0) pin=1;
+		    fprintf(ph,
+		    "Share <Access+$Dir>.^.Dirs.%s %s@@%s -subdir %s -auth %d\n",
+		        user, user, access_drive, struc, pin);
+		}
+		fclose(fh);
+	    }
+	    fclose(ph);
+	}
+	pinfile_loadack(event);
+	read_shares();
+    }
+    else
+    {
+	fclose(ph);
+	strcpy(pindrag,name);
+	memcpy((char *)event,pindralign,sizeof(pindralign));
+	sizex = ovr_window->r.maxx - ovr_window->r.minx;
+	sizey = ovr_window->r.maxy - ovr_window->r.miny;
+	minx = _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2),
+		    -1, VduExt_XWindLimit);
+	miny = _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2),
+		    -1, VduExt_YWindLimit);
+	minx <<= _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2),
+		      -1, VduExt_XEigFactor);
+	miny <<= _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2),
+		      -1, VduExt_YEigFactor);
+	minx = (minx - sizex) >> 1;
+	miny = (miny - sizey) >> 1;
+	_swi(Wimp_OpenWindow, _BLOCK(1),
+	     ovr_w,
+	     minx,
+	     miny,
+	     minx + sizex,
+	     miny + sizey,
+	     0,
+	     0,
+	     -1);
+    }
+}
+
+/**********************************************************************/
+
+static void pinfile_overwrite(void)
+{
+    FILE *fh, *ph;
+    char line[128], user[32], pinstr[32], epin[32], struc[32];
+    int pin,s;
+
+    _swix(OS_File, _INR(0,1)|_IN(4), OSFile_CreateDir, PINFILE_WDIR, 0);
+    ph = fopen(PINFILE_W,"w");
+    if (ph != NULL)
+    {
+	fh = fopen(pindrag,"r");
+
+	if (fh != NULL)
+	{
+	    for (;;)
+	    {
+		if (fgets(line, sizeof(line), fh) == NULL)
+		    break;
+
+		s=sscanf(line, "%s%s%s", struc, user, pinstr);
+		if ((s < 2) || (s > 3)) break;
+		if (s==2) *pinstr='\0';
+		    if (toupper(struc[0]) == 'P')
+		        strcpy(struc,"-protected");
+		    else
+		        *struc = '\0';
+
+		    pin=password_to_pin(pinstr);
+		    if (pin==0) pin=1;
+		    fprintf(ph,
+		    "Share <Access+$Dir>.^.Dirs.%s %s@@%s -subdir %s -auth %d\n",
+		        user, user, access_drive, struc, pin);
+	    }
+
+	    pinfile_loadack((WimpEvent *)pindralign);
+	    fclose(fh);
+	}
+        fclose(ph);
+    }
+    read_shares();
+}
+
+/**********************************************************************/
+
+static void pinfile_append(void)
+{
+    FILE *fh, *ph;
+    char line[128], user[32], pinstr[32], epin[32], struc[12];
+    int pin,s;
+
+    fh = fopen(pindrag, "r");
+    if (fh != NULL)
+    {
+	_swix(OS_File, _INR(0,1)|_IN(4), OSFile_CreateDir, PINFILE_WDIR, 0);
+	ph = fopen(PINFILE_W,"a");
+	if (ph!=NULL)
+	{
+	    /*
+	     * Since the file was opened to append data this
+	     * probably isnt needed. It also shouldnt make any
+	     * difference since it is a text and not binary file
+	     *
+	    fseek(ph,0,2);
+             */
+
+	    for (;;)
+	    {
+	        if (fgets(line, sizeof(line), fh) == NULL)
+		    break;
+
+		s=sscanf(line, "%s%s%s", struc,user, pinstr);
+		if ((s < 2) || (s > 3)) break;
+		if (s==2) *pinstr='\0';
+		    if ((struc[0] = toupper(struc[0])) == 'P')
+		        strcpy(struc,"-protected");
+		    else
+		        strcpy(struc,"");
+
+		    pin=password_to_pin(pinstr);
+		    if (pin==0) pin=1;
+		    fprintf(ph,
+		    "Share <Access+$Dir>.^.Dirs.%s %s@@%s -subdir %s -auth %d\n",
+		        user, user, access_drive, struc, pin);
+	    }
+
+	    pinfile_loadack((WimpEvent *)pindralign);
+	    fclose(ph);
+	}
+	fclose(fh);
+    }
+    read_shares();
+}
+
+/**********************************************************************/
+
+static void menu_select(int *m)
+{
+    EventClick mouse;
+
+    switch (m[0])
+    {
+      case MI_SHOW:
+	if( m[1] != -1 )
+	{
+	    _swi(Wimp_GetPointerInfo, _IN(1), &mouse);
+	    show_show(remove_menu->items[m[1]].text, mouse.screen_x - 64, 96);
+	}
+
+	break;
+
+      case MI_REMOVE:
+	if( m[1] != -1 )
+	{
+	    stop_serve(remove_menu->items[m[1]].text);
+	    if( maxshares )
+		maxshares--;
+	}
+
+	break;
+
+      case MI_SAVE:
+	_swix(OS_File, _INR(0,1)|_IN(4), OSFile_CreateDir, PINFILE_WDIR, 0);
+	_swi(OS_CLI, _IN(0), "%Shares -spin { > " PINFILE_W " }");
+	break;
+
+      case MI_QUIT:
+	if (_swi(ShareFS_EnumerateShares,
+		 _IN(0)|_IN(4)|_RETURN(4), 010, 0) != -1)
+	    open_quit_dialog();
+	else
+	    Acc_exit(0);
+
+	break;
+    }
+}
+
+/**********************************************************************/
+
+int got_null = 1;
+
+static void process_event(int reason, WimpEvent *event)
+{
+    EventClick mouse;
+    int window, icon;
+    /*
+     * use pointers to avoid warnings from the compiler
+     */
+    Icon *ip = serve_window->icons;
+    int *msgdata = event->msg.data;
+
+    switch (reason)
+    {
+      case E_NULL:
+	got_null = 1;
+	break;
+
+      case E_USER_MESSAGE:
+      case E_USER_MESSAGE_RECORDED:
+        {
+            if (event->msg.action == 0)
+                Acc_exit(1);
+
+            if (event->msg.action == MESSAGE_DATALOAD)
+	    {
+		char *buffer, *s, *extn, *name;
+		int c;
+
+		buffer = (ip + DI_DIR)->buffer;
+		name = (char *)(msgdata + 6);
+
+                zero_terminate(name);
+                zero_terminate(buffer);
+
+                if (*(msgdata + 5) == FileType_Text)
+		    read_new_pins(event, name);
+		else
+		{
+		    if (!got_null)
+		    {
+			extn = s = name;
+
+			while( (c = *s) != 0 )
+			{
+			    if (c == '.')
+				extn = s;
+
+			    s++;
+			}
+
+			*extn = 0;
+			if (!strcmp(name, buffer))
+			    break;
+		    }
+		    else
+		    {
+			got_null = 0;
+			if (event->msg.data[0] != serve_w)
+			    open_dialog(*(msgdata + 2) - 64, 96);
+		    }
+
+		    strcpy(buffer, name);
+		    _swi(Wimp_SetCaretPosition, _IN(0)|_IN(1)|_IN(4)|_IN(5),
+			 serve_w, DI_DIR, -1, strlen_ctrl(buffer));
+		    _swi(Wimp_SetIconState, _BLOCK(1), serve_w, DI_DIR, 0, 0);
+		}
+            }
+
+            if (event->msg.action == MESSAGE_DATASAVE)
+	    {
+		event->msg.action = MESSAGE_DATASAVEACK;
+		event->msg.your_ref = event->msg.my_ref;
+		*(msgdata + 4) = -1;
+
+		strcpy((char *)(msgdata + 6), "<Wimp$Scrap>");
+		event->msg.size = 60;
+		_swi(Wimp_SendMessage, _IN(0)|_IN(1)|_IN(2),
+		     17, &event->msg, event->msg.sender_handle);
+            }
+
+            else if (event->msg.action == MESSAGE_HELPREQUEST)
+	    {
+                char *help, *help1, *help2;
+                char help_buffer[20];
+                int m[10];
+
+                help1 = 0;
+                help2 = 0;
+		window = *(msgdata + 3);
+		icon = *(msgdata + 4);
+                if (window == serve_w)
+		{
+                    help1 = "DIALOG";
+                    if (icon >= 0)
+		    {
+                        sprintf(help_buffer, "D_%d", icon);
+                        help2 = help_buffer;
+                    }
+                }
+		else if (window == proginfo_w)
+                    help1 = "PROGINFO";
+		else if (window < 0)
+                    help1 = "ICON";
+		else if (window == show_w)
+                    help1 = "SHOW";
+		else
+		{
+                    _swi(Wimp_GetMenuState, _IN(0)|_IN(1)|_IN(2)|_IN(3),
+                         1, m, window, icon);
+
+                    if (m[0] >= 0)
+		    {
+                        sprintf(help_buffer, "M_%d", m[0]);
+                        if (m[0] == MI_REMOVE && m[1]  >= 0)
+                            strcat(help_buffer, "_N");
+                        help1 = help_buffer;
+                    }
+                }
+
+                if (help1)
+		{
+                    help = (char *)event->msg.data;
+                    strcpy_ctrl(help, msg_lookup(help1));
+
+                    if (help2)
+		    {
+                        strcat_ctrl(help, "|M");
+                        strcat_ctrl(help, msg_lookup(help2));
+                    }
+
+                    event->msg.size = 20 + ((strlen(help) + 1 + 3) & ~3);
+                    event->msg.action = MESSAGE_HELPREPLY;
+                    event->msg.your_ref = event->msg.my_ref;
+                    _swi(Wimp_SendMessage, _IN(0)|_IN(1)|_IN(2),
+                         17, &event->msg, event->msg.sender_handle);
+                }
+            }
+
+            if (event->msg.action == MESSAGE_SAVEDESKTOP)
+	    {
+                char *ptr;
+                int handle;
+                int c;
+
+                handle = event->msg.data[0];
+                c = '/';
+                ptr = getenv("Access+$Dir");
+                do
+		{
+                    _swi(OS_BPut, _IN(0)|_IN(1), c, handle);
+                    c = *ptr++;
+                } while (c);
+
+                _swi(OS_BPut, _IN(0)|_IN(1), '\n', handle);
+            }
+            break;
+        }
+
+      case E_CLICK:
+        {
+            if (event->click.window_handle == -2 &&
+		event->click.icon_handle == icon_handle)
+	    {
+                if (event->click.buttons & MB_MENU)
+		{
+                    create_menu(&icon_menu,
+                                event->click.screen_x - 64, 96 + MENU_HEIGHT);
+                }
+		else if (event->click.buttons & (MB_ADJUST | MB_SELECT))
+                    open_dialog(event->click.screen_x - 64, 96);
+            }
+
+            if (event->click.window_handle == serve_w)
+	    {
+                if (event->click.icon_handle == DI_OK)
+                    process_dialog();
+                else if (event->click.icon_handle == DI_CANCEL)
+                    _swi(Wimp_CloseWindow, _IN(1), &serve_w);
+            }
+
+            if (event->click.window_handle == quit_w)
+	    {
+                if (event->click.icon_handle == QUIT_OK)
+                    Acc_exit(1);
+                else if (event->click.icon_handle == QUIT_EXIT)
+                    Acc_exit(0);
+                else if (event->click.icon_handle == QUIT_CANCEL)
+                    _swi(Wimp_CloseWindow, _IN(1), &quit_w);
+            }
+
+            if (event->click.window_handle == ovr_w)
+	    {
+		if (event->click.icon_handle == OVR_OVR)
+		{
+		    pinfile_overwrite();
+		    _swi(Wimp_CloseWindow, _IN(1), &ovr_w);
+		}
+		else if (event->click.icon_handle == OVR_APP)
+		{
+		    pinfile_append();
+		    _swi(Wimp_CloseWindow, _IN(1), &ovr_w);
+		}
+		else if (event->click.icon_handle == OVR_CAN)
+		    _swi(Wimp_CloseWindow, _IN(1), &ovr_w);
+            }
+
+            break;
+        }
+
+      case E_OPEN:
+	_swi(Wimp_OpenWindow, _IN(1), &event->open);
+	break;
+
+      case E_CLOSE:
+	_swi(Wimp_CloseWindow, _IN(1), &event->window_handle);
+	break;
+
+      case E_MENU:
+	_swi(Wimp_GetPointerInfo, _IN(1), &mouse);
+	menu_select(event->menu);
+	if (mouse.buttons & MB_ADJUST)
+	    create_menu(&icon_menu, current_menu_x, current_menu_y);
+
+	break;
+
+      case E_KEY:
+	if (event->key.window_handle == serve_w)
+	{
+	    switch (event->key.ch)
+	    {
+	      case 0x1b:
+		_swi(Wimp_CloseWindow, _IN(1), &serve_w);
+		break;
+
+	      case 0x0d:
+		if (event->key.icon_handle == DI_PIN)
+		{
+		    process_dialog();
+		    return;
+		}
+
+	      case 0x18e:
+	      case 0x18f:
+		icon = DI_PIN;
+		if (event->key.icon_handle == DI_PIN)
+		    icon = DI_DIR;
+
+		_swi(Wimp_SetCaretPosition, _IN(0)|_IN(1)|_IN(4)|_IN(5),
+		     serve_w, icon, -1,
+		     strlen_ctrl(serve_window->icons[icon].buffer));
+		return;
+	    }
+	}
+
+	_swi(Wimp_ProcessKey, _IN(0), event->key.ch);
+	break;
+    }
+}
+
+/**********************************************************************/
+
+void error_handler(int sig)
+{
+    int key;
+    int flags;
+
+    flags = ERROR_OK;
+    if (initialised)
+	flags |= ERROR_CANCEL;
+
+    key = _swi(Wimp_ReportError, _IN(0)|_IN(1)|_IN(2)|_RETURN(1),
+               _kernel_last_oserror(), flags, progname);
+
+    if (key & ERROR_CANCEL)
+    {
+        signal(SIGOSERROR, error_handler);
+        longjmp(cont, 1);
+    }
+
+    Acc_exit(1);
+}
+
+/**********************************************************************/
+
+
+
+void icon_create(void)
+{
+    icon_handle = _swi(Wimp_CreateIcon, _BLOCK(1), ICON_POS, Acc_icon);
+}
+
+
+void set_acc_path(void)
+{
+  char access_path[MAX_PATH_LENGTH];
+  _kernel_oserror *err;
+  char *cc, *vol;
+  int k;
+
+  err = _swix(OS_ReadVarVal, _INR(0,3)|_OUT(2),
+		"Access+$Dir", access_path, sizeof(access_path), VarType_String, &k);
+
+  if (err != NULL) k = 0;
+  access_path[k] = '\0';
+
+  vol = strrchr(access_path, ':');
+  if( vol )
+  {
+    cc = strchr(++vol, '.');
+    if( cc )
+    {
+      *cc = '\0';
+      sprintf(access_drive,"%s",vol);
+      return;
+    }
+  }
+  error("NoNam");
+}
+
+
+/**********************************************************************/
+int main(void)
+{
+    char *buffer;
+    int b_size;
+    int task;
+    int reason;
+    int timer;
+    WimpEvent event;
+    Icon *ip;
+
+    signal(SIGOSERROR, error_handler);
+    b_size = _swi(MessageTrans_FileInfo, _IN(1)|_RETURN(2),
+		  "<Access+$Dir>.Messages");
+    buffer = malloc(b_size);
+
+    if (!buffer)
+	error("NoMem");
+
+    _swi(MessageTrans_OpenFile, _IN(0)|_IN(1)|_IN(2),
+	 m_descr_block, "<Access+$Dir>.Messages", buffer);
+    m_descr = m_descr_block;
+
+    timer=_swi(OS_ReadMonotonicTime, _RETURN(0));
+    srand(timer);
+
+    _swi(Wimp_OpenTemplate, _IN(1), "<Access+$Dir>.Templates");
+    progname = msg_lookup("AccsP");
+
+    _swi(OS_SetVarVal, _IN(0)|_IN(1)|_IN(2)|_IN(4),
+	 "Access+$Running", "Yes", VarType_LiteralString, 0);
+
+    task = _swi(Wimp_Initialise, _IN(0)|_IN(1)|_IN(2)|_IN(3)|_RETURN(1),
+		310, *(int *)"TASK", progname, messages);
+
+    _swi(Wimp_StartTask, _IN(0), "%Desktop_ShareFSFiler");
+    serve_w = create_window("Server", &serve_window);
+    proginfo_w = create_window("progInfo", &proginfo_window);
+    quit_w = create_window("Quit", &quit_window);
+    show_w = create_window("Show", &show_window);
+    ovr_w = create_window("Ovr", &ovr_window);
+
+    /* Update progInfo with the application version */
+    ip = proginfo_window->icons;
+    strcpy_ctrl((ip + PROGI_VERSION)->buffer, msg_lookup("_Version"));
+
+    build_icon_menu();
+    icon_menu.items[MI_INFO].submenu = proginfo_w;
+
+    set_acc_path();
+
+    icon_create();
+
+    read_shares();
+    setjmp(cont);
+    initialised = 1;
+
+    do
+    {
+        reason = _swi(Wimp_Poll, _IN(0)|_IN(1),
+		      got_null ? 1 << E_NULL : 0, &event);
+        process_event(reason, &event);
+    } while (1);
+}
+
+/**********************************************************************/
+
+/* EOF access.c */
+@
+
+
+1.4
+log
+@Delete blocked out OldCode
+Get some defines from central headers. The various local Wimp defines have been left for another day.
+
+Version 1.04. Tagged as 'Access+-1_04'
+@
+text
+@d1012 4
+a1015 6
+	cc = strchr(++vol, '.');
+    if( cc )
+	*cc = 0;
+
+    if (!strcmp(leaf,"$")) {
+      leaf=vol;
+a1017 1
+
+d1020 3
+d1276 1
+a1276 1
+    char line[128], user[32], pinstr[32], epin[32], struc[4];
+d1670 2
+a1671 1
+  if (err != NULL) access_path[0]='\0';
+d1674 3
+a1676 2
+    if( vol )
+	cc = strchr(++vol, '.');
+d1678 7
+a1684 3
+	*cc = 0;
+  sprintf(access_drive,"%s",vol);
+
+@
+
+
+1.3
+log
+@Cleanup pass
+Changed !Run to use RMFind of Freeway/ShareFS from !System rather than inside the application.
+Update info box from VersionNum via the Messages file.
+Templates adjusted for Style Guide sanctioned icon sizes.
+Write !Share settings into Choices$Write and read from Choices:
+Increase the length of some internal paths from 128.
+
+Version 1.03. Tagged as 'Access+-1_03'
+@
+text
+@d28 9
+a44 3
+#include "kernel.h"
+#include "swis.h"
+#include "wimp.h"
+a362 84
+#ifdef OldCode
+static void encrypt_pin(char *buf, unsigned int pin)
+{
+    int timer, spin, pinh, spinh;
+
+    pinh = pin >> 16;
+    pin &= 0xffff;
+    timer = (rand() & 0xffff);
+
+    spin = (pin + timer) & 0x3ffff;
+    pin = (pin - timer) & 0x3ffff;
+    timer = (rand() & 0xffff);
+    spinh = (pinh + timer) & 0x3ffff;
+    pinh = (pinh - timer) & 0x3ffff;
+    spin ^= 0xaf35;
+    pin ^= 0xda6d;
+    spinh ^= 0x2aea;
+    pinh ^= 0x9512;
+    spin += 0xaaaa;
+    spin &= 0x3ffff;
+    pin += 0x7777;
+    pin &= 0x3ffff;
+    spinh += 0x9999;
+    spinh &= 0x3ffff;
+    pinh += 0xbbbb;
+    pinh &= 0x3ffff;
+
+    buf[9] = (char)((int)'A' + (spin & 0x3f));
+    buf[3] = (char)((int)'A' + ((spin >> 6) & 0x3f));
+    buf[5] = (char)((int)'A' + ((spin >> 12) & 0x3f));
+    buf[1] = (char)((int)'A' + (pin & 0x3f));
+    buf[8] = (char)((int)'A' + ((pin >> 6) & 0x3f));
+    buf[2] = (char)((int)'A' + ((pin >> 12) & 0x3f));
+    buf[4] = (char)((int)'A' + (spinh & 0x3f));
+    buf[10] = (char)((int)'A' + ((spinh >> 6) & 0x3f));
+    buf[7] = (char)((int)'A' + ((spinh >> 12) & 0x3f));
+    buf[0] = (char)((int)'A' + (pinh & 0x3f));
+    buf[11] = (char)((int)'A' + ((pinh >> 6) & 0x3f));
+    buf[6] = (char)((int)'A' + ((pinh >> 12) & 0x3f));
+    buf[12] = 0;
+
+    return;
+}
+#endif
+
+/**********************************************************************/
+#ifdef OldCode /* this is no longer used! */
+static unsigned int decrypt_pin(char *buf)
+{
+    unsigned int pin, spin, pinh, spinh;
+
+    pinh = ((int)buf[6] - (int)'A') << 12;
+    pinh |= ((int)buf[11] - (int)'A') << 6;
+    pinh |= ((int)buf[0] - (int)'A');
+    spinh = ((int)buf[7] - (int)'A') << 12;
+    spinh |= ((int)buf[10] - (int)'A') << 6;
+    spinh |= ((int)buf[4] - (int)'A');
+    pin = ((int)buf[2] - (int)'A') << 12;
+    pin |= ((int)buf[8] - (int)'A') << 6;
+    pin |= ((int)buf[1] - (int)'A');
+    spin = ((int)buf[5] - (int)'A') << 12;
+    spin |= ((int)buf[3] - (int)'A') << 6;
+    spin |= ((int)buf[9] - (int)'A');
+
+    pinh &= (!0x3ffff);
+    pinh -= 0xbbbb;
+    spinh -= 0x9999;
+    spinh &= 0x3ffff;
+    pin -= 0x7777;
+    pin &= 0x3ffff;
+    spin -= 0xaaaa;
+    spin &= 0x3ffff;
+    pin ^= 0xda6d;
+    spin ^= 0xaf35;
+    spinh ^= 0x2aea;
+    pinh ^= 0x9512;
+
+    return((((pin + spin) >> 1) & (!0x3ffff)) |
+	   ((((pinh + spinh) >> 1) & (!0x3ffff)) << 16));
+}
+#endif
+
+/**********************************************************************/
+
+a379 19
+#ifdef OldCode
+/*
+ * XXX THIS ROUTINE APPEARS TO BE REDUNDANT
+ */
+static char retrieve_psw_char(int v)
+{
+    if (v == 0)
+	return((char)0);
+
+    if (v < 11)
+	return((char)(v + (int)'0'));
+
+    return((char)(v + (int)'A'));
+}
+
+#endif
+
+/**********************************************************************/
+
+a394 23
+#ifdef OldCode
+/*
+ * XXX THIS ROUTINE APPEARS TO BE REDUNDANT
+ */
+static void pin_to_password(char *buf, int pin)
+{
+    int x;
+
+    while (pin)
+    {
+	x = pin % 37;
+	pin = pin / 37;
+
+	*(buf++) = retrieve_psw_char(x);
+    }
+
+    *buf = '\0';
+}
+
+#endif
+
+/**********************************************************************/
+
+a787 5
+#ifdef OldCode
+    strcpy(show_window->icons[SH_NAME].buffer, name);
+    strcpy(show_window->icons[SH_DIR].buffer, dir);
+    strcpy(show_window->icons[SH_TYPE].buffer, type);
+#else
+a788 2
+     * 941129 KWelton
+     *
+a795 1
+#endif
+a812 5
+#ifdef OldCode
+    _swix(Wimp_CloseWindow, _BLOCK(1), serve_w);
+    serve_window->icons[DI_DIR].buffer[0] = 0;
+    serve_window->icons[DI_PIN].buffer[0] = 0;
+#else
+a813 2
+     * 941129 KWelton
+     *
+a821 1
+#endif
+a832 4
+#ifdef OldCode
+    _swi(Wimp_SetCaretPosition, _IN(0)|_IN(1)|_IN(4)|_IN(5),
+         serve_w, DI_DIR, -1, strlen_ctrl(serve_window->icons[DI_DIR].buffer));
+#else
+a834 1
+#endif
+a838 5
+#define XEigFactor  4
+#define YEigFactor  5
+#define XWindLimit 11
+#define YWindLimit 12
+
+d846 2
+a847 2
+    minx = _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2), -1, XWindLimit);
+    miny = _swi(OS_ReadModeVariable, _IN(0)|_IN(1)|_RETURN(2), -1, YWindLimit);
+d849 1
+a849 1
+		  -1, XEigFactor);
+d851 1
+a851 1
+		  -1, YEigFactor);
+a866 19
+#ifdef OldCode
+/*
+ * XXX THIS ROUTINE APPEARS TO BE REDUNDANT
+ */
+static int alldigits(char *pinstr)
+{
+    char *c;
+
+    for (c = pinstr; *c; c++)
+        if (!isdigit(*c))
+            return(0);
+
+    return(1);
+}
+
+#endif
+
+/**********************************************************************/
+
+d902 1
+a902 1
+        e = _swix(OS_File, _IN(0)|_IN(1)|_OUT(0), 17, dir, &r0);
+d911 1
+a911 1
+		e = _swix(OS_File, _IN(0)|_IN(1)|_IN(2), 19, dir, r0);
+a976 1
+#ifndef OldCode
+a982 1
+#endif
+a991 14
+#ifdef OldCode
+    zero_terminate(serve_window->icons[DI_DIR].buffer);
+    zero_terminate(serve_window->icons[DI_PIN].buffer);
+
+    if (strlen(serve_window->icons[DI_PIN].buffer) &&
+	((pin = password_to_pin(serve_window->icons[DI_PIN].buffer)) < 9))
+    {
+	e = _swix(MessageTrans_ErrorLookup, _IN(0)|_IN(1)|_IN(2),
+		  "\0\0\0\0Pin0", m_descr, 0);
+	_swi(Wimp_ReportError, _IN(0)|_IN(1)|_IN(2), e, 0, progname);
+	return;
+    }
+    strcpy(accpath, serve_window->icons[DI_DIR].buffer);
+#else
+a1004 1
+#endif
+a1024 6
+#ifdef OldCode
+	if (!start_serve(serve_window->icons[DI_DIR].buffer,
+			 serve_window->icons[DI_PIN].buffer,
+			 mountname, attrs, 0))
+	    _swi(Wimp_CloseWindow, _IN(1), &serve_w);
+#else
+a1028 1
+#endif
+a1038 105
+#ifdef OldCode /* this is the old read_shares - the next one down
+       	        * is the one in use...
+       	        */
+static void read_shares(void)
+{
+    char fullpath[128], *leaf, *vol, *avol;
+    char line[128], volname[32], mountname[32], pinstr[32], accpath[128];
+    char *cc, struc[4];
+    int k, pin, o = 0, objtype;
+    _kernel_oserror *err;
+
+    /*
+     * these variables don't seem to be necessary
+     */
+    char *c, buf[64], dirname[64];
+    int nr = 0;
+
+
+    err = _swix(OS_ReadVarVal, _INR(0,3)|_OUT(2),
+		"Access+$Dir", accpath, 128, 0, &k);
+
+    if (err || k <= 0 || !openpins())
+        return;
+    accpath[k] = 0;
+
+    avol = strrchr(accpath, ':');
+    if (!avol || *avol==0)
+	return;
+
+    cc = strchr(++avol, '.');
+    if (cc)
+	*cc = 0;
+
+    for (;;)
+    {
+        if (fgets(line, sizeof(line), pinfd) == NULL)
+            break;
+
+        if (sscanf(line, "%s%s%s", struc, fullpath, pinstr) != 3)
+            break;
+
+        leaf = strrchr(fullpath, '.');
+
+        if (leaf)
+	    leaf++;
+
+        if (struc[0] == 'S')
+	    vol = avol;
+        else
+	{
+	    vol = strrchr(fullpath, ':');
+	    if (vol)
+		cc = strchr(++vol, '.');
+	    if (cc)
+	    {
+		strncpy(volname, vol, (int)(cc - vol));
+		volname[cc - vol] = 0;
+		vol = volname;
+	    }
+        }
+
+        if (leaf && vol)
+	{
+	    _swi(OS_File, _INR(0,1)|_OUT(0), 17, fullpath, &objtype);
+	    if (objtype == 2 || objtype == 3)
+	    {
+		sprintf(mountname, "%s@@%s", leaf, vol);
+		pin = decrypt_pin(pinstr);
+
+		(void)start_serve(fullpath, (char *)0, mountname,
+				  ShareFS_Subdir | ShareFS_Auth |
+				  (struc[1] == 'P' ? ShareFS_Protected : 0),
+				  pin_to_password(pin));
+	    }
+        }
+    }
+
+    closepins();
+
+    appsname[0] = 0;
+    bootname[0] = 0;
+    sprintf(fullpath, "<Access+$Dir>.^.Apps");
+    err = _swix(OS_File, _INR(0,1)|_OUT(0), 5, fullpath, &o);
+
+    if (o == 2 && !err)
+    {
+        sprintf(mountname, "Apps@@%s", avol);
+        (void)start_serve(fullpath, (char *)0, mountname,
+			  ShareFS_ReadOnly, 0);
+        strcpy(appsname, mountname);
+    }
+
+    sprintf(fullpath, "<Access+$Dir>.^.Boot");
+    err = _swix(OS_File, _INR(0,1)|_OUT(0), 5, fullpath, &o);
+
+    if (o == 2 && !err)
+    {
+        sprintf(mountname, "Boot@@%s", avol);
+        (void)start_serve(fullpath, (char *)0, mountname,
+			  ShareFS_Protected | ShareFS_NoIcon, 0);
+        strcpy(bootname, mountname);
+    }
+}
+
+#else
+d1051 1
+a1051 1
+		"Access+$Dir", accpath, sizeof(accpath), 0, &k);
+d1082 1
+a1082 1
+	    _swi(OS_File, _INR(0,1)|_OUT(0), 17, fullpath, &objtype);
+d1114 1
+a1114 1
+    err = _swix(OS_File, _INR(0,1)|_OUT(0), 5, fullpath, &o);
+d1116 1
+a1116 1
+    if (o == 2 && !err)
+d1125 1
+a1125 1
+    err = _swix(OS_File, _INR(0,1)|_OUT(0), 5, fullpath, &o);
+d1127 1
+a1127 1
+    if (o == 2 && !err)
+a1134 1
+#endif
+a1139 1
+#ifndef OldCode
+a1140 2
+     * 941129 KWelton
+     *
+a1143 1
+#endif
+a1146 3
+#ifdef OldCode
+    event->msg.size = 48 + ((strlen((char *)&event->msg.data[6])) >> 2 ) << 2;
+#else
+a1147 1
+#endif
+d1165 1
+a1165 1
+	_swix(OS_File, _INR(0,1)|_IN(4), 8, PINFILE_WDIR, 0);
+a1179 6
+#ifdef OldCode
+		    if ((struc[0] = toupper(struc[0])) == 'P')
+			strcpy(struc,"SP");
+		    else
+			strcpy(struc,"SU");
+#else
+a1183 1
+#endif
+a1184 8
+#ifdef OldCode
+		    if (s==3)
+			encrypt_pin(epin, password_to_pin(pinstr));
+		    else
+			encrypt_pin(epin,1);
+		    fprintf(ph, "%s <Access+$Dir>.^.Dirs.%s %s\n",
+			    struc, user, epin);
+#else
+a1189 1
+#endif
+d1206 1
+a1206 1
+		    -1, XWindLimit);
+d1208 1
+a1208 1
+		    -1, YWindLimit);
+d1210 1
+a1210 1
+		      -1, XEigFactor);
+d1212 1
+a1212 1
+		      -1, YEigFactor);
+d1235 1
+a1235 1
+    _swix(OS_File, _INR(0,1)|_IN(4), 8, PINFILE_WDIR, 0);
+a1250 6
+#ifdef OldCode
+		    if ((struc[0] = toupper(struc[0])) == 'P')
+			strcpy(struc,"SP");
+		    else
+			strcpy(struc,"SU");
+#else
+a1254 1
+#endif
+a1255 8
+#ifdef OldCode
+		    if (s==3)
+			encrypt_pin(epin, password_to_pin(pinstr));
+		    else
+			encrypt_pin(epin,1);
+		    fprintf(ph, "%s <Access+$Dir>.^.Dirs.%s %s\n",
+			    struc, user, epin);
+#else
+a1260 1
+#endif
+d1282 1
+a1282 1
+	_swix(OS_File, _INR(0,1)|_IN(4), 8, PINFILE_WDIR, 0);
+a1301 6
+#ifdef OldCode
+		    if ((struc[0] = toupper(struc[0])) == 'P')
+			strcpy(struc,"SP");
+		    else
+			strcpy(struc,"SU");
+#else
+a1305 1
+#endif
+a1306 8
+#ifdef OldCode
+		    if (s==3)
+			encrypt_pin(epin, password_to_pin(pinstr));
+		    else
+			encrypt_pin(epin,1);
+		    fprintf(ph, "%s <Access+$Dir>.^.Dirs.%s %s\n",
+			    struc, user, epin);
+#else
+a1311 1
+#endif
+a1323 87
+#ifdef OldCode
+/*
+ * XXX THIS ROUTINE APPEARS TO BE REDUNDANT
+ */
+static void process_savedata(void)
+{
+    FILE *newph, *shareph;
+    int k;
+    char *xx;
+    _kernel_oserror *err;
+    char accpath[128],line[256], user[32], pinstr[32];
+    char path[128], struc[4], *apt;
+
+    err = _swix(OS_ReadVarVal, _INR(0,3)|_OUT(2), "Access+$Dir",
+		accpath, 128, 0, &k);
+    if (err || k <= 0)
+	return;
+
+    accpath[k] = 0;
+    xx = strrchr(accpath,'.');
+    if (xx)
+	strcpy(xx+1,"Dirs.");
+
+    if( (shareph = fopen("<Access+$Dir>.!Shares", "r")) != NULL )
+    {
+	closepins();
+	return;
+    }
+
+    if( (newph = fopen("<Access+$Dir>.NewPINS","w")) != NULL )
+    {
+	closepins();
+	fclose(shareph);
+	return;
+    }
+
+    if(openpins())
+    {
+	rewind(pinfd);
+	for (;;)
+	{
+	    if (fgets(line, sizeof(line), pinfd) == NULL)
+		break;
+
+	    if (sscanf(line, "%s%s%s", struc, user, pinstr) != 3)
+		break;
+
+	    if (struc[0] == 'S')
+		fprintf(newph, "%s %s %s\n", struc, user, pinstr);
+	}
+
+	closepins();
+    }
+
+    for (;;)
+    {
+	if( fgets(line, sizeof(line), shareph) == NULL )
+	    break;
+
+	if( (apt = strstr(line, "-auth ")) != NULL )
+	    break;
+
+	if (strstr(line, "-protected"))
+	    strcpy(struc, "P");
+	else
+	    strcpy(struc, "U");
+
+	if ((sscanf(apt + 6, "%s", pinstr) == 1) &&
+	    (sscanf(line + 6, "%s", path) == 1) &&
+	    (strncmp(path,accpath,strlen(accpath))))
+	{
+	    fprintf(newph,"D%s %s %s\n", struc, path, pinstr);
+	}
+    }
+
+    fclose(shareph);
+    fclose(newph);
+    _swi(OS_File, _INR(0,1), 6, "<Access+$Dir>.!Shares");
+    _swi(OS_File, _INR(0,1), 6, "<Access+$Dir>.PINS");
+    _swi(OS_FSControl, _INR(0,2), 25,
+	 "<Access+$Dir>.NewPINS", "<Access+$Dir>.PINS");
+}
+
+#endif
+
+/**********************************************************************/
+
+d1350 2
+a1351 1
+	_swi(OS_CLI, _IN(0), "%Shares -spin { > <Access+$Dir>.!Shares }");
+a1372 1
+#ifndef OldCode
+a1373 2
+     * 941129 KWelton
+     *
+a1377 1
+#endif
+a1395 4
+#ifdef OldCode
+                buffer = serve_window->icons[DI_DIR].buffer;
+                name = (char *)&(event->msg.data[6]);
+#else
+a1397 1
+#endif
+d1402 1
+a1402 2
+#ifdef OldCode
+                if (event->msg.data[5] == 0xfff)
+a1403 4
+#else
+                if (*(msgdata + 5) == 0xfff)
+		    read_new_pins(event, name);
+#endif
+a1424 4
+#ifdef OldCode
+			if (event->msg.data[0] != serve_w)
+			    open_dialog(event->msg.data[2] - 64, 96);
+#else
+a1426 1
+#endif
+a1439 5
+#ifdef OldCode
+		event->msg.data[4] = -1;
+
+		strcpy((char *)&event->msg.data[6], "<Wimp$Scrap>");
+#else
+a1442 1
+#endif
+a1455 4
+#ifdef OldCode
+                window = event->msg.data[3];
+                icon = event->msg.data[4];
+#else
+a1457 1
+#endif
+d1668 1
+a1668 1
+		"Access+$Dir", access_path, sizeof(access_path), 0, &k);
+d1712 1
+a1712 1
+	 "Access+$Running", "Yes", 4, 0);
+@
+
+
+1.2
+log
+@Update resources
+Discontinue $Log$ keyword expansion in the sources.
+Retagged as Access+-1_01.
+@
+text
+@d35 1
+a35 1
+
+a37 1
+/* #include "_swis.h" */
+d52 5
+d192 2
+a193 3
+char pindrag[128];
+int pindralign[256/4];
+char *pindragbl=(char *)pindralign;
+d291 1
+a291 1
+#define MENU_HEIGHT (5 * 44)
+d346 1
+a346 1
+char *progname = "Access+";
+d357 1
+d400 1
+d477 1
+a477 1
+static int password_to_pin(char *buf)
+d515 1
+a515 1
+int caseless_strcmp(char *a, char *b)
+d531 3
+a533 2
+#define PINFILE "Access:!Shares"
+/* #define PINFILE "Access:PINS" */
+d540 1
+a540 1
+        pinfd  = fopen(PINFILE, "r");
+d558 1
+a558 1
+int read_pin(char *name)
+d583 1
+a583 1
+int strlen_ctrl(char *s)
+d585 1
+a585 1
+    char *t;
+d601 1
+a601 1
+char *strcpy_ctrl(char *s, char *t)
+d613 1
+a613 1
+char *strcat_ctrl(char *s, char *t)
+d621 1
+a621 1
+void error(char *s)
+d635 1
+a635 1
+			_IN(0)|_IN(1)|_IN(2)|_IN(3)|_RETURN(2),
+d641 1
+a641 1
+void make_title(Acc_Menu *m, char *t)
+d645 1
+a645 1
+        m->title = t;
+d660 1
+a660 1
+    char *s;
+d684 1
+a684 1
+int create_window(char *s, Window **wind)
+d906 1
+a906 1
+static void open_show(char *name, char *dir, char *type, int minx, int miny)
+d1094 1
+a1094 1
+static void show_show(char *export, int x, int y)
+d1336 2
+a1337 2
+    char fullpath[128], *avol;
+    char line[128], mountname[32], pinstr[32], accpath[128];
+d1345 1
+a1345 1
+		"Access+$Dir", accpath, 128, 0, &k);
+d1458 1
+a1458 1
+static void read_new_pins(WimpEvent *event, char *name)
+d1464 1
+a1464 1
+    ph = fopen(PINFILE,"r");
+d1468 2
+a1469 1
+	ph = fopen(PINFILE,"w");
+d1521 1
+a1521 1
+	memcpy((char *)event,pindragbl,256);
+d1554 2
+a1555 1
+    ph = fopen(PINFILE,"w");
+d1598 1
+a1598 1
+	    pinfile_loadack((WimpEvent *)pindragbl);
+d1617 2
+a1618 1
+	ph = fopen(PINFILE,"a");
+d1665 1
+a1665 1
+	    pinfile_loadack((WimpEvent *)pindragbl);
+d2121 1
+a2121 1
+void icon_create()
+a2122 19
+/*
+ *     int wi[7];
+ *     int sprx = 34, spry = 17, sprm = 12;
+ *     int l;
+ *     char *name=NULL;
+ *     char *validstr=NULL;
+ *
+ *     l = strlen(name);
+ *     _swix(Wimp_SpriteOp, _IN(0) | _IN(2) | _OUT(3) | _OUT(4) | _OUT(6), 40, validstr + 1, &sprx, &spry, &sprm);
+ *     sprx <<= (int) _swix(OS_ReadModeVariable, _INR(0, 1) | _RETURN(2), sprm, 4);
+ *     spry <<= (int) _swix(OS_ReadModeVariable, _INR(0, 1) | _RETURN(2), sprm, 5);
+ *     wi[0]= ICON_POS;
+ *     wi[1] = 0;
+ *     wi[2] -16;
+ *     wi[3] = sprx;
+ *     if (sprx < l * 16)
+ * 	wi[3] = l * 16;
+ *     wi[4] = -16 + 32 + 4 + spry;
+ */
+a2123 1
+
+d2129 1
+a2129 1
+  char access_path[128];
+d2135 1
+a2135 1
+		"Access+$Dir", access_path, 128, 0, &k);
+d2158 1
+d2191 4
+a2197 2
+/* icon_handle = _swi(Wimp_CreateIcon, _BLOCK(1), ICON_POS, Acc_icon); */
+
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@a16 3
+ * $Header$
+ * $Source$
+ *
+a18 2
+ * $Log$
+ *
+@
+
+
+1.1.1.1
+log
+@Import of Access+ sources
+Recovered from archive disc 0284,804 these are the sources to !Access+, only the installed copy of which previously made it into CVS.
+The files have been reorganised into a conventional layout so are unlikely to build with the unmodified Makefile.
+@
+text
+@@

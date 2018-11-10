@@ -1,0 +1,327 @@
+head	1.5;
+access;
+symbols
+	EtherH-4_59:1.5
+	EtherH-4_58:1.4
+	EtherH-4_57:1.4
+	EtherH-4_56:1.3
+	EtherH-4_55:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.5
+date	2013.02.03.09.36.31;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	KsFXaENIUKMthJCw;
+
+1.4
+date	2012.10.13.21.01.24;	author rsprowson;	state Exp;
+branches;
+next	1.3;
+commitid	x8Jt9KAXLv3CHgow;
+
+1.3
+date	2012.10.13.20.58.42;	author rsprowson;	state Exp;
+branches;
+next	1.2;
+commitid	622MTy7PdZDGGgow;
+
+1.2
+date	2012.10.13.20.56.57;	author rsprowson;	state Exp;
+branches;
+next	1.1;
+commitid	4sVrnZlgMCe1Ggow;
+
+1.1
+date	2012.10.13.20.55.31;	author rsprowson;	state Exp;
+branches;
+next	;
+commitid	iWEN5VZZYRYzFgow;
+
+
+desc
+@@
+
+
+1.5
+log
+@Fix for dropping excessive numbers of transmitted fragmented IP packets
+When transmitting packets larger than the MTU the Internet module splits them and so ends up with mbufs with back to back packets. The timing of the network chip access wasn't right so the packets got scrambled in the buffer RAM, and were sent either too short or too long.
+A simple "ping -s 1600 other_pc" would have ~25% dropped packets, and a large file transfer via LanManFS would stall (due to 2s TCP/IP backoffs).
+The microdelay function polled on the ROM to implement the delay but on a NIC this also cranks the 12 bit ROM counter which seems to interfer with the other CPLD functions.
+c/init: function prototype tweaked
+h/module: microdelay macro now polls on a read of the control register
+s/Support: comment updated to reflect change
+
+Tested on StrongARM Risc PC w/5.19 and A7000 w/3.71. 200 oversized pings completed with 0% dropped.
+
+Version 4.59. Tagged as 'EtherH-4_59'
+@
+text
+@; Copyright (c) 2002, Design IT
+; All rights reserved.
+;
+; Redistribution and use in source and binary forms, with or without
+; modification, are permitted provided that the following conditions are met: 
+;     * Redistributions of source code must retain the above copyright
+;       notice, this list of conditions and the following disclaimer.
+;     * Redistributions in binary form must reproduce the above copyright
+;       notice, this list of conditions and the following disclaimer in the
+;       documentation and/or other materials provided with the distribution.
+;     * Neither the name of RISC OS Open Ltd nor the names of its contributors
+;       may be used to endorse or promote products derived from this software
+;       without specific prior written permission.
+; 
+; THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+; AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+; IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+; ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+; LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+; CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+; SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+; INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+; CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+; ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+; POSSIBILITY OF SUCH DAMAGE.
+;
+; Assembler helper functions
+
+        GET     Hdr:ListOpts
+        GET     Hdr:Macros
+        GET     Hdr:System
+        GET     Hdr:Services
+
+        EXPORT  eh_microdelay
+        EXPORT  eh_call_protocol
+        EXPORT  eh_call_back
+
+        AREA    Support,CODE,READONLY
+
+;**********************************************************************
+;
+;       implement an n-microsecond delay: this code assumes the card
+;       is set to Podule_Speed_TypeA and will do dummy reads from
+;       a location that has no side effects.
+;       For 'fast' podules this is 5 cycles of 8MHz => 625ns
+;       For 'easi/nic' this is 9 cycles of 16MHz => 562ns
+;       so two dummy reads will ensure at least 1us per loop.
+;
+;       void eh_microdelay(int micros, const char *rom);
+;
+eh_microdelay ROUT
+        TEQ     r0, #0
+        TEQNE   r1, #0
+        MOVEQ   pc, lr                  ; Duff caller
+10
+        LDRB    r2, [r1]
+        LDRB    r2, [r1]
+        SUBS    r0, r0, #1
+        BNE     %BT10
+        MOV     pc, lr
+
+;**********************************************************************
+;
+;       void eh_call_protocol(DibRef, struct mbuf *, void *, int);
+;
+
+eh_call_protocol ROUT
+        Push    "r12, lr"
+        MOV     r12, r2
+        MOV     lr, pc
+        MOV     pc, r3
+        Pull    "r12, pc"
+
+;**********************************************************************
+;
+;       eh_call_back r12 -> pointer to Dib for device starting
+;
+
+eh_call_back ROUT
+        Push    "r0-r3, lr"
+        MOV     r0, r12
+        MOV     r1, #Service_DCIDriverStatus
+        MOV     r2, #0                  ; DCIDRIVER_STARTING
+        LDR     r3, =406                ; DCIVERSION
+        SWI     XOS_ServiceCall
+        TEQ     pc, pc
+        Pull    "r0-r3, pc", EQ
+        Pull    "r0-r3, pc", NE, ^      ; Don't confuse a 26 bit OS
+
+        END
+@
+
+
+1.4
+log
+@Recoded MICRODELAY to be processor speed/cache agnostic
+Checked on a scope doing groups of 250/125/62us delays with interrupts disabled, wiggling an IO line.
+Get podule/MEMC logical addresses from Podule_ReadInfo (falls back to table for pre RISC OS 3.50).
+
+Version 4.57. Tagged as 'EtherH-4_57'
+@
+text
+@d43 2
+a44 2
+;       is set to Podule_Speed_TypeA and will read a byte from ROM
+;       offset 0 (the expansion card identity byte).
+@
+
+
+1.3
+log
+@32 bitted the assembler
+Only a couple of places make OS interface calls, everything else is called from APCS-32 C, so doesn't need to flag preserve.
+Fixed *CONFIGURE output to not show a "Syntax:" error prefix.
+Now uses device number queried from podule manager (or falls back to hardwired assignments if Podule_ReadInfo missing).
+
+Version 4.56. Tagged as 'EtherH-4_56'
+@
+text
+@d34 1
+a34 1
+        EXPORT  DELAY_
+d42 18
+a59 20
+;       implement an n-microsecond delay: this code is pretty naff,
+;       it is derived from _DELAY_ (arm/delay.s) and calculates the
+;       delay for a 32MHz arm3 machine with all the code running in
+;       the cache, i.e. this is a *minimum* delay of n microseconds.
+;
+;       void DELAY_(int n, int n)
+;
+
+DELAY_ ROUT
+        MOV     r0, r0, LSL r1
+        ; this loop takes 8 fast cycles, so need to multiply loop
+        ; count by 4 to achieve 1us per loop
+delayloop
+        SUBS    r0, r0, #1              ; 1 F
+        MOV     r3, r3, LSL r3          ; 2 F
+        MOV     r3, r3, LSL r3          ; 2 F
+        BGT     delayloop               ; 2 F + 1 F
+                                        ; ---------
+                                        ; 8 F
+        ; all done
+@
+
+
+1.2
+log
+@Lined up the assembler to familiar column numbers
+No code changes, not tagged.
+@
+text
+@a50 2
+        STMFD   sp!, {r4,lr}
+
+d56 2
+a57 2
+        MOV     r4, r4, LSL r4          ; 2 F
+        MOV     r4, r4, LSL r4          ; 2 F
+d62 1
+a62 1
+        LDMFD   sp!, {r4,pc}^
+d70 1
+a70 1
+        STMFD   sp!, {r12, lr}
+d74 1
+a74 1
+        LDMFD   sp!, {r12, pc}^
+d82 1
+a82 1
+        STMFD   sp!, {r0-r3, lr}
+d85 2
+a86 2
+        MOV     r2, #0          ; DCIDRIVER_STARTING
+        LDR     r3, =406        ; DCIVERSION
+d88 3
+a90 1
+        LDMFD   sp!, {r0-r3, pc}^
+@
+
+
+1.1
+log
+@Replaced htons and friends with ${INETLIB} ones
+Functions max() and min() changed for macros.
+Made supporting assembler functions common -> support.s, so the IO sources just manipulate IO.
+Unused header file 'int_hndlr.h' removed.
+Resolved all the remaining compiler warnings.
+File 'dma.c' compiles now, but is unused.
+Substituted magic numbers for defines from exported header files where available.
+Text for NIC slot 8 is now "Network slot" rather than "Expansion slot 8".
+Builds but not tested. 26 bit only.
+
+Version 4.55. Tagged as 'EtherH-4_55'
+@
+text
+@d32 1
+d40 1
+a40 4
+;
+;    **********************************************************************
+;
+
+d50 2
+a51 18
+DELAY_          ROUT
+                STMFD   sp!, {r4,lr}
+
+                ;MOV    r0, r0, LSL #2
+                MOV   r0, r0, LSL r1            ; Changed for StrongArm
+;
+;       this loop takes 8 fast cycles, so need to multiply loop
+;       count by 4 to acheive 1us per loop
+;
+delayloop       SUBS    r0, r0, #1              ; 1 F
+                MOV     r4, r4, LSL r4          ; 2 F
+                MOV     r4, r4, LSL r4          ; 2 F
+                BGT     delayloop               ; 2 F + 1 F
+                                                ; ---------
+                                                ; 8 F
+;       all done
+;
+                LDMFD   sp!, {r4,pc}^
+d53 12
+a64 2
+;
+;       ************************************************************
+d68 1
+a68 1
+;               void eh_call_protocol(DibRef, struct mbuf *, void *, int);
+d71 6
+a76 7
+eh_call_protocol
+                ROUT
+                STMFD   sp!, {r12, lr}
+                MOV     r12, r2
+                MOV     lr, pc
+                MOV     pc, r3
+                LDMFD   sp!, {r12, pc}^
+d80 1
+a80 1
+;               eh_call_back r12 -> pointer to Dib for device starting
+d83 8
+a90 15
+eh_call_back
+                ROUT
+                STMFD   sp!, {r0-r3, lr}
+                MOV     r0, r12
+                MOV     r1, #&9d        ; Service_DCIDriverStatus
+                MOV     r2, #0          ; starting
+                MOV     r3, #400        ; major DCIVersion
+                ; OSS 23 June 2001 We have been DCI 4.04 for ages
+                ADD     r3, r3, #4      ; minor DCIVersion
+                SWI     XOS_ServiceCall
+                LDMFD   sp!, {r0-r3, pc}^
+
+;
+;       **********************************************************************
+;
+d92 1
+a92 1
+                END
+@
+

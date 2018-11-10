@@ -1,0 +1,984 @@
+head	1.3;
+access;
+symbols
+	DWCDriver-0_35:1.3
+	DWCDriver-0_34:1.3
+	DWCDriver-0_33:1.3
+	DWCDriver-0_32:1.3
+	DWCDriver-0_31:1.3
+	DWCDriver-0_30:1.3
+	DWCDriver-0_29:1.3
+	DWCDriver-0_28:1.3
+	DWCDriver-0_27:1.3
+	DWCDriver-0_26:1.3
+	DWCDriver-0_24-1:1.3
+	DWCDriver-0_25:1.3
+	DWCDriver-0_24:1.3
+	DWCDriver-0_23:1.3
+	DWCDriver-0_22:1.3
+	DWCDriver-0_21:1.3
+	DWCDriver-0_20:1.3
+	DWCDriver-0_19:1.3
+	DWCDriver-0_18:1.3
+	DWCDriver-0_17:1.3
+	DWCDriver-0_16:1.3
+	DWCDriver-0_15:1.3
+	DWCDriver-0_14:1.3
+	DWCDriver-0_13:1.3
+	DWCDriver-0_12:1.3
+	DWCDriver-0_11:1.3
+	DWCDriver-0_10:1.2
+	DWCDriver-0_09:1.2
+	DWCDriver-0_08:1.1
+	DWCDriver-0_07:1.1
+	DWCDriver-0_06:1.1
+	DWCDriver-0_05:1.1
+	DWCDriver-0_04:1.1
+	DWCDriver-0_03:1.1
+	DWCDriver-0_02:1.1
+	DWCDriver-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2014.04.26.18.18.22;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	3PdzN60cJJ3zNdyx;
+
+1.2
+date	2012.09.17.16.35.16;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	DXVFy2WJjyak3Ukw;
+
+1.1
+date	2012.06.03.15.14.32;	author jlee;	state Exp;
+branches;
+next	;
+commitid	ZZ9X1FvMWAU11h7w;
+
+
+desc
+@@
+
+
+1.3
+log
+@Update to latest code from Raspberry Pi github
+Detail:
+  Makefile, dwc/* - Updated to latest code from Raspberry Pi github (rev e0001dd59d). Includes the fabled 'FIQ fix' code, although the code isn't yet enabled in the RISC OS version of the driver.
+  c/cmodule - Add extra flags for controlling driver behaviour, as required by the new core code
+  c/dwc_otg_riscos - Add some missing driver parameters (although we leave them at default). Handle DWC_E_SHUTDOWN xfer errors, which will now be produced when the driver is shutting down
+  c/softc_device - Disable interrupts around dwc_otg_hcd_urb_enqueue, to mirror behaviour of Linux code (previously, it was the responsibility of the DWC code to disable interrupts for the appropriate part of the operation)
+  s/regaccess - Add some extra IRQ/memory barrier functions required by the new code (mainly the FIQ fix). Make DWC_MODIFY_REG32 operate atomicly (mirrors change in Linux version)
+Admin:
+  Tested on Raspberry Pi
+
+
+Version 0.11. Tagged as 'DWCDriver-0_11'
+@
+text
+@/*	$OpenBSD: queue.h,v 1.26 2004/05/04 16:59:32 grange Exp $	*/
+/*	$NetBSD: queue.h,v 1.11 1996/05/16 05:17:14 mycroft Exp $	*/
+
+/*
+ * Copyright (c) 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@@(#)queue.h	8.5 (Berkeley) 8/20/94
+ */
+
+#ifndef _DWC_LIST_H_
+#define _DWC_LIST_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** @@file
+ *
+ * This file defines linked list operations.  It is derived from BSD with
+ * only the MACRO names being prefixed with DWC_.  This is because a few of
+ * these names conflict with those on Linux.  For documentation on use, see the
+ * inline comments in the source code.  The original license for this source
+ * code applies and is preserved in the dwc_list.h source file.
+ */
+
+/*
+ * This file defines five types of data structures: singly-linked lists,
+ * lists, simple queues, tail queues, and circular queues.
+ *
+ *
+ * A singly-linked list is headed by a single forward pointer. The elements
+ * are singly linked for minimum space and pointer manipulation overhead at
+ * the expense of O(n) removal for arbitrary elements. New elements can be
+ * added to the list after an existing element or at the head of the list.
+ * Elements being removed from the head of the list should use the explicit
+ * macro for this purpose for optimum efficiency. A singly-linked list may
+ * only be traversed in the forward direction.  Singly-linked lists are ideal
+ * for applications with large datasets and few or no removals or for
+ * implementing a LIFO queue.
+ *
+ * A list is headed by a single forward pointer (or an array of forward
+ * pointers for a hash table header). The elements are doubly linked
+ * so that an arbitrary element can be removed without a need to
+ * traverse the list. New elements can be added to the list before
+ * or after an existing element or at the head of the list. A list
+ * may only be traversed in the forward direction.
+ *
+ * A simple queue is headed by a pair of pointers, one the head of the
+ * list and the other to the tail of the list. The elements are singly
+ * linked to save space, so elements can only be removed from the
+ * head of the list. New elements can be added to the list before or after
+ * an existing element, at the head of the list, or at the end of the
+ * list. A simple queue may only be traversed in the forward direction.
+ *
+ * A tail queue is headed by a pair of pointers, one to the head of the
+ * list and the other to the tail of the list. The elements are doubly
+ * linked so that an arbitrary element can be removed without a need to
+ * traverse the list. New elements can be added to the list before or
+ * after an existing element, at the head of the list, or at the end of
+ * the list. A tail queue may be traversed in either direction.
+ *
+ * A circle queue is headed by a pair of pointers, one to the head of the
+ * list and the other to the tail of the list. The elements are doubly
+ * linked so that an arbitrary element can be removed without a need to
+ * traverse the list. New elements can be added to the list before or after
+ * an existing element, at the head of the list, or at the end of the list.
+ * A circle queue may be traversed in either direction, but has a more
+ * complex end of list detection.
+ *
+ * For details on the use of these macros, see the queue(3) manual page.
+ */
+
+/*
+ * Double-linked List.
+ */
+
+typedef struct dwc_list_link {
+	struct dwc_list_link *next;
+	struct dwc_list_link *prev;
+} dwc_list_link_t;
+
+#define DWC_LIST_INIT(link) do {	\
+	(link)->next = (link);		\
+	(link)->prev = (link);		\
+} while (0)
+
+#define DWC_LIST_FIRST(link)	((link)->next)
+#define DWC_LIST_LAST(link)	((link)->prev)
+#define DWC_LIST_END(link)	(link)
+#define DWC_LIST_NEXT(link)	((link)->next)
+#define DWC_LIST_PREV(link)	((link)->prev)
+#define DWC_LIST_EMPTY(link)	\
+	(DWC_LIST_FIRST(link) == DWC_LIST_END(link))
+#define DWC_LIST_ENTRY(link, type, field)			\
+	(type *)((uint8_t *)(link) - (size_t)(&((type *)0)->field))
+
+#if 0
+#define DWC_LIST_INSERT_HEAD(list, link) do {			\
+	(link)->next = (list)->next;				\
+	(link)->prev = (list);					\
+	(list)->next->prev = (link);				\
+	(list)->next = (link);					\
+} while (0)
+
+#define DWC_LIST_INSERT_TAIL(list, link) do {			\
+	(link)->next = (list);					\
+	(link)->prev = (list)->prev;				\
+	(list)->prev->next = (link);				\
+	(list)->prev = (link);					\
+} while (0)
+#else
+#define DWC_LIST_INSERT_HEAD(list, link) do {			\
+	dwc_list_link_t *__next__ = (list)->next;		\
+	__next__->prev = (link);				\
+	(link)->next = __next__;				\
+	(link)->prev = (list);					\
+	(list)->next = (link);					\
+} while (0)
+
+#define DWC_LIST_INSERT_TAIL(list, link) do {			\
+	dwc_list_link_t *__prev__ = (list)->prev;		\
+	(list)->prev = (link);					\
+	(link)->next = (list);					\
+	(link)->prev = __prev__;				\
+	__prev__->next = (link);				\
+} while (0)
+#endif
+
+#if 0
+static inline void __list_add(struct list_head *new,
+                              struct list_head *prev,
+                              struct list_head *next)
+{
+        next->prev = new;
+        new->next = next;
+        new->prev = prev;
+        prev->next = new;
+}
+
+static inline void list_add(struct list_head *new, struct list_head *head)
+{
+        __list_add(new, head, head->next);
+}
+
+static inline void list_add_tail(struct list_head *new, struct list_head *head)
+{
+        __list_add(new, head->prev, head);
+}
+
+static inline void __list_del(struct list_head * prev, struct list_head * next)
+{
+        next->prev = prev;
+        prev->next = next;
+}
+
+static inline void list_del(struct list_head *entry)
+{
+        __list_del(entry->prev, entry->next);
+        entry->next = LIST_POISON1;
+        entry->prev = LIST_POISON2;
+}
+#endif
+
+#define DWC_LIST_REMOVE(link) do {				\
+	(link)->next->prev = (link)->prev;			\
+	(link)->prev->next = (link)->next;			\
+} while (0)
+
+#define DWC_LIST_REMOVE_INIT(link) do {				\
+	DWC_LIST_REMOVE(link);					\
+	DWC_LIST_INIT(link);					\
+} while (0)
+
+#define DWC_LIST_MOVE_HEAD(list, link) do {			\
+	DWC_LIST_REMOVE(link);					\
+	DWC_LIST_INSERT_HEAD(list, link);			\
+} while (0)
+
+#define DWC_LIST_MOVE_TAIL(list, link) do {			\
+	DWC_LIST_REMOVE(link);					\
+	DWC_LIST_INSERT_TAIL(list, link);			\
+} while (0)
+
+#define DWC_LIST_FOREACH(var, list)				\
+	for((var) = DWC_LIST_FIRST(list);			\
+	    (var) != DWC_LIST_END(list);			\
+	    (var) = DWC_LIST_NEXT(var))
+
+#define DWC_LIST_FOREACH_SAFE(var, var2, list)			\
+	for((var) = DWC_LIST_FIRST(list), (var2) = DWC_LIST_NEXT(var);	\
+	    (var) != DWC_LIST_END(list);			\
+	    (var) = (var2), (var2) = DWC_LIST_NEXT(var2))
+
+#define DWC_LIST_FOREACH_REVERSE(var, list)			\
+	for((var) = DWC_LIST_LAST(list);			\
+	    (var) != DWC_LIST_END(list);			\
+	    (var) = DWC_LIST_PREV(var))
+
+/*
+ * Singly-linked List definitions.
+ */
+#define DWC_SLIST_HEAD(name, type)					\
+struct name {								\
+	struct type *slh_first;	/* first element */			\
+}
+
+#define DWC_SLIST_HEAD_INITIALIZER(head)				\
+	{ NULL }
+
+#define DWC_SLIST_ENTRY(type)						\
+struct {								\
+	struct type *sle_next;	/* next element */			\
+}
+
+/*
+ * Singly-linked List access methods.
+ */
+#define DWC_SLIST_FIRST(head)	((head)->slh_first)
+#define DWC_SLIST_END(head)		NULL
+#define DWC_SLIST_EMPTY(head)	(SLIST_FIRST(head) == SLIST_END(head))
+#define DWC_SLIST_NEXT(elm, field)	((elm)->field.sle_next)
+
+#define DWC_SLIST_FOREACH(var, head, field)				\
+	for((var) = SLIST_FIRST(head);					\
+	    (var) != SLIST_END(head);					\
+	    (var) = SLIST_NEXT(var, field))
+
+#define DWC_SLIST_FOREACH_PREVPTR(var, varp, head, field)		\
+	for((varp) = &SLIST_FIRST((head));				\
+	    ((var) = *(varp)) != SLIST_END(head);			\
+	    (varp) = &SLIST_NEXT((var), field))
+
+/*
+ * Singly-linked List functions.
+ */
+#define DWC_SLIST_INIT(head) {						\
+	SLIST_FIRST(head) = SLIST_END(head);				\
+}
+
+#define DWC_SLIST_INSERT_AFTER(slistelm, elm, field) do {		\
+	(elm)->field.sle_next = (slistelm)->field.sle_next;		\
+	(slistelm)->field.sle_next = (elm);				\
+} while (0)
+
+#define DWC_SLIST_INSERT_HEAD(head, elm, field) do {			\
+	(elm)->field.sle_next = (head)->slh_first;			\
+	(head)->slh_first = (elm);					\
+} while (0)
+
+#define DWC_SLIST_REMOVE_NEXT(head, elm, field) do {			\
+	(elm)->field.sle_next = (elm)->field.sle_next->field.sle_next;	\
+} while (0)
+
+#define DWC_SLIST_REMOVE_HEAD(head, field) do {				\
+	(head)->slh_first = (head)->slh_first->field.sle_next;		\
+} while (0)
+
+#define DWC_SLIST_REMOVE(head, elm, type, field) do {			\
+	if ((head)->slh_first == (elm)) {				\
+		SLIST_REMOVE_HEAD((head), field);			\
+	}								\
+	else {								\
+		struct type *curelm = (head)->slh_first;		\
+		while( curelm->field.sle_next != (elm) )		\
+			curelm = curelm->field.sle_next;		\
+		curelm->field.sle_next =				\
+		    curelm->field.sle_next->field.sle_next;		\
+	}								\
+} while (0)
+
+/*
+ * Simple queue definitions.
+ */
+#define DWC_SIMPLEQ_HEAD(name, type)					\
+struct name {								\
+	struct type *sqh_first;	/* first element */			\
+	struct type **sqh_last;	/* addr of last next element */		\
+}
+
+#define DWC_SIMPLEQ_HEAD_INITIALIZER(head)				\
+	{ NULL, &(head).sqh_first }
+
+#define DWC_SIMPLEQ_ENTRY(type)						\
+struct {								\
+	struct type *sqe_next;	/* next element */			\
+}
+
+/*
+ * Simple queue access methods.
+ */
+#define DWC_SIMPLEQ_FIRST(head)	    ((head)->sqh_first)
+#define DWC_SIMPLEQ_END(head)	    NULL
+#define DWC_SIMPLEQ_EMPTY(head)	    (SIMPLEQ_FIRST(head) == SIMPLEQ_END(head))
+#define DWC_SIMPLEQ_NEXT(elm, field)    ((elm)->field.sqe_next)
+
+#define DWC_SIMPLEQ_FOREACH(var, head, field)				\
+	for((var) = SIMPLEQ_FIRST(head);				\
+	    (var) != SIMPLEQ_END(head);					\
+	    (var) = SIMPLEQ_NEXT(var, field))
+
+/*
+ * Simple queue functions.
+ */
+#define DWC_SIMPLEQ_INIT(head) do {					\
+	(head)->sqh_first = NULL;					\
+	(head)->sqh_last = &(head)->sqh_first;				\
+} while (0)
+
+#define DWC_SIMPLEQ_INSERT_HEAD(head, elm, field) do {			\
+	if (((elm)->field.sqe_next = (head)->sqh_first) == NULL)	\
+		(head)->sqh_last = &(elm)->field.sqe_next;		\
+	(head)->sqh_first = (elm);					\
+} while (0)
+
+#define DWC_SIMPLEQ_INSERT_TAIL(head, elm, field) do {			\
+	(elm)->field.sqe_next = NULL;					\
+	*(head)->sqh_last = (elm);					\
+	(head)->sqh_last = &(elm)->field.sqe_next;			\
+} while (0)
+
+#define DWC_SIMPLEQ_INSERT_AFTER(head, listelm, elm, field) do {	\
+	if (((elm)->field.sqe_next = (listelm)->field.sqe_next) == NULL)\
+		(head)->sqh_last = &(elm)->field.sqe_next;		\
+	(listelm)->field.sqe_next = (elm);				\
+} while (0)
+
+#define DWC_SIMPLEQ_REMOVE_HEAD(head, field) do {			\
+	if (((head)->sqh_first = (head)->sqh_first->field.sqe_next) == NULL) \
+		(head)->sqh_last = &(head)->sqh_first;			\
+} while (0)
+
+/*
+ * Tail queue definitions.
+ */
+#define DWC_TAILQ_HEAD(name, type)					\
+struct name {								\
+	struct type *tqh_first;	/* first element */			\
+	struct type **tqh_last;	/* addr of last next element */		\
+}
+
+#define DWC_TAILQ_HEAD_INITIALIZER(head)				\
+	{ NULL, &(head).tqh_first }
+
+#define DWC_TAILQ_ENTRY(type)						\
+struct {								\
+	struct type *tqe_next;	/* next element */			\
+	struct type **tqe_prev;	/* address of previous next element */	\
+}
+
+/*
+ * tail queue access methods
+ */
+#define DWC_TAILQ_FIRST(head)		((head)->tqh_first)
+#define DWC_TAILQ_END(head)		NULL
+#define DWC_TAILQ_NEXT(elm, field)	((elm)->field.tqe_next)
+#define DWC_TAILQ_LAST(head, headname)					\
+	(*(((struct headname *)((head)->tqh_last))->tqh_last))
+/* XXX */
+#define DWC_TAILQ_PREV(elm, headname, field)				\
+	(*(((struct headname *)((elm)->field.tqe_prev))->tqh_last))
+#define DWC_TAILQ_EMPTY(head)						\
+	(DWC_TAILQ_FIRST(head) == DWC_TAILQ_END(head))
+
+#define DWC_TAILQ_FOREACH(var, head, field)				\
+	for ((var) = DWC_TAILQ_FIRST(head);				\
+	    (var) != DWC_TAILQ_END(head);				\
+	    (var) = DWC_TAILQ_NEXT(var, field))
+
+#define DWC_TAILQ_FOREACH_REVERSE(var, head, headname, field)		\
+	for ((var) = DWC_TAILQ_LAST(head, headname);			\
+	    (var) != DWC_TAILQ_END(head);				\
+	    (var) = DWC_TAILQ_PREV(var, headname, field))
+
+/*
+ * Tail queue functions.
+ */
+#define DWC_TAILQ_INIT(head) do {					\
+	(head)->tqh_first = NULL;					\
+	(head)->tqh_last = &(head)->tqh_first;				\
+} while (0)
+
+#define DWC_TAILQ_INSERT_HEAD(head, elm, field) do {			\
+	if (((elm)->field.tqe_next = (head)->tqh_first) != NULL)	\
+		(head)->tqh_first->field.tqe_prev =			\
+		    &(elm)->field.tqe_next;				\
+	else								\
+		(head)->tqh_last = &(elm)->field.tqe_next;		\
+	(head)->tqh_first = (elm);					\
+	(elm)->field.tqe_prev = &(head)->tqh_first;			\
+} while (0)
+
+#define DWC_TAILQ_INSERT_TAIL(head, elm, field) do {			\
+	(elm)->field.tqe_next = NULL;					\
+	(elm)->field.tqe_prev = (head)->tqh_last;			\
+	*(head)->tqh_last = (elm);					\
+	(head)->tqh_last = &(elm)->field.tqe_next;			\
+} while (0)
+
+#define DWC_TAILQ_INSERT_AFTER(head, listelm, elm, field) do {		\
+	if (((elm)->field.tqe_next = (listelm)->field.tqe_next) != NULL)\
+		(elm)->field.tqe_next->field.tqe_prev =			\
+		    &(elm)->field.tqe_next;				\
+	else								\
+		(head)->tqh_last = &(elm)->field.tqe_next;		\
+	(listelm)->field.tqe_next = (elm);				\
+	(elm)->field.tqe_prev = &(listelm)->field.tqe_next;		\
+} while (0)
+
+#define DWC_TAILQ_INSERT_BEFORE(listelm, elm, field) do {		\
+	(elm)->field.tqe_prev = (listelm)->field.tqe_prev;		\
+	(elm)->field.tqe_next = (listelm);				\
+	*(listelm)->field.tqe_prev = (elm);				\
+	(listelm)->field.tqe_prev = &(elm)->field.tqe_next;		\
+} while (0)
+
+#define DWC_TAILQ_REMOVE(head, elm, field) do {				\
+	if (((elm)->field.tqe_next) != NULL)				\
+		(elm)->field.tqe_next->field.tqe_prev =			\
+		    (elm)->field.tqe_prev;				\
+	else								\
+		(head)->tqh_last = (elm)->field.tqe_prev;		\
+	*(elm)->field.tqe_prev = (elm)->field.tqe_next;			\
+} while (0)
+
+#define DWC_TAILQ_REPLACE(head, elm, elm2, field) do {			\
+	if (((elm2)->field.tqe_next = (elm)->field.tqe_next) != NULL)	\
+		(elm2)->field.tqe_next->field.tqe_prev =		\
+		    &(elm2)->field.tqe_next;				\
+	else								\
+		(head)->tqh_last = &(elm2)->field.tqe_next;		\
+	(elm2)->field.tqe_prev = (elm)->field.tqe_prev;			\
+	*(elm2)->field.tqe_prev = (elm2);				\
+} while (0)
+
+/*
+ * Circular queue definitions.
+ */
+#define DWC_CIRCLEQ_HEAD(name, type)					\
+struct name {								\
+	struct type *cqh_first;		/* first element */		\
+	struct type *cqh_last;		/* last element */		\
+}
+
+#define DWC_CIRCLEQ_HEAD_INITIALIZER(head)				\
+	{ DWC_CIRCLEQ_END(&head), DWC_CIRCLEQ_END(&head) }
+
+#define DWC_CIRCLEQ_ENTRY(type)						\
+struct {								\
+	struct type *cqe_next;		/* next element */		\
+	struct type *cqe_prev;		/* previous element */		\
+}
+
+/*
+ * Circular queue access methods
+ */
+#define DWC_CIRCLEQ_FIRST(head)		((head)->cqh_first)
+#define DWC_CIRCLEQ_LAST(head)		((head)->cqh_last)
+#define DWC_CIRCLEQ_END(head)		((void *)(head))
+#define DWC_CIRCLEQ_NEXT(elm, field)	((elm)->field.cqe_next)
+#define DWC_CIRCLEQ_PREV(elm, field)	((elm)->field.cqe_prev)
+#define DWC_CIRCLEQ_EMPTY(head)						\
+	(DWC_CIRCLEQ_FIRST(head) == DWC_CIRCLEQ_END(head))
+
+#define DWC_CIRCLEQ_EMPTY_ENTRY(elm, field) (((elm)->field.cqe_next == NULL) && ((elm)->field.cqe_prev == NULL))
+
+#define DWC_CIRCLEQ_FOREACH(var, head, field)				\
+	for((var) = DWC_CIRCLEQ_FIRST(head);				\
+	    (var) != DWC_CIRCLEQ_END(head);				\
+	    (var) = DWC_CIRCLEQ_NEXT(var, field))
+
+#define DWC_CIRCLEQ_FOREACH_SAFE(var, var2, head, field)			\
+	for((var) = DWC_CIRCLEQ_FIRST(head), var2 = DWC_CIRCLEQ_NEXT(var, field); \
+	    (var) != DWC_CIRCLEQ_END(head);					\
+	    (var) = var2, var2 = DWC_CIRCLEQ_NEXT(var, field))
+
+#define DWC_CIRCLEQ_FOREACH_REVERSE(var, head, field)			\
+	for((var) = DWC_CIRCLEQ_LAST(head);				\
+	    (var) != DWC_CIRCLEQ_END(head);				\
+	    (var) = DWC_CIRCLEQ_PREV(var, field))
+
+/*
+ * Circular queue functions.
+ */
+#define DWC_CIRCLEQ_INIT(head) do {					\
+	(head)->cqh_first = DWC_CIRCLEQ_END(head);			\
+	(head)->cqh_last = DWC_CIRCLEQ_END(head);			\
+} while (0)
+
+#define DWC_CIRCLEQ_INIT_ENTRY(elm, field) do {				\
+	(elm)->field.cqe_next = NULL;					\
+	(elm)->field.cqe_prev = NULL;					\
+} while (0)
+
+#define DWC_CIRCLEQ_INSERT_AFTER(head, listelm, elm, field) do {	\
+	(elm)->field.cqe_next = (listelm)->field.cqe_next;		\
+	(elm)->field.cqe_prev = (listelm);				\
+	if ((listelm)->field.cqe_next == DWC_CIRCLEQ_END(head))		\
+		(head)->cqh_last = (elm);				\
+	else								\
+		(listelm)->field.cqe_next->field.cqe_prev = (elm);	\
+	(listelm)->field.cqe_next = (elm);				\
+} while (0)
+
+#define DWC_CIRCLEQ_INSERT_BEFORE(head, listelm, elm, field) do {	\
+	(elm)->field.cqe_next = (listelm);				\
+	(elm)->field.cqe_prev = (listelm)->field.cqe_prev;		\
+	if ((listelm)->field.cqe_prev == DWC_CIRCLEQ_END(head))		\
+		(head)->cqh_first = (elm);				\
+	else								\
+		(listelm)->field.cqe_prev->field.cqe_next = (elm);	\
+	(listelm)->field.cqe_prev = (elm);				\
+} while (0)
+
+#define DWC_CIRCLEQ_INSERT_HEAD(head, elm, field) do {			\
+	(elm)->field.cqe_next = (head)->cqh_first;			\
+	(elm)->field.cqe_prev = DWC_CIRCLEQ_END(head);			\
+	if ((head)->cqh_last == DWC_CIRCLEQ_END(head))			\
+		(head)->cqh_last = (elm);				\
+	else								\
+		(head)->cqh_first->field.cqe_prev = (elm);		\
+	(head)->cqh_first = (elm);					\
+} while (0)
+
+#define DWC_CIRCLEQ_INSERT_TAIL(head, elm, field) do {			\
+	(elm)->field.cqe_next = DWC_CIRCLEQ_END(head);			\
+	(elm)->field.cqe_prev = (head)->cqh_last;			\
+	if ((head)->cqh_first == DWC_CIRCLEQ_END(head))			\
+		(head)->cqh_first = (elm);				\
+	else								\
+		(head)->cqh_last->field.cqe_next = (elm);		\
+	(head)->cqh_last = (elm);					\
+} while (0)
+
+#define DWC_CIRCLEQ_REMOVE(head, elm, field) do {			\
+	if ((elm)->field.cqe_next == DWC_CIRCLEQ_END(head))		\
+		(head)->cqh_last = (elm)->field.cqe_prev;		\
+	else								\
+		(elm)->field.cqe_next->field.cqe_prev =			\
+		    (elm)->field.cqe_prev;				\
+	if ((elm)->field.cqe_prev == DWC_CIRCLEQ_END(head))		\
+		(head)->cqh_first = (elm)->field.cqe_next;		\
+	else								\
+		(elm)->field.cqe_prev->field.cqe_next =			\
+		    (elm)->field.cqe_next;				\
+} while (0)
+
+#define DWC_CIRCLEQ_REMOVE_INIT(head, elm, field) do {			\
+	DWC_CIRCLEQ_REMOVE(head, elm, field);				\
+	DWC_CIRCLEQ_INIT_ENTRY(elm, field);				\
+} while (0)
+
+#define DWC_CIRCLEQ_REPLACE(head, elm, elm2, field) do {		\
+	if (((elm2)->field.cqe_next = (elm)->field.cqe_next) ==		\
+	    DWC_CIRCLEQ_END(head))					\
+		(head).cqh_last = (elm2);				\
+	else								\
+		(elm2)->field.cqe_next->field.cqe_prev = (elm2);	\
+	if (((elm2)->field.cqe_prev = (elm)->field.cqe_prev) ==		\
+	    DWC_CIRCLEQ_END(head))					\
+		(head).cqh_first = (elm2);				\
+	else								\
+		(elm2)->field.cqe_prev->field.cqe_next = (elm2);	\
+} while (0)
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _DWC_LIST_H_ */
+@
+
+
+1.2
+log
+@Update to version 3.00 of DWC_otg
+Detail:
+  This big batch of changes brings us in line with rev 70428950df of the Raspberry Pi Linux github.
+  Briefly:
+  * Deleted HTML docs as they're a waste of space
+  * Dropped the SOF fix (which we never used anyway)
+  * Dropped our implementation of the microframe scheduling patch, in favour of their implementation
+  * Updated to version 3.00 of the DWC sources. Hard to tell what useful changes this brings, due to API tweaks resulting in pretty much every file being littered with changes.
+Admin:
+  Tested on Raspberry Pi with high processor vectors
+  This new version seems like it might be a bit more sensitive to insufficient power supplies. Beware!
+
+
+Version 0.09. Tagged as 'DWCDriver-0_09'
+@
+text
+@d387 1
+a387 1
+	(TAILQ_FIRST(head) == TAILQ_END(head))
+d390 3
+a392 3
+	for((var) = TAILQ_FIRST(head);					\
+	    (var) != TAILQ_END(head);					\
+	    (var) = TAILQ_NEXT(var, field))
+d395 3
+a397 3
+	for((var) = TAILQ_LAST(head, headname);				\
+	    (var) != TAILQ_END(head);					\
+	    (var) = TAILQ_PREV(var, headname, field))
+@
+
+
+1.1
+log
+@Add initial version of DWCDriver - USB driver for Synopsys DWC OTG controllers
+Detail:
+  A fairly simple wrapper for Synopsys's open source "DWC_otg" Linux driver, based around a GPL-free version of the DWC_otg 2.90a sources received from the Raspberry Pi foundation.
+  Instead of interfacing with the Linux USB stack a new host interface layer has been implemented to allow it to talk to the standard BSD-derived RISC OS stack.
+  RTSupport is used to provide the threading functionality that the DWC driver relies upon.
+  Interesting files:
+  - c/cmodule, h/cmodule - Main module frontend
+  - c/dwc_common_riscos, h/dwc_common_riscos - Implementation of the OS support layer required by the DWC driver
+  - c/dwc_otg_riscos, h/dwc_otg_riscos - Core code for the BSD driver implementation, driver init/shutdown, and for handling calls from the DWC host driver to us
+  - c/port - Some support functions required by BSD-style code inherited from the other USB drivers
+  - c/softc_device - Code to handle requests from the BSD layer to attached USB devices
+  - c/softc_root - Code to handle requests from the BSD layer to the controller root hub
+  - dwc/doc/* - Original Synopsys release notes & user guide pdfs
+  - dwc/driver/*, dwc/dwc_common_port/* - Synopsys code and documentation. A few tweaks were required to allow it to compile under Norcroft, but otherwise it's functionally equivalent to the original sources.
+Admin:
+  Tested in BCM2835 ROM
+  There are a few loose ends still to tidy up (search for "DWCTODO"), mainly regarding implementation of Isochronous support, but otherwise the driver seems stable enough for daily use.
+
+
+Version 0.01. Tagged as 'DWCDriver-0_01'
+@
+text
+@d35 2
+a36 2
+#ifndef	_DWCSYS_QUEUE_H_
+#define	_DWCSYS_QUEUE_H_
+d38 3
+d52 1
+a52 1
+ * This file defines five types of data structures: singly-linked lists, 
+d79 1
+a79 1
+ * 
+d107 1
+a107 1
+#define DWC_LIST_INIT(link) do{		\
+d110 1
+a110 1
+} while(0)
+d119 2
+a120 2
+#define DWC_LIST_ENTRY(link, type, field) (type *)		\
+	((uint8_t *)(link) - (size_t)(&((type *)0)->field))
+d122 1
+d126 3
+a128 3
+	(list)->next->prev = link;				\
+	(list)->next = link;					\
+} while(0)
+d131 1
+a131 1
+	(link)->next = list;					\
+d133 55
+a187 3
+	(list)->prev->next = link;				\
+	(list)->prev = link;					\
+} while(0)
+d192 1
+a192 1
+} while(0)
+d197 1
+a197 1
+} while(0)
+d202 1
+a202 1
+} while(0)
+d207 1
+a207 1
+} while(0)
+d215 1
+a215 1
+	for((var) = DWC_LIST_FIRST(list), var2 = DWC_LIST_NEXT(var);	\
+d217 1
+a217 1
+	    (var) = (var2), var2 = DWC_LIST_NEXT(var2))
+d231 2
+a232 2
+ 
+#define	DWC_SLIST_HEAD_INITIALIZER(head)					\
+d234 1
+a234 1
+ 
+d239 1
+a239 1
+ 
+d248 1
+a248 1
+#define DWC_SLIST_FOREACH(var, head, field)					\
+d253 2
+a254 2
+#define DWC_SLIST_FOREACH_PREVPTR(var, varp, head, field)			\
+	for ((varp) = &SLIST_FIRST((head));				\
+d265 1
+a265 1
+#define DWC_SLIST_INSERT_AFTER(slistelm, elm, field) do {			\
+a295 82
+#if 0
+
+/*
+ * List definitions.
+ */
+#define DWC_LIST_HEAD(name, type)						\
+struct name {								\
+	struct type *lh_first;	/* first element */			\
+}
+
+#define DWC_LIST_HEAD_INITIALIZER(head)					\
+	{ NULL }
+
+#define DWC_LIST_ENTRY(type)						\
+struct {								\
+	struct type *le_next;	/* next element */			\
+	struct type **le_prev;	/* address of previous next element */	\
+}
+
+/*
+ * List access methods
+ */
+#define DWC_LIST_FIRST(head)		((head)->lh_first)
+#define DWC_LIST_END(head)			NULL
+#define DWC_LIST_EMPTY(head)		(DWC_LIST_FIRST(head) == DWC_LIST_END(head))
+#define DWC_LIST_NEXT(elm, field)		((elm)->field.le_next)
+
+#define DWC_LIST_FOREACH(var, head, field)					\
+	for((var) = DWC_LIST_FIRST(head);					\
+	    (var)!= DWC_LIST_END(head);					\
+	    (var) = DWC_LIST_NEXT(var, field))
+#define DWC_LIST_FOREACH_SAFE(var, var2, head, field)				\
+	for((var) = DWC_LIST_FIRST(head), var2 = DWC_LIST_NEXT(var, field);				\
+	    (var) != DWC_LIST_END(head);					\
+	    (var) = var2, var2 = DWC_LIST_NEXT(var, field))
+
+/*
+ * List functions.
+ */
+#define DWC_LIST_INIT(head) do {						\
+	DWC_LIST_FIRST(head) = DWC_LIST_END(head);				\
+} while (0)
+
+#define DWC_LIST_INSERT_AFTER(listelm, elm, field) do {			\
+	if (((elm)->field.le_next = (listelm)->field.le_next) != NULL)	\
+		(listelm)->field.le_next->field.le_prev =		\
+		    &(elm)->field.le_next;				\
+	(listelm)->field.le_next = (elm);				\
+	(elm)->field.le_prev = &(listelm)->field.le_next;		\
+} while (0)
+
+#define DWC_LIST_INSERT_BEFORE(listelm, elm, field) do {			\
+	(elm)->field.le_prev = (listelm)->field.le_prev;		\
+	(elm)->field.le_next = (listelm);				\
+	*(listelm)->field.le_prev = (elm);				\
+	(listelm)->field.le_prev = &(elm)->field.le_next;		\
+} while (0)
+
+#define DWC_LIST_INSERT_HEAD(head, elm, field) do {				\
+	if (((elm)->field.le_next = (head)->lh_first) != NULL)		\
+		(head)->lh_first->field.le_prev = &(elm)->field.le_next;\
+	(head)->lh_first = (elm);					\
+	(elm)->field.le_prev = &(head)->lh_first;			\
+} while (0)
+
+#define DWC_LIST_REMOVE(elm, field) do {					\
+	if ((elm)->field.le_next != NULL)				\
+		(elm)->field.le_next->field.le_prev =			\
+		    (elm)->field.le_prev;				\
+	*(elm)->field.le_prev = (elm)->field.le_next;			\
+} while (0)
+
+#define DWC_LIST_REPLACE(elm, elm2, field) do {				\
+	if (((elm2)->field.le_next = (elm)->field.le_next) != NULL)	\
+		(elm2)->field.le_next->field.le_prev =			\
+		    &(elm2)->field.le_next;				\
+	(elm2)->field.le_prev = (elm)->field.le_prev;			\
+	*(elm2)->field.le_prev = (elm2);				\
+} while (0)
+
+#endif
+
+d305 1
+a305 1
+#define DWC_SIMPLEQ_HEAD_INITIALIZER(head)					\
+d329 1
+a329 1
+#define DWC_SIMPLEQ_INIT(head) do {						\
+d346 1
+a346 1
+#define DWC_SIMPLEQ_INSERT_AFTER(head, listelm, elm, field) do {		\
+d360 1
+a360 1
+#define DWC_TAILQ_HEAD(name, type)						\
+d366 1
+a366 1
+#define DWC_TAILQ_HEAD_INITIALIZER(head)					\
+d375 2
+a376 2
+/* 
+ * tail queue access methods 
+d379 2
+a380 2
+#define DWC_TAILQ_END(head)			NULL
+#define DWC_TAILQ_NEXT(elm, field)		((elm)->field.tqe_next)
+d389 1
+a389 1
+#define DWC_TAILQ_FOREACH(var, head, field)					\
+d402 1
+a402 1
+#define DWC_TAILQ_INIT(head) do {						\
+d434 1
+a434 1
+#define DWC_TAILQ_INSERT_BEFORE(listelm, elm, field) do {			\
+d469 1
+a469 1
+#define DWC_CIRCLEQ_HEAD_INITIALIZER(head)					\
+d479 1
+a479 1
+ * Circular queue access methods 
+d493 1
+a493 1
+	    (var) != DWC_CIRCLEQ_END(head);					\
+d496 2
+a497 2
+#define DWC_CIRCLEQ_FOREACH_SAFE(var, var2, head, field)				\
+	for((var) = DWC_CIRCLEQ_FIRST(head), var2 = DWC_CIRCLEQ_NEXT(var, field);				\
+d502 2
+a503 2
+	for((var) = DWC_CIRCLEQ_LAST(head);					\
+	    (var) != DWC_CIRCLEQ_END(head);					\
+d509 3
+a511 3
+#define DWC_CIRCLEQ_INIT(head) do {						\
+	(head)->cqh_first = DWC_CIRCLEQ_END(head);				\
+	(head)->cqh_last = DWC_CIRCLEQ_END(head);				\
+d514 3
+a516 3
+#define DWC_CIRCLEQ_INIT_ENTRY(elm, field) do { \
+	(elm)->field.cqe_next = NULL; \
+	(elm)->field.cqe_prev = NULL; \
+d519 1
+a519 1
+#define DWC_CIRCLEQ_INSERT_AFTER(head, listelm, elm, field) do {		\
+d529 1
+a529 1
+#define DWC_CIRCLEQ_INSERT_BEFORE(head, listelm, elm, field) do {		\
+d559 2
+a560 2
+#define DWC_CIRCLEQ_REMOVE(head, elm, field) do {				\
+	if ((elm)->field.cqe_next == DWC_CIRCLEQ_END(head))			\
+d565 1
+a565 1
+	if ((elm)->field.cqe_prev == DWC_CIRCLEQ_END(head))			\
+d572 3
+a574 3
+#define DWC_CIRCLEQ_REMOVE_INIT(head, elm, field) do { \
+	DWC_CIRCLEQ_REMOVE(head, elm, field); \
+	DWC_CIRCLEQ_INIT_ENTRY(elm, field); \
+d577 1
+a577 1
+#define DWC_CIRCLEQ_REPLACE(head, elm, elm2, field) do {			\
+d579 1
+a579 1
+	    DWC_CIRCLEQ_END(head))						\
+d584 1
+a584 1
+	    DWC_CIRCLEQ_END(head))						\
+d590 5
+a594 1
+#endif	/* !_SYS_QUEUE_H_ */
+@
+

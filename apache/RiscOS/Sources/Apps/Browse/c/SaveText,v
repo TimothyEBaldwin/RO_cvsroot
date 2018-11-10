@@ -1,0 +1,1645 @@
+head	1.9;
+access;
+symbols
+	Browse-2_16:1.9
+	Browse-2_15:1.9
+	Browse-2_14:1.9
+	Browse-2_13:1.9
+	Browse-2_12:1.9
+	Browse-2_11:1.9
+	Browse-2_10:1.9
+	Browse-2_09:1.9
+	ahodgkin_208_i4_2:1.9
+	ahodgkin_208_i4:1.7
+	ahodgkin_208_i3:1.7
+	ahodgkin_208_i2:1.7
+	ahodgkin_208_i1:1.7
+	ahodgkin_207release:1.6
+	ahodgkin_206release:1.6
+	ahodgkin_205release:1.5
+	ahodgkin_204release:1.5
+	ahodgkin_202release:1.5
+	ahodgkin_201release:1.5
+	ahodgkin_200release:1.5
+	ahodgkin_133beta:1.5
+	ahodgkin_132beta:1.5
+	ahodgkin_131beta:1.5
+	ahodgkin_130beta:1.4
+	ahodgkin_129:1.3
+	ahodgkin_128beta:1.2
+	ahodgkin_128alpha:1.2;
+locks; strict;
+comment	@# @;
+
+
+1.9
+date	2000.11.14.08.45.08;	author ahodgkin;	state Exp;
+branches;
+next	1.8;
+
+1.8
+date	2000.05.31.15.58.48;	author ahodgkin;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	99.03.30.15.52.03;	author ahodgkin;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	98.07.09.10.27.26;	author ahodgkin;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	98.01.31.10.55.34;	author ahodgkin;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	97.12.18.10.07.09;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.12.12.11.18.06;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.12.02.16.14.02;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.11.27.17.50.08;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.9
+log
+@  Load balancer pulled apart. DebugLib support. Temporary debug in place.
+Detail:
+  This is in the middle of some load balancer changes, but I'm checking it
+  in as there's a sweeping source code change to use DebugLib. See Global.c
+  for full details. Temporary debug code for the load balancer stuff is
+  currently held under undocumented area "test".
+Admin:
+  This build now identifies itself as 2.08 i2-4 and says Pace on the about:
+  page. Run for some time with no unexpected problems. Tried a mixture of
+  debug levels successfully.
+
+Version 2.08. Not tagged
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    SaveText.c                                        */
+/*          (C) 2000 Pace Micro Technology PLC                */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Save a web page as text.                          */
+/*                                                            */
+/* Author:  A.D.Hodgkinson, including various functions from  */
+/*          original Customer browser by Merlyn Kline.       */
+/*                                                            */
+/* History: 24-Nov-1997 (ADH): Created.                       */
+/*          23-May-2000 (ADH): 64-wide comments adopted.      */
+/**************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
+
+#include <kernel.h>
+#include <swis.h>
+#include <tboxlibs/flex.h>
+
+#include <HTMLLib/HTMLLib.h>
+
+#include <tboxlibs/wimp.h>
+#include <tboxlibs/wimplib.h>
+#include <tboxlibs/event.h>
+
+#include "Global.h"
+#include "FromROSLib.h"
+#include "Utils.h"
+
+#include "Fetch.h"
+#include "Filetypes.h"
+#include "Forms.h"
+#include "Protocols.h"
+#include "Reformat.h"
+#include "Save.h"
+#include "SaveObject.h"
+
+#include "SaveText.h"
+
+/* Local statics */
+
+static int    references         = 0;
+static char   savetext_hr_text[] = "\n  --------------------------------------------------------------------------\n"; /* Use [] not char *, as sizeof() is called on this entity */
+static FILE * outfile            = NULL;
+
+/* Static function prototypes */
+
+static int    savetext_write_bytes       (const char * s, unsigned int n);
+
+static char * savetext_create_image_text (HStream * t, char * s, int size);
+static int    savetext_write_ref         (int getsize);
+static int    savetext_summarise_refs    (browser_data * b, HStream * stream, int getsize);
+static int    savetext_save              (browser_data * b, HStream * stream, int embelished, int getsize);
+
+/**************************************************************/
+/* savetext_write_bytes()                                     */
+/*                                                            */
+/* Outputs a given number of bytes of a given string to the   */
+/* FILE * set up in the global 'outfile', returning a success */
+/* flag.                                                      */
+/*                                                            */
+/* Parameters: Pointer to a string;                           */
+/*                                                            */
+/*             Number of characters from the string to save.  */
+/*                                                            */
+/* Returns:    1 if successful, 0 if failed.                  */
+/*                                                            */
+/* Assumes:    An appropriately opened file is accessible     */
+/*             through the global FILE * 'outfile'.           */
+/**************************************************************/
+
+static int savetext_write_bytes(const char * s, unsigned int n)
+{
+  if (!s || !outfile) return 0;
+
+  while (n && *s)
+  {
+    if (fputc(*s, outfile) == EOF) return 0;
+
+    s++, n--;
+  }
+
+  return 1;
+}
+
+/**************************************************************/
+/* savetext_create_image_text()                               */
+/*                                                            */
+/* Creates a string that can be used to represent an image,   */
+/* using the ALT text if present or a generic alternative     */
+/* from the Messages file.                                    */
+/*                                                            */
+/* Parameters: Pointer to an HStream struct representing the  */
+/*             image;                                         */
+/*                                                            */
+/*             Pointer to a buffer to hold the string;        */
+/*                                                            */
+/*             Size of the buffer.                            */
+/**************************************************************/
+
+static char * savetext_create_image_text(HStream * t, char * s, int size)
+{
+  /* Quick sanity check */
+
+  if (!s || size < 3) return s;
+
+  /* Want to have '[', ALT text, then ']' */
+
+  s[0] = '[';
+  s[1] = 0;
+
+  /* If there's any ALT text, strncpy this in after the opening '[' */
+
+  if (t->text) strncpy(s + 1, t->text, size - 1);
+
+  /* Force a terminator in the penultimate byte. This gives us room */
+  /* for the closing ']', even if the strncpy above filled up the   */
+  /* buffer.                                                        */
+
+  s[size - 2] = 0;
+
+  /* What if there was no ALT text? */
+
+  if (s[1] == 0)
+  {
+    char * generic = lookup_token("SaveTextImage:Image",0,0);
+
+    /* If there's room, use a generic string instead */
+
+    if (size > strlen(generic) + 2) strcat(s, generic);
+  }
+
+  /* Append the closing ']' */
+
+  strcat(s, "]");
+
+  return s;
+}
+
+/**************************************************************/
+/* savetext_write_ref()                                       */
+/*                                                            */
+/* Build a reference number, returning either a size of       */
+/* entity or a success flag following writing the reference   */
+/* to the output file.                                        */
+/*                                                            */
+/* The format specifier for the reference is read from the    */
+/* Messages file.                                             */
+/*                                                            */
+/* Parameters: 1 to return the size of the constructed        */
+/*             entity, 0 to return a success flag having      */
+/*             tried to write the entity to disc.             */
+/**************************************************************/
+
+static int savetext_write_ref(int getsize)
+{
+  char * format = lookup_token("SaveTextRef: [Ref %%d]",0,0);
+  char   j[64];
+  int    nl;
+
+  /* Increment the reference (anchor) count */
+
+  references++;
+
+  /* Check the length */
+
+  nl = utils_number_length(references);
+
+  if (nl + strlen(format) >= sizeof(j))
+  {
+    /* If it won't fit, use a simple indicator that will */
+
+    sprintf(j, " [%d]", references);
+  }
+  else
+  {
+    /* If it will fit, use the format specified in the Messages file */
+
+    sprintf(j, format, references);
+  }
+
+  /* Return either the size or return through the */
+  /* disc output routine.                         */
+
+  if (getsize) return strlen(j);
+
+  return savetext_write_bytes(j, strlen(j));
+}
+
+/**************************************************************/
+/* savetext_summarise_refs()                                  */
+/*                                                            */
+/* Build a summary of all of the references made through the  */
+/* text file so far.                                          */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the file;                                      */
+/*                                                            */
+/*             Pointer to the first HStream of the list from  */
+/*             which the refs. are to be built;               */
+/*                                                            */
+/*             1 to return the size of the constructed        */
+/*             entity, 0 to return a success flag having      */
+/*             tried to write the entity to disc.             */
+/**************************************************************/
+
+static int savetext_summarise_refs(browser_data * b, HStream * stream, int getsize)
+{
+  char         j[512];
+  int          size = 0;
+  static int   n    = 0;
+  HStream    * curr;
+  HStream    * last;
+
+  /* If there are no references, there's nothing to do. */
+
+  if (!references) return getsize ? 0 : 1;
+
+  if (stream == b->stream)
+  {
+    n = 0;
+
+    /* Output a separator and section title, if we're not in a table cell */
+
+    sprintf(j,
+            "\n\n==============================================================================\n\n%s\n\n",
+            lookup_token("SaveTextRefs:References in this document:",0,0));
+
+    size += strlen(j);
+
+    /* If required, try to output this to the file  */
+
+    if (!getsize && !savetext_write_bytes(j, strlen(j))) return 0;
+  }
+
+  last = NULL;
+  curr = stream;
+
+  while (curr)
+  {
+    if (ISBODY(curr))
+    {
+      if (curr->tagno == TAG_TABLE)
+      {
+        table_stream   * table = (table_stream *) curr;
+        table_row      * R;
+        table_headdata * D;
+        HStream        * attached;
+
+        /* Scan the rows and cells */
+
+        R = table->List;
+
+        while (R)
+        {
+          D = R->List;
+
+          while (D)
+          {
+            if (D->Tag)
+            {
+              switch (D->Tag)
+              {
+                case TagTableData:
+                case TagTableHead:
+                {
+                  attached = (HStream *) D->List;
+
+                  /* Deal with the cell contents */
+
+                  if (getsize) size += savetext_summarise_refs(b, attached, getsize);
+                  else if (!savetext_summarise_refs(b, attached, getsize)) return 0;
+                }
+                break;
+              }
+            }
+
+            D = D->Next;
+          }
+
+          R = R->Next;
+        }
+      }
+
+      /* If the current item is a link, and the last item wasn't */
+      /* a link or wasn't the same link as this one (remember,   */
+      /* multiple tokens can represent the same link), then      */
+      /* output this as a reference. We're relying on the        */
+      /* conditions under which a reference is output here being */
+      /* exactly the same as those which mark a reference when   */
+      /* the body of the page is being output.                   */
+
+      if (
+           ISLINK(curr)             &&
+           curr->tagno != TAG_TABLE &&
+           (
+             !last                        ||
+             !ISLINK(last)                ||
+             !ISBODY(last)                ||
+             last->tagno  == TAG_TABLE    ||
+             last->anchor != curr->anchor
+           )
+         )
+      {
+        /* Increment the local reference counter */
+
+        n++;
+        sprintf(j, "%8d. ", n);
+
+        /* Output the reference number if required */
+
+        size += strlen(j);
+        if (!getsize && !savetext_write_bytes(j, strlen(j))) return 0;
+
+        /* If required, output the anchor text */
+
+        size += strlen(curr->anchor);
+        if (!getsize && !savetext_write_bytes(curr->anchor, strlen(curr->anchor))) return 0;
+
+        /* Add a line break */
+
+        size++;
+        if (!getsize && !savetext_write_bytes("\n", 1)) return 0;
+      }
+    }
+
+    /* Move on to the next item */
+
+    last = curr;
+    curr = curr->next;
+  }
+
+  /* Finished; return either the total size that would have been */
+  /* output to a file, or flag success.                          */
+
+  return getsize ? size : 1;
+}
+
+/**************************************************************/
+/* savetext_save()                                            */
+/*                                                            */
+/* Does the work of outputting the page as text to a file     */
+/* (the FILE * should already be set up in 'outfile') or      */
+/* works out how large the file would be.                     */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the file;                                      */
+/*                                                            */
+/*             Pointer to the first HStream of the list to    */
+/*             output;                                        */
+/*                                                            */
+/*             1 to include references, table notes etc., 0   */
+/*             for plain text;                                */
+/*                                                            */
+/*             1 to return the size of the constructed file,  */
+/*             0 to return a success flag having tried to     */
+/*             write the file to disc.                        */
+/**************************************************************/
+
+static int savetext_save(browser_data * b, HStream * stream, int embelished, int getsize)
+{
+  HStream * curr;
+  HStream * last;
+  int       size = 0, s;
+
+  curr = stream;
+  last = NULL;
+
+  /* Only zero references if we're working on the main document */
+  /* stream - table cells should all add to the reference list  */
+
+  if (stream == b->stream) references = 0;
+
+  /* Go through the tokens */
+
+  while (curr)
+  {
+    if (ISBODY(curr))
+    {
+      /* If we're on a line break, then write (or account for writing) */
+      /* a new line, then tabs to indent to the current level of       */
+      /* indentation (whatever that may be).                           */
+
+      if (reformat_newline(curr, last, 0))
+      {
+        if (getsize) size += 1 + curr->indent;
+        else
+        {
+          int i = curr->indent;
+
+          if (!savetext_write_bytes("\n", 1)) return 0;
+
+          while (i)
+          {
+            if (!savetext_write_bytes("\t", i)) return 0;
+            i --;
+          }
+        }
+      }
+
+      /* Output a line break for paragraphs */
+
+      if (curr->style & P)
+      {
+        if (getsize) size += 1;
+        else if (!savetext_write_bytes("\n", 1)) return 0;
+      }
+
+      /* Hmm. A table. This'll be fun, then. */
+
+      if (curr->tagno == TAG_TABLE)
+      {
+        table_stream   * table = (table_stream *) curr;
+        table_row      * R;
+        table_headdata * D;
+        HStream        * attached;
+        char             j[512];
+        char             n[64];
+        char           * l;
+        int              cell = 0;
+
+        if (embelished)
+        {
+          strcpy(j, "\n[");
+
+          /* Compile a description of the table */
+
+          sprintf(n, "%d", table->RowSpan);
+          l = lookup_token("SaveTextTable:Table - %0", 0, n);
+          strcat(j, l);
+
+          sprintf(n, "%d", table->ColSpan);
+          if (table->RowSpan == 1) l = lookup_token("SaveTextRow: row and %0",   0, n);
+          else                     l = lookup_token("SaveTextRows: rows and %0", 0, n);
+          strcat(j, l);
+
+          if (table->ColSpan == 1) l = lookup_token("SaveTextCol: column",   0, 0);
+          else                     l = lookup_token("SaveTextCols: columns", 0, 0);
+          strcat(j, l);
+
+          strcat(j, "]\n");
+        }
+        else strcpy(j, "\n");
+
+        /* Output this description */
+
+        if (getsize) size += strlen(j);
+        else if (!savetext_write_bytes(j, strlen(j))) return 0;
+
+        /* Scan the rows and cells */
+
+        R = table->List;
+
+        while (R)
+        {
+          D = R->List;
+
+          while (D)
+          {
+            if (D->Tag)
+            {
+              switch (D->Tag)
+              {
+                case TagTableData:
+                case TagTableHead:
+                {
+                  cell ++;
+
+                  attached = (HStream *) D->List;
+
+                  /* Compile a description of the cell */
+
+                  if (cell > 1)
+                  {
+                    if (getsize) size += 1;
+                    else if (!savetext_write_bytes("\n", 1)) return 0;
+                  }
+
+                  if (embelished)
+                  {
+                    if (getsize) size += 2;
+                    else if (!savetext_write_bytes("\n[", 2)) return 0;
+
+                    l = lookup_token("SaveTextCell:Row %%d, column %%d", 0, 0);
+
+                    sprintf(j,
+                            l,
+                            D->RowOffs + 1,
+                            D->ColOffs + 1);
+
+                    /* Output this description */
+
+                    if (getsize) size += strlen(j);
+                    else if (!savetext_write_bytes(j, strlen(j))) return 0;
+
+                    if (getsize) size += 3;
+                    else if (!savetext_write_bytes("]\n\n", 3)) return 0;
+                  }
+
+                  /* Deal with the cell contents */
+
+                  if (getsize) size += savetext_save(b, attached, embelished, getsize);
+                  else if (!savetext_save(b, attached, embelished, getsize)) return 0;
+                }
+                break;
+              }
+            }
+
+            D = D->Next;
+          }
+
+          R = R->Next;
+        }
+      }
+
+      /* Output image data */
+
+      else if (
+                (curr->style & IMG) ||
+                (
+                  curr->tagno         == TAG_INPUT &&
+                  HtmlINPUTtype(curr) == inputtype_IMAGE
+                )
+              )
+      {
+        char j[128]; /* Don't really want more than about 127 characters of ALT text in one go, surely?! */
+
+        savetext_create_image_text(curr, j, sizeof(j));
+
+        if (getsize) size += strlen(j);
+        else if (!savetext_write_bytes(j, strlen(j))) return 0;
+      }
+
+      /* For bullets, output an asterisk */
+
+      else if (ISBULLET(curr))
+      {
+        if (getsize) size += 2;
+        else if (!savetext_write_bytes("* ", 2)) return 0;
+      }
+
+      /* Horizontal rules */
+
+      else if (curr->style & HR)
+      {
+        if (getsize) size += sizeof(savetext_hr_text) - 1; /* ('-1' as sizeof includes the terminating null byte */
+        else if (!savetext_write_bytes(savetext_hr_text, sizeof(savetext_hr_text) - 1)) return 0;
+      }
+
+      /* Text areas: ' [', the text area value, then '] ' */
+
+      else if (curr->tagno == TAG_SELECT)
+      {
+        if (getsize) size += 4 + strlen(form_get_field(b, curr)->text);
+        else
+        {
+          if (!savetext_write_bytes(" [",                          2))                                  return 0;
+          if (!savetext_write_bytes(form_get_field(b, curr)->text, strlen(form_get_field(b, curr)->text))) return 0;
+          if (!savetext_write_bytes("] ",                          2))                                  return 0;
+        }
+      }
+
+      /* Selection lists - ' [', the current displayed item, */
+      /* ']', then '[>] ' to represent the popup.            */
+
+      else if(curr->tagno == TAG_STYLE)
+      {
+        if (getsize) size += 7 + strlen(form_get_field_text(b, curr));
+        else
+        {
+          if (!savetext_write_bytes(" [",                         2))                                 return 0;
+          if (!savetext_write_bytes(form_get_field_text(b, curr), strlen(form_get_field_text(b, curr)))) return 0;
+          if (!savetext_write_bytes("][>] ",                      5))                                 return 0;
+        }
+      }
+
+      /* Various INPUT field types */
+
+      else if (curr->tagno == TAG_INPUT)
+      {
+        switch (HtmlINPUTtype(curr))
+        {
+          /* Single line normal writable */
+
+          case inputtype_TEXT:
+          {
+            if (getsize) size += 4 +strlen(form_get_field(b, curr)->text);
+            else
+            {
+              if (!savetext_write_bytes(" [",                          2))                                  return 0;
+              if (!savetext_write_bytes(form_get_field(b, curr)->text, strlen(form_get_field(b, curr)->text))) return 0;
+              if (!savetext_write_bytes("] ",                          2))                                  return 0;
+            }
+          }
+          break;
+
+          /* Single line password writable - output '*'s instead of the actual text */
+
+          case inputtype_PASSWORD:
+          {
+            if (getsize) size += 4 + strlen(form_get_field(b, curr)->text);
+            else
+            {
+              int j ,l;
+
+              if (!savetext_write_bytes(" [", 2)) return 0;
+
+              l = strlen(form_get_field(b, curr)->text);
+
+              for (j = 0; j < l; j++)
+              {
+                if (!savetext_write_bytes("*",1)) return 0;
+              }
+
+              if (!savetext_write_bytes("] ", 2)) return 0;
+            }
+          }
+          break;
+
+          /* Check box; '[Y]' if selected, '[_]' if not */
+
+          case inputtype_CHECKBOX:
+          {
+            if (getsize) size += 3;
+            else if (!savetext_write_bytes(form_get_field(b, curr)->checked ? "[Y]" : "[_]", 3)) return 0;
+          }
+          break;
+
+          /* Radio button; '(O)' if selected, '(_)' if not */
+
+          case inputtype_RADIO:
+          {
+            if (getsize) size += 3;
+            else if (!savetext_write_bytes(form_get_field(b, curr)->checked ? "(O)" : "(_)", 3)) return 0;
+          }
+          break;
+
+          /* Hidden items give no text */
+
+          case inputtype_HIDDEN: break;
+
+          /* Sumbit / Reset buttons */
+
+          case inputtype_SUBMIT: /* same as TYPE_RESET: no break */
+          case inputtype_BUTTON: /* Again, no break              */
+          case inputtype_RESET:
+          {
+            const char * p;
+
+            p = form_button_text(curr);
+
+            if (getsize) size += strlen(p) + 4;
+            else
+            {
+              if (!savetext_write_bytes(" <", 2))         return 0;
+              if (!savetext_write_bytes(p,    strlen(p))) return 0;
+              if (!savetext_write_bytes("> ", 2))         return 0;
+            }
+          }
+          break;
+        }
+      }
+
+      /* For anything else, try to extract some generic text */
+
+      else
+      {
+        char * d = curr->text;
+
+        if (getsize && d) size += strlen(d);
+        else if (d && !savetext_write_bytes(d, strlen(d))) return 0;
+      }
+
+      /* If we've got a link and the last item wasn't a link or */
+      /* was, but to a different URL as this one, then output a */
+      /* marker pointing to a reference that will be added on   */
+      /* at the end of the document.                            */
+      /*                                                        */
+      /* Note that these conditions MUST be kept in step with   */
+      /* those in savetext_summarise_refs, which actually       */
+      /* writes the references pointed to by these markers.     */
+
+      if (
+           embelished               &&
+           ISLINK(curr)             &&
+           curr->tagno != TAG_TABLE &&
+           (
+             !last                        ||
+             !ISLINK(last)                ||
+             !ISBODY(last)                ||
+             last->tagno  == TAG_TABLE    ||
+             last->anchor != curr->anchor
+           )
+         )
+      {
+        s = savetext_write_ref(getsize);
+
+        if (getsize) size += s;
+        else if (!s) return 0;
+      }
+    }
+
+    last = curr;
+    curr = curr->next;
+  }
+
+  /* Summarise the references if we're not in a table cell */
+
+  if (stream == b->stream && embelished)
+  {
+    s = savetext_summarise_refs(b, b->stream, getsize);
+    if (getsize) size += s;
+    else if (!s) return 0;
+  }
+
+  /* Return whatever was requested - size, or a success flag */
+
+  return getsize ? size : 1;
+}
+
+/**************************************************************/
+/* savetext_save_text()                                       */
+/*                                                            */
+/* Save a given browser page as a text file.                  */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the page to save as text;                      */
+/*                                                            */
+/*             Pointer to the pathname to save to;            */
+/*                                                            */
+/*             1 to include references, table notes etc., 0   */
+/*             for plain text.                                */
+/**************************************************************/
+
+_kernel_oserror * savetext_save_text(browser_data * b, const char * pathname, int embelished)
+{
+  int success = 0;
+
+  /* If we seem to have left a file open, close it */
+
+  if (outfile)
+  {
+    fclose(outfile);
+    outfile = NULL;
+  }
+
+  /* Only proceed if we've got a pathname */
+
+  if (pathname && *pathname)
+  {
+    save_record_path(pathname);
+
+    outfile = fopen(pathname, "wb");
+
+    if (!outfile) RetLastE;
+
+    success = savetext_save(b, b->stream, embelished, 0);
+    StrLastE;
+
+    fclose(outfile);
+    outfile = NULL;
+
+    if (!success) return &erb;
+
+    /* Set the filetype */
+
+    return _swix(OS_File,
+                 _INR(0,2),
+
+                 18,
+                 pathname,
+                 FileType_TEXT);
+  }
+
+  return NULL;
+}
+
+/**************************************************************/
+/* savetext_text_size()                                       */
+/*                                                            */
+/* Returns the size of file that would be written by          */
+/* savetext_save_text for the given browser.                  */
+/*                                                            */
+/* Parameters: Pointer to a browser_data struct relevant to   */
+/*             the page to save as text, for which the file   */
+/*             size is to be returned.                        */
+/*                                                            */
+/* Returns:    Size of file that would be written by          */
+/*             savetext_save_text for the given browser;      */
+/*                                                            */
+/*             1 to include references, table notes etc., 0   */
+/*             for plain text.                                */
+/**************************************************************/
+
+int savetext_text_size(browser_data * b, int embelished)
+{
+  return savetext_save(b, b->stream, embelished, 1);
+}
+@
+
+
+1.8
+log
+@
+64-wide comments adopted throughout. All headers protected against multiple
+inclusion. Use of <> for external headers rather than "". For libraries,
+<libname/header.h> is used rather than relying on a complex include path,
+where appropriate. Move towards using external URILib rather than the local
+copy. Phoenix JavaScript build resources are the only up to date set
+currently so don't try others; more work still required on Makefile (e.g.
+getting the ROM build working, and internationalisation issues).
+
+Version 2.08. Not tagged
+@
+text
+@a43 5
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+@
+
+
+1.7
+log
+@Intermediate check-in; building a browser from this gives you something
+between 2.07 and 2.08. Only the Phoenix JavaScript resources are fully
+up to date.
+
+I *think* these are the changes since the last check-in:
+
+When saved as a Draw file, horizontal rules were plotted one page width
+too far to the right (wonder when that started happening?!). Fixed. In
+addition, DrawFiles now accepted as OBJECTs - they weren't in the
+recognised filetype list before. Doh.
+
+Table size calculator tables_count_table would overestimate the number
+of cells where ROWSPAN was present and there were other rows below the
+one spanned. Fixed. In certain odd cases (e.g. optimised image exports
+as HTML tables (!!) from the Gimp) this can save vast amounts of RAM.
+
+Fixed problem where printing stops in the middle of a document. Redraw
+engine pagination code was written in the days where lines couldn't
+have gaps between them; they can now. If a gap fell at the bottom of
+a page the engine would look down, see no line straddling or touching
+the page edge, and assume there was nothing more. This case is now
+correctly handled.
+
+Made sure desktop and testbed Browse Res files had up-to-date Encoding
+menus (v2.07 Phoenix has different menus from v2.07 Browse by oversight).
+
+URL auto-completion piggy-backed onto manual completion code; any string
+without '.', '/' or ':' in it gets run through completion to see if a
+more meaningful item can be produced - "www" special cased out though.
+
+New List dialogue box handler, used for proxy exclusions etc.
+(incomplete), complete with appropriate Res file objects.
+@
+text
+@d15 13
+a27 10
+/***************************************************/
+/* File   : SaveText.c                             */
+/*                                                 */
+/* Purpose: Save a web page as text.               */
+/*                                                 */
+/* Author : Merlyn Kline for Customer browser     */
+/*          This source adapted by A.D.Hodgkinson  */
+/*                                                 */
+/* History: 24-Nov-97: Created.                    */
+/***************************************************/
+d34 14
+a47 2
+#include "swis.h"
+#include "flex.h"
+a48 7
+#include "HTMLLib.h" /* HTML library API, Which will include html2_ext.h, tags.h and struct.h */
+
+#include "wimp.h"
+#include "wimplib.h"
+#include "event.h"
+
+#include "svcprint.h"
+d78 16
+a93 18
+/*************************************************/
+/* savetext_write_bytes()                        */
+/*                                               */
+/* Outputs a given number of bytes of a given    */
+/* string to the FILE * set up in the global     */
+/* 'outfile', returning a success flag.          */
+/*                                               */
+/* Parameters: Pointer to a string;              */
+/*                                               */
+/*             Number of characters from the     */
+/*             string to save.                   */
+/*                                               */
+/* Returns:    1 if successful, 0 if failed.     */
+/*                                               */
+/* Assumes:    An appropriately opened file is   */
+/*             accessible through the global     */
+/*             FILE * 'outfile'.                 */
+/*************************************************/
+d109 14
+a122 16
+/*************************************************/
+/* savetext_create_image_text()                  */
+/*                                               */
+/* Creates a string that can be used to          */
+/* represent an image, using the ALT text if     */
+/* present or a generic alternative from the     */
+/* Messages file.                                */
+/*                                               */
+/* Parameters: Pointer to an HStream struct      */
+/*             representing the image;           */
+/*                                               */
+/*             Pointer to a buffer to hold the   */
+/*             string;                           */
+/*                                               */
+/*             Size of the buffer.               */
+/*************************************************/
+d163 14
+a176 15
+/*************************************************/
+/* savetext_write_ref()                          */
+/*                                               */
+/* Build a reference number, returning either    */
+/* a size of entity or a success flag following  */
+/* writing the reference to the output file.     */
+/*                                               */
+/* The format specifier for the reference is     */
+/* read from the Messages file.                  */
+/*                                               */
+/* Parameters: 1 to return the size of the       */
+/*             constructed entity, 0 to return a */
+/*             success flag having tried to      */
+/*             write the entity to disc.         */
+/*************************************************/
+d213 16
+a228 18
+/*************************************************/
+/* savetext_summarise_refs()                     */
+/*                                               */
+/* Build a summary of all of the references made */
+/* through the text file so far.                 */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the file;             */
+/*                                               */
+/*             Pointer to the first HStream of   */
+/*             the list from which the refs. are */
+/*             to be built;                      */
+/*                                               */
+/*             1 to return the size of the       */
+/*             constructed entity, 0 to return a */
+/*             success flag having tried to      */
+/*             write the entity to disc.         */
+/*************************************************/
+d362 20
+a381 22
+/*************************************************/
+/* savetext_save()                               */
+/*                                               */
+/* Does the work of outputting the page as text  */
+/* to a file (the FILE * should already be set   */
+/* up in 'outfile') or works out how large the   */
+/* file would be.                                */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the file;             */
+/*                                               */
+/*             Pointer to the first HStream of   */
+/*             the list to output;               */
+/*                                               */
+/*             1 to include references, table    */
+/*             notes etc., 0 for plain text;     */
+/*                                               */
+/*             1 to return the size of the       */
+/*             constructed file, 0 to return a   */
+/*             success flag having tried to      */
+/*             write the file to disc.           */
+/*************************************************/
+d744 13
+a756 15
+/*************************************************/
+/* savetext_save_text()                          */
+/*                                               */
+/* Save a given browser page as a text file.     */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the page to save as   */
+/*             text;                             */
+/*                                               */
+/*             Pointer to the pathname to save   */
+/*             to;                               */
+/*                                               */
+/*             1 to include references, table    */
+/*             notes etc., 0 for plain text.     */
+/*************************************************/
+d801 16
+a816 19
+/*************************************************/
+/* savetext_text_size()                          */
+/*                                               */
+/* Returns the size of file that would be        */
+/* written by savetext_save_text for the given   */
+/* browser.                                      */
+/*                                               */
+/* Parameters: Pointer to a browser_data struct  */
+/*             relevant to the page to save as   */
+/*             text, for which the file size is  */
+/*             to be returned.                   */
+/*                                               */
+/* Returns:    Size of file that would be        */
+/*             written by savetext_save_text for */
+/*             the given browser;                */
+/*                                               */
+/*             1 to include references, table    */
+/*             notes etc., 0 for plain text.     */
+/*************************************************/
+@
+
+
+1.6
+log
+@Check-in of Browse v2.06; using very small log file to try and avoid
+CVS crashing. Some of the Resources may well be out of date due to CVS
+locks being in place after earlier server-end core dumps, which I can't
+remove myself.
+
+I'll try and check one file in at the end with the full change log so
+people know what's happened (it's reached about 16K...) - I'll make
+that the TaskObey file '!All' in the top level directory. So for the
+full log, look for the changes on this file.
+@
+text
+@d794 1
+a794 1
+                 _INR(0,2) | _INR(4,5),
+@
+
+
+1.5
+log
+@Check for WindowManager 3.97 and ensure Unicode$Path is set in all
+!Run[D] files, don't set the Alias$@@PrintType_FF4 variable, and updated
+Customer build ROM obey file variants. Various other changes to
+the Run files for new module versions, updated paths to support
+new positions of choices, hotlist and histories (see later), etc.
+
+!Sprites[22] files hold small !app icons for some variants, and
+an ic_browse sprite. Some variants now have a Sprites and Sprites22
+file instead of just Sprites, with the former containing various
+mode 12 or 15 specific sprites.
+
+Text files dragged to the URL writable are treated as ANT URL files. This
+relies on URLBarWrit (Toolbars.h) being a unique ID, which it should be,
+but beware of the Hotlist and Choices numberspaces...
+
+INPUT TYPE=BUTTON supported. Form items without a FORM tag are now shown
+(as MSIE 4, but not NN 4).
+
+'*', '-', '@@', '_' and '.' are not escaped when submitting forms now. The
+Web interface to the IMDb now works.
+
+INPUT TYPE=HIDDEN items will not affect the line height anymore - so
+http://www.hotmail.com/ now has correctly aligned writable icons, for
+example. Similarly, TAG_FORM and TAG_FORM_END items could push up
+line height and don't anymore.
+
+HRs with a specified pixel width will now influence the size of a table
+cell (they didn't before).
+
+BRs now checked by tagno field when the browser needs to know something
+was an actual BR tag rather than just a line break signal, and by the
+style bit entry when only the indication of a line break is required.
+
+Table widths of 0 or 0% are ignored.
+
+Trace.c updated to report height and background fields in a table_stream.
+
+fm_putsl() writes a terminator into the string; the Forms.c routines were
+calling this for displaying INPUT TYPE=PASSWORD fields using the FE_PassCode
+literal string (a line of stars). This write into a read only data area
+would make the debugger fault the access. A local char array is now used
+instead, to get round this (note the use of var[]=literal rather than
+var[sizeof(literal)]; strcpy(var, literal) due to some weird compiler bug
+that copies the wrong thing into 'var' under some (undefined...)
+circumstances).
+
+Text areas don't scroll back to the top line when clicked in anymore;
+single line writables don't scroll back to the left either. When
+reentering a text area from 'above', the caret appears at the top line
+rather than 'somewhere further down'...
+
+ARROWS_MOVE_OUT compile time option at the top of Forms.c defines whether
+you must press Tab/Shift+Tab to move between writable fields in forms or
+if up/down will drop out of them, though if keyboard control is on this
+is enforced (or you get trapped inside the form!).
+
+urlutils_filetype_from_url now uses MimeMap module.
+
+If fetcher is told a page is text, it'll check for a filename extension and
+may choose to use this instead (e.g. it may find it's HTML instead). This
+is to try and get around duff servers... (e.g. http://www.batalarms.co.uk/).
+
+Save dialogues shouldn't flicker when options that don't change the
+filetype are selected (before, the draggable sprite was always reset for
+each selection). Noticed the erroneous setting of a static variable in
+SaveFile.c by a call to this by SaveObject.c, and so added a flag to
+savefile_set_filetype to deal with this - would have been possible to get
+the wrong filetype sent to applications or at best the wrong filetype
+sprite in the dialogue without that.
+
+The caret shouldn't jump out of a form back to the URL writable if the page
+reformats now.
+
+Table background colours now supported (as in the colour you see in the
+border space if the cellspacing is large enough; this is as in MSIE, not
+as in Navigator). Drawfile output routines updated accordingly.
+
+Corrected erroneous use of wimpt_dx() / wimpt_dy() in a couple of places
+in Images.c, which meant that (say) 1x1 images didn't work correctly in
+medium resolution display modes.
+
+Now have support for save as text (component ID and event 0x12) and save
+as Draw (component ID and event 0x13) buttons. Dubious conditions for
+greying and ungreying the print, save source and view source buttons and
+menu options sorted out as part of implementing the same for the two new
+buttons; added greying out of their associated menu items in passing.
+
+Turned kerning on in draw file objects (does mean a rather heinous
+increase in file size, but this is the only way to ensure the draw file
+matches the visible page).
+
+Comments before functions in SaveDraw.c are now complete and up to date.
+
+Image and visit histories now generate a crude hash number to speed up
+searching for items. It does give a speed increase, though it's a
+disappointingly small one.
+
+Issue of left/right margins and cellpaddings sorted out. Now have
+redraw_left/right_margin for finding out the basic gap you must leave.
+redraw_left/right_gap then gives any extra indentation for LI, BLOCKQUOTE
+or whatever. The last two can be subtracted from the display width to
+get an available page width for any section of text. Note that
+redraw_left_gap replaces redraw_margin. The redraw_start_x function
+uses the above to work out where a line's left hand edge should be,
+taking account of left/right/centre alignment. HRs have been fixed now
+(they were quite broken in v1.30, I think) based on this new model and
+the behaviour of MSIE/NN 4.
+
+Fixed width of cells with no contents - cell padding values wouldn't
+have worked properly as the reformatter returns 0 rather than the left
+hand margin size if given no stream.
+
+Removed FM_Absolute flags for Font_Paint (spotted by DBrown) - sets bit
+2, which is reserved...?
+
+IMG width and height in % terms now works correctly; a % of available
+width (after margins and indents) or height on the main page or for
+a table cell, if the image lies in one. Because of the chicken-and-egg
+problem with the latter, the cell must specify a width and/or height
+for things to work properly. If this is not done, you'll usually end
+up with a 1:1 scaled image (as in Navigator 4, rather than ending up
+with no image or even no cell (!), as in MSIE 4).
+
+HEIGHT attribute on a TABLE tag is supported, but only in a crude
+fashion; the extra height (if there is any) is distributed over the
+rows in a linear fashion. This is probably all you have to do in
+practice, but I haven't checked. To maintain a notion of min/max
+height as well as width would of course require a great deal more
+work...
+
+If using client pull to reload a page with a fragment ('...#name')
+specified, then the reload wouldn't work on the same page; it'd just
+jump to the fragment position. This won't happen if b->reloading is
+set now (so works in conjunction with client pull on the same page
+forcing a non-cached fetch). Similarly, if POSTing to such a URL,
+a fetch will proceed (both these fixes done originally for
+http://jupiter.beseen.com/chat/rooms/g/1678/).
+
+browser_inherit split to browser_inherit and browser_inherit_post_data;
+the code for the latter didn't clear any post_data in the child before
+copying from the parent either, and could cause flex errors (now fixed).
+
+Res file for Ursula ('Desktop' Browse) build tweaked - bits in the
+font choices dialogue renamed, and button bar rearranged to hold the
+new Save As Draw button. Other builds have had Save As Draw and
+Save As Text buttons added, or not, depending upon availability of
+suitable sprites, required UI simplicity, etc.
+
+Now have:
+
+  Browse$ChoicesFile
+  Browse$ControlsFile
+  Browse$ChoicesSave
+  Browse$ControlsSave
+
+(the last two are new) for loading and saving of the Choices or Controls
+files. If unset, <App$Dir>.Choices or <App$Dir>.Controls will be set.
+E.g., you could set Browse$ChoicesFile to be:
+
+  <App$Dir>.Choices,Choices:WWW.(app).Choices
+
+for loading and
+
+  <Choices$Write>.WWW.(app).Choices
+
+for saving. (The browser never saves Controls at the moment, so the
+relevant variable above isn't effectively implemented, but could be
+in future). Similarly, to support asymetric loading/saving of the Hotlist,
+there are HotlistSave, HistorySave and ImageHistorySave entries in Choices
+to complement HotlistPath, HistoryPath and ImageHistoryPath (which are used
+for loading). save_save_choices will create directories as needed to obtain
+the given path (and has also been fixed in various areas that hadn't been
+tested out until now; e.g. zero termination of the AppName$ChoicesFile
+variable expansion...). !Run[D] files updated appropriately.
+
+Table widthing code rewritten. Slower, but a lot better on the whole.
+Still has some problems - still needs a final 'make sure nothing is
+below minimum width' scan, which it should be possible to do without.
+No time to fix this at present!
+
+The reformatter will now 'glue together' an LI token followed by any
+non-LI token; so a bullet point followed by an item should not be able to
+have a line break inserted after the bullet because of very tight width
+constraints (it could before - yuk...).
+
+'about:' brings up a page about the browser and any Plug-Ins, as with
+Navigator (for example).
+
+URI files support titles, as per spec. version 8. Saving a current
+location to the Hotlist will thus give a sensible title now (unless
+you're in a frame, so there's no title to get...). Of course, v1.00
+files without a title still work.
+
+Note that NOBR is *not* supported in this build and this combined with
+the new table widther may cause problems on some sites (e.g. Microsoft's
+home page!).
+@
+text
+@d68 1
+a68 1
+static int    savetext_save              (browser_data * b, HStream * stream, int getsize);
+d375 3
+d384 1
+a384 1
+static int savetext_save(browser_data * b, HStream * stream, int getsize)
+d446 3
+a448 1
+        strcpy(j, "\n[");
+d450 1
+a450 1
+        /* Compile a description of the table */
+d452 3
+a454 3
+        sprintf(n, "%d", table->RowSpan);
+        l = lookup_token("SaveTextTable:Table - %0", 0, n);
+        strcat(j, l);
+d456 4
+a459 4
+        sprintf(n, "%d", table->ColSpan);
+        if (table->RowSpan == 1) l = lookup_token("SaveTextRow: row and %0",   0, n);
+        else                     l = lookup_token("SaveTextRows: rows and %0", 0, n);
+        strcat(j, l);
+d461 3
+a463 3
+        if (table->ColSpan == 1) l = lookup_token("SaveTextCol: column",   0, 0);
+        else                     l = lookup_token("SaveTextCols: columns", 0, 0);
+        strcat(j, l);
+d465 3
+a467 1
+        strcat(j, "]\n");
+d503 4
+a506 2
+                  if (getsize) size += 2;
+                  else if (!savetext_write_bytes("\n[", 2)) return 0;
+d508 1
+a508 1
+                  l = lookup_token("SaveTextCell:Row %%d, column %%d", 0, 0);
+d510 4
+a513 4
+                  sprintf(j,
+                          l,
+                          D->RowOffs + 1,
+                          D->ColOffs + 1);
+d515 1
+a515 1
+                  /* Output this description */
+d517 2
+a518 2
+                  if (getsize) size += strlen(j);
+                  else if (!savetext_write_bytes(j, strlen(j))) return 0;
+d520 3
+a522 2
+                  if (getsize) size += 3;
+                  else if (!savetext_write_bytes("]\n\n", 3)) return 0;
+d526 2
+a527 2
+                  if (getsize) size += savetext_save(b, attached, getsize);
+                  else if (!savetext_save(b, attached, getsize)) return 0;
+d708 1
+d733 1
+a733 1
+  if (stream == b->stream)
+d755 4
+a758 1
+/*             to.                               */
+d761 1
+a761 1
+_kernel_oserror * savetext_save_text(browser_data * b, const char * pathname)
+d783 2
+a784 1
+    success = savetext_save(b, b->stream, 0);
+d789 1
+a789 1
+    if (!success) RetLastE;
+d818 4
+a821 1
+/*             the given browser.                */
+d824 1
+a824 1
+int savetext_text_size(browser_data * b)
+d826 1
+a826 1
+  return savetext_save(b, b->stream, 1);
+@
+
+
+1.4
+log
+@Not all resources are up to date in this check-in, and documentation
+both within source and stuff in 'Docs' is out of date or missing - I
+was very pushed for time on this one... Hopefully will do another
+'tidy up' check-in before close on Friday; until then, beware of
+anything other than the Ursula (Desktop browser) build. Anyway...
+
+Export As Draw done. As part of this, FONT SIZE and SUP / SUB adjustment
+of font size is done in fm_token_font_info rather than fm_find_token_font.
+
+Bullets and switches are plotted as indirected sprite items, rather than
+indirected text + sprite items - this relied on being in a redraw loop to
+pick the sprites up from the local pool (failed during printing).
+
+URI files now have a LF line ending rather than CR... '*' recognised
+as an empty field when loading via. RAM transfer now (only worked for
+loading from disc before).
+
+Gave placeholder bounding boxes 4 OS units more minimum extra gap
+vertically and reduced horizontal addition to this value * 1.5, rather
+than * 2 (see reformat_get_placeholder_size).
+
+Background image tiling starts at ymax - h + 4, rather than ymax, so
+there isn't the bottom line of pixels from the top tile always present
+at the top of the window. The '+4' is for caution's sake.
+
+Can now save a frame's HTML source, that of its parent or its ancestor,
+and the same for the URI pointing to those documents - see Menus.h for
+the relevant component IDs that should lead to the SaveFile dialogue.
+
+Have hopefully fixed timeout = 0 values (i.e. 'forever') on things
+like LinkTo; before, image fetches could override the state (so you'd
+only ever see brief flickers of a given URL as the pointer went over
+a link).
+
+Save File dialogue will remember the state of option or radio buttons
+for a given parent component origin and restore that state when the
+dialogue is next opened from the same place (stops turning on saving
+as a URL file also turning on 'save background images' for Draw file
+export, etc.).
+
+Use of a META tag to reload the *same* page now sets the 'reloading'
+flag in the browser so that it doesn't go through a proxy - otherwise
+pages which are meant to update periodically through client pull
+don't work, as they keep coming out of the cache.
+
+Can now handle images specifying just a width or height in the HTML
+(other dimension is scaled accordingly, but note that the placeholder
+size must still be 'dumb' until the image data comes in). An image
+will now override an image history size entry for the same entry
+with a different size.
+@
+text
+@d659 1
+@
+
+
+1.3
+log
+@There are a few known significant problems with this code but it's being
+checked in so the Choices can be worked on. Note that Res files etc. are
+not up to date across all builds. Progress is as follows...
+
+Bug report prompted me to do this - now ignore <p> tags straight after
+<li> tags, so '<ul><li><p>Some text' works as the author (or automatic
+generator, more commonly) intended.
+
+A <p> tag before a table will be acted upon now (it was ignored before).
+Something like <li><p><table...> will give a line break and paragraph
+space after the <li> despite the changes mentioned above, as in other browsers.
+Both browsers differ from Navigator, where the table appears alongside
+the <li> tag.
+
+Multiple BR tags work as in MSIE / Navigator (they don't collapse to
+zero height anymore).
+
+For the above, line height (and so, <br><br> or <p> spacing) is now
+calculated inside reformat_text_line_height, and is used with either
+a token to get the text height at a given size (e.g. for general line
+spacing or multiple BR tags) or NULL for normal size text (e.g. for
+P spacing, though this value is in practice later scaled by 7/8ths in
+reformat_check_height). Note this behaviour is exhibited by MSIE 4;
+v3 gave two BRs the same spacing as one P (i.e. not font size
+dependent).
+
+Save dialogues can have an option button or couple of radios to
+switch between various formats (e.g. URI or URL, sprite or original
+format). See 'Docs.Notes' for more. The back-end to this is now
+implemented (i.e. at the moment, save as URI or URL, save as original
+image format). Note that when saving background images, a leafname
+based on the original fetch URL is now offered rather than a generic
+'Background'.
+
+Internal URL scheme changed to be all lower case, so relativisation
+through URL_Fetcher still makes sense... :-/
+
+Holding down 'shift' when clicking on stop reverses the interpretation
+of the Controls file 'StopWebServe' entry.
+
+Fixed row / column count for exporting tables as text; fixed a few
+bits and pieces of internal URL scheme stuff which got broken when
+HTMLLib started using URL_Fetcher's relativisation.
+@
+text
+@d760 1
+a760 1
+  if (pathname)
+d762 2
+@
+
+
+1.2
+log
+@Implemented Message_PlugIn_ReshapeRequest, Message_PlugIn_Status and
+Message_PlugIn_Busy. Plug-in code more robust when given invalid
+browser instance handles by the plug-in.
+
+Line spacing is now calculated on the basis of the normal style base serif
+font, with all other fonts being forced into that line height. This does
+mean that an unusually tall (say) sans serif font may get clipped. It
+appears to be the only way to get around wildly different baseline
+depths returned from the font metrics - you can't work out line spacing
+based on each different font style; the line spacing will vary.
+
+Table heighting (as opposed to widthing...) improved considerably; rowspan
+can no longer cause very tall cells in odd places. Having trouble getting
+rid of the single pixel breaks between vertically adjacent cells, though
+I've not tried too hard. Widthing, though, seems fairly badly broken at
+present... :-/
+
+Set/clear of page_is_text flag made more robust (it looked as though there
+was the potential for this to get stuck in a set state, though I've never
+see the front-end behave in a manner which indicates this is the case).
+The reformatter will now decrease leading if this flag is set (plain text
+pages look daft with a line spacing that is OK for 'rich' text pages).
+No reformatting is done if the page width changes by dragging on the
+resize icon, though toggle size / full screen will still reformat even
+if the contents are only text (browser needs to sort out various width
+flags at this point).
+
+Cut down on excessive redrawing when reformatting due to a change in
+window dimensions is not done. If display_width hasn't changed, then no
+redraw is needed. If this causes redraw problems, then whatever is
+changing display_width needs investigating. It shouldn't be kludged
+(basically) by forcing a redraw instead of a reformat.
+
+TT/PRE/etc. text can now have a non-100% aspect ratio. 80-90% looks
+best (ArcWeb, for example, uses 86%). New option 'TTAspect' in
+the Choices files.
+
+Debug builds link to a non-debug Unicode library now; stops stderr
+being dumped to the bottom left of the screen if you've not redirected
+it in the Run file.
+
+RISC OS 3.1 seems to need more initial WimpSlot than later OS versions.
+The 64 deep nested table set gives a 'No stack for trap handler' error
+(which it really means in this case!) without 800K, even though 3.71
+is happy with just 640K. So, the !Run file checks if Boot$OSVersion
+is exactly 300, 310 or 311, and sets the WimpSlot accordingly.
+
+!Run[D] files now require latest fetcher module versions (URL 0.21,
+File 0.31, HTTP 0.58).
+@
+text
+@d503 2
+a504 2
+                          ((cell - 1) / table->RowSpan) + 1,
+                          ((cell - 1) % table->ColSpan) + 1);
+@
+
+
+1.1
+log
+@Image history can be emptied from the History menu.
+
+Significant reduction in number of times reformatter is called during
+a table widthing session results in a dramatic speed increase for nested
+tables (e.g. 64 deep with a paragraph of text in the deepest table takes
+about two seconds to load with near-instantaneous subsequent reformats,
+as opposed to taking optimistically 28 days for a 32 deep table!).
+This code relies on a very big stack of assumptions...
+
+Save as plain text implemented.
+
+Choices, Messages and Res files brought up to date where necessary.
+Version number taken to 1.28, 04-Dec-97 (so I don't forget later,
+basically...).
+@
+text
+@d46 1
+d750 9
+a758 1
+  if (outfile) fclose(outfile);
+d772 9
+@

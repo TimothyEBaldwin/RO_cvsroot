@@ -1,0 +1,257 @@
+head	4.2;
+access;
+symbols
+	TCPIPLibs-5_66:4.2
+	TCPIPLibs-5_65:4.2
+	TCPIPLibs-5_64:4.2
+	TCPIPLibs-5_63:4.2
+	TCPIPLibs-5_62:4.2
+	TCPIPLibs-5_61:4.2
+	TCPIPLibs-5_60:4.2
+	TCPIPLibs-5_59:4.2
+	TCPIPLibs-5_58:4.2
+	TCPIPLibs-5_57:4.1
+	TCPIPLibs-5_56:4.1
+	TCPIPLibs-5_55:4.1
+	TCPIPLibs-5_54:4.1
+	TCPIPLibs-5_53:4.1
+	TCPIPLibs-5_52:4.1
+	TCPIPLibs-5_51:4.1
+	TCPIPLibs-5_50:4.1
+	TCPIPLibs-5_49:4.1
+	RO_5_07:4.1
+	TCPIPLibs-5_48:4.1
+	TCPIPLibs-5_47:4.1
+	TCPIPLibs-5_46:4.1
+	TCPIPLibs-5_45:4.1
+	TCPIPLibs-5_44:4.1
+	TCPIPLibs-5_43:4.1
+	TCPIPLibs-5_42:4.1
+	TCPIPLibs-5_41:4.1
+	TCPIPLibs-5_40:4.1
+	TCPIPLibs-5_39:4.1
+	dellis_autobuild_BaseSW:4.1
+	TCPIPLibs-5_38:4.1
+	TCPIPLibs-5_37:4.1
+	TCPIPLibs-5_36:4.1
+	sbrodie_sedwards_16Mar2000:4.1
+	TCPIPLibs-5_35:4.1
+	TCPIPLibs-5_34:4.1
+	TCPIPLibs-5_33:4.1
+	TCPIPLibs-5_32:4.1
+	TCPIPLibs-5_31:4.1
+	dcotton_autobuild_BaseSW:4.1
+	TCPIPLibs-5_30:4.1;
+locks; strict;
+comment	@# @;
+
+
+4.2
+date	2013.05.26.19.33.45;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+commitid	WEicgaeWcxFcZaRw;
+
+4.1
+date	99.07.28.11.24.21;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.2
+log
+@Build fixes for cc 5.70
+The built in headers with cc 5.70 include new non-ANSI defines in <errno.h> which clash with some of the names in TCPIPLibs:sys/errno.h
+This change extends the practice in some of the libs to not include <errno.h> when __unix is not defined (since the symbol for errno is also declared as extern at the top of the TCPIPLibs copy) to avoid the duplication and hence the clash.
+Also, add error text for EAUTH and ENEEDAUTH (text from FreeBSD release 9.0.0 SVN revision 229286) in line with those the Internet module knows about in AUNMsgs.
+Built with cc 5.70, but no runtime testing.
+
+
+Version 5.58. Tagged as 'TCPIPLibs-5_58'
+@
+text
+@/*
+ * Copyright (c) 1996 by Internet Software Consortium.
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND INTERNET SOFTWARE CONSORTIUM DISCLAIMS
+ * ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL INTERNET SOFTWARE
+ * CONSORTIUM BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
+ * DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
+ * PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
+ * ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
+ * SOFTWARE.
+ */
+
+#if defined(LIBC_SCCS) && !defined(lint)
+static const char rcsid[] = "$Id: inet_nntop,v 4.1 1999/07/28 11:24:21 sbrodie Exp $";
+#endif
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#ifndef __riscos
+#include <errno.h>
+#else
+#include <sys/errno.h>
+#endif
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#include "inetlib.h"
+
+#ifdef SPRINTF_CHAR
+# define SPRINTF(x) strlen(sprintf/**/x)
+#else
+# define SPRINTF(x) ((size_t)sprintf x)
+#endif
+
+static char *	inet_net_ntop_ipv4(const u_char *src, int bits,
+					char *dst, size_t size);
+
+/*
+ * char *
+ * inet_net_ntop(af, src, bits, dst, size)
+ *	convert network number from network to presentation format.
+ *	generates CIDR style result always.
+ * return:
+ *	pointer to dst, or NULL if an error occurred (check errno).
+ * author:
+ *	Paul Vixie (ISC), July 1996
+ */
+char *
+inet_net_ntop(af, src, bits, dst, size)
+	int af;
+	const void *src;
+	int bits;
+	char *dst;
+	size_t size;
+{
+	switch (af) {
+	case AF_INET:
+		return (inet_net_ntop_ipv4(src, bits, dst, size));
+	default:
+		errno = EAFNOSUPPORT;
+		return (NULL);
+	}
+}
+
+/*
+ * static char *
+ * inet_net_ntop_ipv4(src, bits, dst, size)
+ *	convert IPv4 network number from network to presentation format.
+ *	generates CIDR style result always.
+ * return:
+ *	pointer to dst, or NULL if an error occurred (check errno).
+ * note:
+ *	network byte order assumed.  this means 192.5.5.240/28 has
+ *	0x11110000 in its fourth octet.
+ * author:
+ *	Paul Vixie (ISC), July 1996
+ */
+static char *
+inet_net_ntop_ipv4(src, bits, dst, size)
+	const u_char *src;
+	int bits;
+	char *dst;
+	size_t size;
+{
+	char *odst = dst;
+	char *t;
+	u_int m;
+	int b;
+
+	if (bits < 0 || bits > 32) {
+		errno = EINVAL;
+		return (NULL);
+	}
+	if (bits == 0) {
+		if (size < sizeof "0")
+			goto emsgsize;
+		*dst++ = '0';
+		*dst = '\0';
+	}
+
+	/* Format whole octets. */
+	for (b = bits / 8; b > 0; b--) {
+		if (size < sizeof "255.")
+			goto emsgsize;
+		t = dst;
+		dst += SPRINTF((dst, "%u", *src++));
+		if (b > 1) {
+			*dst++ = '.';
+			*dst = '\0';
+		}
+		size -= (size_t)(dst - t);
+	}
+
+	/* Format partial octet. */
+	b = bits % 8;
+	if (b > 0) {
+		if (size < sizeof ".255")
+			goto emsgsize;
+		t = dst;
+		if (dst != odst)
+			*dst++ = '.';
+		m = ((1 << b) - 1) << (8 - b);
+		dst += SPRINTF((dst, "%u", *src & m));
+		size -= (size_t)(dst - t);
+	}
+
+	/* Format CIDR /width. */
+	if (size < sizeof "/32")
+		goto emsgsize;
+	dst += SPRINTF((dst, "/%u", bits));
+	return (odst);
+
+ emsgsize:
+	errno = EMSGSIZE;
+	return (NULL);
+}
+@
+
+
+4.1
+log
+@  Added new conversion functions from latest resolver libraries.
+Detail:
+  New function inet_net_ntop, inet_net_pton, inet_ntop, inet_pton
+    added.  These are thread-safe versions of other functions and
+    should be used in preference to things like inet_ntoa, inet_aton.
+    These functions are IPv6 aware - pass AF_INET6 to them if you
+    want IPv6 operations, pass AF_INET if you want IPv4 (ie. current
+    behaviour).
+  Extra address family, protocol family definitions added for IPv6
+    (and others since they were there in the FreeBSD headers),
+    specifically: AF_INET6, PF_INET6, IN6ADDRSZ.  Corresponding
+    extra DNS record types (T_AAAA) have been added too.
+  APIs are standard APIs - documentation added to LibraryDoc.
+  New inetlib/c/* files also contain their own documentation.
+Admin:
+  Required by TFTPserver (RISC OS version)
+  Note: addition of these macros to the header file does *not* imply
+    that the Internet module now supports IPv6.  These are header
+    file macros added for the benefit of the conversion routines.
+
+Version 5.30. Tagged as 'TCPIPLibs-5_30'
+@
+text
+@d19 1
+a19 1
+static const char rcsid[] = "$Id: inet_net_ntop.c,v 8.2 1996/08/08 06:54:44 vixie Exp $";
+d27 1
+d29 1
+d31 1
+@
+

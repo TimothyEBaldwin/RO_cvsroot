@@ -1,0 +1,353 @@
+head	4.2;
+access;
+symbols
+	Manager-1_89:4.2
+	Manager-1_88:4.2
+	Manager-1_87:4.1.3.1
+	Manager-1_86:4.1.3.1
+	Manager-1_85:4.1.3.1
+	Manager-1_84:4.1.3.1
+	Manager-1_83:4.1.3.1
+	Manager-1_82:4.1.3.1
+	Manager-1_81:4.1.3.1
+	Manager-1_80:4.1.3.1
+	Manager-1_79:4.1.3.1
+	Manager-1_78:4.1.3.1
+	Manager-1_77:4.1.3.1
+	Manager-1_76:4.1.3.1
+	Manager-1_75:4.1.3.1
+	Manager-1_74:4.1.3.1
+	Manager-1_73:4.1.3.1
+	Manager-1_72:4.1.3.1
+	Manager-1_71:4.1.3.1
+	Manager-1_70:4.1.3.1
+	Manager-1_69:4.1.3.1
+	Manager-1_68:4.1.3.1
+	Manager-1_67:4.1.3.1
+	Manager-1_66:4.1.3.1
+	Manager-1_65:4.1.3.1
+	Manager-1_64:4.1.3.1
+	Manager-1_63:4.1.3.1
+	mstphens_UrsulaRiscPCBuild_20Nov98:4.1.3.1
+	Ursula_RiscPC:4.1.3.1.0.2
+	rthornb_UrsulaBuild-19Aug1998:4.1.3.1
+	UrsulaBuild_FinalSoftload:4.1.3.1
+	rthornb_UrsulaBuild-12Aug1998:4.1.3.1
+	aglover_UrsulaBuild-05Aug1998:4.1.3.1
+	rthornb_UrsulaBuild-29Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-22Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-15Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-07Jul1998:4.1.3.1
+	rthornb_UrsulaBuild-17Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-03Jun1998:4.1.3.1
+	rthornb_UrsulaBuild-27May1998:4.1.3.1
+	Ursula_bp:4.1.3.1
+	Ursula:4.1.3.1
+	Ursula_31Mar1998:4.1.3.1
+	Daytona:4.1.3.1.0.4
+	Daytona_bp:4.1.3.1
+	RO_3_71:4.1.3.1
+	MergeFiles:4.1.3.1
+	RO_3_70:4.1.3.1
+	StrongARM:4.1.3;
+locks; strict;
+comment	@# @;
+
+
+4.2
+date	2018.02.26.20.44.11;	author rsprowson;	state Exp;
+branches;
+next	4.1;
+commitid	Dcj3YMcKdSLBxpsA;
+
+4.1
+date	96.11.06.03.01.46;	author nturton;	state Exp;
+branches
+	4.1.3.1;
+next	;
+
+4.1.3.1
+date	96.11.06.03.01.46;	author nturton;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+4.2
+log
+@Write through the right system variable
+Remove the misuse of PrinterChoices$Path for writing through
+* It's stated in the sources it only ever has one directory on it, so might as well not be a path
+* It's not in !Printers allocated namespace
+* We can save some effort canonicalising it
+Drop support for the define 'UseChoices'; always use them.
+Global search and replace of PrinterChoices: for <Printers$ChoicesRW>. (cf. Boot$ChoicesRW).
+
+Version 1.88. Tagged as 'Manager-1_88'
+@
+text
+@/* Copyright 1996 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/* prpalgen.c - generate printer palettes for Black2 PdumperSpt */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "kernel.h"
+
+#include "prtablegen.h"
+#include "udpalette.h"
+
+#define OS_CLI        0x05
+#define OS_ReadVarVal 0x23
+#define OS_Find       0x0d
+#define OS_FSControl  0x29
+
+#define Version "0.0beta"
+
+static int verbose = 0;
+
+/* ------------------------------------------------------------------------ */
+
+static void give_up(_kernel_oserror *error)
+{
+  fprintf(stderr,"%s\n",error->errmess);
+  exit(1);
+}
+
+/* ------------------------------------------------------------------------ */
+
+static void swi(uint32 swicode, _kernel_swi_regs *regs)
+{
+  _kernel_oserror *error;
+
+  error = _kernel_swi(swicode, regs, regs);
+  if (error) give_up(error);
+}
+
+/* ------------------------------------------------------------------------ */
+
+static void os_cli(char *cmd)
+{
+  _kernel_swi_regs r;
+
+  if (verbose) fprintf(stderr,"os_cli: |%s|\n",cmd);
+
+  r.r[0] = (int)cmd;
+  swi(OS_CLI,&r);
+}
+
+/* ------------------------------------------------------------------------ */
+
+static void readvar(char *name, char *value, int valsize)
+{
+  _kernel_oserror *error;
+  _kernel_swi_regs r;
+
+  r.r[0] = (int)name;
+  r.r[1] = (int)value;
+  r.r[2] = valsize;
+  r.r[3] = 0;
+  r.r[4] = 0;
+  error =  _kernel_swi(OS_ReadVarVal, &r, &r);
+  if (error) value[0] = '\0'; else value[r.r[2]] = '\0';
+}
+
+/* ------------------------------------------------------------------------ */
+
+static void update_cached_palette(char *resname, tables_t *tables, int taboff)
+{
+  /* only updates the new-tables part */
+
+  _kernel_swi_regs r;
+  int              handle,syshandle,fsno;
+  uint32           *u, pv,hdr;
+  tables_t         *t;
+
+  r.r[0] = 0x43;
+  r.r[1] = (int)resname;
+  swi(OS_Find,&r);
+  handle = r.r[0];
+
+  if (verbose) fprintf(stderr,"'%s' opened handle = %1d\n",resname,handle);
+
+  if (handle != 0)
+  {
+    r.r[0] = 21; /* return filing system file handle */
+    r.r[1] = handle;
+    swi(OS_FSControl,&r);
+    syshandle = r.r[1];
+    fsno = r.r[2] & 255;
+    if (verbose) fprintf(stderr,"syshandle=%8.8x fsno=%1d\n",syshandle,fsno);
+    if (fsno == 46) /* ResourceFS */
+    {
+      u = (uint32 *)syshandle;
+      pv = *u;
+      u = (uint32 *)(syshandle - ((strlen(resname)-strlen("Resources:")+4) & ~3) - 28);
+      hdr = *u;
+
+      if (verbose) fprintf(stderr,"word @@ syshandle = %8.8x\n"
+                                  "hdr word         = %8.8x\n"
+                                  "table offset = %1d\n",pv,hdr,taboff);
+
+      if ((pv == 2) && (hdr == 0x48434143))
+      {
+        t = (tables_t *)(syshandle + taboff);
+        *t = *tables;
+      }
+      else
+        fprintf(stderr,"wrong version of palette cached "
+                       "- restart !Printers to fix this\n");
+      r.r[0] = 0;
+      r.r[1] = handle;
+      swi(OS_Find,&r); /* close */
+    }
+  }
+}                                         
+
+/* ------------------------------------------------------------------------ */
+
+static FILE *do_fopen(char *name, char *mode)
+{
+  FILE *fp = fopen(name,mode);
+
+  if (verbose) fprintf(stderr,"fopen |%s| |%s|\n",name,mode);
+
+  if (fp == NULL)
+  {
+    fprintf(stderr,"failed to open '%s'\n",name);
+    exit(1);
+  }
+  return fp;
+}
+
+/* ------------------------------------------------------------------------ */
+
+int main(int argc, char *argv[])
+{
+  int      oldv, taboff;
+  calib_t  calib;
+  tables_t tables;
+  char     fname[256], readpath[256], writepath[256], cmd[256];
+  FILE     *pal,*params;
+
+  if ( (argc != 3) || (argv[1][0] != '-') ||
+       ((argv[1][1] != 'u') && (argv[1][1] != 'r')) )
+  {
+    fprintf(stderr,"usage - update: prpalgen -u <palette>\n"
+                   "      - read:   prpalgen -r <palette>\n");
+    exit(1);
+  }
+
+  verbose = (argv[1][2] == 'v');
+
+  if (verbose) fprintf(stderr,"prpalgen version " Version "\n");
+
+  readvar("Printers$Path",readpath,256);
+  readvar("<Choices$Write>.Printers",writepath,256);
+
+  if (verbose)
+  {
+    fprintf(stderr,"Printers$Path is |%s|\n",readpath);
+    fprintf(stderr,"Choices from |%s|\n",writepath);
+  }
+
+  if ((readpath[0] == '\0') || (writepath[0] == '\0'))
+  {
+    fprintf(stderr,"Printers: and/or <Choices$Write> not set"
+                   " - please run !Printers first\n");
+    exit(1);
+  }
+
+  sprintf(cmd,"cdir %s",writepath);
+  cmd[strlen(cmd)-1] = '\0'; /* zap '.' */
+  os_cli(cmd);
+  sprintf(cmd,"cdir %sPalettes",writepath);
+  os_cli(cmd);
+  sprintf(cmd,"cdir %sPalettes.Params",writepath);
+  os_cli(cmd);
+
+  if (argv[1][1] == 'u')
+  {
+    sprintf(fname,"%sPalettes.%s",writepath,argv[2]);
+    pal = fopen(fname,"r");
+    if (pal == NULL)
+    {
+      sprintf(cmd,"copy Printers:Palettes.%s %sPalettes.%s ~c~v",
+              argv[2],writepath,argv[2] );
+      os_cli(cmd);
+    }
+    else fclose(pal);
+    sprintf(cmd,"access %s RW",fname);
+    os_cli(cmd);
+    pal = do_fopen(fname,"r+");
+    sprintf(fname,"%sPalettes.Params.%s",writepath,argv[2]);
+    params = do_fopen(fname,"r");
+
+    prtablegen(params,&calib,&tables);
+    oldv = udpalette(pal,&tables,&taboff);
+    sprintf(fname,"Resources:Resources.Printers.Palettes.%s",argv[2]);
+    update_cached_palette(fname,&tables,taboff);
+    fprintf(stderr,"updated: '%sPalettes.%s'\n",writepath,argv[2]);
+  }
+  else /* argv[1][1] == 'r' */
+  {
+    sprintf(fname,"Printers:Palettes.%s",argv[2]);
+    pal = do_fopen(fname,"r");
+    sprintf(fname,"%sPalettes.Params.%s",writepath,argv[2]);
+    params = do_fopen(fname,"w");
+
+    oldv = readback_params(pal,&calib);
+    write_calib(&calib,params);
+    fprintf(stderr,"updated: '%sPalettes.Params.%s'\n",writepath,argv[2]);
+    if (oldv == 1) fprintf(stderr,"  old palette format => default parameters only\n");
+  }
+
+  fclose(pal);
+  fclose(params);
+
+  return 0;
+}
+@
+
+
+4.1
+log
+@Initial revision
+@
+text
+@d172 1
+a172 1
+  readvar("PrinterChoices$Path",writepath,256);
+d176 2
+a177 2
+    fprintf(stderr,"Printers$Path: |%s|\n",readpath);
+    fprintf(stderr,"PrinterChoices$Path: |%s|\n",writepath);
+d182 1
+a182 1
+    fprintf(stderr,"Path Printers: and/or PrinterChoices: not set"
+@
+
+
+4.1.3.1
+log
+@Import from cleaned 370 CD
+@
+text
+@@

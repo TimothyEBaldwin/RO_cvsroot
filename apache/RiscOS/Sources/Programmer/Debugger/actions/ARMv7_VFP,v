@@ -1,0 +1,734 @@
+head	1.3;
+access;
+symbols
+	Debugger-2_02-1:1.3
+	Debugger-2_02:1.3
+	Debugger-2_01:1.2
+	Debugger-2_00:1.2
+	Debugger-1_99:1.2
+	Debugger-1_98:1.2
+	Debugger-1_97:1.2
+	Debugger-1_96:1.2
+	Debugger-1_95:1.2
+	Debugger-1_94:1.2
+	Debugger-1_93:1.2
+	Debugger-1_92:1.2
+	Debugger-1_91:1.2
+	Debugger-1_90:1.2
+	Debugger-1_89:1.2
+	Debugger-1_88:1.2
+	Debugger-1_87:1.2
+	Debugger-1_86:1.2
+	Debugger-1_85:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2018.02.25.19.13.04;	author jlee;	state Exp;
+branches;
+next	1.2;
+commitid	PliTQiXFRyup4hsA;
+
+1.2
+date	2014.02.08.15.47.01;	author jlee;	state Exp;
+branches;
+next	1.1;
+commitid	WRCgbSfWiPsdrjox;
+
+1.1
+date	2013.11.28.01.29.19;	author jlee;	state Exp;
+branches;
+next	;
+commitid	STgm4PaoUxPr0Zex;
+
+
+desc
+@@
+
+
+1.3
+log
+@VFP/NEON disassembly improvements
+Detail:
+  actions/ARMv8FP_AArch32, Makefile - Add disasembly for the ARMv8 VFP/NEON instructions
+  actions/ARMv7_ASIMD, actions/ARMv7_VFP - Fix incorrect disassembly of VCLS, VMOVN, VRSUBHN, VFNMA, VFNMS
+  c/util - Add disassembly for MVFR2 register
+  s/ARM - Tweak coprocessor instruction decoding logic; ARMv8 uses some of the CDP2 instructions for VFP/NEON
+  cache/vfp - Updated decgen cache file
+  Test/c/testbed - Improve fopen/system error checking. Add some more rules to deal with (expected) differences between Debugger/dis2 and decaof.
+Admin:
+  Tested on Raspberry Pi 3
+  Disassembly for new instructions (+ some nearby values) checked against BASIC 1.74 + decaof 5.18
+  Requires Library-1_92
+
+
+Version 2.02. Tagged as 'Debugger-2_02'
+@
+text
+@# Copyright 2013 Castle Technology Ltd
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# Actions for VFP disassembly
+
+VABS_A2(cond,D,Vd,sz,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VM(JUSTPARAMS,"VABS","FABS",cond,sz,Vd,D,Vm,M);
+	return;
+}
+
+VADD_fp_A2(cond,D,Vn,Vd,sz,N,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,"VADD","FADD",cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VCMP_VCMPE_A1(cond,D,Vd,sz,E,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VM(JUSTPARAMS,(E?"VCMPE":"VCMP"),(E?"FCMPE":"FCMP"),cond,sz,Vd,D,Vm,M);
+	return;
+}
+
+VCMP_VCMPE_A2(cond,D,Vd,sz,E,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_F(JUSTPARAMS,(E?"VCMPE":"VCMP"),(E?"FCMPEZ":"FCMPZ"),cond,sz,Vd,D,0);
+	return;
+}
+
+VCVT_VCVTR_fp_int_VFP_A1(cond,D,opc2,Vd,sz,op,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(!(opc2 & 4))
+	{
+		if(params->opt->vfpual)
+			sprintf(params->buf,"VCVT%s.F%d.%c32\t",cc,(sz?64:32),(op?'S':'U'));
+		else
+			sprintf(params->buf,"F%cITO%c%s\t",(op?'S':'U'),(sz?'D':'S'),cc);
+		if(sz)
+			scatf(params->buf,"D%d,S%d",(D<<4)|Vd,(Vm<<1)|M);
+		else
+			scatf(params->buf,"S%d,S%d",(Vd<<1)|D,(Vm<<1)|M);
+	}
+	else
+	{
+		if(params->opt->vfpual)
+			sprintf(params->buf,"VCVT%s%s.%c32.F%d\t",(op?"":"R"),cc,((opc2&1)?'S':'U'),(sz?64:32));
+		else
+			sprintf(params->buf,"FTO%cI%s%c%s\t",((opc2&1)?'S':'U'),(op?"Z":""),(sz?'D':'S'),cc);
+		if(sz)
+			scatf(params->buf,"S%d,D%d",(Vd<<1)|D,(M<<4)|Vm);
+		else
+			scatf(params->buf,"S%d,S%d",(Vd<<1)|D,(Vm<<1)|M);
+	}
+	return;
+}
+
+VCVT_fp_fx_VFP_A1(cond,D,op,U,Vd,sf,sx,i,imm4,nonstandard)
+{
+	_UNDEFINED(sf && !VFPDP);
+	COMMON
+	ONLY2(VFPv3,VFPv4);
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(params->opt->vfpual)
+	{
+		if(op)
+			sprintf(params->buf,"VCVT%s.%c%d.F%d\t",cc,(U?'U':'S'),(sx?32:16),(sf?64:32));
+		else
+			sprintf(params->buf,"VCVT%s.F%d.%c%d\t",cc,(sf?64:32),(U?'U':'S'),(sx?32:16));
+		if(sf)
+			scatf(params->buf,"D%d,D%d,#%d",(D<<4)|Vd,(D<<4)|Vd,(sx?32:16)-((imm4<<1)|i));
+		else
+			scatf(params->buf,"S%d,S%d,#%d",(Vd<<1)|D,(Vd<<1)|D,(sx?32:16)-((imm4<<1)|i));
+	}
+	else
+	{
+		sprintf(params->buf,(op?"FTO%c%c":"F%c%cTO"),(U?'U':'S'),(sx?'L':'H'));
+		if(sf)
+			scatf(params->buf,"D%s\tD%d,#%d",cc,(D<<4)|Vd,(sx?32:16)-((imm4<<1)|i));
+		else
+			scatf(params->buf,"S%s\tS%d,#%d",cc,(Vd<<1)|D,(sx?32:16)-((imm4<<1)|i));
+	}
+	return;
+}
+
+VCVT_dp_sp_A1(cond,D,Vd,sz,M,Vm,nonstandard)
+{
+	_UNDEFINED(!VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(sz)
+		sprintf(params->buf,(params->opt->vfpual?"VCVT%s.F32.F64\tS%d,D%d":"FCVTSD%s\tS%d,D%d"),cc,(Vd<<1)|D,(M<<4)|Vm);
+	else
+		sprintf(params->buf,(params->opt->vfpual?"VCVT%s.F64.F32\tD%d,S%d":"FCVTDS%s\tD%d,S%d"),cc,(D<<4)|Vd,(Vm<<1)|M);
+	return;
+}
+
+VCVTB_VCVTT_hp_sp_VFP_A1(cond,Vd:D,op,T,Vm:M,nonstandard)
+{
+	COMMON
+	ONLY2(VFPv3HP,VFPv4);
+	// TODO - Find non-UAL syntax for this
+	sprintf(params->buf,"VCVT%c%s.F%d.F%d\tS%d,S%d",(T?'T':'B'),condition(JUSTPARAMS,cond),(op?16:32),(op?32:16),Vd_D,Vm_M);
+	return;
+}
+
+VDIV_A1(cond,D,Vn,Vd,sz,N,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,"VDIV","FDIV",cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VFMA_VFMS_A2(cond,D,Vn,Vd,sz,N,op,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY1(VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,(op?"VFMS":"VFMA"),(op?"VFMS":"VFMA"),cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VFNMA_VFNMS_A1(cond,D,Vn,Vd,sz,N,op,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY1(VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,(op?"VFNMA":"VFNMS"),(op?"VFNMA":"VFNMS"),cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VLDM_A1(cond,P,U,D:Vd,W,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8>>1;
+	_UNPREDICTABLE((Rn==15) && W);
+	_UNPREDICTABLE(!regs || (regs > 16) || ((D_Vd+regs) > 32));
+	const char *fmt;
+	if(imm8 & 1)
+	{
+		_UNPREDICTABLE(D_Vd+regs > 16);
+		fmt = "FLDM%sX%s\t%s%s,{";
+	}
+	else if(params->opt->vfpual)
+		fmt = "VLDM%s%s\t%s%s,{";
+	else
+		fmt = "FLDM%sD%s\t%s%s,{";
+	sprintf(params->buf,fmt,ldmmode(P,U),condition(JUSTPARAMS,cond),REG(Rn),(W?"!":""));
+	if(regs > 1)
+		scatf(params->buf,"D%d%cD%d}",D_Vd,(regs>2?'-':','),D_Vd+regs-1);
+	else
+		scatf(params->buf,"D%d}",D_Vd);
+	return;
+}
+
+VLDM_A2(cond,P,U,Vd:D,W,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8;
+	_UNPREDICTABLE((Rn==15) && W);
+	_UNPREDICTABLE(!regs || ((Vd_D+regs) > 32));
+	sprintf(params->buf,(params->opt->vfpual?"VLDM%s%s\t%s%s,{":"FLDM%sS%s\t%s%s,{"),ldmmode(P,U),condition(JUSTPARAMS,cond),REG(Rn),(W?"!":""));
+	if(regs > 1)
+		scatf(params->buf,"S%d%cS%d}",Vd_D,(regs>2?'-':','),Vd_D+regs-1);
+	else
+		scatf(params->buf,"S%d}",Vd_D);
+	return;
+}
+
+VLDR_A1(cond,U,D:Vd,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	sprintf(params->buf,(params->opt->vfpual?"VLDR%s\tD%d,":"FLDD%s\tD%d,"),condition(JUSTPARAMS,cond),D_Vd);
+	if(Rn==15)
+	{
+		doldrstrlit(JUSTPARAMS,U,0,imm8<<2,true);
+	}
+	else
+	{
+		scatf(params->buf,"[%s,#%s%d]",REG(Rn),(U?"":"-"),imm8<<2);
+	}
+	return;
+}
+
+VLDR_A2(cond,U,Vd:D,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	sprintf(params->buf,(params->opt->vfpual?"VLDR%s\tS%d,":"FLDS%s\tS%d,"),condition(JUSTPARAMS,cond),Vd_D);
+	if(Rn==15)
+	{
+		doldrstrlit(JUSTPARAMS,U,0,imm8<<2,true);
+	}
+	else
+	{
+		scatf(params->buf,"[%s,#%s%d]",REG(Rn),(U?"":"-"),imm8<<2);
+	}
+	return;
+}
+
+VMLA_VMLS_fp_A2(cond,D,Vn,Vd,sz,N,op,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,(op?"VMLS":"VMLA"),(op?"FNMAC":"FMAC"),cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VMOV_imm_A2(cond,D,imm4H:imm4L,Vd,sz,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY2(VFPv3,VFPv4);
+	VFP_CC_VD_IMM(JUSTPARAMS,"VMOV","FCONST",cond,sz,Vd,D,imm4H_imm4L);
+	return;
+}
+
+VMOV_reg_A2(cond,D,Vd,sz,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VM(JUSTPARAMS,"VMOV","FCPY",cond,sz,Vd,D,Vm,M);
+	return;
+}
+
+VMOV_arm_A1(cond,opc1,D:Vd,Rt,opc2,nonstandard)
+{
+	COMMON
+	ONLY1(ASIMD);
+	_UNPREDICTABLE(Rt==15);
+	uint32_t size,index;
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(opc1 & 2)
+	{
+		size = 8;
+		index = ((opc1&1)<<2) | opc2;
+	}
+	else if(opc2 & 1)
+	{
+		size = 16;
+		index = ((opc1&1)<<1) | (opc2>>1);
+	}
+	else
+	{
+		size = 32;
+		index = (opc1 & 1);
+		ONLY1(VFP_ASIMD_common);
+	}
+	if(params->opt->vfpual || (size != 32))
+	{
+		sprintf(params->buf,"VMOV%s.%d\tD%d[%d],%s",cc,size,D_Vd,index,REG(Rt));
+	}
+	else
+	{
+		sprintf(params->buf,"FMD%cR%s\tD%d,%s",(index?'H':'L'),cc,D_Vd,REG(Rt));
+	}
+	return;
+}
+
+VMOV_scalar_A1(cond,U,opc1,N:Vn,Rt,opc2,nonstandard)
+{
+	COMMON
+	ONLY1(ASIMD);
+	_UNPREDICTABLE(Rt==15);
+	uint32_t size,index;
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(opc1 & 2)
+	{
+		size = 8;
+		index = ((opc1&1)<<2) | opc2;
+	}
+	else if(opc2 & 1)
+	{
+		size = 16;
+		index = ((opc1&1)<<1) | (opc2>>1);
+	}
+	else
+	{
+		size = 32;
+		index = (opc1 & 1);
+		ONLY1(VFP_ASIMD_common);
+	}
+	if(params->opt->vfpual || (size != 32))
+	{
+		sprintf(params->buf,"VMOV%s.%s%d\t%s,D%d[%d]",cc,(size==32?"":(U?"U":"S")),size,REG(Rt),N_Vn,index);
+	}
+	else
+	{
+		sprintf(params->buf,"FMRD%c%s\t%s,D%d",(index?'H':'L'),cc,REG(Rt),N_Vn);
+	}
+	return;
+}
+
+VMOV_1fp_A1(cond,op,Vn:N,Rt,nonstandard)
+{
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	_UNPREDICTABLE(Rt==15);
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(op)
+		sprintf(params->buf,(params->opt->vfpual?"VMOV%s\t%s,S%d":"FMRS%s\t%s,S%d"),cc,REG(Rt),Vn_N);
+	else
+		sprintf(params->buf,(params->opt->vfpual?"VMOV%s\tS%d,%s":"FMSR%s\tS%d,%s"),cc,Vn_N,REG(Rt));
+	return;
+}
+
+VMOV_2fp_A1(cond,op,Rt2,Rt,Vm:M,nonstandard)
+{
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	_UNPREDICTABLE((Rt==15) || (Rt2==15) || (Vm_M==31));
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(op)
+	{
+		_UNPREDICTABLE(Rt==Rt2);
+		sprintf(params->buf,(params->opt->vfpual?"VMOV%s\t%s,%s,S%d,S%d":"FMRRS%s\t%s,%s,{S%d,S%d}"),cc,REG(Rt),REG(Rt2),Vm_M,Vm_M+1);
+	}
+	else
+		sprintf(params->buf,(params->opt->vfpual?"VMOV%s\tS%d,S%d,%s,%s":"FMSRR%s\t{S%d,S%d},%s,%s"),cc,Vm_M,Vm_M+1,REG(Rt),REG(Rt2));
+	return;
+}
+
+VMOV_dbl_A1(cond,op,Rt2,Rt,M:Vm,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	_UNPREDICTABLE((Rt==15) || (Rt2==15));
+	const char *cc = condition(JUSTPARAMS,cond);
+	if(op)
+	{
+		_UNPREDICTABLE(Rt==Rt2);
+		sprintf(params->buf,(params->opt->vfpual?"VMOV%s\t%s,%s,D%d":"FMRRD%s\t%s,%s,D%d"),cc,REG(Rt),REG(Rt2),M_Vm);
+	}
+	else
+		sprintf(params->buf,(params->opt->vfpual?"VMOV%s\tD%d,%s,%s":"FMDRR%s\tD%d,%s,%s"),cc,M_Vm,REG(Rt),REG(Rt2));
+	return;
+}
+
+VMUL_fp_A2(cond,D,Vn,Vd,sz,N,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,"VMUL","FMUL",cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VNEG_A2(cond,D,Vd,sz,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VM(JUSTPARAMS,"VNEG","FNEG",cond,sz,Vd,D,Vm,M);
+	return;
+}
+
+VNMLA_VNMLS_VNMUL_A1(cond,D,Vn,Vd,sz,N,op,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,(op?"VNMLA":"VNMLS"),(op?"FNMSC":"FMSC"),cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VNMLA_VNMLS_VNMUL_A2(cond,D,Vn,Vd,sz,N,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,"VNMUL","FNMUL",cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VPOP_A1(cond,D:Vd,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8>>1;
+	_UNPREDICTABLE(!regs || (regs > 16) || ((D_Vd+regs) > 32));
+	const char *fmt;
+	if(imm8 & 1)
+	{
+		_UNPREDICTABLE(D_Vd+regs > 16);
+		fmt = "FLDMIAX%s\t%s!,{";
+	}
+	else if(params->opt->vfpual)
+		fmt = "VPOP%s\t{";
+	else
+		fmt = "FLDMIAD%s\t%s!,{";
+		sprintf(params->buf,fmt,condition(JUSTPARAMS,cond),REG(13));
+	if(regs > 1)
+		scatf(params->buf,"D%d%cD%d}",D_Vd,(regs>2?'-':','),D_Vd+regs-1);
+	else
+		scatf(params->buf,"D%d}",D_Vd);
+	return;
+}
+
+VPOP_A2(cond,Vd:D,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8;
+	_UNPREDICTABLE(!regs || ((Vd_D+regs) > 32));
+	sprintf(params->buf,(params->opt->vfpual?"VPOP%s\t{":"FLDMIAS%s\t%s!,{"),condition(JUSTPARAMS,cond),REG(13));
+	if(regs > 1)
+		scatf(params->buf,"S%d%cS%d}",Vd_D,(regs>2?'-':','),Vd_D+regs-1);
+	else
+		scatf(params->buf,"S%d}",Vd_D);
+	return;
+}
+
+VPUSH_A1(cond,D:Vd,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8>>1;
+	_UNPREDICTABLE(!regs || (regs > 16) || ((D_Vd+regs) > 32));
+	const char *fmt;
+	if(imm8 & 1)
+	{
+		_UNPREDICTABLE(D_Vd+regs > 16);
+		fmt = "FSTMDBX%s\t%s!,{";
+	}
+	if(params->opt->vfpual)
+		fmt = "VPUSH%s\t{";
+	else
+		fmt = "FSTMDBD%s\t%s!,{";
+	sprintf(params->buf,fmt,condition(JUSTPARAMS,cond),REG(13));
+	if(regs > 1)
+		scatf(params->buf,"D%d%cD%d}",D_Vd,(regs>2?'-':','),D_Vd+regs-1);
+	else
+		scatf(params->buf,"D%d}",D_Vd);
+	return;
+}
+
+VPUSH_A2(cond,Vd:D,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8;
+	_UNPREDICTABLE(!regs || ((Vd_D+regs) > 32));
+	sprintf(params->buf,(params->opt->vfpual?"VPUSH%s\t{":"FSTMDBS%s\t%s!,{"),condition(JUSTPARAMS,cond),REG(13));
+	if(regs > 1)
+		scatf(params->buf,"S%d%cS%d}",Vd_D,(regs>2?'-':','),Vd_D+regs-1);
+	else
+		scatf(params->buf,"S%d}",Vd_D);
+	return;
+}
+
+VSQRT_A1(cond,D,Vd,sz,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VM(JUSTPARAMS,"VSQRT","FSQRT",cond,sz,Vd,D,Vm,M);
+	return;
+}
+
+VSTM_A1(cond,P,U,D:Vd,W,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8>>1;
+	_UNPREDICTABLE((Rn==15) && W);
+	_UNPREDICTABLE(!regs || (regs > 16) || ((D_Vd+regs) > 32));
+	const char *fmt;
+	if(imm8 & 1)
+	{
+		_UNPREDICTABLE(D_Vd+regs > 16);
+		fmt = "FSTM%sX%s\t%s%s,{";
+	}
+	else if(params->opt->vfpual)
+		fmt = "VSTM%s%s\t%s%s,{";
+	else
+		fmt = "FSTM%sD%s\t%s%s,{";
+	sprintf(params->buf,fmt,ldmmode(P,U),condition(JUSTPARAMS,cond),REG(Rn),(W?"!":""));
+	if(regs > 1)
+		scatf(params->buf,"D%d%cD%d}",D_Vd,(regs>2?'-':','),D_Vd+regs-1);
+	else
+		scatf(params->buf,"D%d}",D_Vd);
+	return;
+}
+
+VSTM_A2(cond,P,U,Vd:D,W,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	uint32_t regs = imm8;
+	_UNPREDICTABLE((Rn==15) && W);
+	_UNPREDICTABLE(!regs || ((Vd_D+regs) > 32));
+	sprintf(params->buf,(params->opt->vfpual?"VSTM%s%s\t%s%s,{":"FSTM%sS%s\t%s%s,{"),ldmmode(P,U),condition(JUSTPARAMS,cond),REG(Rn),(W?"!":""));
+	if(regs > 1)
+		scatf(params->buf,"S%d%cS%d}",Vd_D,(regs>2?'-':','),Vd_D+regs-1);
+	else
+		scatf(params->buf,"S%d}",Vd_D);
+	return;
+}
+
+VSTR_A1(cond,U,D:Vd,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	sprintf(params->buf,(params->opt->vfpual?"VSTR%s\tD%d,[%s,#%s%d]":"FSTD%s\tD%d,[%s,#%s%d]"),condition(JUSTPARAMS,cond),D_Vd,REG(Rn),(U?"":"-"),imm8<<2);
+	return;
+}
+
+VSTR_A2(cond,U,Vd:D,Rn,imm8,nonstandard)
+{
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	sprintf(params->buf,(params->opt->vfpual?"VSTR%s\tS%d,[%s,#%s%d]":"FSTS%s\tS%d,[%s,#%s%d]"),condition(JUSTPARAMS,cond),Vd_D,REG(Rn),(U?"":"-"),imm8<<2);
+	return;
+}
+
+VSUB_fp_A2(cond,D,Vn,Vd,sz,N,M,Vm,nonstandard)
+{
+	_UNDEFINED(sz && !VFPDP);
+	COMMON
+	ONLY3(VFPv2,VFPv3,VFPv4);
+	VFP_CC_VD_VN_VM(JUSTPARAMS,"VSUB","FSUB",cond,sz,Vd,D,Vn,N,Vm,M);
+	return;
+}
+
+VMRS_A1(cond,reg,Rt,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	_UNPREDICTABLE((Rt==15) && (reg != 1));
+	if(!vfp_mrs[reg].valid)
+		warning(JUSTPARAMS,WARN_BAD_VFP_MRS_MSR);
+	const char *rt=REG(Rt);
+	const char *fmt;
+	if(params->opt->vfpual)
+	{
+		fmt = "VMRS%s\t%s,%s";
+		if(Rt==15)
+			rt = "APSR_nzcv";
+	}
+	else
+	{
+		if((Rt==15) && (reg==1))
+			fmt = "FMSTAT%s";
+		else
+			fmt = "FMRX%s\t%s,%s";
+	}
+	sprintf(params->buf,fmt,condition(JUSTPARAMS,cond),rt,vfp_mrs[reg].str);
+	return;
+}
+
+VMSR_A1(cond,reg,Rt,nonstandard)
+{
+	COMMON
+	ONLY1(VFP_ASIMD_common);
+	if(!vfp_msr[reg].valid)
+		warning(JUSTPARAMS,WARN_BAD_VFP_MRS_MSR);
+	sprintf(params->buf,(params->opt->vfpual?"VMSR%s\t%s,%s":"FMXR%s\t%s,%s"),condition(JUSTPARAMS,cond),vfp_msr[reg].str,REG(Rt));
+	return;
+}
+@
+
+
+1.2
+log
+@Add *ShowVFPRegs command
+Detail:
+  This adds support for the *ShowVFPRegs command, which is basically VFP equivalent of *ShowFPRegs. However unlike *ShowFPRegs it allows for any arbitrary VFP context to be viewed, not just the last context that caused an exception:
+  *ShowVFPRegs [E] for showing the exception context
+  *ShowVFPRegs A <address> for showing a context at a specific address
+  *ShowVFPRegs C for showing the current context
+  File changes:
+  - HelpSrc, Resources/UK/CmdHelp - Added *ShowVFPRegs help text
+  - Resources/Germany/Messages, Resources/UK/Messages - New message tokens for *ShowVFPRegs output
+  - s/Debugger - *ShowVFPRegs implementation
+  - actions/ARMv7_VFP - VPUSH or VPOP of >16 singleword registers were incorrectly being flagged as unpredictable; it's only the doubleword version which should have that restriction.
+Admin:
+  Tested on Raspberry Pi
+  German messages are in need of translation
+
+
+Version 1.86. Tagged as 'Debugger-1_86'
+@
+text
+@d158 1
+a158 1
+	VFP_CC_VD_VN_VM(JUSTPARAMS,(op?"VFNMS":"VFNMA"),(op?"VFNMS":"VFNMA"),cond,sz,Vd,D,Vn,N,Vm,M);
+@
+
+
+1.1
+log
+@Add a new, machine-generated VFP/NEON disassembler. Fix some ARMv6/v7 disassembly bugs.
+Detail:
+  This change adds up-to-date VFP & NEON disassembly to the module, by way of a partially machine-generated disassembler written in C.
+  It's also possible to build a standalone disassembler utility (dubbed 'dis2') which is 100% C and has support for all ARM instructions (including some obscure stuff the assembler disassembler currently lacks, e.g. XScale DSP instructions). One day this may completely replace the assembler disassembler, but at the moment it's a bit bulky and probably has a few bugs left to squash. The disassembler is also fairly flexible, supporting various output formatting options.
+
+  Main changes:
+  - Makefile - Rewritten to switch over to using the CModule makefile fragment instead of AAsmModule, to allow the C code to be included in the component. Also added 'dis2' as an alternative component to build as.
+  - Resources/UK/Messages, Resources/Germany/Messages - Updated with new disassembler messages
+  - s/Debugger - Add new UseCVFPNEON switch to allow control over whether the module builds with the C VFP/NEON disassembler or the original assembler VFP disassembler
+  - s/CGlue - Glue code used with the C disassembler to bridge the gap between the assembler world and the C world
+  - actions/* - A set of decgen action files describing what to do for each instruction the new disassembler supports. These are basically just blocks of C code - although they need to match up with the encoding names in Library/Misc/decgen/encodings
+  - cache/* - Folder for decgen to cache decision trees in. Building the decision tree for the disassembler is currently a lengthy process, but caching the trees reduces the build time to a fraction of the full time.
+  - c/head - Stub C file that decgen prepends to the code it generates
+  - c/main - main frontend for the standalone version of the disassembler
+  - c/support - Reimplementation of the standard C library functions required for the disassembler. This allows us to avoid a runtime dependency on the shared C library, and also allows us to deal with control-terminated strings from messagetrans where relevant. For convenience this file also has the main entry point that's called from assembler.
+  - c/util - Utility code for outputting various forms of instruction, decoding immediate constants, etc.
+  - h/dis2 - Header file for the C code
+  - Test/c/testbed - Simple C testbed app to allow the output of dis2 to be compared against the Debugger module and decaof
+  - !MkDis2,fd7 - Script to allow easy building of the standalone 'dis2' disassembler
+  Bugfixes:
+  - s/ARMv6 - Change 'ROR#' to 'ROR #' for UXTAB, etc. disassembly. Fix bitfield extract & clear instructions to detect unpredictable/invalid bitfield definitions
+  Misc other changes:
+  - s/* - Source files updated so s/Debugger contains a list of GETs instead of each source file LNK'ing to the next
+Admin:
+  Tested in ROM form on BB-xM, and as softload on Iyonix
+  German messages are in need of translation
+  Requires Library-1_65 and BuildSys-6_34
+
+
+Version 1.85. Tagged as 'Debugger-1_85'
+@
+text
+@d439 1
+a439 1
+	_UNPREDICTABLE(!regs || (regs > 16) || ((Vd_D+regs) > 32));
+d477 1
+a477 1
+	_UNPREDICTABLE(!regs || (regs > 16) || ((Vd_D+regs) > 32));
+@
+

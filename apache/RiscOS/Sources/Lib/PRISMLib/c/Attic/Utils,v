@@ -1,0 +1,466 @@
+head	1.3;
+access;
+symbols
+	PRISMLib-0_03:1.2
+	PRISMLib-0_02:1.2
+	PRISMLib-0_01:1.1;
+locks; strict;
+comment	@# @;
+
+
+1.3
+date	2005.04.14.16.06.08;	author ahodgkin;	state dead;
+branches;
+next	1.2;
+
+1.2
+date	2005.04.13.09.28.43;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	2005.03.11.15.09.38;	author ahodgkin;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.3
+log
+@  Overhaul to improve library consistency and support new naming
+  conventions.
+Detail:
+  Extensive set of changes to follow naming conventions covered in
+  PRISM/Docs/Naming and introduce a better library structure with
+  more consistent file naming (important for exported headers) as
+  well as function names (important for ease of use).
+Admin:
+  Requires header export of PRISM 0.21 or later. Used in many other
+  modules tested on an Iyonix as part of a wider set of changes.
+
+Version 0.04. Tagged as 'PRISMLib-0_04'
+@
+text
+@/* Copyright 2005 Castle Technology Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**************************************************************/
+/* File:    Utils.c                                           */
+/*          (C) 2005 Tematic Ltd.                             */
+/*          All rights reserved                               */
+/*                                                            */
+/* Purpose: Miscellaneous utilities for PRISM modules.        */
+/*                                                            */
+/* Author:  IDJ, B.Avison, A.D.Hodgkinson.                    */
+/*                                                            */
+/* History: 10-Mar-2005 (ADH): Imported from PRISM's Utils.c. */
+/**************************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <stdbool.h>
+
+#include <swis.h>
+
+#ifdef TRACE2
+  #define TRACE
+#endif
+#ifdef TRACE
+  #define DEBUGLIB
+#endif
+#include <debuglib/debuglib.h>
+
+#include "PRISMLib.h"
+
+/* Local definitions */
+
+#define MessageTrans_TokenNotFound 0xAC2
+#define ERR_BLOCKS                 3
+
+/* Local variables */
+
+static int             registered = false;
+static int             messages_fd[4];
+static _kernel_oserror stored_error;
+
+/* Local functions */
+
+static _kernel_oserror * find_error (void);
+
+/**************************************************************/
+/* find_error()                                               */
+/*                                                            */
+/* Get a pointer to one of ERR_BLOCKS locally stored error    */
+/* blocks, in which error messages can be stored for future   */
+/* reference. Each request increments the internal counter    */
+/* until it wraps around back to the first error block held.  */
+/**************************************************************/
+
+static _kernel_oserror * find_error(void)
+{
+  static _kernel_oserror global_error_block[ERR_BLOCKS];
+  static int             errblock = 0;
+
+  errblock = (errblock+1) % ERR_BLOCKS;
+  return &global_error_block[errblock];
+}
+
+/**************************************************************/
+/* prismlib_open_messages()                                   */
+/*                                                            */
+/* Open the named messages file, using the global messages    */
+/* block.                                                     */
+/*                                                            */
+/* Parameters: Pointer to the filename of the Messages file.  */
+/**************************************************************/
+
+_kernel_oserror * prismlib_open_messages(const char * messages_filename)
+{
+  _kernel_oserror * e = _swix(MessageTrans_OpenFile,
+                              _INR(0,2),
+
+                              messages_fd,
+                              messages_filename,
+                              0);
+
+  if (e == NULL) registered = true;
+
+  return e;
+}
+
+/**************************************************************/
+/* prismlib_close_messages()                                  */
+/*                                                            */
+/* Close the Messages file using the global messages block.   */
+/**************************************************************/
+
+_kernel_oserror * prismlib_close_messages(void)
+{
+  _kernel_oserror * e;
+
+  if (registered == true)
+  {
+    e = _swix(MessageTrans_CloseFile,
+              _IN(0),
+
+              messages_fd);
+  }
+  else
+  {
+    e = NULL;
+  }
+
+  /* Regardless of any returned error, we have to assume that
+   * internally things have closed (maybe the error was to say
+   * that things were already shut down even though we didn't
+   * expect it).
+   */
+
+  registered = false;
+
+  /* Return the error, in case the caller can do something
+   * sensible with it.
+   */
+
+  return e;
+}
+
+/**************************************************************/
+/* prismlib_read_message()                                    */
+/*                                                            */
+/* Look up a given message through MessageTrans into a given  */
+/* buffer with no parameter substitution. You must have first */
+/* opened a Messages file with prismlib_open_messages.        */
+/*                                                            */
+/* Parameters: Pointer to the token to look up;               */
+/*                                                            */
+/*             Pointer to a char * pointing to the buffer -   */
+/*             this is updated on exit to point to the result */
+/*             string ("*value" is given in R2 of             */
+/*             MessageTrans_Lookup and R2 on exit is written  */
+/*             back);                                         */
+/*                                                            */
+/*             Pointer to a size_t holding the buffer size,   */
+/*             updated on exit to hold the size of the looked */
+/*             up string.                                     */
+/**************************************************************/
+
+_kernel_oserror * prismlib_read_message
+                  (
+                    const const char  * token,
+
+                    const char       ** buffer,
+                    size_t            * inoutlength
+                  )
+{
+  return _swix(MessageTrans_Lookup,
+               _INR(0,7) | _OUTR(2,3),
+
+               messages_fd,
+               token,
+               *buffer,
+               *inoutlength,
+               0,
+               0,
+               0,
+               0,
+
+               buffer,
+               inoutlength);
+}
+
+/**************************************************************/
+/* prismlib_make_message()                                    */
+/*                                                            */
+/* Look up a given message through MessageTrans into a given  */
+/* buffer with parameter substitution. You must have first    */
+/* opened a Messages file with prismlib_open_messages.        */
+/*                                                            */
+/* Parameters: Pointer to the token to look up;               */
+/*                                                            */
+/*             Pointer to a char * pointing to the buffer -   */
+/*             this is updated on exit to point to the result */
+/*             string ("*value" is given in R2 of             */
+/*             MessageTrans_Lookup and R2 on exit is written  */
+/*             back);                                         */
+/*                                                            */
+/*             Pointer to a size_t holding the buffer size,   */
+/*             updated on exit to hold the size of the looked */
+/*             up string;                                     */
+/*                                                            */
+/*             Number of parameters to pass to MessageTrans   */
+/*             for substitution into the string or zero for   */
+/*             none - up to four parameters will be read;     */
+/*                                                            */
+/*             Between zero and four pointers to strings to   */
+/*             use as substitution parameters.                */
+/**************************************************************/
+
+_kernel_oserror * prismlib_make_message
+                  (
+                    const const char  * token,
+
+                    const char       ** buffer,
+                    size_t            * inoutlength,
+
+                    size_t              parameters,
+                    ...
+                  )
+{
+  va_list   ap;
+  char    * args[4] = { 0, 0, 0, 0 };
+  int       i;
+
+  va_start(ap, parameters);
+  if (parameters > 4) parameters = 4;
+
+  for (i = 0; parameters > 0; i++, parameters--)
+  {
+    args[i] = va_arg(ap, char *);
+  }
+
+  return _swix(MessageTrans_Lookup,
+               _INR(0,7) | _OUTR(2,3),
+
+               messages_fd,
+               token,
+               *buffer,
+               *inoutlength,
+               args[0],
+               args[1],
+               args[2],
+               args[3],
+
+               buffer,
+               inoutlength);
+}
+
+/**************************************************************/
+/* prismlib_make_error()                                      */
+/*                                                            */
+/* Raise an error based on an error number masked with &FF -  */
+/* see the Messages file for a list.                          */
+/*                                                            */
+/* Parameters: Error number;                                  */
+/*                                                            */
+/*             Number of arguments given that are to be       */
+/*             substituted into the message string;           */
+/*                                                            */
+/*             Zero to four NUL terminated strings to use for */
+/*             substitution.                                  */
+/**************************************************************/
+
+_kernel_oserror * prismlib_make_error(const int err_num, int num_args, ...)
+{
+  va_list            ap;
+  char             * s, token[4];
+  int                i = 0;
+  _kernel_oserror  * e, * ptr;
+  char             * sub[4] = {0,0,0,0};
+
+  ptr         = find_error();
+  ptr->errnum = err_num;
+
+  num_args    = (num_args > 4) ? 4 : num_args;
+
+  for (va_start (ap, num_args); num_args--; i++)
+  {
+    s      = va_arg (ap, char *);
+    sub[i] = (s && *s) ? s : NULL; /* copy (pointer to args)s into registers */
+  }
+
+  sprintf(token, "E%02x", err_num & 0xff);
+
+  e = _swix(MessageTrans_Lookup,
+            _INR(0,7),
+
+            messages_fd,
+            token,
+            ptr->errmess,
+            sizeof(*ptr) - sizeof(ptr->errnum) /* 252! */,
+            sub[0],
+            sub[1],
+            sub[2],
+            sub[3]);
+
+  /* if the token isn't found, generate our own not found report */
+
+  if ((e != NULL) && (e->errnum == MessageTrans_TokenNotFound))
+  {
+    _swix(MessageTrans_Lookup,
+          _INR(0,7),
+
+          messages_fd,
+          "TNF",
+          ptr->errmess,
+          sizeof(*ptr) - sizeof(ptr->errnum) /* 252! */,
+          0,
+          0,
+          0,
+          0);
+  }
+
+  va_end (ap);
+  return ptr;
+}
+
+/**************************************************************/
+/* prismlib_store_error()                                     */
+/*                                                            */
+/* Stores a copy of an error into a local block, overwriting  */
+/* any previously stored error.                               */
+/*                                                            */
+/* Parameters: Pointer to the _kernel_oserror * struct to     */
+/*             copy away. May be NULL.                        */
+/**************************************************************/
+
+void prismlib_store_error(const _kernel_oserror * e)
+{
+  if (e != NULL)
+  {
+    stored_error.errnum = e->errnum;
+    strncpy(stored_error.errmess, e->errmess, sizeof(stored_error.errmess));
+  }
+
+  return;
+}
+
+/**************************************************************/
+/* prismlib_recall_error()                                    */
+/*                                                            */
+/* Recall errors stored with prismlib_store_error. The caller */
+/* bears responsibility for matching store to recall. Only    */
+/* one error can be stored at a time. See also find_error for */
+/* a different way of accessing similar functionality.        */
+/*                                                            */
+/* Returns:    Pointer to the stored error.                   */
+/**************************************************************/
+
+_kernel_oserror * prismlib_recall_error(void)
+{
+  return &stored_error;
+}
+@
+
+
+1.2
+log
+@  Compilation fixes, bug fixes, new features.
+
+Detail:
+  Added prismlib_make_message() and PRISMLIB_RETERR.
+
+  Added -Wpe in Makefile to suppress warnings about non-standard includes,
+  then standardised on using <name> for any exported inclusions and
+  "name" for any local inclusions.
+
+  Removed 'restrict' keyword on function pointers as CC 559 raises this
+  as an error.
+
+  Fixed heinous bug in Mechanism.c that prevents any client from properly
+  registering (and therefore properly deregistering) with PRISM.
+
+  Corrected reason code name using underscores to one that didn't as per
+  latest definitions in PRISM.h for version 0.18 of the PRISM module.
+
+Admin:
+  Tested using in-development PFC Buffer module; new functions and bug fix
+  perform correctly, other sundry fixes result in source that builds.
+
+Version 0.02. Tagged as 'PRISMLib-0_02'
+@
+text
+@@
+
+
+1.1
+log
+@  Initial import of PRISMLib into CVS.
+
+Detail:
+  PRISMLib provides some commonly used 'C' functions for PRISM modules.
+  It is a little limited by being statically linked to a physical module
+  instance, where that physical module may support multiple logical
+  PRISM components; without having its own concept of sessions, no code
+  that carries state data related to a particular component can be
+  included. Sessions may be added in future but at the moment I see them
+  as an unnecessary run-time overhead and too complex given the light-
+  weight approach the library tries to take.
+
+Admin:
+  Compiled. PRISM module modified to use the library, and also compiled.
+  Ran it on Iyonix - *-commands worked as expected. No other testing, but
+  the code is by and large copied out of existing well tested sources.
+
+
+Version 0.01. Not tagged
+@
+text
+@d33 1
+a33 1
+#include "swis.h"
+d41 1
+a41 1
+#include "debuglib/debuglib.h"
+d115 1
+a115 1
+ 
+d183 66
+@
+

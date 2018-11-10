@@ -1,0 +1,757 @@
+head	1.4;
+access;
+symbols
+	FrontEnd-1_34:1.4
+	FrontEnd-1_33:1.4
+	FrontEnd-1_32:1.4
+	FrontEnd-1_31:1.4
+	FrontEnd-1_30-2:1.4
+	FrontEnd-1_30:1.4
+	FrontEnd-1_29:1.4
+	FrontEnd-1_28:1.3
+	FrontEnd-1_27:1.3
+	FrontEnd-1_26:1.3
+	FrontEnd-1_25:1.3
+	FrontEnd-1_24:1.3
+	FrontEnd-1_23:1.3
+	FrontEnd-1_22:1.2
+	FrontEnd-1_21:1.1.1.1
+	FrontEnd-1_20:1.1.1.1
+	FrontEnd-1_19:1.1.1.1
+	FrontEnd-1_18:1.1.1.1
+	FrontEnd-1_17:1.1.1.1
+	FrontEnd-1_16:1.1.1.1
+	FrontEnd-Aquarius-1_16:1.1.1.1
+	initial:1.1.1.1
+	TRUNK:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.4
+date	2006.03.13.17.32.17;	author ahodgkin;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	2001.05.22.13.58.40;	author ahodgkin;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	2001.05.11.15.37.34;	author ahodgkin;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	99.03.18.10.30.26;	author sbrodie;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	99.03.18.10.30.26;	author sbrodie;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.4
+log
+@  Bug fix, bug aversion, compiles.
+Detail:
+  "Command line too short" error from DDEUtils down to not including space
+  for a terminating NUL character fixed. Nasty crashes due to lines being
+  exactly 64 characters long averted, but I don't understand the root cause
+  of the fault; changing the parser block size to 128 pushes the problem
+  further away. Not ideal but time was short. A few instances of static
+  structures initialised to "{}" removed; the C99 compiler disliked them.
+Admin:
+  !MkBrowse FrontEnd application being developed at the time, provoking
+  the above faults. Faults no longer show up, FrontEnd behaves as hoped.
+
+Version 1.29. Tagged as 'FrontEnd-1_29'
+@
+text
+@/* Copyright 1999 Element 14 Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/* Title:    lexer.c
+ * Purpose:  lexical analysis of an application description
+ * Author:   IDJ
+ * History:  05-Apr-90: IDJ: created
+ *           19-Mar-91: IDJ: added "prefix_by" keyword
+ *
+ *           Re-release
+ *           04-Nov-91: IDJ: bug-fix to DDE-0846 to allow tokens of any length
+ *
+ *           11-May-01: ADH: added support for quoted_string, ctrl_chars, escape,
+ *                           hide and tab_width
+ *
+ */
+
+
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <stdarg.h>
+
+#include "swis.h"
+
+#include "global.h"
+#include "types.h"
+#include "FrontEnd.h"
+#include "lexer.h"
+#include "parser.h"
+#include "bool.h"
+#include "FEinterr.h"
+#include "FEmem.h"
+
+
+/* error messages */
+#define lerr_internal       "FrontEnd internal error (lexer): %s"
+#define lerr_nonterm_string "non-terminated string value"
+
+
+extern char *lexer_tokenstrings[] =
+     {
+        "any",                   /* keywords */
+        "buffer_size",
+        "by",
+        "command_is",
+        "ctrl_chars",
+        "dbox_end",
+        "dbox_start",
+        "decreases",
+        "defaults",
+        "deselect",
+        "deselections_end",
+        "deselections_start",
+        "deselects",
+        "display_dft_is",
+        "drag_to",
+        "escape",
+        "exclude",
+        "excludes",
+        "exclusions_end",
+        "exclusions_start",
+        "extends",
+        "fileoutput_end",
+        "fileoutput_start",
+        "filetype",
+        "followed_by",
+        "from",
+        "has_auto_run",
+        "has_auto_save",
+        "has_extended_cmdline",
+        "has_summary_window",
+        "has_text_window",
+        "hide",
+        "icn",
+        "iconbar",
+        "icons_end",
+        "icons_start",
+        "imports_end",
+        "imports_start",
+        "include",
+        "includes",
+        "inclusions_end",
+        "inclusions_start",
+        "increases",
+        "inserts",
+        "k",
+        "leafname",
+        "make_defaults",
+        "make_excludes",
+        "make_order_is",
+        "maps_to",
+        "max",
+        "menu",
+        "menu_end",
+        "menu_start",
+        "metaoptions_end",
+        "metaoptions_start",
+        "min",
+        "name",
+        "not_saved",
+        "number",
+        "off",
+        "on",
+        "order_is",
+        "output",
+        "output_dft_is",
+        "output_dft_string",
+        "output_option_is",
+        "prefix_by",
+        "produces_no_output",
+        "produces_output",
+        "quoted_string",
+        "rules_end",
+        "rules_start",
+        "select",
+        "selections_end",
+        "selections_start",
+        "selects",
+        "separator_is",
+        "spaces",
+        "string",
+        "sub_menu",
+        "summary",
+        "tab_width",
+        "text",
+        "to",
+        "tool_details_end",
+        "tool_details_start",
+        "toolflags",
+        "version",
+        "wild_card_is",
+        "wimpslot",
+        "string value",          /* literals */
+        "integer value",
+        "boolean value",
+        "eof",
+        ";",
+        "(",
+        ")",
+        ",",
+        ".",
+        "^",
+        "keyword"
+   };
+
+extern int line_number = 1;
+
+
+static int lexer__next_char(void)
+{
+   return fgetc(fp);
+}
+
+static int lexer__keywd_lookup(char *s)
+{
+   int i = 0;
+
+   while (i < NKEYWORDS)
+   {
+      if (!strcmp(s, lexer_tokenstrings[i])) return i;
+      else i++;
+   }
+
+   return s_unknown;
+}
+
+
+static BOOL lexer__token_starter(int ch)
+{
+   return (ch == '"'   ||
+           ch == '('   ||
+           ch == ')'   ||
+           ch == ';'   ||
+           ch == ','   ||
+           ch == '.'   ||
+           ch == '^'   ||
+           ch == '&'   ||
+           isalpha(ch) ||
+           isdigit(ch)
+          );
+}
+
+
+static void lexer__error(char *s, ...)
+{
+   _kernel_oserror e;
+   va_list a;
+
+   va_start(a, s);
+
+   /* Try to report the error with a Wimp error box. If that fails,
+    * try to print it with OS_PrettyPrint to get word wrapping when
+    * inside narrow displays / command windows. If that fails, use
+    * printf.
+    */
+
+   e.errnum = 0;
+
+   /* Not very satisfactory - it assumes the message will fit... But
+    * about to call exit() anyway.
+    */
+
+   sprintf(e.errmess, "FrontEnd (line %d): ", line_number);
+   vsprintf(e.errmess + strlen(e.errmess), s, a);
+   e.errmess[sizeof(e.errmess) - 1] = '\0';
+
+   if (
+         _swix(Wimp_ReportError,
+               _INR(0,5),
+
+               &e,
+               (1u<<8) | (3u<<9),
+               application.name != NULL && *application.name != '\0' ? application.name : 0,
+               0,
+               0,
+               "Quit")
+
+         != NULL
+      )
+   {
+      if (_swix(OS_PrettyPrint, _INR(0,2), e.errmess, 0, NULL) != NULL)
+         printf("%s\n", e.errmess);
+      else
+         printf("\n");
+   }
+
+   va_end(a);
+   exit(EXIT_FAILURE);       /* --- no attempt at error recovery --- */
+}
+
+
+static int lexer__hexval(int c)
+{
+   return(isdigit(c) ? (c) - '0' :
+          islower(c) ? (c) - 'a' + 10 :
+          isupper(c) ? (c) - 'A' + 10 :
+          -1);
+}
+
+
+/* exported functions */
+
+/* if tokens are more complex this will need rewriting */
+/* for the moment, this simplistic approach to lexing is good enough */
+
+#if VARIABLE_LENGTH_TOKENS
+
+#define TOKEN_BLOCK_SIZE 128
+
+#include "werr.h"
+
+static void lexer__ensure_space(lexer_token *t, unsigned int size)
+{
+   if (t->lexeme == 0)
+   {
+      t->lexeme = FEmem_alloc(size);
+      t->lexeme_size = size;
+   }
+   else
+   {
+      while (size > t->lexeme_size)
+      {
+         t->lexeme = FEmem_realloc(t->lexeme, t->lexeme_size+TOKEN_BLOCK_SIZE);
+         t->lexeme_size +=TOKEN_BLOCK_SIZE;
+      }
+   }
+}
+
+extern void lexer_copy_token(lexer_token *dst, lexer_token *src)
+{
+   dst->number = src->number;
+   dst->value.integer = src->value.integer;
+
+   if (src->lexeme != 0)
+   {
+      if (dst->lexeme_size < src->lexeme_size) lexer__ensure_space(dst, src->lexeme_size);
+      memcpy(dst->lexeme, src->lexeme, src->lexeme_size);
+   }
+}
+
+extern void lexer_next_token(lexer_token *token)
+{
+   int ch, pos=0;
+
+   /* --- ensure initial space for lexeme --- */
+   lexer__ensure_space(token, TOKEN_BLOCK_SIZE);
+
+   /* --- skip spaces and blank lines --- */
+   ch = lexer__next_char();
+   while (TRUE)
+   {
+      if (ch == '#')
+         do {ch = lexer__next_char(); } while (ch != '\n' && ch != EOF);
+      if (ch == EOF) {token->number = s_eof; return;}
+      if (ch == '\n') line_number++;
+      if (!isspace(ch) && lexer__token_starter(ch)) break;
+      ch = lexer__next_char();
+   }
+
+   /* --- first char gives type of symbol --- */
+   switch (ch)
+   {
+      case '"':  /* string literal */
+        ch = lexer__next_char();
+        while (ch != '"' && ch != '\n' && ch != EOF)
+        {
+           lexer__ensure_space(token, pos+1);
+           token->lexeme[pos++] = ch;
+           ch = lexer__next_char();
+        }
+        if (ch == '\n' || ch == EOF)
+        {
+           if (ch == '\n') line_number++;
+           lexer__error(lerr_nonterm_string);
+        }
+        else
+           token->number = s_string_value;
+        token->lexeme[pos] = 0;
+        break;
+
+      case '(':
+        token->number = s_bra;
+        token->lexeme[pos++] = ch; token->lexeme[pos] = 0;
+        break;
+
+      case ')':
+        token->number = s_ket;
+        token->lexeme[pos++] = ch; token->lexeme[pos] = 0;
+        break;
+
+      case ',':
+        token->number = s_comma;
+        token->lexeme[pos++] = ch; token->lexeme[pos] = 0;
+        break;
+
+      case '.':
+        token->number = s_dot;
+        token->lexeme[pos++] = ch; token->lexeme[pos] = 0;
+        break;
+
+      case '^':
+        token->number = s_hat;
+        token->lexeme[pos++] = ch; token->lexeme[pos] = 0;
+        break;
+
+      case ';':
+        token->number = s_semicolon;
+        token->lexeme[pos++] = ch; token->lexeme[pos] = 0;
+        break;
+
+      case '&':
+        ch = lexer__next_char();
+        token->value.integer = 0;
+        while (isxdigit(ch))
+        {
+           lexer__ensure_space(token, pos+1);
+           token->lexeme[pos++] = ch;
+           token->value.integer = (token->value.integer<<4) + lexer__hexval(ch);
+           ch = lexer__next_char();
+        }
+        ungetc(ch, fp);
+        token->number = s_number_value;
+        token->lexeme[pos] = 0;
+        break;
+
+      default:  /* maybe keyword, number or whatever */
+        if (isdigit(ch))   /* a number */
+        {
+           do
+           {
+              lexer__ensure_space(token, pos+1);
+              token->lexeme[pos++] = ch;
+              ch = lexer__next_char();
+           } while (isdigit(ch));
+           ungetc(ch, fp);
+           token->number = s_number_value;
+           token->lexeme[pos] = 0;
+           token->value.integer = atoi(token->lexeme);
+        }
+        else if (isalpha(ch))  /* a keyword? */
+        {
+           do
+           {
+              lexer__ensure_space(token, pos+1);
+              token->lexeme[pos++] = ch;
+              ch = lexer__next_char();
+           } while (isalpha(ch) || ch == '_');
+           ungetc(ch, fp);
+           token->lexeme[pos] = 0;
+           token->number = lexer__keywd_lookup(token->lexeme);
+        }
+        else
+          lexer__error(lerr_internal, "unexpected non-token char");
+        break;
+   }
+}
+
+#else
+
+extern lexer_token lexer_next_token(void)
+{
+   lexer_token token;
+   int ch, pos=0;
+
+   /* --- skip spaces and blank lines --- */
+   ch = lexer__next_char();
+   while (TRUE)
+   {
+      if (ch == '#')
+         do {ch = lexer__next_char(); } while (ch != '\n' && ch != EOF);
+      if (ch == EOF) {token.number = s_eof; return token;}
+      if (ch == '\n') line_number++;
+      if (!isspace(ch) && lexer__token_starter(ch)) break;
+      ch = lexer__next_char();
+   }
+
+   /* --- first char gives type of symbol --- */
+   switch (ch)
+   {
+      case '"':  /* string literal */
+        ch = lexer__next_char();
+        while (ch != '"' && ch != '\n' && ch != EOF)
+        {
+           token.lexeme[pos++] = ch;
+           ch = lexer__next_char();
+        }
+        if (ch == '\n' || ch == EOF)
+        {
+           if (ch == '\n') line_number++;
+           lexer__error(lerr_nonterm_string);
+        }
+        else
+           token.number = s_string_value;
+        token.lexeme[pos] = 0;
+        break;
+
+      case '(':
+        token.number = s_bra;
+        token.lexeme[pos++] = ch; token.lexeme[pos] = 0;
+        break;
+
+      case ')':
+        token.number = s_ket;
+        token.lexeme[pos++] = ch; token.lexeme[pos] = 0;
+        break;
+
+      case ',':
+        token.number = s_comma;
+        token.lexeme[pos++] = ch; token.lexeme[pos] = 0;
+        break;
+
+      case '.':
+        token.number = s_dot;
+        token.lexeme[pos++] = ch; token.lexeme[pos] = 0;
+        break;
+
+      case '^':
+        token.number = s_hat;
+        token.lexeme[pos++] = ch; token.lexeme[pos] = 0;
+        break;
+
+      case ';':
+        token.number = s_semicolon;
+        token.lexeme[pos++] = ch; token.lexeme[pos] = 0;
+        break;
+
+      case '&':
+        ch = lexer__next_char();
+        token.value.integer = 0;
+        while (isxdigit(ch))
+        {
+           token.lexeme[pos++] = ch;
+           token.value.integer = (token.value.integer<<4) + lexer__hexval(ch);
+           ch = lexer__next_char();
+        }
+        ungetc(ch, fp);
+        token.number = s_number_value;
+        token.lexeme[pos] = 0;
+        break;
+
+      default:  /* maybe keyword, number or whatever */
+        if (isdigit(ch))   /* a number */
+        {
+           do
+           {
+              token.lexeme[pos++] = ch;
+              ch = lexer__next_char();
+           } while (isdigit(ch));
+           ungetc(ch, fp);
+           token.number = s_number_value;
+           token.lexeme[pos] = 0;
+           token.value.integer = atoi(token.lexeme);
+        }
+        else if (isalpha(ch))  /* a keyword? */
+        {
+           do
+           {
+              token.lexeme[pos++] = ch;
+              ch = lexer__next_char();
+           } while (isalpha(ch) || ch == '_');
+           ungetc(ch, fp);
+           token.lexeme[pos] = 0;
+           token.number = lexer__keywd_lookup(token.lexeme);
+        }
+        else
+          lexer__error(lerr_internal, "unexpected non-token char");
+        break;
+   }
+
+   return token;
+}
+
+#endif
+@
+
+
+1.3
+log
+@  Great many changes and a few fixes.
+Detail:
+  See 'ReadMe' in the Docs directory. Summary - new includes and selections
+  rules, rules_start/rules_end section, lists before rules keywords, actions
+  can take place when icons go off as well as on, and more.
+Admin:
+  Tested new features a reasonable amount by playing around with the UpgFetch
+  front-end. Link still behaves as it should, and all the other Desktop tools
+  run without any parser errors or obvious faults in behaviour.
+
+
+Version 1.23. Tagged as 'FrontEnd-1_23'
+@
+text
+@d261 3
+a263 1
+#define TOKEN_BLOCK_SIZE 64
+@
+
+
+1.2
+log
+@  Improved redraw strategy; added 'quoted_string' option for icons, plus
+  'ctrl_chars' and 'tab_width' for metaoptions.
+Detail:
+  Previously the redraw engine stayed one line behind current output as it
+  did not know where to terminate redraw of the current line. At task exit
+  it forced \n\r into the output to flush the last line. Now, the incoming
+  data buffer is oversized by 1 byte and a \0 written in to give the redraw
+  engine something to stop at. This allows it to redraw the current line,
+  meaning e.g. "....[...]" progress indicators and so-on will work. It also
+  means the \r\n hack isn't needed so saved output doesn't have a spurious
+  blank line.
+
+  For 'icn <n> maps_to ...' you can now say 'quoted_string' where you used
+  to say 'string'. This encloses the relevant writable field's text in
+  double quotes, escaping any double quotes from the writable with '\'. If
+  you use 'prefix_by', all of the prefixes and strings are within the
+  double quotes (rather than e.g. enclosing each item individually).
+
+  Previously, control characters were output more or less directly. This
+  could cause a crash for some nasty ones (e.g. send output to printer)
+  or just cause redraw corruptions and the bell to ring. Now, any control
+  characters are replaced with "?" by default, including &7F, except for
+  tab (&09), which is replaced with a single space. Behaviour is chosen by
+  the "ctrl_chars" metaoption, which takes parameters "text" for the usual
+  behaviour as described, "escape" for !Edit-style "[aa]" escaping, or
+  "hide" to not draw anything at all (so e.g. put "ctrl_chars escape" in
+  your metaoptions section of the Desc file). Another new option is
+  "tab_width"; tabs are now understood for all three output types. To
+  avoid unduly changing existing output the default tab width is 1, but it
+  can be 0 to hide tabs, or up to 32. The limit is arbitrary and only in
+  place to stop the redraw engine trying to do silly things if given a
+  very large value.
+
+  Finally, lexer.c's list of text items was mirrored in lexer.h by a list
+  of numbered items - all done by #define, so you had to manually renumber
+  them all! This has been changed to an enum, with compiled output checked
+  against the previous version - identical as expected.
+Admin:
+  Remember, you MUST NOT soft load this if you have any FrontEnd apps
+  running already! Either quit them all (check there are no instantiations
+  with *Modules) and then run it, or put it in !System and reboot. The new
+  features have been tested with a work-in-progress !UpgCreate utility,
+  and the usual set of DDE apps run to ensure they don't give any syntax
+  errors. GNUDiff and Find tested fairly heavily. Builds ROM and RAM
+  variants from clean.
+
+
+Version 1.22. Tagged as 'FrontEnd-1_22'
+@
+text
+@d36 2
+d64 1
+d71 1
+d93 4
+d126 6
+d199 1
+d201 1
+d203 37
+a239 3
+   printf("FrontEnd: line %d: ", line_number);
+   vprintf(s, a);
+   printf("\n");
+d241 1
+a241 1
+   exit(-1);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d24 3
+d51 1
+a51 1
+extern char *lexer_tokenstrings[] = 
+d57 1
+d65 1
+a65 1
+        "display_dft_is", 
+d67 1
+d82 1
+d117 1
+d123 1
+d178 1
+a178 1
+           isdigit(ch) 
+d253 1
+a253 1
+      if (ch == '#') 
+d330 1
+a330 1
+           do 
+d351 1
+a351 1
+           token->number = lexer__keywd_lookup(token->lexeme); 
+d370 1
+a370 1
+      if (ch == '#') 
+d445 1
+a445 1
+           do 
+d464 1
+a464 1
+           token.number = lexer__keywd_lookup(token.lexeme); 
+@
+
+
+1.1.1.1
+log
+@  Initial import of FrontEnd module to CVS from Aquarius.
+Detail:
+  Code claims to build FrontEnd 1.16 (11 Jan 1995), but will not
+    build in current build environment.
+Admin:
+  Does not compile - checked in for reference purposes only.
+  Tagged appropriately.  Use tag FrontEnd-1_16 to extract version
+    which builds in the current build environment.
+
+Tagged as FrontEnd-Aquarius-1_16
+
+
+@
+text
+@@

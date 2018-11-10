@@ -1,0 +1,2446 @@
+head	1.10;
+access;
+symbols
+	builder-0_26:1.10
+	builder-0_25:1.9
+	builder-0_24:1.8
+	builder-0_23:1.8
+	builder-0_22:1.8
+	builder-0_21:1.8
+	builder-0_20:1.8
+	builder-0_19:1.7
+	builder-0_18:1.7
+	builder-0_17:1.6
+	builder-0_16:1.6
+	builder-0_15:1.6
+	builder-0_14:1.6
+	builder-0_13:1.5
+	builder-0_12:1.5
+	builder-0_11:1.5
+	builder-0_10:1.4
+	builder-0_09:1.3
+	builder-0_08:1.3
+	builder-0_07:1.2
+	builder-0_06:1.1.1.4
+	builder-0_06-1_1_2_2:1.1.1.4
+	initial:1.1.1.1
+	Spinner:1.1.1;
+locks; strict;
+comment	@# @;
+
+
+1.10
+date	2014.10.31.19.37.39;	author srevill;	state Exp;
+branches;
+next	1.9;
+commitid	03eFpwTzNuadcoWx;
+
+1.9
+date	2014.07.23.07.41.18;	author rsprowson;	state Exp;
+branches;
+next	1.8;
+commitid	2MDSHsLl0llKrtJx;
+
+1.8
+date	2010.10.21.11.32.03;	author srevill;	state Exp;
+branches;
+next	1.7;
+
+1.7
+date	2007.05.31.00.29.09;	author srevill;	state Exp;
+branches;
+next	1.6;
+
+1.6
+date	2001.10.19.12.45.16;	author srevill;	state Exp;
+branches;
+next	1.5;
+
+1.5
+date	99.10.26.10.40.26;	author nbingham;	state Exp;
+branches;
+next	1.4;
+
+1.4
+date	99.09.09.12.57.40;	author nbingham;	state Exp;
+branches;
+next	1.3;
+
+1.3
+date	97.10.07.12.57.16;	author rbuckley;	state Exp;
+branches;
+next	1.2;
+
+1.2
+date	97.09.25.12.45.58;	author rbuckley;	state Exp;
+branches;
+next	1.1;
+
+1.1
+date	97.09.12.14.13.55;	author rbuckley;	state Exp;
+branches
+	1.1.1.1;
+next	;
+
+1.1.1.1
+date	97.09.12.14.13.55;	author rbuckley;	state Exp;
+branches;
+next	1.1.1.2;
+
+1.1.1.2
+date	97.09.22.12.45.24;	author rbuckley;	state Exp;
+branches;
+next	1.1.1.3;
+
+1.1.1.3
+date	97.09.22.16.54.24;	author rbuckley;	state Exp;
+branches;
+next	1.1.1.4;
+
+1.1.1.4
+date	97.09.25.11.14.58;	author rbuckley;	state Exp;
+branches;
+next	;
+
+
+desc
+@@
+
+
+1.10
+log
+@Added "Build directory" to the things you can do in the main window's menu.
+
+You can now open the build directory from the main window's "View" submenu,
+which complements the pre-existing functionality.
+
+Also squashed a whole slew of build warnings. This was some shoddy code...
+
+Version 0.26. Tagged as 'builder-0_26'
+@
+text
+@/* Copyright 1997 Acorn Computers Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/************************************************************************/
+/*                  Copyright 1997 Acorn Computers Ltd                  */
+/*                                                                      */
+/*  This material is the confidential trade secret and proprietary      */
+/*  information of Acorn Computers. It may not be reproduced, used      */
+/*  sold, or transferred to any third party without the prior written   */
+/*  consent of Acorn Computers. All rights reserved.                    */
+/*                                                                      */
+/************************************************************************/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "kernel.h"
+#include "swis.h"
+#include "wimp.h"
+#include "toolbox.h"
+#include "event.h"
+#include "wimplib.h"
+#include "gadgets.h"
+#include "window.h"
+#include "menu.h"
+#include "proginfo.h"
+#include "iconbar.h"
+
+#include "resources.h"
+#include "constants.h"
+#include "main.h"
+#include "msg.h"
+#include "env.h"
+#include "file.h"
+#include "parse.h"
+#include "build.h"
+#include "DebugLib/DebugLib.h"
+
+#define WimpVersion    350
+
+#define IGNORE(x) (void)(x)
+
+char *build_tree 	  = NULL;
+char *default_env	  = NULL;
+build_list_t *build_list  = NULL;
+
+static  WimpPollBlock  poll_block;
+static  MessagesFD     messages;
+static  IdBlock        id_block;
+
+static int  task_handle          = 0;  /* Wimp task handle */
+static int  iconbar_id           = 0;  /* object ids */
+static int  menu_iconbar_id      = 0;
+static int  menu_option_id 	  = 0;
+static int  menu_view_id 	  = 0;
+static int  window_options_id	  = 0;
+static int  window_build_id	  = 0;
+static int  proginfo_id	  = 0;
+static int  default_versioning	  = 0;
+static int  used_default_options = FALSE;
+
+/*
+ * clean up before exit
+ */
+static int
+quit_all(void)
+{
+  build_free();
+
+  if (build_tree)
+    free(build_tree);
+
+  if (default_env)
+    free(default_env);
+
+  exit(0);
+
+  return (1);
+}
+
+/*
+ *
+ * Event handler to be called when toolbox event 1 is generated (by click on the
+ * 'Quit' entry of the iconbar menu.
+ */
+static int
+event_quit(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  event_code = event_code;
+  event = event;
+  id_block = id_block;
+  handle = handle;
+
+  return(quit_all());
+}
+
+/*
+ * Message handler to be called on receipt of a Quit or PreQuit message from the
+ * Wimp.
+ */
+static int
+message_quit(WimpMessage *message, void *handle)
+{
+  message = message;
+  handle = handle;
+
+  return(quit_all());
+}
+
+/*
+ * set build tree
+ */
+static void
+set_build_tree(char *name)
+{
+  if (build_tree) {
+    if (strlen(name)>strlen(build_tree)) { /* will it fit */
+      free(build_tree);
+    } else {
+      strcpy(build_tree,name);
+      dprintf(("build_tree set to '%s'\n",build_tree));
+      return;
+    }
+  }
+  build_tree = strdup(name);
+}
+
+/*
+ * Validate filetype of file then initiate a load and open the main window
+ */
+static int
+message_data_open(WimpMessage *message, void *handle)
+{
+  _kernel_oserror *err;
+  WimpMessage msg;
+  char *path;
+  int  toolbox_object;
+  int  component_id;
+  handle=handle;
+
+  if (message->hdr.sender == task_handle)
+    return 0;
+
+  path = message->data.data_load_ack.leaf_name;
+
+  ERR_CHECK(err,window_wimp_to_toolbox(0,
+  	message->data.data_load_ack.destination_window,
+  	message->data.data_load_ack.destination_icon,
+  	&toolbox_object,&component_id));
+
+  if (toolbox_object == window_build_id)
+  {
+    if (file_exists(path)==2)
+    {
+      set_build_tree(path);
+      ERR_CHECK_RETURN(err,build_add_entry(path));
+      ERR_CHECK_RETURN(err,build_populate(window_build_id,
+        	BUILD_GADGET_TREE));
+    }
+  }
+
+  /*
+   * acknowledge message
+   */
+  msg = *message;
+  msg.hdr.your_ref = msg.hdr.my_ref;
+
+  if (message->hdr.action_code == Wimp_MDataLoad)
+    msg.hdr.action_code = Wimp_MDataLoadAck;
+
+  wimp_send_message(Wimp_EUserMessage, &msg, msg.hdr.sender,0,0);
+
+  return 1;
+}
+
+
+/*
+ * setup the versioning radio buttons appropriately
+ */
+static int version_set_radios(ComponentId sel)
+{
+  _kernel_oserror	*er = NULL;
+
+  dprintf(("", "Setting options for '%x'...\n", sel));
+  switch(sel)
+  {
+    case(OPTIONS_GADGET_IMAGENAME):
+    {
+      /* Set text of middle radio to "Major", select the Don't radio button and unfade Don't */
+      ERR_CHECK_RETURN(er, radiobutton_set_label(0, window_options_id, OPTIONS_GADGET_MAJOR,
+                       "Major"));
+      ERR_CHECK_RETURN(er, radiobutton_set_state(0, window_options_id, OPTIONS_GADGET_DONT, 1));
+      ERR_CHECK_RETURN(er, gadget_set_flags(0, window_options_id, OPTIONS_GADGET_DONT, 0));
+      break;
+    }
+    case(OPTIONS_GADGET_NEWIMNAME):
+    {
+      /* Set text of middle radio to "Release", select the Minor radio button and fade Don't */
+      ERR_CHECK_RETURN(er, radiobutton_set_label(0, window_options_id, OPTIONS_GADGET_MAJOR,
+                       "Release"));
+      ERR_CHECK_RETURN(er, radiobutton_set_state(0, window_options_id, OPTIONS_GADGET_MINOR, 1));
+      ERR_CHECK_RETURN(er, gadget_set_flags(0,window_options_id,OPTIONS_GADGET_DONT,Gadget_Faded));
+      break;
+    }
+  }
+  return(NULL);
+}
+
+
+/*
+ * read in contents of defaults file
+ */
+static int
+read_defaults(void)
+{
+  FILE *fh=NULL;
+  char buffer[BUFFER_SIZE];
+  int  argc,i,j;
+  char *argv[25];
+
+  if ((fh=fopen(DEFAULTS_FILE,"r"))==NULL)
+    return 0;
+
+  while (!feof(fh)) {
+    fgets(buffer,sizeof(buffer),fh);
+    if (!feof(fh)) {
+      chop_newline(buffer);
+      dprintf(("  %s\n",buffer));
+      argc=parse_getargs(buffer,argv);
+      if (argc>0) {
+        if        (cstrcmp(argv[0],"bld")==0) {
+          set_build_tree(argv[1]);
+        } else if (cstrcmp(argv[0],"env")==0) {
+          default_env = strdup(argv[1]);
+        } else if (cstrcmp(argv[0],"opt")==0) {
+          for (i=1; i<argc; i++) {
+    	    for (j=0; j<(sizeof(options)/sizeof(option_t)); j++) {
+      	      if (strcmp(options[j].name,argv[i])==0) {
+      	        options[j].def = 1;
+      	        break;
+      	      }
+      	    }
+          }
+        } else if (cstrcmp(argv[0],"img")==0) {
+          /* Highlight the preferred radiobutton & setup default options */
+          dprintf(("", "\nSelected versioning: %x\n", atoi(argv[1])));
+          default_versioning = atoi(argv[1]);
+        }
+      }
+    }
+  }
+  fclose(fh);
+
+  return 0;
+}
+
+/*
+ * read in contents of build trees file
+ */
+static int
+read_builds(void)
+{
+  FILE *fh=NULL;
+  char buffer[BUFFER_SIZE];
+
+  if ((fh=fopen(BUILDS_FILE,"r"))==NULL)
+    return 0;
+
+  while (!feof(fh)) {
+    fgets(buffer,sizeof(buffer),fh);
+    if (!feof(fh)) {
+      chop_newline(buffer);
+      dprintf(("  %s\n",buffer));
+      build_add_entry(buffer);
+    }
+  }
+  fclose(fh);
+
+  return 0;
+}
+
+/*
+ * write the list of build directories to the defaults file
+ */
+static int
+write_builds(void)
+{
+  _kernel_oserror *err=NULL;
+  FILE *fh=NULL;
+  build_list_t *entry;
+
+  switch (file_exists(CHOICES_DIR))
+  {
+    case 0 :
+      if (mkdir(CHOICES_DIR,0)==0)
+        break;
+      /* else drop though to */
+    case 1 :
+      ERR_CHECK_RETURN(err,msg_error_construct("dir"));
+      /* macro will exit */
+  }
+
+  if ((fh=fopen(BUILDS_FILE,"w"))==NULL) {
+    ERR_CHECK_RETURN(err,msg_error_construct("def"));
+  }
+
+  entry = build_list;
+  while (entry) {
+    fprintf(fh,"%s\n",entry->name);
+    entry = entry->next;
+  }
+  fclose(fh);
+
+  return 0;
+}
+
+/*
+ * save current options in a defaults file
+ */
+static int
+write_defaults(void)
+{
+  _kernel_oserror *err=NULL;
+  FILE *fh=NULL;
+  int  i,state;
+  ComponentId sel;
+  char buffer[BUFFER_SIZE];
+
+  switch (file_exists(CHOICES_DIR))
+  {
+    case 0 :
+      if (mkdir(CHOICES_DIR,0)==0)
+        break;
+      /* else drop though to */
+    case 1 :
+      ERR_CHECK_RETURN(err,msg_error_construct("dir"));
+      /* macro will exit */
+  }
+
+  if ((fh=fopen(DEFAULTS_FILE,"w"))==NULL) {
+    ERR_CHECK_RETURN(err,msg_error_construct("def"));
+  }
+
+  fprintf(fh,"opt");
+  for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {
+    ERR_CHECK_RETURN(err,optionbutton_get_state(0,window_options_id,
+  	options[i].id,&state));
+    if (state)
+      fprintf(fh," %s",options[i].name);
+  }
+  fprintf(fh,"\n");
+
+  ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_TREE,buffer,sizeof(buffer),&i));
+  fprintf(fh,"bld %s\n",buffer);
+  ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_ENV,buffer,sizeof(buffer),&i));
+  fprintf(fh,"env %s\n",buffer);
+
+  ERR_CHECK_RETURN(err,radiobutton_get_state(0,window_options_id,
+        	OPTIONS_GADGET_IMAGENAME,&state, &sel));
+  fprintf(fh,"img %i\n",sel);
+
+  fclose(fh);
+
+  return 0;
+}
+
+/*
+ * attach_other_handlers
+ */
+static int
+attach_other_handlers(int event_code,ToolboxEvent *event,
+			IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err = NULL;
+  char template_name[25];
+  int i;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  ERR_CHECK(err,toolbox_get_template_name(0,id_block->self_id,template_name,
+      				     sizeof(template_name),&i));
+
+  if (strcmp(template_name, ICONBAR_NAME) == 0) {
+    iconbar_id = id_block->self_id;
+  } else if (strcmp(template_name, MENU_ICONBAR_NAME) == 0) {
+    menu_iconbar_id = id_block->self_id;
+  } else if (strcmp(template_name, WINDOW_OPTIONS_NAME) == 0) {
+    window_options_id = id_block->self_id;
+  } else if (strcmp(template_name, PROGINFO_NAME) ==0) {
+    proginfo_id = id_block->self_id;
+  } else if (strcmp(template_name, MENU_OPTION_NAME) ==0) {
+    menu_option_id = id_block->self_id;
+  } else if (strcmp(template_name, MENU_VIEW_NAME) ==0) {
+    menu_view_id = id_block->self_id;
+  } else if (strcmp(template_name, WINDOW_BUILDS_NAME) ==0) {
+    window_build_id = id_block->self_id;
+  }
+  return 0;
+}
+
+/*
+ * Enter the correct version string into window
+ */
+static int
+proginfo_show(int event_code,ToolboxEvent *event,
+    			    IdBlock *id_block, void *handle)
+{
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  proginfo_set_version(0,id_block->self_id,msg_lookup("_Version"));
+  return 0;
+}
+
+/*
+ * populate the windows with data prior to them being opened
+ */
+static int
+window_show(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err=NULL;
+  int i;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  dprintf(("", "window_show() called\n"));
+
+  if (id_block->self_id == window_options_id) {
+    /* populate list of build trees */
+    ERR_CHECK_RETURN(err,build_populate(window_options_id,OPTIONS_GADGET_TREE));
+
+    /* sort out env menu and default value */
+    if (build_tree) {
+      ERR_CHECK_RETURN(err,
+    	env_populate(window_options_id,OPTIONS_GADGET_ENV,default_env));
+    }
+    if (!used_default_options) {
+      /* sort out default rom build options */
+      for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {
+        ERR_CHECK_RETURN(err,optionbutton_set_state(0,window_options_id,
+      	          options[i].id,options[i].def));
+      }
+      /* Sort out versioning options */
+      radiobutton_set_state(0, window_options_id, default_versioning, 1);
+      version_set_radios(default_versioning);
+
+      used_default_options = TRUE;
+    }
+  } else if (id_block->self_id == window_build_id) {
+    /* populate list of build trees */
+    ERR_CHECK_RETURN(err,build_populate(window_build_id,BUILD_GADGET_TREE));
+  }
+  return 0;
+}
+
+/*
+ * populate string set prior to it being shown
+ */
+static int
+stringset_show(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err=NULL;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  if (id_block->self_id == window_options_id) {
+    if (id_block->self_component == OPTIONS_GADGET_ENV) {
+      /* check for build directory being selected */
+      if (!build_tree) {
+        ERR_CHECK_RETURN(err,msg_error_construct("bld"));
+      }
+      ERR_CHECK_RETURN(err,
+    	env_populate(window_options_id,OPTIONS_GADGET_ENV,default_env));
+    } else if (id_block->self_component == OPTIONS_GADGET_TREE) {
+      ERR_CHECK_RETURN(err,
+        build_populate(window_options_id,OPTIONS_GADGET_TREE));
+    }
+  }
+  return 0;
+}
+
+/*
+ * deal with new stringset value
+ */
+static int
+stringset_changed(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err=NULL;
+  char current[BUFFER_SIZE];
+  int i;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  if (id_block->self_id == window_options_id)
+  {
+    if (id_block->self_component == OPTIONS_GADGET_TREE) {
+      ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_TREE,current,sizeof(current),&i));
+      set_build_tree(current);
+      default_env = NULL;
+      ERR_CHECK_RETURN(err,env_populate(window_options_id,OPTIONS_GADGET_ENV,default_env));
+
+    } else if (id_block->self_component == OPTIONS_GADGET_ENV) {
+      ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_ENV,current,sizeof(current),&i));
+      if (default_env)
+        free(default_env);
+      default_env=strdup(current);
+
+      ERR_CHECK_RETURN(err,
+    	env_source());
+    }
+  }
+  return 0;
+}
+
+
+/*
+ * deal with radiobutton presses
+ */
+static int radio_click(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror	*err=NULL;
+  int			 state = 0;
+  ComponentId		 sel = 0;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+  IGNORE(id_block);
+
+  /* Get state of ImageName */
+  err = radiobutton_get_state(0, window_options_id, OPTIONS_GADGET_IMAGENAME, &state, &sel);
+
+  if (err == NULL)
+  {
+    dprintf(("", "Radio button '%x' clicked\n", sel));
+    version_set_radios(sel);
+  }
+  return(NULL);
+}
+
+
+/*
+ * deal with optionbutton presses
+ */
+static int option_click(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  int i;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  for (i=0; i<(sizeof(options)/sizeof(option_t)); i++)
+  {
+    if (options[i].id == id_block->self_component)
+      dprintf(("", "Option button '%s (%x)' clicked\n", options[i].name, id_block->self_component));
+  }
+  return(NULL);
+}
+
+/*
+ * deal with button presses
+ */
+static int action_click(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err=NULL;
+  _kernel_swi_regs reg;
+  int i;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  if (id_block->self_id == window_options_id)
+  {
+    char cmd[BUFFER_SIZE];
+    int state,gadget, versel;
+
+    switch (id_block->self_component)
+    {
+      case OPTIONS_GADGET_BUILD :
+        if (getenv(BUILD_ENV)==NULL) {
+          ERR_CHECK_RETURN(err,msg_error_construct("env"));
+        }
+
+        strcpy(cmd,BUILD_FILE);
+        strcat(cmd," ");
+
+        dprintf(("", "CMD: %s\n", cmd));
+
+        /* Versioning.  Could be either ImageName or NewImName */
+        radiobutton_get_state(0, window_options_id, OPTIONS_GADGET_IMAGENAME, &state, &versel);
+
+        switch(versel)
+        {
+          case(OPTIONS_GADGET_IMAGENAME):
+          {
+            ERR_CHECK_RETURN(err,radiobutton_get_state(0,window_options_id,
+            	OPTIONS_GADGET_DONT,&state,&gadget));
+            for (i=0; i<(sizeof(versioning)/sizeof(version_t)); i++) {
+              if (gadget == versioning[i].id) {
+                break;
+              }
+            }
+            strcat(cmd,"ImageName ");
+            strcat(cmd,versioning[i].action);
+            break;
+          }
+          case(OPTIONS_GADGET_NEWIMNAME):
+          {
+            ERR_CHECK_RETURN(err,radiobutton_get_state(0,window_options_id,
+            	OPTIONS_GADGET_MINOR,&state,&gadget));
+            for (i=0; i<(sizeof(new_versioning)/sizeof(version_t)); i++) {
+              if (gadget == new_versioning[i].id) {
+                break;
+              }
+            }
+            strcat(cmd,"NewImName ");
+            strcat(cmd,new_versioning[i].action);
+            break;
+          }
+        }
+        /* Do the option buttons */
+        for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {
+          ERR_CHECK_RETURN(err,optionbutton_get_state(0,window_options_id,
+        	options[i].id,&state));
+          if (state) {
+            strcat(cmd," ");
+            strcat(cmd,options[i].name);
+          }
+        }
+        dprintf(("", "CMD (before *): %s\n", cmd));
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(Wimp_StartTask,&reg,&reg));
+
+        /* reset version number field to "don't" (ImageName) or "minor" (NewImName) */
+        if (versel == OPTIONS_GADGET_IMAGENAME)
+        {
+          ERR_CHECK_RETURN(err,radiobutton_set_state(0,window_options_id,
+                           OPTIONS_GADGET_DONT,1));
+        }
+        else
+        {
+          ERR_CHECK_RETURN(err,radiobutton_set_state(0,window_options_id,
+                           OPTIONS_GADGET_MINOR,1));
+        }
+
+        break;
+    }
+  } else if (id_block->self_id == window_build_id) {
+    char current[BUFFER_SIZE];
+
+    switch (id_block->self_component)
+    {
+      case BUILD_GADGET_REMOVE :
+        ERR_CHECK_RETURN(err,stringset_get_selected(0,window_build_id,
+        	BUILD_GADGET_TREE,current,sizeof(current),&i));
+        ERR_CHECK_RETURN(err,build_remove_entry(current));
+        ERR_CHECK_RETURN(err,build_populate(window_build_id,
+        	BUILD_GADGET_TREE));
+                break;
+
+      case BUILD_GADGET_ADD :
+        ERR_CHECK_RETURN(err,stringset_get_selected(0,window_build_id,
+        	BUILD_GADGET_TREE,current,sizeof(current),&i));
+        ERR_CHECK_RETURN(err,build_add_entry(current));
+        ERR_CHECK_RETURN(err,build_populate(window_build_id,
+        	BUILD_GADGET_TREE));
+        break;
+
+      case BUILD_GADGET_SAVE :
+	write_builds();
+        break;
+    }
+  }
+
+  return 0;
+}
+
+/*
+ * deal with clicks on the icon bar
+ */
+static int
+iconbar_click(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  IconbarClickedEvent *click_block = (IconbarClickedEvent *) event;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+  IGNORE(id_block);
+
+  dprintf(("", "Iconbar clicked\n"));
+
+  if (click_block->hdr.flags & Iconbar_Clicked_Select)
+  {
+    /*
+     * If no build directories defined, pop up build window
+     */
+    if (build_list)
+      toolbox_show_object(0,window_options_id,0,NULL,iconbar_id,0);
+    else
+      toolbox_show_object(0,window_build_id,0,NULL,iconbar_id,0);
+  }
+  return 0;
+}
+
+/*
+ * deal with key presses
+ */
+static int
+key_pressed(int event_code, WimpPollBlock *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err = NULL;
+  WimpKeyPressedEvent *key_block = (WimpKeyPressedEvent *)event;
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+  IGNORE(id_block);
+
+  ERR_CHECK_RETURN(err,wimp_process_key(key_block->key_code));
+
+  return 0;
+}
+
+/*
+ * deal with clicks on the menus
+ */
+static int
+menu_selection(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err=NULL;
+  _kernel_swi_regs reg;
+  char cmd[1024];
+
+  IGNORE(handle);
+  IGNORE(event);
+  IGNORE(event_code);
+
+  if (id_block->self_id == menu_iconbar_id) {
+  } else if (id_block->self_id == menu_option_id) {
+    switch (id_block->self_component)
+    {
+      case OPTIONMENU_SAVE :
+        write_defaults();
+        break;
+    }
+  } else if (id_block->self_id == menu_view_id) {
+    char build_name[BUILD_NAME_SIZE];
+    char *b=NULL;
+
+    if ((b=getenv(BUILD_ENV))==NULL) {
+      ERR_CHECK_RETURN(err,msg_error_construct("env"));
+    }
+    strncpy(build_name,b,sizeof(build_name));
+
+    switch (id_block->self_component)
+    {
+      case VIEWMENU_COMPONENTS :
+        sprintf(cmd,"Filer_Run %s.%s.%s",BUILDSYS_DIR,
+        	COMPONENTS_DIR,build_name);
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));
+        break;
+      case VIEWMENU_DATABASE :
+        sprintf(cmd,"Filer_Run %s.%s",BUILDSYS_DIR,MODULEDB);
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));
+        break;
+      case VIEWMENU_BUILD :
+        sprintf(cmd,"Filer_Opendir <Build$Dir>");
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));
+        break;
+      case VIEWMENU_LOGS :
+        sprintf(cmd,"Filer_Opendir %s.Logs",BUILDSYS_DIR);
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));
+        break;
+      case VIEWMENU_IMAGES :
+        sprintf(cmd,"Filer_Opendir <Build$Dir>.Images");
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));
+        break;
+    }
+  }
+
+  return (0);
+}
+
+/*
+ * main initialisation
+ */
+int main(void)
+{
+  _kernel_oserror *err = NULL;
+  _kernel_swi_regs reg;
+  int toolbox_events = 0;
+  int wimp_messages  = 0;
+  int event_code;
+  int quiting=FALSE;
+
+  /* Initialise DebugLib */
+  debug_initialise("Builder", "adfs::4.$.BuilderDB", "");
+  debug_atexit();
+  debug_set_options(DebugLib_Options_StampDebug_Off |
+                    DebugLib_Options_TasknamePrefix_Off, 1, 9600);
+  debug_set_area_level_prefix(FALSE);
+  debug_set_device(DEBUGIT_OUTPUT);
+
+  /* read CLI commandline (before it is reused by toolbox initialisation RO 4.42,6.xx) */
+  _kernel_swi(OS_GetEnv,&reg,&reg);
+  if (strstr((char*)reg.r[0],"-quit")) {
+    quiting = TRUE;
+  }
+
+  read_builds();
+  read_defaults();
+
+  ERR_GOTO(err,msg_open_messages(FILENAME_MESSAGES));
+
+  event_initialise(&id_block);          /* initialise the event library. */
+  event_set_mask(Wimp_Poll_NullMask); 	/* mask out un-required wimp events */
+
+  ERR_GOTO(err,event_register_toolbox_handler(-1,Toolbox_ObjectAutoCreated,
+      attach_other_handlers,NULL));
+
+  /* register ourselves with the Toolbox. */
+  ERR_GOTO(err,toolbox_initialise(0, WimpVersion, &wimp_messages,
+      &toolbox_events,APP_DIR,&messages,&id_block,0,0,0));
+
+  /* Message handlers */
+  ERR_GOTO(err,event_register_message_handler(Wimp_MQuit,
+             message_quit,NULL));
+  ERR_GOTO(err,event_register_message_handler(Wimp_MPreQuit,
+             message_quit,NULL));
+  ERR_GOTO(err,event_register_message_handler(Wimp_MDataLoad,
+             message_data_open,NULL));
+
+  /* Event handler */
+  ERR_GOTO(err,event_register_wimp_handler(-1,Wimp_EKeyPressed,
+  	     key_pressed,NULL));
+
+  /* Menu event handlers */
+  ERR_GOTO(err,event_register_toolbox_handler(-1,MENU_EVENT_QUIT,
+             event_quit,NULL));
+  ERR_GOTO(err,event_register_toolbox_handler(-1,Menu_Selection,
+             menu_selection,NULL));
+
+  /* Window event handlers */
+  ERR_GOTO(err,event_register_toolbox_handler(-1,ProgInfo_AboutToBeShown,
+      proginfo_show,NULL));
+  ERR_GOTO(err,event_register_toolbox_handler(-1,Window_AboutToBeShown,
+      window_show,NULL));
+
+  /* Gadget event handlers */
+  ERR_GOTO(err,event_register_toolbox_handler(-1,StringSet_AboutToBeShown,
+      stringset_show,NULL));
+  ERR_GOTO(err,event_register_toolbox_handler(-1,StringSet_ValueChanged,
+      stringset_changed,NULL));
+  ERR_GOTO(err,event_register_toolbox_handler(-1,ActionButton_Selected,
+      action_click,NULL));
+  ERR_GOTO(err,event_register_toolbox_handler(-1,RadioButton_StateChanged,
+      radio_click,NULL));
+  ERR_GOTO(err,event_register_toolbox_handler(-1,OptionButton_StateChanged,
+      option_click,NULL));
+  ERR_GOTO(err,event_register_toolbox_handler(-1,Iconbar_Clicked,
+      iconbar_click,NULL));
+
+  toolbox_get_sys_info(3,&reg);  /* Obtain wimp task handle */
+  task_handle = reg.r[0];
+
+  ERR_GOTO(err,env_source());
+
+  if (!quiting) {
+    /* poll loop */
+    while (TRUE) {
+      event_poll (&event_code, &poll_block, 0);
+    }
+  }
+
+exit_gracefully:
+  if (err != NULL) {
+    wimp_report_error(err,0,0);
+  }
+
+  return (0);
+}
+@
+
+
+1.9
+log
+@Makefile recreated from fragments
+Resource files shuffled into UK subdirectory where required.
+Renamed !Sprites22 to !Sprites.
+Get version number from messages file.
+Built and checked disc install, looks the same as before.
+
+Version 0.25. Tagged as 'builder-0_25'
+@
+text
+@d42 1
+d52 6
+d62 10
+a71 13
+int  task_handle          = 0;  /* Wimp task handle */
+int  iconbar_id           = 0;  /* object ids */
+int  menu_iconbar_id      = 0;
+int  menu_option_id 	  = 0;
+int  menu_view_id 	  = 0;
+int  window_options_id	  = 0;
+int  window_build_id	  = 0;
+int  proginfo_id	  = 0;
+char *build_tree 	  = NULL;
+char *default_env	  = NULL;
+int  default_versioning	  = 0;
+build_list_t *build_list  = NULL;
+int  used_default_options = FALSE;
+d76 1
+a76 1
+int
+d97 1
+a97 1
+int
+d112 1
+a112 1
+int
+d124 1
+a124 1
+void
+d142 1
+a142 1
+int
+d191 1
+a191 1
+int version_set_radios(ComponentId sel)
+d224 1
+a224 1
+int
+d271 1
+a271 1
+int
+d296 1
+a296 1
+int
+d331 1
+a331 1
+int
+d383 1
+a383 1
+int
+d391 4
+d419 1
+a419 1
+int
+d423 4
+d434 1
+a434 1
+int
+d441 4
+d478 1
+a478 1
+int
+d484 4
+d507 1
+a507 1
+int
+d515 4
+d546 1
+a546 1
+int radio_click(int event_code,ToolboxEvent *event,
+d553 5
+d573 1
+a573 1
+int option_click(int event_code,ToolboxEvent *event,
+d576 5
+a580 1
+  int i=0;
+d593 1
+a593 1
+int action_click(int event_code,ToolboxEvent *event,
+d600 4
+d713 1
+a713 1
+int
+d719 5
+d742 1
+a742 1
+int
+d749 5
+d762 1
+a762 1
+int
+d770 4
+d804 5
+@
+
+
+1.8
+log
+@Fix for reading the CLI command line on RO 4.02 and 6.20.
+Author:
+  Willi Theiss
+
+Version 0.20. Tagged as 'builder-0_20'
+@
+text
+@d415 1
+a415 1
+  proginfo_set_version(0,id_block->self_id,APP_VERSION);
+@
+
+
+1.7
+log
+@  Fix for directory name length.
+Detail:
+  The !Builder main window had a rather odd limit of 50 characters for
+  the directory name string even though the register build directory
+  window was 128. I've upped both to 224.
+
+  Also clobbered a silly warning in main.c.
+Admin:
+  Works as expected.
+
+Version 0.18. Tagged as 'builder-0_18'
+@
+text
+@d789 6
+a850 5
+  _kernel_swi(OS_GetEnv,&reg,&reg);
+  if (strstr((char*)reg.r[0],"-quit")) {
+    quiting = TRUE;
+  }
+
+@
+
+
+1.6
+log
+@  Some improvements and changes.
+Detail:
+  Support for subdirectories of the Env directory added. The scan is
+  now recursive to find any nested Env files.
+
+  The environment list construction only bothers to list Obey files and
+  is hard-wired to ignore the !Common file. Thus, the menu now doesn't
+  contain bogus entries like '!Common', 'Makefile' and 'VersionNum'.
+
+  When you select a different build directory, the environment is reset
+  to blank to reinforce the fact that you should really run a new env
+  file.
+Admin:
+  Tested. Requires new srcbuild in Library-0_87 (srcbuild-0_35).
+
+Version 0.14. Tagged as 'builder-0_14'
+@
+text
+@d772 1
+a772 1
+int main()
+@
+
+
+1.5
+log
+@Summary
+  * Improvements to Builder's version handling.
+  * Improvements to debugging support.
+Detail
+  * Changed Builder to use DebugLib.
+  * Builder is now capable of using DCotton's new image naming scheme.
+    An extra set of Radio buttons for selecting the naming scheme has
+    been added to the Options window.  The versioning scheme selected is
+    saved in the defaults file.
+Admin
+  * Tested on ONC2UK build using both ImageName and NewImName scripts for
+    versioning.
+  * Assumes that NewImName will be checked into BuildSys/perl/ once
+    completed.
+
+Version 0.11. Tagged as 'builder-0_11'
+@
+text
+@d501 2
+@
+
+
+1.4
+log
+@Summary
+  * Added support for srcbuild 0.15
+Detail
+  * Added OptionButton in main window for 'Install RAM' that maps onto
+    the install: target.
+  * Added ability to open the 'Logs' and 'Images' directory from the View
+    menu.
+Admin
+  *  Tested install: work using a dummy Baseline 3 build.
+  *  Tested MakeExpROM work using RiscOS/BuildSys/EtherI16E as a basis.
+     srcbuild produces an indentical ROM to the old-style build system for
+     populated roms and roms only containing podule ID information.
+
+Version 0.10. Tagged as 'builder-0_10'
+@
+text
+@d47 1
+d65 1
+a82 1
+  debug db_file_init(NULL);
+d128 1
+a128 1
+      debug db_printf("build_tree set to '%s'\n",build_tree);
+d185 33
+d235 1
+a235 1
+      debug db_printf("  %s\n",buffer);
+d251 4
+d280 1
+a280 1
+      debug db_printf("  %s\n",buffer);
+d333 1
+d366 5
+d429 2
+d446 4
+d516 39
+d568 1
+a568 1
+    int state,gadget;
+d579 32
+a610 5
+        /* find out which radio button is clicked */
+        ERR_CHECK_RETURN(err,radiobutton_get_state(0,window_options_id,
+        	OPTIONS_GADGET_DONT,&state,&gadget));
+        for (i=0; i<(sizeof(versioning)/sizeof(version_t)); i++) {
+          if (gadget == versioning[i].id) {
+d614 1
+a614 1
+        strcat(cmd,versioning[i].action);
+d623 1
+a623 1
+        debug db_printf("cmd = '%s'\n",cmd);
+d627 11
+a637 3
+        /* reset version number field to "don't" */
+        ERR_CHECK_RETURN(err,radiobutton_set_state(0,window_options_id,
+        	OPTIONS_GADGET_DONT,1));
+d680 2
+d779 7
+a785 1
+  debug db_file_init(FILE_DEBUG);
+d833 4
+@
+
+
+1.3
+log
+@Fixed bug whereby default build options were not being used.
+
+Version 0.08. Tagged as 'builder-0_08'
+@
+text
+@d67 1
+a67 1
+/* 
+d74 1
+a74 1
+  
+d77 1
+a77 1
+    
+d80 1
+a80 1
+    
+d83 1
+a83 1
+  
+d116 1
+a116 1
+/* 
+d147 1
+a147 1
+  if (message->hdr.sender == task_handle) 
+d167 2
+a168 2
+  
+  /* 
+d183 1
+a183 1
+/* 
+d193 1
+a193 1
+  
+d196 1
+a196 1
+  
+d210 2
+a211 2
+    	    for (j=0; j<(sizeof(options)/sizeof(option_t)); j++) {  
+      	      if (strcmp(options[j].name,argv[i])==0) { 
+d222 1
+a222 1
+  
+d226 1
+a226 1
+/* 
+d234 1
+a234 1
+  
+d237 1
+a237 1
+    
+d247 1
+a247 1
+  
+d250 2
+a251 2
+  
+/* 
+d273 1
+a273 1
+    ERR_CHECK_RETURN(err,msg_error_construct("def"));    
+d282 1
+a282 1
+  
+d286 1
+a286 1
+/* 
+d289 1
+a289 1
+int 
+d296 1
+a296 1
+  
+d307 1
+a307 1
+  
+d309 1
+a309 1
+    ERR_CHECK_RETURN(err,msg_error_construct("def"));    
+d311 1
+a311 1
+  
+d313 1
+a313 1
+  for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {  
+d320 1
+a320 1
+  
+d328 1
+a328 1
+    
+d335 1
+a335 1
+int 
+d342 1
+a342 1
+  
+d378 1
+a378 1
+int 
+d384 1
+a384 1
+  
+d396 1
+a396 1
+      for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {  
+d399 1
+a399 1
+      }      
+d409 1
+a409 1
+/* 
+d434 1
+a434 1
+/* 
+d444 1
+a444 1
+  
+d451 1
+a451 1
+      
+d458 1
+a458 1
+      
+d466 1
+a466 1
+/* 
+d475 1
+a475 1
+  
+d487 1
+a487 1
+        
+d506 1
+a506 1
+        }          
+d510 1
+a510 1
+        
+d519 1
+a519 1
+    
+d529 1
+a529 1
+        
+d537 1
+a537 1
+        
+d543 1
+a543 1
+  
+d550 1
+a550 1
+int 
+d555 1
+a555 1
+  
+d558 1
+a558 1
+    /* 
+d564 1
+a564 1
+      toolbox_show_object(0,window_build_id,0,NULL,iconbar_id,0);    
+d572 1
+a572 1
+int 
+d578 1
+a578 1
+  
+d580 1
+a580 1
+  
+d600 2
+a601 2
+        write_defaults();      
+        break; 
+d606 1
+a606 1
+    
+d611 1
+a611 1
+    
+d623 11
+a633 1
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));      
+d652 1
+a652 1
+  
+d713 1
+a713 1
+  
+@
+
+
+1.2
+log
+@Changed version number control to use radio buttons.
+
+Version 0.07. Tagged as 'builder-0_07'
+@
+text
+@a210 1
+              options[j].def = 0;   	    
+d397 3
+a399 9
+        if (options[i].def) {
+          ERR_CHECK_RETURN(err,optionbutton_set_state(0,window_options_id,
+      	          options[i].id,1));
+      	} else {
+          ERR_CHECK_RETURN(err,optionbutton_set_state(0,window_options_id,
+      	          options[i].id,0));
+      	}
+      }
+      
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d44 3
+d55 31
+a85 6
+int  iconbar_id           = 0;  /* ID iconbar object */
+int  menu_iconbar_id      = 0;  /* ID of iconbar menu object */
+int  window_options_id	  = 0;  /* ID of build options window */
+int  proginfo_id	  = 0;  /* ID of proginfo window */
+char build_name[BUILD_NAME_SIZE];
+int  defaults_read = 0;
+a87 1
+ * quit_event
+d93 1
+a93 1
+quit_event(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+d100 1
+a100 3
+  debug db_file_init(NULL);
+  exit(0);
+  return(1);
+a103 2
+ * quit_message
+ *
+d108 1
+a108 1
+quit_message(WimpMessage *message, void *handle)
+d113 67
+a179 3
+  debug db_file_init(NULL);
+  exit(0);
+  return(1);
+d182 1
+d184 1
+a184 2
+ * read defaults file (if it exists) and populate window option buttons and
+ * environment
+d189 69
+d260 1
+a260 4
+  char str[1024];
+  char *cp,*wd;
+  int end_of_string=0;
+  int i;
+d262 1
+a262 1
+  if ((fh=fopen(DEFAULTS_FILE,"r"))!=NULL)
+d264 17
+a280 48
+    /* 
+     * set all options off 
+     */
+    for (i=0; i<(sizeof(options)/sizeof(option_t)); i++)
+    {
+      ERR_GOTO(err,optionbutton_set_state(0,window_options_id,
+  	      options[i].id,0));
+    }
+    /* 
+     * read in line from file
+     */
+    fgets(str,sizeof(str),fh);
+    if (!feof(fh))
+    {
+      cp=str;
+      while (*cp!=0 && *cp!='\n')			/* terminate string */
+        cp++;
+      *cp=0;
+      
+      /* 
+       * for each word in line
+       */
+      cp=str;
+      do
+      {
+        while ((*cp==' ') || (*cp==9)) 			/* skip space chars */
+          cp++;
+          
+        wd=cp;
+        while ((*cp!=' ') && (*cp!=9) && (*cp!=0))	/* find end of word */
+          cp++;
+        if (*cp==0)
+          end_of_string=1;
+        else
+          *cp=0;
+        
+  	for (i=0; i<(sizeof(options)/sizeof(option_t)); i++)
+  	{  
+  	  if (strcmp(options[i].name,wd)==0)
+  	  { 
+            ERR_GOTO(err,optionbutton_set_state(0,window_options_id,
+  	      options[i].id,1));
+  	    break;
+  	  }
+  	}
+        cp++;
+      } while (!end_of_string);
+    }
+d282 1
+a282 6
+exit_gracefully:
+  if (fh)
+    fclose(fh);
+  if (err)
+    wimp_report_error(err,0,0);
+  defaults_read = 1;
+d284 1
+a284 1
+  return 0;  
+d295 2
+a296 2
+  int state;
+  int i;
+d298 1
+a298 1
+  if ((fh=fopen(DEFAULTS_FILE,"w"))==NULL)
+d300 11
+a310 1
+    ERR_CHECK_RETURN(err,msg_error_construct("def_write"));
+d313 2
+a314 2
+  for (i=0; i<(sizeof(options)/sizeof(option_t)); i++)
+  {  
+d318 1
+a318 1
+      fprintf(fh,"%s ",options[i].name);
+d320 8
+a327 1
+  fprintf(fh,"\n");    
+d329 1
+a329 1
+  
+d355 6
+a361 1
+
+d369 1
+a369 1
+initialise_proginfo(int event_code,ToolboxEvent *event,
+d384 1
+d386 26
+a411 6
+  if (id_block->self_id == window_options_id)
+  {
+    if (!defaults_read)
+      read_defaults();
+    ERR_CHECK_RETURN(err,
+    	env_populate(ENV_DIR,window_options_id,OPTIONS_GADGET_ENV));
+a412 1
+
+d424 10
+a433 4
+  if (id_block->self_id == window_options_id)
+  {
+    if (id_block->self_component == OPTIONS_GADGET_ENV)
+    {
+d435 1
+a435 1
+    	env_populate(ENV_DIR,window_options_id,OPTIONS_GADGET_ENV));
+d449 2
+d454 12
+a465 2
+    if (id_block->self_component == OPTIONS_GADGET_ENV)
+    {
+d467 1
+a467 1
+    	env_source(ENV_DIR,window_options_id,OPTIONS_GADGET_ENV));
+d472 1
+a480 2
+  char cmd[1024];
+  int state;
+d485 3
+d490 3
+a492 10
+      case OPTIONS_GADGET_EDIT :
+        if (strlen(build_name))
+        {
+          sprintf(cmd,"Filer_Run %s.%s",BUILDSYS_DIR,build_name);
+          reg.r[0] = (int)cmd;
+          ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));
+        }
+        else
+        {
+          ERR_CHECK_RETURN(err,msg_error_construct("no_env"));
+a493 1
+        break;
+a494 1
+      case OPTIONS_GADGET_BUILD :
+d496 11
+a506 2
+        for (i=0; i<(sizeof(options)/sizeof(option_t)); i++)
+        {
+d509 1
+a509 2
+          if (state)
+          {
+d514 1
+d517 4
+d523 13
+d537 10
+a546 2
+      case OPTIONS_GADGET_SAVE :
+        write_defaults();
+d555 37
+d600 20
+a619 3
+  if (id_block->self_id == menu_iconbar_id)
+  {
+    if (id_block->self_component == BARMENU_MODULE)
+d621 12
+a632 5
+      char cmd[BUILD_NAME_SIZE+10];
+      sprintf(cmd,"Filer_Run %s.%s",BUILDSYS_DIR,MODULEDB);
+      reg.r[0] = (int)cmd;
+      ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));      
+    }    
+d634 1
+d648 3
+d652 2
+a653 1
+  debug db_file_init(FILE_DEBUG);
+d669 1
+a669 1
+             quit_message,0));
+d671 7
+a677 1
+             quit_message,0));
+d681 1
+a681 1
+             quit_event,0));
+d683 1
+a683 1
+             menu_selection,0));
+d687 1
+a687 1
+      initialise_proginfo,NULL));
+d698 2
+d704 13
+a716 3
+  /* poll loop */
+  while (TRUE)
+    event_poll (&event_code, &poll_block, 0);
+d719 1
+a719 1
+  if (err != NULL)
+d721 1
+@
+
+
+1.1.1.1
+log
+@First import of !Builder sources for srcbuild front end.
+@
+text
+@@
+
+
+1.1.1.2
+log
+@Major update :
+  Makefile allows application to be installed to a directory specified
+  in !MkInstall.
+  Application maintains multiple build directories.
+  Application supports the -quit command line option.
+  Updated !Help.
+@
+text
+@a43 3
+#include "file.h"
+#include "parse.h"
+#include "build.h"
+d52 6
+a57 30
+int  iconbar_id           = 0;  /* object ids */
+int  menu_iconbar_id      = 0;
+int  menu_option_id 	  = 0;
+int  menu_view_id 	  = 0;
+int  window_options_id	  = 0;
+int  window_build_id	  = 0;
+int  proginfo_id	  = 0;
+char *build_tree 	  = NULL;
+char *default_env	  = NULL;
+build_list_t *build_list  = NULL;
+
+/* 
+ * clean up before exit
+ */
+int
+quit_all(void)
+{
+  build_free();
+  
+  if (build_tree)
+    free(build_tree);
+    
+  if (default_env)
+    free(default_env);
+    
+  debug db_file_init(NULL);
+  exit(0);
+  
+  return (1);
+}
+d60 1
+d66 1
+a66 1
+event_quit(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+d73 3
+a75 1
+  return(quit_all());
+d79 2
+d85 1
+a85 1
+message_quit(WimpMessage *message, void *handle)
+d90 3
+a92 50
+  return(quit_all());
+}
+
+/*
+ * Validate filetype of file then initiate a load and open the main window
+ */
+int
+message_data_open(WimpMessage *message, void *handle)
+{
+  _kernel_oserror *err;
+  WimpMessage msg;
+  char *path;
+  int  toolbox_object;
+  int  component_id;
+  handle=handle;
+
+  if (message->hdr.sender == task_handle) 
+    return 0;
+
+  path = message->data.data_load_ack.leaf_name;
+
+  ERR_CHECK(err,window_wimp_to_toolbox(0,
+  	message->data.data_load_ack.destination_window,
+  	message->data.data_load_ack.destination_icon,
+  	&toolbox_object,&component_id));
+
+  if (toolbox_object == window_build_id)
+  {
+    if (file_exists(path)==2)
+    {
+      ERR_CHECK(err,stringset_set_selected(0,window_build_id,
+      	BUILD_GADGET_TREE,path));
+      ERR_CHECK_RETURN(err,build_add_entry(path));
+      ERR_CHECK_RETURN(err,build_populate(window_build_id,
+        	BUILD_GADGET_TREE));
+    }
+  }
+  
+  /* 
+   * acknowledge message
+   */
+  msg = *message;
+  msg.hdr.your_ref = msg.hdr.my_ref;
+
+  if (message->hdr.action_code == Wimp_MDataLoad)
+    msg.hdr.action_code = Wimp_MDataLoadAck;
+
+  wimp_send_message(Wimp_EUserMessage, &msg, msg.hdr.sender,0,0);
+
+  return 1;
+d96 2
+a97 19
+ * set build tree
+ */
+void
+set_build_tree(char *name)
+{
+  if (build_tree) {
+    if (strlen(name)>strlen(build_tree)) { /* will it fit */
+      free(build_tree);
+    } else {
+      strcpy(build_tree,name);
+      debug db_printf("build_tree set to '%s'\n",build_tree);
+      return;
+    }
+  }
+  build_tree = strdup(name);
+}
+
+/* 
+ * read in contents of defaults file
+a101 69
+  FILE *fh=NULL;
+  char buffer[BUFFER_SIZE];
+  int  argc,i,j;
+  char *argv[25];
+  
+  if ((fh=fopen(DEFAULTS_FILE,"r"))==NULL)
+    return 0;
+  
+  debug db_printf("read_defaults\n");
+  while (!feof(fh)) {
+    fgets(buffer,sizeof(buffer),fh);
+    if (!feof(fh)) {
+      chop_newline(buffer);
+      debug db_printf("  %s\n",buffer);
+      argc=parse_getargs(buffer,argv);
+      if (argc>0) {
+        if        (cstrcmp(argv[0],"bld")==0) {
+          set_build_tree(argv[1]);
+        } else if (cstrcmp(argv[0],"env")==0) {
+          default_env = strdup(argv[1]);
+        } else if (cstrcmp(argv[0],"opt")==0) {
+          for (i=1; i<argc; i++) {
+    	    for (j=0; j<(sizeof(options)/sizeof(option_t)); j++) {  
+      	      if (strcmp(options[j].name,argv[i])==0) { 
+      	        options[j].def = 1;
+      	        break;
+      	      }
+      	    }
+          }
+        }
+      }
+    }
+  }
+  fclose(fh);
+  
+  return 0;
+}
+
+/* 
+ * read in contents of build trees file
+ */
+int
+read_builds(void)
+{
+  FILE *fh=NULL;
+  char buffer[BUFFER_SIZE];
+  
+  if ((fh=fopen(BUILDS_FILE,"r"))==NULL)
+    return 0;
+    
+  while (!feof(fh)) {
+    fgets(buffer,sizeof(buffer),fh);
+    if (!feof(fh)) {
+      chop_newline(buffer);
+      debug db_printf("  %s\n",buffer);
+      build_add_entry(buffer);
+    }
+  }
+  fclose(fh);
+  
+  return 0;
+}
+  
+/* 
+ * write the list of build directories to the defaults file
+ */
+int
+write_builds(void)
+{
+d104 4
+a107 1
+  build_list_t *entry;
+d109 1
+a109 1
+  switch (file_exists(CHOICES_DIR))
+d111 48
+a158 7
+    case 0 :
+      if (mkdir(CHOICES_DIR,0)==0)
+        break;
+      /* else drop though to */
+    case 1 :
+      ERR_CHECK_RETURN(err,msg_error_construct("dir"));
+      /* macro will exit */
+d160 6
+a165 11
+
+  if ((fh=fopen(BUILDS_FILE,"w"))==NULL) {
+    ERR_CHECK_RETURN(err,msg_error_construct("def"));    
+  }
+
+  entry = build_list;
+  while (entry) {
+    fprintf(fh,"%s\n",entry->name);
+    entry = entry->next;
+  }
+  fclose(fh);
+d167 1
+a167 1
+  return 0;
+d178 2
+a179 2
+  int  i,state;
+  char buffer[BUFFER_SIZE];
+d181 1
+a181 1
+  switch (file_exists(CHOICES_DIR))
+d183 1
+a183 11
+    case 0 :
+      if (mkdir(CHOICES_DIR,0)==0)
+        break;
+      /* else drop though to */
+    case 1 :
+      ERR_CHECK_RETURN(err,msg_error_construct("dir"));
+      /* macro will exit */
+  }
+  
+  if ((fh=fopen(DEFAULTS_FILE,"w"))==NULL) {
+    ERR_CHECK_RETURN(err,msg_error_construct("def"));    
+d186 2
+a187 2
+  fprintf(fh,"opt");
+  for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {  
+d191 1
+a191 1
+      fprintf(fh," %s",options[i].name);
+d193 2
+a194 1
+  fprintf(fh,"\n");
+a195 8
+  ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_TREE,buffer,sizeof(buffer),&i));
+  fprintf(fh,"bld %s\n",buffer);
+  ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_ENV,buffer,sizeof(buffer),&i));
+  fprintf(fh,"env %s\n",buffer);
+  fclose(fh);
+    
+a220 6
+  } else if (strcmp(template_name, MENU_OPTION_NAME) ==0) {
+    menu_option_id = id_block->self_id;
+  } else if (strcmp(template_name, MENU_VIEW_NAME) ==0) {
+    menu_view_id = id_block->self_id;
+  } else if (strcmp(template_name, WINDOW_BUILDS_NAME) ==0) {
+    window_build_id = id_block->self_id;
+d222 1
+a244 1
+  int i;
+d246 7
+a252 9
+  if (id_block->self_id == window_options_id) {
+    /* populate list of build trees */
+    ERR_CHECK_RETURN(err,build_populate(window_options_id,OPTIONS_GADGET_TREE));
+
+    /* sort out env menu and default value */
+    if (build_tree) {
+      ERR_CHECK_RETURN(err,
+    	env_populate(window_options_id,OPTIONS_GADGET_ENV,default_env));
+    }
+a253 11
+    /* sort out default rom build options */
+    for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {  
+      if (options[i].def) {
+        ERR_CHECK_RETURN(err,optionbutton_set_state(0,window_options_id,
+      	          options[i].id,1));
+      }
+    }
+  } else if (id_block->self_id == window_build_id) {
+    /* populate list of build trees */
+    ERR_CHECK_RETURN(err,build_populate(window_build_id,BUILD_GADGET_TREE));
+  }
+d265 4
+a268 10
+
+  if (id_block->self_id == window_options_id) {
+    if (id_block->self_component == OPTIONS_GADGET_ENV) {
+      /* check for build directory being selected */
+      if (!build_tree) {
+        ERR_CHECK_RETURN(err,msg_error_construct("bld"));
+      }
+      ERR_CHECK_RETURN(err,
+    	env_populate(window_options_id,OPTIONS_GADGET_ENV,default_env));
+    } else if (id_block->self_component == OPTIONS_GADGET_TREE) {
+d270 1
+a270 1
+        build_populate(window_options_id,OPTIONS_GADGET_TREE));
+a283 2
+  char current[BUFFER_SIZE];
+  int i;
+d287 2
+a288 12
+    if (id_block->self_component == OPTIONS_GADGET_TREE) {
+      ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_TREE,current,sizeof(current),&i));
+      set_build_tree(current);
+      
+    } else if (id_block->self_component == OPTIONS_GADGET_ENV) {
+      ERR_CHECK_RETURN(err,stringset_get_selected(0,window_options_id,
+        	OPTIONS_GADGET_ENV,current,sizeof(current),&i));
+      if (default_env)
+        free(default_env);
+      default_env=strdup(current);
+      
+d290 1
+a290 1
+    	env_source());
+a294 1
+
+d303 2
+a308 3
+    char cmd[1024];
+    int state;
+
+d311 10
+a320 3
+      case OPTIONS_GADGET_BUILD :
+        if (getenv(BUILD_ENV)==NULL) {
+          ERR_CHECK_RETURN(err,msg_error_construct("env"));
+d322 1
+d324 1
+d326 2
+a327 1
+        for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {
+d330 2
+a331 1
+          if (state) {
+a339 13
+    }
+  } else if (id_block->self_id == window_build_id) {
+    char current[BUFFER_SIZE];
+    
+    switch (id_block->self_component)
+    {
+      case BUILD_GADGET_REMOVE :
+        ERR_CHECK_RETURN(err,stringset_get_selected(0,window_build_id,
+        	BUILD_GADGET_TREE,current,sizeof(current),&i));
+        ERR_CHECK_RETURN(err,build_remove_entry(current));
+        ERR_CHECK_RETURN(err,build_populate(window_build_id,
+        	BUILD_GADGET_TREE));
+                break;
+d341 2
+a342 10
+      case BUILD_GADGET_ADD :
+        ERR_CHECK_RETURN(err,stringset_get_selected(0,window_build_id,
+        	BUILD_GADGET_TREE,current,sizeof(current),&i));
+        ERR_CHECK_RETURN(err,build_add_entry(current));
+        ERR_CHECK_RETURN(err,build_populate(window_build_id,
+        	BUILD_GADGET_TREE));
+        break;
+        
+      case BUILD_GADGET_SAVE :
+	write_builds();
+a350 22
+ * deal with clicks on the icon bar
+ */
+int 
+iconbar_click(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  IconbarClickedEvent *click_block = (IconbarClickedEvent *) event;
+  
+  if (click_block->hdr.flags & Iconbar_Clicked_Select)
+  {
+    /* 
+     * If no build directories defined, pop up build window
+     */
+    if (build_list)
+      toolbox_show_object(0,window_options_id,0,NULL,iconbar_id,0);
+    else
+      toolbox_show_object(0,window_build_id,0,NULL,iconbar_id,0);    
+  }
+  return 0;
+}      
+
+/*
+d359 3
+a361 5
+  char cmd[1024];
+
+  if (id_block->self_id == menu_iconbar_id) {
+  } else if (id_block->self_id == menu_option_id) {
+    switch (id_block->self_component)
+d363 5
+a367 26
+      case OPTIONMENU_SAVE :
+        write_defaults();      
+        break; 
+    }
+  } else if (id_block->self_id == menu_view_id) {
+    char build_name[BUILD_NAME_SIZE];
+    char *b=NULL;
+    
+    if ((b=getenv(BUILD_ENV))==NULL) {
+      ERR_CHECK_RETURN(err,msg_error_construct("env"));
+    }
+    strncpy(build_name,b,sizeof(build_name));
+    
+    switch (id_block->self_component)
+    {
+      case VIEWMENU_COMPONENTS :
+        sprintf(cmd,"Filer_Run %s.%s",BUILDSYS_DIR,build_name);
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));
+        break;
+      case VIEWMENU_DATABASE :
+        sprintf(cmd,"Filer_Run %s.%s",BUILDSYS_DIR,MODULEDB);
+        reg.r[0] = (int)cmd;
+        ERR_CHECK_RETURN(err,_kernel_swi(OS_CLI,&reg,&reg));      
+        break;
+    }
+a368 1
+
+d382 1
+a382 2
+  int quiting=FALSE;
+  
+a384 3
+  read_builds();
+  read_defaults();
+
+d399 1
+a399 1
+             message_quit,NULL));
+d401 1
+a401 3
+             message_quit,NULL));
+  ERR_GOTO(err,event_register_message_handler(Wimp_MDataLoad,
+             message_data_open,NULL));
+d405 1
+a405 1
+             event_quit,NULL));
+d407 1
+a407 1
+             menu_selection,NULL));
+a421 2
+  ERR_GOTO(err,event_register_toolbox_handler(-1,Iconbar_Clicked,
+      iconbar_click,NULL));
+d426 3
+a428 13
+  _kernel_swi(OS_GetEnv,&reg,&reg);
+  if (strstr((char*)reg.r[0],"-quit")) {
+    quiting = TRUE;
+  }
+
+  ERR_GOTO(err,env_source());
+  
+  if (!quiting) {
+    /* poll loop */
+    while (TRUE) {
+      event_poll (&event_code, &poll_block, 0);
+    }
+  }
+d431 1
+a431 1
+  if (err != NULL) {
+a432 1
+  }
+@
+
+
+1.1.1.3
+log
+@Fixed bug whereby new directory dropped on the build tree register window
+was not put into the writable field.
+Now look for components files in directory BuildSys.Components.
+@
+text
+@a114 18
+/* 
+ * set build tree
+ */
+void
+set_build_tree(char *name)
+{
+  if (build_tree) {
+    if (strlen(name)>strlen(build_tree)) { /* will it fit */
+      free(build_tree);
+    } else {
+      strcpy(build_tree,name);
+      debug db_printf("build_tree set to '%s'\n",build_tree);
+      return;
+    }
+  }
+  build_tree = strdup(name);
+}
+
+d142 2
+a143 1
+      set_build_tree(path);
+d164 17
+d585 1
+a585 2
+        sprintf(cmd,"Filer_Run %s.%s.%s",BUILDSYS_DIR,
+        	COMPONENTS_DIR,build_name);
+@
+
+
+1.1.1.4
+log
+@New features : logic for new version numbering, saving of defaults and
+wimp process key.
+@
+text
+@a58 1
+int  menu_version_id 	  = 0;
+a64 2
+int  used_default_options = FALSE;
+int  version_type         = 0;
+d196 1
+a210 1
+              options[j].def = 0;   	    
+a216 6
+        } else if (cstrcmp(argv[0],"ver")==0) {
+  	  for (version_type=0; version_type<(sizeof(versioning)/sizeof(version_t)); version_type++) {  
+            if (strcmp(versioning[version_type].msg,argv[1])==0) { 
+              break;
+            }
+          }
+a326 1
+  fprintf(fh,"ver %s\n",versioning[version_type].msg);
+a359 2
+  } else if (strcmp(template_name, MENU_VERSION_NAME) ==0) {
+    menu_version_id = id_block->self_id;
+d368 1
+a368 1
+proginfo_show(int event_code,ToolboxEvent *event,
+d394 5
+a398 5
+    if (!used_default_options) {
+      /* sort out default rom build options */
+      for (i=0; i<(sizeof(options)/sizeof(option_t)); i++) {  
+        if (options[i].def) {
+          ERR_CHECK_RETURN(err,optionbutton_set_state(0,window_options_id,
+a399 4
+      	} else {
+          ERR_CHECK_RETURN(err,optionbutton_set_state(0,window_options_id,
+      	          options[i].id,0));
+      	}
+a400 5
+      
+      ERR_CHECK_RETURN(err,displayfield_set_value(0,window_options_id,
+    	OPTIONS_GADGET_VERSION,msg_lookup(versioning[version_type].msg)));
+    	
+      used_default_options = TRUE;
+a407 23
+/*
+ * deal with the menu about to be displayed
+ */
+int 
+menu_show(int event_code,ToolboxEvent *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err=NULL;
+  int i;
+  
+  if (id_block->self_id == menu_version_id) {
+    for (i=0; i<(sizeof(versioning)/sizeof(version_t)); i++) {  
+      if (version_type == i) {
+        ERR_CHECK_RETURN(err,menu_set_tick(0,menu_version_id,
+    	  versioning[i].id,1));
+      } else {
+        ERR_CHECK_RETURN(err,menu_set_tick(0,menu_version_id,
+    	  versioning[i].id,0));
+      }
+    }
+  }
+  return 0;
+}
+d478 1
+a478 1
+    char cmd[BUFFER_SIZE];
+a488 2
+        strcat(cmd," ");
+        strcat(cmd,versioning[version_type].action);
+a496 1
+        debug db_printf("cmd = '%s'\n",cmd);
+d552 1
+a552 16
+}
+
+/*
+ * deal with key presses
+ */
+int 
+key_pressed(int event_code, WimpPollBlock *event,
+    		       IdBlock *id_block, void *handle)
+{
+  _kernel_oserror *err = NULL;
+  WimpKeyPressedEvent *key_block = (WimpKeyPressedEvent *)event;
+  
+  ERR_CHECK_RETURN(err,wimp_process_key(key_block->key_code));
+  
+  return 0;
+}
+a595 15
+  } else if (id_block->self_id == menu_version_id) {
+    
+    /* untick previous one */
+    ERR_CHECK_RETURN(err,menu_set_tick(0,menu_version_id,
+    	versioning[version_type].id,0));
+    for (version_type=0; version_type<(sizeof(versioning)/sizeof(version_t));
+    	 version_type++) {  
+      if (id_block->self_component == versioning[version_type].id) {
+        break;
+      }
+    }
+    ERR_CHECK_RETURN(err,menu_set_tick(0,menu_version_id,
+    	versioning[version_type].id,1));
+    ERR_CHECK_RETURN(err,displayfield_set_value(0,window_options_id,
+    	OPTIONS_GADGET_VERSION,msg_lookup(versioning[version_type].msg)));
+a637 4
+  /* Event handler */
+  ERR_GOTO(err,event_register_wimp_handler(-1,Wimp_EKeyPressed,
+  	     key_pressed,NULL));
+
+a642 2
+  ERR_GOTO(err,event_register_toolbox_handler(-1,Menu_AboutToBeShown,
+             menu_show,NULL));
+d646 1
+a646 1
+      proginfo_show,NULL));
+@
