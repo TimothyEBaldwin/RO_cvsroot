@@ -1,6 +1,7 @@
-head	1.4;
+head	1.5;
 access;
 symbols
+	ChangeFSI-1_63:1.5
 	ChangeFSI-1_62:1.4
 	ChangeFSI-1_61:1.2
 	ChangeFSI-1_60:1.2
@@ -8,6 +9,12 @@ symbols
 locks; strict;
 comment	@# @;
 
+
+1.5
+date	2018.11.16.22.58.37;	author rsprowson;	state Exp;
+branches;
+next	1.4;
+commitid	yKRmoFQbKhQCPd0B;
 
 1.4
 date	2018.09.30.18.06.45;	author rsprowson;	state Exp;
@@ -38,19 +45,17 @@ desc
 @@
 
 
-1.4
+1.5
 log
-@Further docs improvements
-Output formats were only partially described, and supported
-* Mention IRLAM output format switch in the CmdBasUse docs, add an example to the tests
-* Explain what 'p15' is in CmdBasUse (was only explained in the input formats docs)
-* Prefer S15 to S16
+@Add 4k and 64k sprite output options
+Update ChangeFSI's 16bpp output code paths to convert to 4k and 64k sprites (as well as the pre existing 32k RISC OS 3.5 style).
+Also, simplify the sprite output dialogue a little by grouping the colours together and the DPI as an option, to halve the number of radio buttons.
+If ChangeFSI is run on a kernel without 4k/64k support, those two depths are greyed out in the GUI (since after processing the desktop frontend expects to SpriteOp plot them), however at the command line the 2 new depths are always available (as S12 and S16).
 
-Delete support for C15 output. This appears to have been experimental as the resulting output had an embedded comment saying YUV but the data that followed was identical to a P15 RGB image. Also, ChangeFSI refused to load the C15 image it just wrote.
-Delete support for S24 output switch. This was an undocumented alias for S32.
-Add S15 as a possible output mode and prefer its use for 32k sprites - freeing up S16 for future 64k sprite support (and, logically S12 for 4k sprites).
+ChangeFSI: Add the conversion code
+DesktopFE: Rework dialogue with fewer radio icons, add fading logic
 
-Retagged as 'ChangeFSI-1_62'
+Version 1.63. Tagged as 'ChangeFSI-1_63'
 @
 text
 @REM > ChangeFSI
@@ -273,17 +278,24 @@ IF task% THEN
     q%!4=I%
     SYS SetI,,q%
   NEXT
-  IF stateoutput%>>17 AND 1 q%!8=1<<22 ELSE q%!8=0
+  REM If kernel can't plot 4k/64k, fade on the frontend. This is because
+  REM after processing the sprite is plotted using the kernel and will be
+  REM shown grossly in error. In contrast, at the CLI, no plotting is done
+  REM so it's OK to allow these outputs that way.
+  kernspt%=%1111111100
+  SYS "XOS_ReadModeVariable",&79005051,9 TO,,m : REM Log2bpp 4k
+  IF m<>4 THEN kernspt%=kernspt% AND NOT(1<<6)
+  SYS "XOS_ReadModeVariable",&501680B5,9 TO,,m : REM Log2bpp 64k
+  IF m<>4 THEN kernspt%=kernspt% AND NOT(1<<8)
+  REM If monochrome, fade true colours
   !q%=output%
   q%!12=1<<22
-  q%!4=7
-  SYS SetI,,q%
-  q%!4=8
-  SYS SetI,,q%
-  q%!4=13
-  SYS SetI,,q%
-  q%!4=14
-  SYS SetI,,q%
+  FOR I%=6 TO 9
+    IF kernspt%>>I% AND1 q%!8=0 ELSE q%!8=1<<22
+    IF stateoutput%>>17 AND1 q%!8=1<<22
+    q%!4=I%
+    SYS SetI,,q%
+  NEXT
   PROCshowscaletofit
   $z%(0)="1"
   $z%(1)="1"
@@ -540,12 +552,14 @@ DEF PROCcallFSI
       A$+=$adspcl%
     ELSE
       IF FNgeticonstate(output%,16) THEN
-        IF FNgeticonstate(output%,5) OR FNgeticonstate(output%,11) A$+="R"
+        IF FNgeticonstate(output%,3) AND FNgeticonstate(output%,11) A$+="R"
       ELSE
         SYS 53,VAL A$,3 TO ,,A%
         IF A%=63 THEN
-          IF FNgeticonstate(output%,6) A$="27t"
-          IF FNgeticonstate(output%,12) A$="12t"
+          IF FNgeticonstate(output%,5) THEN
+            IF FNgeticonstate(output%,11) A$="27t":REM Square 256
+            IF FNgeticonstate(output%,10) A$="12t":REM Rect 256
+          ENDIF
         ELSE
           IF A%=255 A$+="d"
         ENDIF
@@ -801,7 +815,7 @@ ENDPROC
 :
 REM  «  »
 DEF PROCcheckmouse(mousex%,mousey%,b%,handle%,icon%,ob%)
-  LOCAL moved%,imenu$,pmenu$
+  LOCAL moved%,sqr$,imenu$,pmenu$
   REM Picture menu structure
   pmenu$=       FNmsg0("Pimg")+">sinfo%,"+FNmsg0("Psrc")+">srcinfo%,"+FNmsg0("Prange")+">raninfo%,"
   pmenu$=pmenu$+FNmsg0("Pzoom")+">zoom%,"+FNmsg0("Psave")+">save%,"+FNmsg0("PIredo")
@@ -857,9 +871,23 @@ DEF PROCcheckmouse(mousex%,mousey%,b%,handle%,icon%,ob%)
     CASE handle% OF
       WHEN output%
         IF dest%=0 THEN dest%=1:PROCdomenu(101,imenu$,FNmsg0("_TaskName")):SYS Getcaret%,,q%:moved%= TRUE
+        IFFNgeticonstate(output%,11) THENsqr$="90" ELSEsqr$="45"
         CASE icon% OF
-          WHEN 3,4,5,6
-            PROCkillcurrent( STR$(22+icon%))
+          WHEN 2,3,4,5
+            IFsqr$="90" THEN
+              PROCkillcurrent(MID$("25262728",(2*icon%)-3,2))
+            ELSE
+              PROCkillcurrent(MID$(" 0 81215",(2*icon%)-3,2))
+            ENDIF
+            !q%=output%
+            q%!4=18
+            q%!8=0
+            q%!12=1<<21
+            SYS SetI,,q%
+            q%!4=24
+            SYS SetI,,q%
+          WHEN 6
+            PROCkillcurrent("S12,90,"+sqr$)
             !q%=output%
             q%!4=18
             q%!8=0
@@ -868,7 +896,7 @@ DEF PROCcheckmouse(mousex%,mousey%,b%,handle%,icon%,ob%)
             q%!4=24
             SYS SetI,,q%
           WHEN 7
-            PROCkillcurrent("S15,90,90")
+            PROCkillcurrent("S15,90,"+sqr$)
             !q%=output%
             q%!4=18
             q%!8=0
@@ -877,7 +905,7 @@ DEF PROCcheckmouse(mousex%,mousey%,b%,handle%,icon%,ob%)
             q%!4=24
             SYS SetI,,q%
           WHEN 8
-            PROCkillcurrent("S32,90,90")
+            PROCkillcurrent("S16,90,"+sqr$)
             !q%=output%
             q%!4=18
             q%!8=0
@@ -886,7 +914,7 @@ DEF PROCcheckmouse(mousex%,mousey%,b%,handle%,icon%,ob%)
             q%!4=24
             SYS SetI,,q%
           WHEN 9
-            PROCkillcurrent("0")
+            PROCkillcurrent("S32,90,"+sqr$)
             !q%=output%
             q%!4=18
             q%!8=0
@@ -894,112 +922,58 @@ DEF PROCcheckmouse(mousex%,mousey%,b%,handle%,icon%,ob%)
             SYS SetI,,q%
             q%!4=24
             SYS SetI,,q%
-          WHEN 10
-            PROCkillcurrent("8")
-            !q%=output%
-            q%!4=18
-            q%!8=0
-            q%!12=1<<21
-            SYS SetI,,q%
-            q%!4=24
-            SYS SetI,,q%
-          WHEN 11
-            PROCkillcurrent("12")
-            !q%=output%
-            q%!4=18
-            q%!8=0
-            q%!12=1<<21
-            SYS SetI,,q%
-            q%!4=24
-            SYS SetI,,q%
-          WHEN 12
-            PROCkillcurrent("15")
-            !q%=output%
-            q%!4=18
-            q%!8=0
-            q%!12=1<<21
-            SYS SetI,,q%
-            q%!4=24
-            SYS SetI,,q%
-          WHEN 13
-            PROCkillcurrent("S15,90,45")
-            !q%=output%
-            q%!4=18
-            q%!8=0
-            q%!12=1<<21
-            SYS SetI,,q%
-            q%!4=24
-            SYS SetI,,q%
-          WHEN 14
-            PROCkillcurrent("S32,90,45")
-            !q%=output%
-            q%!4=18
-            q%!8=0
-            q%!12=1<<21
-            SYS SetI,,q%
-            q%!4=24
-            SYS SetI,,q%
+          WHEN 10,11
+            REM The dpi changed, simulate a colour click to force a mode recalc
+            FOR I%=2 TO 9
+              IFFNgeticonstate(output%,I%) PROCcheckmouse(0,0,b%,output%,I%,0):I%=10
+            NEXT
           WHEN 15
+            REM 'Special'
             PROCkillcurrent(FNdeducemode)
             SYS SetI,,q%
             SYS Caretpos%,output%,19,,,-1,LEN ($adspcl%)
             !q%=output%
-            q%!4=7
             q%!8=0
             q%!12=1<<22
-            SYS SetI,,q%
-            q%!4=8
-            SYS SetI,,q%
-            q%!4=13
-            SYS SetI,,q%
-            q%!4=14
-            SYS SetI,,q%
+            FOR I%=6 TO 9
+              IF kernspt%>>I% AND1 q%!8=0 ELSE q%!8=1<<22
+              q%!4=I%
+              SYS SetI,,q%
+            NEXT
           WHEN 16
+            REM 'Colour'
             PROCkillcurrent(FNdeducemode)
             !q%=output%
-            q%!4=7
             q%!8=0
             q%!12=1<<22
-            SYS SetI,,q%
-            q%!4=8
-            SYS SetI,,q%
-            q%!4=13
-            SYS SetI,,q%
-            q%!4=14
-            SYS SetI,,q%
+            FOR I%=6 TO 9
+              IF kernspt%>>I% AND1 q%!8=0 ELSE q%!8=1<<22
+              q%!4=I%
+              SYS SetI,,q%
+            NEXT
           WHEN 17
+            REM 'Monochrome'
             PROCkillcurrent(FNdeducemode)
             !q%=output%
-            q%!4=7
             q%!8=1<<22
             q%!12=1<<22
-            SYS SetI,,q%
-            q%!4=8
-            SYS SetI,,q%
-            q%!4=13
-            SYS SetI,,q%
-            q%!4=14
-            SYS SetI,,q%
+            FOR I%=6 TO 9
+              q%!4=I%
+              SYS SetI,,q%
+            NEXT
             IF LEFT$($admode%,1) = "S" THEN
               IF RIGHT$($admode%,2) = "45" THEN
                 PROCkillcurrent("15")
-                !q%=output%
-                q%!4=18
-                q%!8=0
-                q%!12=1<<21
-                SYS SetI,,q%
-                q%!4=24
-                SYS SetI,,q%
               ELSE
                 PROCkillcurrent("28")
-                !q%=output%
-                q%!4=18
-                q%!8=0
-                q%!12=1<<21
-                SYS SetI,,q%
-                q%!4=24
-                SYS SetI,,q%
               ENDIF
+              !q%=output%
+              q%!4=18
+              q%!8=0
+              q%!12=1<<21
+              SYS SetI,,q%
+              q%!4=24
+              SYS SetI,,q%
             ENDIF
           WHEN 18
             !q%=output%
@@ -1402,39 +1376,43 @@ DEF FNdeducemode
 :
 REM  «  »
 DEF PROCshowscaletofit
-  LOCAL m,x,y
+  LOCAL m,x,y,dpi%,col%
   $admode%=FNdeducemode
   CASE ?admode% OF
     WHEN ASC "S"
-      IF VAL MID$($admode%,5)>VAL MID$($admode%,8) x=6 ELSE x=0
-      IF VAL MID$($admode%,2)>16 x+=5 ELSE x+=4
+      IF VAL MID$($admode%,5)>VAL MID$($admode%,8) dpi%=45 ELSE dpi%=90
+      col%=6+INSTR("12151632",MID$($admode%,2,2))DIV2
       SYS &35,-1,11 TO ,,tofitx%
       SYS &35,-1,12 TO ,,tofity%
     WHEN ASC "J"
       SYS &35,-1,11 TO ,,tofitx%
       SYS &35,-1,12 TO ,,tofity%
-      x = 12 : REM So no radio button is selected.
+      dpi%=90 : col%=12 : REM So no radio button is selected.
     OTHERWISE
       m=VAL $admode%
       SYS &35,m,11 TO ,,tofitx%
       SYS &35,m,12 TO ,,tofity%
       SYS &35,m,4 TO ,,x
       SYS &35,m,5 TO ,,y
-      IF y>x x=6 ELSE x=0
+      IF y>x dpi%=45 ELSE dpi%=90
       SYS &35,m,9 TO ,,y
-      x+=y
+      col%=2+y
   ENDCASE
   tofitx%+=1
   tofity%+=1
   $adscale%=FNmsg2("ScaleFill",STR$tofitx%,STR$tofity%)
   q%!12=1<<21
   !q%=output%
-  FOR I%=0 TO 11
-    IF I%=x q%!8=1<<21 ELSE q%!8=0
-    q%!4=I%+3
+  q%!4=10 : IF dpi%=45 THEN q%!8=1<<21 ELSE q%!8=0
+  SYS SetI,,q%
+  q%!4=11 : IF dpi%=90 THEN q%!8=1<<21 ELSE q%!8=0
+  SYS SetI,,q%
+  FOR I%=2 TO 9
+    IF I%=col% q%!8=1<<21 ELSE q%!8=0
+    q%!4=I%
     SYS SetI,,q%
   NEXT
-  IF x=12 q%!8=0:q%!4=24:SYS SetI,,q%
+  IF col%=12 q%!8=0:q%!4=24:SYS SetI,,q%
 ENDPROC
 :
 REM  «  »
@@ -1480,6 +1458,182 @@ DEF PROCerrorbox
   SYS "Wimp_ReportError",buffer%,%010100000000,FNmsg0("_TaskName"),"!changefsi",1,FNmsg0("ButErr") TO ,A%
   IF A%=4 THEN PROCfinishandquit
 ENDPROC
+@
+
+
+1.4
+log
+@Further docs improvements
+Output formats were only partially described, and supported
+* Mention IRLAM output format switch in the CmdBasUse docs, add an example to the tests
+* Explain what 'p15' is in CmdBasUse (was only explained in the input formats docs)
+* Prefer S15 to S16
+
+Delete support for C15 output. This appears to have been experimental as the resulting output had an embedded comment saying YUV but the data that followed was identical to a P15 RGB image. Also, ChangeFSI refused to load the C15 image it just wrote.
+Delete support for S24 output switch. This was an undocumented alias for S32.
+Add S15 as a possible output mode and prefer its use for 32k sprites - freeing up S16 for future 64k sprite support (and, logically S12 for 4k sprites).
+
+Retagged as 'ChangeFSI-1_62'
+@
+text
+@d221 10
+a230 1
+  IF stateoutput%>>17 AND 1 q%!8=1<<22 ELSE q%!8=0
+d233 6
+a238 8
+  q%!4=7
+  SYS SetI,,q%
+  q%!4=8
+  SYS SetI,,q%
+  q%!4=13
+  SYS SetI,,q%
+  q%!4=14
+  SYS SetI,,q%
+d495 1
+a495 1
+        IF FNgeticonstate(output%,5) OR FNgeticonstate(output%,11) A$+="R"
+d499 4
+a502 2
+          IF FNgeticonstate(output%,6) A$="27t"
+          IF FNgeticonstate(output%,12) A$="12t"
+d758 1
+a758 1
+  LOCAL moved%,imenu$,pmenu$
+d814 1
+d816 6
+a821 2
+          WHEN 3,4,5,6
+            PROCkillcurrent( STR$(22+icon%))
+d829 2
+a830 2
+          WHEN 7
+            PROCkillcurrent("S15,90,90")
+d838 2
+a839 2
+          WHEN 8
+            PROCkillcurrent("S32,90,90")
+d847 2
+a848 2
+          WHEN 9
+            PROCkillcurrent("0")
+d856 2
+a857 38
+          WHEN 10
+            PROCkillcurrent("8")
+            !q%=output%
+            q%!4=18
+            q%!8=0
+            q%!12=1<<21
+            SYS SetI,,q%
+            q%!4=24
+            SYS SetI,,q%
+          WHEN 11
+            PROCkillcurrent("12")
+            !q%=output%
+            q%!4=18
+            q%!8=0
+            q%!12=1<<21
+            SYS SetI,,q%
+            q%!4=24
+            SYS SetI,,q%
+          WHEN 12
+            PROCkillcurrent("15")
+            !q%=output%
+            q%!4=18
+            q%!8=0
+            q%!12=1<<21
+            SYS SetI,,q%
+            q%!4=24
+            SYS SetI,,q%
+          WHEN 13
+            PROCkillcurrent("S15,90,45")
+            !q%=output%
+            q%!4=18
+            q%!8=0
+            q%!12=1<<21
+            SYS SetI,,q%
+            q%!4=24
+            SYS SetI,,q%
+          WHEN 14
+            PROCkillcurrent("S32,90,45")
+d865 5
+d871 1
+a875 1
+            q%!4=7
+d878 5
+a882 7
+            SYS SetI,,q%
+            q%!4=8
+            SYS SetI,,q%
+            q%!4=13
+            SYS SetI,,q%
+            q%!4=14
+            SYS SetI,,q%
+d884 1
+a886 1
+            q%!4=7
+d889 5
+a893 7
+            SYS SetI,,q%
+            q%!4=8
+            SYS SetI,,q%
+            q%!4=13
+            SYS SetI,,q%
+            q%!4=14
+            SYS SetI,,q%
+d895 1
+a897 1
+            q%!4=7
+d900 4
+a903 7
+            SYS SetI,,q%
+            q%!4=8
+            SYS SetI,,q%
+            q%!4=13
+            SYS SetI,,q%
+            q%!4=14
+            SYS SetI,,q%
+a906 7
+                !q%=output%
+                q%!4=18
+                q%!8=0
+                q%!12=1<<21
+                SYS SetI,,q%
+                q%!4=24
+                SYS SetI,,q%
+a908 7
+                !q%=output%
+                q%!4=18
+                q%!8=0
+                q%!12=1<<21
+                SYS SetI,,q%
+                q%!4=24
+                SYS SetI,,q%
+d910 7
+d1319 1
+a1319 1
+  LOCAL m,x,y
+d1323 2
+a1324 2
+      IF VAL MID$($admode%,5)>VAL MID$($admode%,8) x=6 ELSE x=0
+      IF VAL MID$($admode%,2)>16 x+=5 ELSE x+=4
+d1330 1
+a1330 1
+      x = 12 : REM So no radio button is selected.
+d1337 1
+a1337 1
+      IF y>x x=6 ELSE x=0
+d1339 1
+a1339 1
+      x+=y
+d1346 7
+a1352 3
+  FOR I%=0 TO 11
+    IF I%=x q%!8=1<<21 ELSE q%!8=0
+    q%!4=I%+3
+d1355 1
+a1355 1
+  IF x=12 q%!8=0:q%!4=24:SYS SetI,,q%
 @
 
 

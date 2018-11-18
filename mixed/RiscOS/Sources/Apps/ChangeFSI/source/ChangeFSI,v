@@ -1,6 +1,7 @@
-head	1.24;
+head	1.25;
 access;
 symbols
+	ChangeFSI-1_63:1.25
 	ChangeFSI-1_62:1.24
 	ChangeFSI-1_61:1.23
 	ChangeFSI-1_60:1.23
@@ -33,6 +34,12 @@ symbols
 locks; strict;
 comment	@# @;
 
+
+1.25
+date	2018.11.16.22.58.36;	author rsprowson;	state Exp;
+branches;
+next	1.24;
+commitid	yKRmoFQbKhQCPd0B;
 
 1.24
 date	2018.09.30.18.06.45;	author rsprowson;	state Exp;
@@ -183,19 +190,17 @@ desc
 @@
 
 
-1.24
+1.25
 log
-@Further docs improvements
-Output formats were only partially described, and supported
-* Mention IRLAM output format switch in the CmdBasUse docs, add an example to the tests
-* Explain what 'p15' is in CmdBasUse (was only explained in the input formats docs)
-* Prefer S15 to S16
+@Add 4k and 64k sprite output options
+Update ChangeFSI's 16bpp output code paths to convert to 4k and 64k sprites (as well as the pre existing 32k RISC OS 3.5 style).
+Also, simplify the sprite output dialogue a little by grouping the colours together and the DPI as an option, to halve the number of radio buttons.
+If ChangeFSI is run on a kernel without 4k/64k support, those two depths are greyed out in the GUI (since after processing the desktop frontend expects to SpriteOp plot them), however at the command line the 2 new depths are always available (as S12 and S16).
 
-Delete support for C15 output. This appears to have been experimental as the resulting output had an embedded comment saying YUV but the data that followed was identical to a P15 RGB image. Also, ChangeFSI refused to load the C15 image it just wrote.
-Delete support for S24 output switch. This was an undocumented alias for S32.
-Add S15 as a possible output mode and prefer its use for 32k sprites - freeing up S16 for future 64k sprite support (and, logically S12 for 4k sprites).
+ChangeFSI: Add the conversion code
+DesktopFE: Rework dialogue with fewer radio icons, add fading logic
 
-Retagged as 'ChangeFSI-1_62'
+Version 1.63. Tagged as 'ChangeFSI-1_63'
 @
 text
 @REM Copyright 2012 Castle Technology Ltd
@@ -401,8 +406,14 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
       m=-4
       m$=""
       p6bits=8
-    WHEN "S15","S16"
+    WHEN "S12"
+      m=-5
+      m$=""
+    WHEN "S15"
       m=-6
+      m$=""
+    WHEN "S16"
+      m=-7
       m$=""
     WHEN "S32"
       m=-8
@@ -3101,11 +3112,11 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
       x%=sx%
       y%=sy%
       IF spm=18 ncol=1 ELSE ncol=15
-    WHEN -3,-6
+    WHEN -3,-5,-6,-7
       x%=sx%
       y%=sy%
       ncol=2^15-1
-    WHEN -4,-7,-8
+    WHEN -4,-8
       x%=sx%
       y%=sy%
       ncol=2^24-1
@@ -3147,12 +3158,17 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
         ENDIF
       ENDIF
   ENDCASE
-  IF m=-6 OR m=-7 OR m=-8 THEN
-    REM 32k/16M RISC OS 3.5+ sprite
+  IF m=-5 OR m=-6 OR m=-7 OR m=-8 THEN
+    REM 4k/32k/64k/16M RISC OS sprite
     nx=VAL MID$(pnm$,5)
     ny=VAL MID$(pnm$,INSTR(pnm$,",",5)+1)
     IF nx<>0 AND ny=0 THEN ny=nx:REM No y DPI given,make it square pixels
     IF nx=0 AND ny=0 THEN nx=90:ny=90:REM Silly user forgot to specify any x or y DPI at all
+    IF m=-5 THEN
+      REM RISC OS 5 sprite only has 2 bits for DPI, quantise to 22.5/45/90/180
+      nx=22.5*((100*nx+1225)DIV2250)
+      ny=22.5*((100*ny+1225)DIV2250)
+    ENDIF
     IF scaleo% THEN
       IF rotate% THEN
         IF xdiv% ymul%=ymul%*nx
@@ -3610,7 +3626,7 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
   CASE m OF
     WHEN -1,-9
       col=0:REM Monochrome AIM and JPEG 
-    WHEN -3,-4,-6,-7,-8,-10
+    WHEN -3,-4,-5,-6,-7,-8,-10
       col=2
     OTHERWISE
       col=0
@@ -3782,6 +3798,14 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
         ]
       WHEN 2^15-1
         [ OPT Z%(Z)
+         .div15
+        ]
+        FOR I%=0 TO 31
+          [ OPT Z%(Z)
+            EQUD I%/15*F
+          ]
+        NEXT
+        [ OPT Z%(Z)
          .div31
         ]
         FOR I%=0 TO 31
@@ -3790,10 +3814,36 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
           ]
         NEXT
         [ OPT Z%(Z)
+         .div63
+        ]
+        FOR I%=0 TO 63
+          [ OPT Z%(Z)
+            EQUD I%/63*F
+          ]
+        NEXT
+        IF m=-5 THEN
+          bitsRB=4
+          bitsG=4:REM 444
+          divRB=div15
+          divG =div15
+        ELSE
+          IF m=-7 THEN
+            bitsRB=5
+            bitsG=6:REM 565
+            divRB=div31
+            divG =div63
+          ELSE
+            bitsRB=5
+            bitsG=5:REM 555
+            divRB=div31
+            divG =div31
+          ENDIF
+        ENDIF
+        [ OPT Z%(Z)
          .fs%
           FNcpsr_to_r(1)
           STMFD SP !,{R1,R14}
-          ADR R7,div31
+          ADR R7,divRB
           LDR R1,[R9,#6*8]
           LDR R1,[R1] REM incr
           LDR R10,[R9,#5*8] REM addr current
@@ -3805,6 +3855,7 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
           LDR R14,[R9]
           LDR R14,[R14] REM base addr
           ADD R12,R12,R14
+          ADR R14,divG
           LDR R9,[R9,#8]
           LDR R9,[R9] REM count
           LDR R4,[R10] REM r
@@ -3815,27 +3866,27 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
           CMP R4,#F
           MOVCS R4,#0
           MOVGE R4,#F
-          SUB R0,R4,R4,LSR #5
-          ADD R0,R0,#1<<(bits-6)
-          MOV R0,R0,LSR #(bits-5)
+          SUB R0,R4,R4,LSR #bitsRB
+          ADD R0,R0,#1<<(bits-bitsRB-1)
+          MOV R0,R0,LSR #(bits-bitsRB)
           LDR R2,[R7,R0,LSL #2]
           SUB R4,R4,R2
           CMP R5,#F
           MOVCS R5,#0
           MOVGE R5,#F
-          SUB R3,R5,R5,LSR #5
-          ADD R3,R3,#1<<(bits-6)
-          MOV R3,R3,LSR #(bits-5)
-          ORR R0,R0,R3,LSL #5
-          LDR R2,[R7,R3,LSL #2]
+          SUB R3,R5,R5,LSR #bitsG
+          ADD R3,R3,#1<<(bits-bitsG-1)
+          MOV R3,R3,LSR #(bits-bitsG)
+          ORR R0,R0,R3,LSL #bitsRB
+          LDR R2,[R14,R3,LSL #2]
           SUB R5,R5,R2
           CMP R6,#F
           MOVCS R6,#0
           MOVGE R6,#F
-          SUB R3,R6,R6,LSR #5
-          ADD R3,R3,#1<<(bits-6)
-          MOV R3,R3,LSR #(bits-5)
-          ORR R0,R0,R3,LSL #10
+          SUB R3,R6,R6,LSR #bitsRB
+          ADD R3,R3,#1<<(bits-bitsRB-1)
+          MOV R3,R3,LSR #(bits-bitsRB)
+          ORR R0,R0,R3,LSL #bitsRB+bitsG
           LDR R2,[R7,R3,LSL #2]
           SUB R6,R6,R2
           STRB R0,[R12]
@@ -7504,7 +7555,7 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
     =100
   ENDIF
   IF m>=0 oname$="p"+ STR$m+m$ ELSE oname$=m$
-  IF m=-6 OR m=-7 OR m=-8 oname$=pnm$
+  IF m=-5 OR m=-6 OR m=-7 OR m=-8 oname$=pnm$
   IF range% oname$+="r"
   IF equal% oname$+="e"
   IF sharpen% oname$+="s"+ STR$sharpen%
@@ -7539,7 +7590,7 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
       Y%=ysp%
       PROCgetoutput(sz%,0,xwords%,Y%)
       base%=ram%
-    WHEN -6
+    WHEN -5,-6,-7
       xwords%=xsp%*2+3 AND NOT 3
       sz%=xwords%*ysp%
       Y%=ysp%
@@ -7554,18 +7605,19 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
       base%!(5*4)=A%-1
       !base%=!base%-Y%*xwords%+A%*xwords%
       ram%!12=ram%!12-Y%*xwords%+A%*xwords%
-      base%!(10*4)=5<<27 OR nx<<1 OR ny<<14 OR 1
+      IF m=-6 THEN
+        base%!(10*4)=5<<27 OR nx<<1 OR ny<<14 OR 1
+      ELSE
+        IF m=-5 THEN
+          ex%=3-INT(0.5+(3/8*(nx/22.5))):REM Eigen-ify 180/90/45/22.5 -> 0/1/2/3
+          ey%=3-INT(0.5+(3/8*(ny/22.5)))
+          base%!(10*4)=16<<20 OR ex%<<4 OR ey%<<6 OR &78000001
+        ELSE
+          base%!(10*4)=10<<27 OR nx<<1 OR ny<<14 OR 1
+        ENDIF
+      ENDIF
       base%+=base%!(8*4):REM Base of the sprite pixel array
       IF o% SYS 12,2,o%,ram%+4,base%-(ram%+4):REM Flush the sprite header
-    WHEN -7
-      REM 24bpp is an alias for 32bpp for now
-      REM xwords%=xsp%*3+3ANDNOT3:sz%=xwords%*ysp%:Y%=ysp%
-      REM A%=Y%:PROCgetoutput(sz%,64,xwords%,Y%)
-      REM ram%!4=0:ram%!8=16:ram%!12=16:SYS&2E,&109,ram%
-      REM SYS&2E,&10f,ram%,oname$,0,xsp%*3,Y%,28
-      REM base%=ram%+ram%!8:base%!(5*4)=A%-1:!base%=!base%-Y%*xwords%+A%*xwords%
-      REM ram%!12=ram%!12-Y%*xwords%+A%*xwords%
-      REM base%!(10*4)=8<<27 OR nx<<1 OR ny<<14 OR 1:base%+=base%!(8*4)
     WHEN -8
       xwords%=xsp%*4
       sz%=xwords%*ysp%
@@ -7769,8 +7821,8 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
   rowstep%=xwords%*size%
   colstep%=1
   dist%=xsp%-1
-  IF m=-3 OR m=-6 dist%=dist%*2
-  IF m=-4 OR m=-7 OR m=-10 OR m=-12 dist%=dist%*3
+  IF m=-3 OR m=-5 OR m=-6 OR m=-7 dist%=dist%*2
+  IF m=-4 OR m=-10 OR m=-12 dist%=dist%*3
   IF m=-8 dist%=dist%*4
   IF rotate% THEN
     odist%=dist%
@@ -7787,8 +7839,8 @@ DEF FNChangeFSI(A$,spritearea%,workspace%,worklimit%,oksave%,okinfo%,RETURN ram%
       dist%=(ysp%-1)*colstep%
       REM -90
     ENDIF
-    IF m=-3 OR m=-6 colstep%=colstep%/2:rowstep%=rowstep%*2
-    IF m=-4 OR m=-7 OR m=-10 OR m=-12 colstep%=colstep%/3:rowstep%=rowstep%*3
+    IF m=-3 OR m=-5 OR m=-6 OR m=-7 colstep%=colstep%/2:rowstep%=rowstep%*2
+    IF m=-4 OR m=-10 OR m=-12 colstep%=colstep%/3:rowstep%=rowstep%*3
     IF m=-8 colstep%=colstep%/4:rowstep%=rowstep%*4
   ENDIF
   IF hflip% THEN
@@ -9654,6 +9706,93 @@ DEF PROCsubtask(a$)
     CALL Shell_Call
   ENDIF
 ENDPROC
+@
+
+
+1.24
+log
+@Further docs improvements
+Output formats were only partially described, and supported
+* Mention IRLAM output format switch in the CmdBasUse docs, add an example to the tests
+* Explain what 'p15' is in CmdBasUse (was only explained in the input formats docs)
+* Prefer S15 to S16
+
+Delete support for C15 output. This appears to have been experimental as the resulting output had an embedded comment saying YUV but the data that followed was identical to a P15 RGB image. Also, ChangeFSI refused to load the C15 image it just wrote.
+Delete support for S24 output switch. This was an undocumented alias for S32.
+Add S15 as a possible output mode and prefer its use for 32k sprites - freeing up S16 for future 64k sprite support (and, logically S12 for 4k sprites).
+
+Retagged as 'ChangeFSI-1_62'
+@
+text
+@d204 4
+a207 1
+    WHEN "S15","S16"
+d210 3
+d2910 1
+a2910 1
+    WHEN -3,-6
+d2914 1
+a2914 1
+    WHEN -4,-7,-8
+d2956 2
+a2957 2
+  IF m=-6 OR m=-7 OR m=-8 THEN
+    REM 32k/16M RISC OS 3.5+ sprite
+d2962 5
+d3424 1
+a3424 1
+    WHEN -3,-4,-6,-7,-8,-10
+d3596 8
+d3612 26
+d3641 1
+a3641 1
+          ADR R7,div31
+d3653 1
+d3664 3
+a3666 3
+          SUB R0,R4,R4,LSR #5
+          ADD R0,R0,#1<<(bits-6)
+          MOV R0,R0,LSR #(bits-5)
+d3672 5
+a3676 5
+          SUB R3,R5,R5,LSR #5
+          ADD R3,R3,#1<<(bits-6)
+          MOV R3,R3,LSR #(bits-5)
+          ORR R0,R0,R3,LSL #5
+          LDR R2,[R7,R3,LSL #2]
+d3681 4
+a3684 4
+          SUB R3,R6,R6,LSR #5
+          ADD R3,R3,#1<<(bits-6)
+          MOV R3,R3,LSR #(bits-5)
+          ORR R0,R0,R3,LSL #10
+d7353 1
+a7353 1
+  IF m=-6 OR m=-7 OR m=-8 oname$=pnm$
+d7388 1
+a7388 1
+    WHEN -6
+d7403 11
+a7413 1
+      base%!(10*4)=5<<27 OR nx<<1 OR ny<<14 OR 1
+a7415 9
+    WHEN -7
+      REM 24bpp is an alias for 32bpp for now
+      REM xwords%=xsp%*3+3ANDNOT3:sz%=xwords%*ysp%:Y%=ysp%
+      REM A%=Y%:PROCgetoutput(sz%,64,xwords%,Y%)
+      REM ram%!4=0:ram%!8=16:ram%!12=16:SYS&2E,&109,ram%
+      REM SYS&2E,&10f,ram%,oname$,0,xsp%*3,Y%,28
+      REM base%=ram%+ram%!8:base%!(5*4)=A%-1:!base%=!base%-Y%*xwords%+A%*xwords%
+      REM ram%!12=ram%!12-Y%*xwords%+A%*xwords%
+      REM base%!(10*4)=8<<27 OR nx<<1 OR ny<<14 OR 1:base%+=base%!(8*4)
+d7619 2
+a7620 2
+  IF m=-3 OR m=-6 dist%=dist%*2
+  IF m=-4 OR m=-7 OR m=-10 OR m=-12 dist%=dist%*3
+d7637 2
+a7638 2
+    IF m=-3 OR m=-6 colstep%=colstep%/2:rowstep%=rowstep%*2
+    IF m=-4 OR m=-7 OR m=-10 OR m=-12 colstep%=colstep%/3:rowstep%=rowstep%*3
 @
 
 
